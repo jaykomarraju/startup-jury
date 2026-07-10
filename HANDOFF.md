@@ -7,11 +7,13 @@ the plan at `~/.claude/plans/ok-do-we-need-goofy-barto.md` + `git log`.
 
 ## Status
 
-- **Complete:** Phase 0 — Scaffold & CI.
-- **Next:** Phase 1 — Data & auth (D1 schema + migrations, seed rubric/params/demo, auth +
-  KV sessions + `requireRole`, `src/shared` role/stage/parameter types, `src/pipeline`
-  state-machine configs — no UI yet).
-- **Branch:** `phase-0-scaffold` (PR into `main`).
+- **Complete:** Phase 0 — Scaffold & CI · Phase 1 — Data & auth.
+- **Next:** Phase 2 — Design system & app shell (Tailwind brand tokens, fonts, logo assets;
+  shared components; role-based sidebar + route guards; real login → launcher → role landing).
+  Start with the **visual mockup review gate**: render each role's prototype HTML from
+  `STARTUPJURY-TEAM-FOLDER` and match it.
+- **Workflow:** commit directly to `main`, no PRs. Green gate (typecheck+lint+tests+build)
+  before each push. Node 22 (`nvm use`).
 
 ## Environment (important)
 
@@ -80,10 +82,43 @@ npm run build
 npm run test:e2e        # Playwright (auto-starts dev server)
 ```
 
-## Resume here (Phase 1)
+## Phase 1 — Data & auth (shipped)
 
-Build D1 schema + migrations and seed data; auth with KV sessions and `requireRole`
-middleware; `src/shared` types for roles/stages/parameters; `src/pipeline` incubator + VC
-state-machine configs. **Acceptance:** migrations apply clean; pipeline transition-matrix
-unit tests (legal/illegal transitions per role, both editions) and auth middleware tests
-pass. Start on branch `phase-1-data-auth`.
+- **Domain model** (`src/shared/roles.ts`): `Edition`, incubator/VC `Role` unions, labels,
+  helpers. **Pipeline** (`src/pipeline/`): typed state machine, `incubator.ts` + `vc.ts`
+  configs from the flow diagrams, engine (`getPipeline`, `allowedTransitions`,
+  `canTransition`, `performAction`) with role-gated transitions + terminal/unknown handling.
+- **Database** (`migrations/0001_init.sql`): full schema — users, org_settings, parameters,
+  rubric_anchors, decks, deck_extractions, scores, evaluations, pipeline_events, queries,
+  calls, investment_dd, ic_votes, term_sheets, legal_dd, portfolio, tickets, messages.
+  `0002_seed.sql`: 13 core weighted params per edition, anchors, thresholds, 12 demo users,
+  7 demo decks. Dev password for all seed users: **`demo1234`**.
+- **Auth** (`src/server/auth/`): `password.ts` (PBKDF2-HMAC-SHA256, constant-time verify),
+  `session.ts` (KV sessions, 7-day TTL, cookie `sj_session`), `middleware.ts`
+  (`requireAuth`, `requireRole(...)` with superuser bypass). Routes `src/server/routes/auth.ts`
+  (`POST /api/auth/login|logout`, `GET /api/auth/me`). Shared `src/server/types.ts`
+  (`Env`, `AppEnv`, `SessionUser`); `src/server/db.ts` user queries.
+- **Bindings:** D1 `DB` + KV `SESSIONS` in `wrangler.jsonc` (ids are `local-dev-placeholder`
+  — replaced with real created resources in Phase 8).
+- **Tests (29 total):** unit — scoring + pipeline structural/role-matrix; worker — health,
+  404, full auth + role-gate flow. Worker tests apply migrations to isolated local D1 via
+  `test/worker/apply-migrations.ts` (migrations read in `vitest.worker.config.ts`).
+
+### Phase 1 gotchas
+- **Test env typing:** `env` from `cloudflare:test` is `Cloudflare.Env`. We declare that
+  namespace in `test/worker/env.d.ts` (bindings + `TEST_MIGRATIONS`) instead of committing
+  the large generated `worker-configuration.d.ts` (still gitignored). If you add bindings,
+  update that declaration (or `npm run cf-typegen` locally, but don't commit it).
+- **Session staleness:** sessions cache `role`/`edition` in KV; a role change won't take
+  effect until the 7-day session expires. Revisit if roles become editable.
+- **Local D1:** apply migrations for manual dev with
+  `npx wrangler d1 migrations apply startup-jury-db --local`.
+
+## Resume here (Phase 2)
+
+Run the visual mockup review gate, then build the design system (Tailwind brand tokens from
+`startupjury_brand_guidelines.docx`: amber #E8A020, navy #1A1E2E, off-white #F5F7F2, military
+green #3B4A3F, deep green #4A6644; DM Sans UI / DM Mono scores), shared components, and the
+role-based app shell (sidebar nav derived from the permission matrix + route guards) wired to
+`/api/auth`. **Acceptance:** each role logs in and sees only its permitted nav (Playwright
+e2e asserts against the matrix); component unit tests pass. Commit directly to `main`.
