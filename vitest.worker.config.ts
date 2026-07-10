@@ -1,12 +1,23 @@
 import { defineConfig } from "vitest/config";
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { fileURLToPath } from "node:url";
+import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
 
-// Vitest 4: the cloudflareTest plugin resolves the `cloudflare:test` module and
-// wires the Workers pool (running tests inside workerd with local bindings).
+// Read D1 migrations at config time and hand them to the test worker as a
+// binding; the setup file applies them to the isolated local D1 before tests.
+const migrations = await readD1Migrations(
+  fileURLToPath(new URL("./migrations", import.meta.url)),
+);
+
 export default defineConfig({
-  plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" } })],
+  plugins: [
+    cloudflareTest({
+      wrangler: { configPath: "./wrangler.jsonc" },
+      miniflare: { bindings: { TEST_MIGRATIONS: migrations } },
+    }),
+  ],
   test: {
     name: "worker",
     include: ["test/worker/**/*.test.ts"],
+    setupFiles: ["test/worker/apply-migrations.ts"],
   },
 });

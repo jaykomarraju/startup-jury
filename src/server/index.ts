@@ -1,11 +1,10 @@
 import { Hono } from "hono";
+import type { AppEnv } from "./types";
+import auth from "./routes/auth";
 
-export interface Env {
-  ASSETS: Fetcher;
-  // D1/R2/KV/Queue bindings are added in later phases.
-}
+export type { Env } from "./types";
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<AppEnv>();
 
 app.get("/api/health", (c) =>
   c.json({
@@ -14,6 +13,8 @@ app.get("/api/health", (c) =>
     time: new Date().toISOString(),
   }),
 );
+
+app.route("/api/auth", auth);
 
 // Unknown API routes return JSON 404 (never the SPA) so client `response.json()`
 // fails loudly instead of silently parsing index.html.

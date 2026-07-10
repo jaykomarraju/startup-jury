@@ -8,6 +8,20 @@
     "binding": "ASSETS",
     "not_found_handling": "single-page-application"
   },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "startup-jury-db",
+      "database_id": "local-dev-placeholder",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "SESSIONS",
+      "id": "local-dev-placeholder"
+    }
+  ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
