@@ -53,6 +53,15 @@ export const ROLE_LABELS: Record<Edition, Partial<Record<Role, string>>> = {
   },
 };
 
+export const EDITION_LABELS: Record<Edition, string> = {
+  incubator: "Incubator",
+  vc: "Venture Capital",
+};
+
+export function editionLabel(edition: Edition): string {
+  return EDITION_LABELS[edition];
+}
+
 export function isRoleInEdition(role: Role, edition: Edition): boolean {
   return (ROLES_BY_EDITION[edition] as readonly string[]).includes(role);
 }

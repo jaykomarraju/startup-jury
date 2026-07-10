@@ -11,3 +11,4 @@ export { ScoreBar, ScoreBars, type ParamScoreView } from "./ScoreBars";
 export { EvaluationDrawer, type ExtractionSlide } from "./EvaluationDrawer";
 export { Sidebar } from "./Sidebar";
 export { Topbar } from "./Topbar";
+export { AppShell } from "./AppShell";

@@ -14,11 +14,18 @@ import { getPipeline } from "../../src/pipeline";
 const ids = (items: NavItem[]) => items.map((i) => i.id);
 
 describe("nav manifest", () => {
-  it("superuser sees the full non-portal set for each edition", () => {
+  it("superuser sees the full shared set (no portal or role-exclusive items)", () => {
     for (const edition of ["incubator", "vc"] as Edition[]) {
-      const full = NAV_BY_EDITION[edition].filter((i) => !i.portal).map((i) => i.id);
+      const full = NAV_BY_EDITION[edition]
+        .filter((i) => !i.portal && !i.exclusive)
+        .map((i) => i.id);
       expect(ids(navForUser(edition, "superuser"))).toEqual(full);
     }
+    // Superuser does not inherit a jury member's personalized reports.
+    const su = ids(navForUser("incubator", "superuser"));
+    expect(su).not.toContain("repscores");
+    expect(su).not.toContain("jassigned");
+    expect(su).toHaveLength(20);
   });
 
   it("founder sees only the founder portal; internal roles never see portal items", () => {

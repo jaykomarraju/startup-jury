@@ -31,6 +31,9 @@ export interface NavItem {
   labelOverrides?: Partial<Record<Role, string>>;
   /** Portal items are shown ONLY to the listed roles (no superuser bypass). */
   portal?: "founder";
+  /** Role-exclusive item: only listed roles see it, no superuser bypass
+      (e.g. a jury member's personalized "My scores" reports). */
+  exclusive?: boolean;
 }
 
 // ── Incubator ────────────────────────────────────────────────────────────────
@@ -49,7 +52,7 @@ const INCUBATOR_NAV: NavItem[] = [
   { id: "query", label: "Query", icon: "MessageSquare", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"] },
   { id: "evaluate", label: "Evaluate", icon: "ClipboardCheck", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"] },
   { id: "assign", label: "Assign", icon: "UserPlus", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"] },
-  { id: "jassigned", label: "Assigned", icon: "UserCheck", section: "Evaluation", roles: ["jury"] },
+  { id: "jassigned", label: "Assigned", icon: "UserCheck", section: "Evaluation", roles: ["jury"], exclusive: true },
   {
     id: "jurypipeline",
     label: "Jury Pipeline",
@@ -82,9 +85,9 @@ const INCUBATOR_NAV: NavItem[] = [
   { id: "evaluatorscores", label: "Evaluator scores", icon: "Users", section: "Reports", roles: ["admin", "program_manager", "program_associate"] },
   { id: "scoredrift", label: "Score drift", icon: "TrendingUp", section: "Reports", roles: ["admin", "program_manager", "program_associate"] },
   { id: "funnel", label: "Pipeline funnel", icon: "Activity", section: "Reports", roles: ["admin", "program_manager", "program_associate"] },
-  { id: "repdecks", label: "My decks summary", icon: "ChartBar", section: "Reports", roles: ["jury"] },
-  { id: "repscores", label: "My scores", icon: "FileText", section: "Reports", roles: ["jury"] },
-  { id: "repdrift", label: "My scores drift", icon: "TrendingUp", section: "Reports", roles: ["jury"] },
+  { id: "repdecks", label: "My decks summary", icon: "ChartBar", section: "Reports", roles: ["jury"], exclusive: true },
+  { id: "repscores", label: "My scores", icon: "FileText", section: "Reports", roles: ["jury"], exclusive: true },
+  { id: "repdrift", label: "My scores drift", icon: "TrendingUp", section: "Reports", roles: ["jury"], exclusive: true },
   // Settings
   { id: "coreparams", label: "Core Parameters", icon: "SlidersHorizontal", section: "Settings", roles: ["admin"] },
   { id: "myparams", label: "My Parameters", icon: "Sliders", section: "Settings", roles: ["admin", "program_manager", "program_associate", "jury"] },
@@ -164,6 +167,7 @@ export const NAV_SECTIONS: NavSection[] = [
 /** Whether a role may see a nav item (superuser bypass for non-portal items). */
 export function canSeeNav(role: Role, item: NavItem): boolean {
   if (item.portal === "founder") return role === "founder";
+  if (item.exclusive) return item.roles.includes(role); // no superuser bypass
   if (role === "superuser") return true;
   return item.roles.includes(role);
 }
