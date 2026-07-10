@@ -1,0 +1,32 @@
+:root {
+  --amber: #e8a020;
+  --navy: #1a1e2e;
+  --offwhite: #f5f7f2;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "DM Sans", system-ui, sans-serif;
+  background: var(--offwhite);
+  color: var(--navy);
+}
+
+.shell {
+  max-width: 640px;
+  margin: 12vh auto;
+  padding: 0 24px;
+}
+
+h1 {
+  color: var(--amber);
+  letter-spacing: 1px;
+}
+
+.tagline {
+  color: #888888;
+}
