@@ -4,6 +4,10 @@ import { defineConfig } from "vitest/config";
 // via @cloudflare/vitest-pool-workers with real local bindings.
 export default defineConfig({
   test: {
-    projects: ["vitest.unit.config.ts", "vitest.worker.config.ts"],
+    projects: [
+      "vitest.unit.config.ts",
+      "vitest.worker.config.ts",
+      "vitest.client.config.ts",
+    ],
   },
 });

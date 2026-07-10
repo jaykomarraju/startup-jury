@@ -1,32 +1,106 @@
-:root {
-  --amber: #e8a020;
-  --navy: #1a1e2e;
-  --offwhite: #f5f7f2;
+@import "tailwindcss";
+
+/* Self-hosted brand fonts (no runtime CDN). DM Sans (UI) + DM Mono (scores). */
+@import "@fontsource-variable/dm-sans/wght.css";
+@import "@fontsource/dm-mono/400.css";
+@import "@fontsource/dm-mono/500.css";
+
+/* Dark mode is driven by data-theme="dark" on <html> (set by ThemeProvider). */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme {
+  --font-sans: "DM Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "DM Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  /* Fixed brand palette (startupjury_brand_guidelines.docx) */
+  --color-amber: #e8a020;
+  --color-navy: #1a1a2e;
+  --color-offwhite: #f5f7f2;
+  --color-military: #3b4a3f;
+  --color-deepgreen: #4a6644;
+  --color-divider: #d8ddd2;
+  --color-divider-dark: #2d3d2a;
+  --color-mute: #888888;
+
+  /* Signal / status hues (deck signal tags, pipeline bars). Keys mirror the
+     SignalTag union in src/shared/scoring.ts, plus a deck-level "flagged". */
+  --color-signal-strong: #4a6644;
+  --color-signal-moderate: #e8a020;
+  --color-signal-weak: #b45309;
+  --color-signal-absent: #6b7280;
+  --color-signal-flagged: #c0392b;
+}
+
+/* Semantic runtime tokens — light default, dark override. Mapped into Tailwind
+   utilities via @theme inline below (e.g. bg-surface, text-fg, border-line). */
+:root,
+:root[data-theme="light"] {
   color-scheme: light;
+  --bg: #f5f7f2;
+  --surface: #ffffff;
+  --surface-2: #fbfcfa;
+  --line: #d8ddd2;
+  --fg: #1a1a2e;
+  --fg-muted: #888888;
+  --topbar: #3b4a3f;
+  --topbar-fg: #ffffff;
+  --topbar-line: #2d3d2a;
+  --sidebar: #ffffff;
+  --sidebar-active: #fdf3e0;
+  --accent: #e8a020;
+  --positive: #4a6644;
 }
 
-* {
-  box-sizing: border-box;
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #14171f;
+  --surface: #1e2230;
+  --surface-2: #191d28;
+  --line: #2d3d2a;
+  --fg: #f5f7f2;
+  --fg-muted: #9aa0a6;
+  --topbar: #101019;
+  --topbar-fg: #ffffff;
+  --topbar-line: #2d3d2a;
+  --sidebar: #1a1e2a;
+  --sidebar-active: #2a2416;
+  --accent: #e8a020;
+  --positive: #6f9068;
 }
 
-body {
-  margin: 0;
-  font-family: "DM Sans", system-ui, sans-serif;
-  background: var(--offwhite);
-  color: var(--navy);
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-topbar: var(--topbar);
+  --color-topbar-fg: var(--topbar-fg);
+  --color-topbar-line: var(--topbar-line);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-accent: var(--accent);
+  --color-positive: var(--positive);
 }
 
-.shell {
-  max-width: 640px;
-  margin: 12vh auto;
-  padding: 0 24px;
-}
-
-h1 {
-  color: var(--amber);
-  letter-spacing: 1px;
-}
-
-.tagline {
-  color: #888888;
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+  }
+  /* Uppercase letter-spaced label convention from the brand guidelines. */
+  .u-label {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: var(--fg-muted);
+  }
 }
