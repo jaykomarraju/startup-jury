@@ -10,3 +10,12 @@ describe("GET /api/health", () => {
     expect(body.service).toBe("startup-jury");
   });
 });
+
+describe("unknown API route", () => {
+  it("returns a JSON 404, not the SPA", async () => {
+    const res = await SELF.fetch("https://example.com/api/does-not-exist");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ error: "not_found" });
+  });
+});
