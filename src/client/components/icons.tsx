@@ -1,0 +1,83 @@
+import {
+  Activity,
+  Archive,
+  ChartBar,
+  ClipboardCheck,
+  CircleCheck,
+  FileCheck,
+  FileText,
+  Gavel,
+  GitBranch,
+  Handshake,
+  History,
+  Landmark,
+  Layers,
+  LayoutDashboard,
+  LifeBuoy,
+  Mail,
+  MessageSquare,
+  MessagesSquare,
+  Phone,
+  PhoneCall,
+  PieChart,
+  Scale,
+  Send,
+  ShieldAlert,
+  Sliders,
+  SlidersHorizontal,
+  TrendingUp,
+  Upload,
+  UserCheck,
+  UserPlus,
+  Users,
+  Vote,
+  type LucideIcon,
+} from "lucide-react";
+
+/** Icon names referenced by the nav manifest (src/shared/nav.ts). */
+const ICONS: Record<string, LucideIcon> = {
+  Activity,
+  Archive,
+  ChartBar,
+  ClipboardCheck,
+  CircleCheck,
+  FileCheck,
+  FileText,
+  Gavel,
+  GitBranch,
+  Handshake,
+  History,
+  Landmark,
+  Layers,
+  LayoutDashboard,
+  LifeBuoy,
+  Mail,
+  MessageSquare,
+  MessagesSquare,
+  Phone,
+  PhoneCall,
+  PieChart,
+  Scale,
+  Send,
+  ShieldAlert,
+  Sliders,
+  SlidersHorizontal,
+  TrendingUp,
+  Upload,
+  UserCheck,
+  UserPlus,
+  Users,
+  Vote,
+};
+
+/** Resolve a nav icon name to a lucide component, falling back to a neutral dot. */
+export function NavIcon({
+  name,
+  className,
+}: {
+  name: string;
+  className?: string;
+}) {
+  const Icon = ICONS[name] ?? Layers;
+  return <Icon className={className} aria-hidden="true" />;
+}
