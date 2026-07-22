@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../auth/useAuth";
 import {
   KpiTile,
@@ -6,84 +6,132 @@ import {
   Button,
   DeckRow,
   EvaluationDrawer,
+  EmptyState,
+  type ParamScoreView,
+  type ExtractionSlide,
 } from "../components";
 import type { DeckView } from "../types";
-import type { ParamScoreView } from "../components";
-import type { Edition } from "../../shared/roles";
+import { listDecks, getDeck } from "../api";
 
-// Placeholder data — mirrors the mockups. Replaced by the decks API in Phase 3.
-const DECKS: Record<Edition, DeckView[]> = {
-  incubator: [
-    { id: "1", name: "FinStack", sector: "FinTech", stage: "Seed", city: "Hyderabad", founder: "Ananya Reddy", aiScore: 7.2, signal: "moderate", status: "AI Evaluated" },
-    { id: "2", name: "InsureFlow", sector: "Insurtech", stage: "Series A", city: "Bengaluru", founder: "Rahul Verma", aiScore: 8.6, signal: "strong", status: "Shortlisted" },
-    { id: "3", name: "CreditBridge", sector: "Lending", stage: "Pre-seed", city: "Pune", founder: "Kavya Nair", aiScore: 6.1, signal: "moderate", status: "Assigned" },
-    { id: "4", name: "PayRoute", sector: "Payments", stage: "Idea", city: "Delhi", founder: "—", signal: "flagged", status: "Incomplete" },
-    { id: "5", name: "GreenRoute", sector: "Climatetech", stage: "Pre-seed", city: "Hyderabad", founder: "Sneha Iyer", aiScore: 9.1, signal: "strong", status: "AI Evaluated" },
-  ],
-  vc: [
-    { id: "1", name: "FinStack", sector: "B2B FinTech", city: "Hyderabad", aiScore: 7.2, signal: "moderate", status: "AI Evaluated" },
-    { id: "2", name: "InsureFlow", sector: "Insurtech", city: "Bengaluru", aiScore: 8.3, signal: "strong", status: "Onboard ready" },
-    { id: "3", name: "CreditBridge", sector: "Lending", city: "Pune", aiScore: 6.4, signal: "moderate", status: "In Diligence" },
-    { id: "4", name: "PayRoute", sector: "Payments", city: "Delhi", aiScore: 4.1, signal: "weak", status: "Incomplete" },
-    { id: "5", name: "WealthOS", sector: "Wealthtech", city: "Mumbai", aiScore: 7.8, signal: "moderate", status: "IC ready" },
-  ],
-};
+interface Kpi {
+  label: string;
+  value: number;
+  sublabel: string;
+  progress: number;
+}
 
-const KPIS: Record<Edition, { label: string; value: number; sublabel: string; progress: number }[]> = {
-  incubator: [
-    { label: "Uploaded", value: 24, sublabel: "+3 since yesterday", progress: 100 },
-    { label: "Pending", value: 9, sublabel: "Awaiting evaluation", progress: 38 },
-    { label: "Incomplete", value: 4, sublabel: "Missing slides", progress: 17 },
-    { label: "AI Evaluated", value: 11, sublabel: "46% of uploaded", progress: 46 },
-    { label: "Assigned", value: 8, sublabel: "33% of uploaded", progress: 33 },
-    { label: "Shortlisted", value: 5, sublabel: "63% shortlist rate", progress: 63 },
-  ],
-  vc: [
-    { label: "Uploaded", value: 24, sublabel: "+3 this week", progress: 100 },
-    { label: "Incomplete", value: 4, sublabel: "Missing materials", progress: 17 },
-    { label: "AI Evaluated", value: 20, sublabel: "83% of uploaded", progress: 83 },
-    { label: "In Diligence", value: 8, sublabel: "Active diligence", progress: 33 },
-    { label: "IC Ready", value: 5, sublabel: "Queued for committee", progress: 21 },
-    { label: "Onboard Ready", value: 3, sublabel: "Cleared to onboard", progress: 13 },
-  ],
-};
+const PASS_STATUSES = new Set([
+  "AI Evaluated",
+  "Assigned",
+  "Jury Evaluation",
+  "Shortlisted",
+  "Intro",
+  "Signup",
+  "Ready to Onboard",
+  "Analyst Scoring",
+  "Associate Review",
+  "Partner Review",
+  "Partner Call",
+  "Investment DD",
+  "IC Review",
+  "Term Sheet",
+  "Legal DD",
+  "Onboard Ready",
+]);
 
-const SAMPLE_SCORES: ParamScoreView[] = [
-  { label: "Problem & Market Clarity", weight: 8, value: 8 },
-  { label: "Traction & Validation", weight: 10, value: 7 },
-  { label: "Team & Execution", weight: 10, value: 9 },
-  { label: "Business Model", weight: 8, value: 6 },
-  { label: "Climate Impact", weight: 10, value: 8 },
-];
+function pct(n: number, total: number): number {
+  return total === 0 ? 0 : Math.round((n / total) * 100);
+}
 
-const PIPELINE_PROGRESS: Record<
-  Edition,
-  { label: string; count: number; pct: number; color: string }[]
-> = {
-  incubator: [
-    { label: "Pending", count: 9, pct: 38, color: "var(--color-signal-moderate)" },
-    { label: "Incomplete", count: 4, pct: 17, color: "var(--color-signal-flagged)" },
-    { label: "AI Evaluated", count: 11, pct: 46, color: "var(--color-signal-strong)" },
-    { label: "Assigned", count: 8, pct: 33, color: "var(--color-navy)" },
-    { label: "Shortlisted", count: 5, pct: 21, color: "var(--color-deepgreen)" },
-  ],
-  vc: [
-    { label: "Incomplete", count: 4, pct: 17, color: "var(--color-signal-flagged)" },
-    { label: "AI Evaluated", count: 20, pct: 83, color: "var(--color-signal-strong)" },
-    { label: "In Diligence", count: 8, pct: 33, color: "var(--color-signal-moderate)" },
-    { label: "IC Ready", count: 5, pct: 21, color: "var(--color-navy)" },
-    { label: "Onboard Ready", count: 3, pct: 13, color: "var(--color-deepgreen)" },
-  ],
+function computeKpis(decks: DeckView[]): Kpi[] {
+  const total = decks.length;
+  const evaluated = decks.filter((d) => d.aiScore !== undefined).length;
+  const incomplete = decks.filter((d) => d.signal === "flagged" || d.status === "Incomplete").length;
+  const pending = decks.filter(
+    (d) => d.aiScore === undefined && d.status !== "Incomplete",
+  ).length;
+  const strong = decks.filter((d) => d.signal === "strong").length;
+  const advanced = decks.filter(
+    (d) => d.aiScore !== undefined && d.status !== undefined && PASS_STATUSES.has(d.status),
+  ).length;
+  return [
+    { label: "Uploaded", value: total, sublabel: "All submissions", progress: 100 },
+    { label: "Pending", value: pending, sublabel: "Awaiting evaluation", progress: pct(pending, total) },
+    { label: "Incomplete", value: incomplete, sublabel: "Missing details", progress: pct(incomplete, total) },
+    { label: "AI Evaluated", value: evaluated, sublabel: `${pct(evaluated, total)}% of uploaded`, progress: pct(evaluated, total) },
+    { label: "Advanced", value: advanced, sublabel: "Passed AI gate", progress: pct(advanced, total) },
+    { label: "Strong signal", value: strong, sublabel: "Score ≥ 8.0", progress: pct(strong, total) },
+  ];
+}
+
+const SIGNAL_COLORS: Record<string, string> = {
+  strong: "var(--color-signal-strong)",
+  moderate: "var(--color-signal-moderate)",
+  weak: "var(--color-signal-weak)",
+  absent: "var(--color-signal-absent)",
+  flagged: "var(--color-signal-flagged)",
 };
 
 export function DashboardPage() {
   const { user } = useAuth();
+  const [decks, setDecks] = useState<DeckView[] | null>(null);
   const [selected, setSelected] = useState<DeckView | null>(null);
-  if (!user) return null;
+  const [report, setReport] = useState<{
+    scores: ParamScoreView[];
+    extraction: ExtractionSlide[];
+    verdict?: string;
+    weightedTotal?: number;
+  } | null>(null);
 
+  useEffect(() => {
+    let live = true;
+    listDecks()
+      .then((r) => live && setDecks(r.decks))
+      .catch(() => live && setDecks([]));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selected) {
+      setReport(null);
+      return;
+    }
+    let live = true;
+    getDeck(selected.id)
+      .then((r) => live && setReport({ scores: r.scores, extraction: r.extraction, verdict: r.verdict, weightedTotal: r.weightedTotal }))
+      .catch(() => live && setReport({ scores: [], extraction: [] }));
+    return () => {
+      live = false;
+    };
+  }, [selected]);
+
+  const kpis = useMemo(() => computeKpis(decks ?? []), [decks]);
+
+  // Pipeline-progress rail: counts per distinct status present (top 5).
+  const progress = useMemo(() => {
+    const list = decks ?? [];
+    const counts = new Map<string, { count: number; signal?: string }>();
+    for (const d of list) {
+      const key = d.status ?? "Unknown";
+      const entry = counts.get(key) ?? { count: 0, signal: d.signal };
+      entry.count += 1;
+      counts.set(key, entry);
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 5)
+      .map(([label, { count, signal }]) => ({
+        label,
+        count,
+        pct: pct(count, list.length),
+        color: SIGNAL_COLORS[signal ?? ""] ?? "var(--color-navy)",
+      }));
+  }, [decks]);
+
+  if (!user) return null;
   const edition = user.edition;
-  const decks = DECKS[edition];
-  const kpis = KPIS[edition];
 
   return (
     <div className="flex flex-col gap-5 p-5 lg:flex-row">
@@ -92,7 +140,7 @@ export function DashboardPage() {
           <div>
             <h1 className="text-xl font-semibold text-fg">All decks</h1>
             <p className="mt-0.5 text-sm text-fg-muted">
-              {decks.length} submissions · Updated 2 min ago
+              {decks === null ? "Loading…" : `${decks.length} submissions`}
             </p>
           </div>
           <Button variant="secondary" size="sm">Export</Button>
@@ -105,30 +153,40 @@ export function DashboardPage() {
         </div>
 
         <Card flush className="mt-5 overflow-x-auto">
-          <table className="w-full min-w-[36rem] text-left">
-            <thead>
-              <tr className="text-fg-muted">
-                <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Startup</th>
-                <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">
-                  {edition === "incubator" ? "Founder" : "Sector"}
-                </th>
-                <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">City</th>
-                <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">AI score</th>
-                <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Signal</th>
-                <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {decks.map((deck) => (
-                <DeckRow
-                  key={deck.id}
-                  deck={deck}
-                  secondary={edition === "incubator" ? "founder" : "sector"}
-                  onClick={setSelected}
-                />
-              ))}
-            </tbody>
-          </table>
+          {decks !== null && decks.length === 0 ? (
+            <div className="p-6">
+              <EmptyState
+                icon="Upload"
+                title="No decks yet"
+                description="Upload a pitch deck to run AI extraction and rubric scoring."
+              />
+            </div>
+          ) : (
+            <table className="w-full min-w-[36rem] text-left">
+              <thead>
+                <tr className="text-fg-muted">
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Startup</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">
+                    {edition === "incubator" ? "Founder" : "Sector"}
+                  </th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">City</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">AI score</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Signal</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(decks ?? []).map((deck) => (
+                  <DeckRow
+                    key={deck.id}
+                    deck={deck}
+                    secondary={edition === "incubator" ? "founder" : "sector"}
+                    onClick={setSelected}
+                  />
+                ))}
+              </tbody>
+            </table>
+          )}
         </Card>
       </div>
 
@@ -136,7 +194,8 @@ export function DashboardPage() {
         <Card>
           <div className="u-label">Pipeline progress</div>
           <div className="mt-3 flex flex-col gap-2.5">
-            {PIPELINE_PROGRESS[edition].map((p) => (
+            {progress.length === 0 && <p className="text-xs text-fg-muted">No decks yet.</p>}
+            {progress.map((p) => (
               <div key={p.label}>
                 <div className="flex items-center justify-between text-xs">
                   <span className="flex items-center gap-1.5 text-fg">
@@ -170,13 +229,9 @@ export function DashboardPage() {
           open
           onClose={() => setSelected(null)}
           deck={selected}
-          verdict={selected.signal === "strong" ? "Shortlist" : "Review"}
-          scores={SAMPLE_SCORES}
-          extraction={[
-            { label: "Cover", heading: selected.name, text: `${selected.sector ?? ""} · ${selected.city ?? ""}` },
-            { label: "Problem", text: "Placeholder extraction — live AI extraction arrives in Phase 3." },
-            { label: "Traction", text: "Placeholder metrics and validation summary." },
-          ]}
+          verdict={report?.verdict}
+          scores={report?.scores ?? []}
+          extraction={report?.extraction ?? []}
         />
       )}
     </div>

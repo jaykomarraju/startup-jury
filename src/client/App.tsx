@@ -4,6 +4,7 @@ import { AppShell } from "./components";
 import { RequireAuth, RequireNav } from "./routes/guards";
 import { LoginPage } from "./routes/LoginPage";
 import { DashboardPage } from "./routes/DashboardPage";
+import { UploadPage } from "./routes/UploadPage";
 import { StubPage } from "./routes/StubPage";
 import { landingNavId } from "../shared/nav";
 
@@ -22,10 +23,12 @@ function LandingRedirect() {
   return <Navigate to={`/app/${landingNavId(user.edition, user.role)}`} replace />;
 }
 
-/** The dashboard renders for "alldecks"; other slugs are stubs (later phases). */
+/** Dashboard for "alldecks", Upload for the upload slugs; others are stubs. */
 function NavRoute() {
   const { navId } = useParams();
-  return navId === "alldecks" ? <DashboardPage /> : <StubPage />;
+  if (navId === "alldecks") return <DashboardPage />;
+  if (navId === "upload" || navId === "founder-upload") return <UploadPage />;
+  return <StubPage />;
 }
 
 export default function App() {

@@ -103,4 +103,19 @@
     font-weight: 600;
     color: var(--fg-muted);
   }
+  /* Form input convention used by the Upload screen (theme-aware). */
+  .sj-input {
+    width: 100%;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--fg);
+    border-radius: 0.5rem;
+    padding: 0.5rem 0.625rem;
+    font-size: 0.8125rem;
+    font-family: var(--font-sans);
+  }
+  .sj-input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+  }
 }
