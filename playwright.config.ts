@@ -11,9 +11,12 @@ export default defineConfig({
   reporter: process.env.CI ? "list" : "html",
   use: { baseURL, trace: "on-first-retry" },
   webServer: {
-    command: "npm run dev",
+    // Seed the local D1 (Phase 1 migrations) BEFORE the dev server boots, so the
+    // browser login flows have the demo users. Playwright starts webServer before
+    // any globalSetup, so seeding must happen here, in-command, not in a hook.
+    command: "npm run e2e:serve",
     url: baseURL,
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
+    timeout: 180_000,
   },
 });

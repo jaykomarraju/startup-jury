@@ -13,6 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "db:migrate:local": "wrangler d1 migrations apply startup-jury-db --local",
+    "e2e:serve": "rm -rf .wrangler/state && npm run db:migrate:local && npm run dev",
     "cf-typegen": "wrangler types"
   },
   "dependencies": {
@@ -27,7 +29,7 @@
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.44.0",
     "@cloudflare/vitest-pool-workers": "^0.18.4",
-    "@cloudflare/workers-types": "^4.20260702.1",
+    "@cloudflare/workers-types": "^5.20260722.1",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.61.1",
     "@tailwindcss/vite": "^4.3.2",
@@ -45,6 +47,6 @@
     "typescript-eslint": "^8.63.0",
     "vite": "^8.1.4",
     "vitest": "^4.1.10",
-    "wrangler": "^4.86.0"
+    "wrangler": "^4.113.0"
   }
 }
