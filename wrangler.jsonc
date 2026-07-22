@@ -12,14 +12,14 @@
     {
       "binding": "DB",
       "database_name": "startup-jury-db",
-      "database_id": "local-dev-placeholder",
+      "database_id": "6353d3a9-e2f0-459a-9acc-411373197232",
       "migrations_dir": "migrations"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "SESSIONS",
-      "id": "local-dev-placeholder"
+      "id": "a6b70566774d4f03900a05c5c77f1365"
     }
   ],
   "observability": {
