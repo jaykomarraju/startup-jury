@@ -187,15 +187,28 @@ screenshot every screen/state, and match layout, copy, and interactions exactly.
 Superuser mockups are the feature supersets; per-role mockups trim nav/actions per the
 permission matrix. This is where pixel/UX detail is verified — not up front.
 
-**Phase 2 — Design system & app shell.** _(next)_ Tailwind brand tokens, fonts, logo assets;
+**Phase 2 — Design system & app shell.** _(done)_ Tailwind brand tokens, fonts, logo assets;
 shared components (KPI tile, deck card/row+signal tag, score bars, drawer, nav); role-based
 sidebar + route guards; real login → launcher → role landing.
 _Tests:_ component unit tests; Playwright e2e — each role logs in and sees only its
 permitted nav (asserted against the permission matrix).
 
+**Live demo deployed (from Phase 2).** _(done)_ To let non-technical stakeholders view the
+product as it's built, the app is **deployed to Cloudflare early** and kept live from Phase 2
+onward, rather than deploying only once at the end. Provisioned so far: remote **D1**
+(`startup-jury-db`) + **KV** (`SESSIONS`), real ids in `wrangler.jsonc`, remote migrations
+applied, `wrangler deploy` → `https://startup-jury.jay-komarraju.workers.dev`. A viewer guide
+lives at `docs/DEMO.md` (demo URL + per-role logins). **This does not change the final target
+app** — it front-loads provisioning that was originally bundled into Phase 8. Remaining
+infra (R2, Queues, `ANTHROPIC_API_KEY` secret, Cron) is provisioned in the phase that first
+needs it (below). **Keep the demo current: redeploy at each phase boundary** (`wrangler deploy`
++ `wrangler d1 migrations apply … --remote` for new migrations) after the green gate passes.
+
 **Phase 3 — Upload & AI evaluation.** R2 upload (single/bulk), Queue consumer,
 `ai/evaluate.ts` (Claude PDF→structured extraction+scores), `score > 5` gate, Review-decks
-+ Evaluation-report screens.
++ Evaluation-report screens. **Infra:** provision remote **R2** bucket + **Queue** and add
+their bindings to `wrangler.jsonc`; `wrangler secret put ANTHROPIC_API_KEY`. Redeploy at the
+end so the demo gains live upload+scoring.
 _Tests:_ evaluate.ts with a **mocked Anthropic response** (deterministic) — parsing, gate,
 DB writes; Worker integration test of upload→queue→stage; one live-API smoke test behind a
 flag using a real sample PDF.
@@ -223,8 +236,12 @@ error states.
 _Tests:_ analytics aggregation unit tests against seeded AI-vs-human scores; cron reminder
 selects correct pending decks; e2e dashboard render.
 
-**Phase 8 — Deploy.** Provision D1/R2/KV/Queue; `wrangler secret put ANTHROPIC_API_KEY`;
-`wrangler deploy`; run migrations on remote D1; live smoke test of upload→evaluate→advance.
+**Phase 8 — Production hardening & final deploy.** The app has been continuously deployed
+since Phase 2 (D1/KV from Phase 2; R2/Queue/secret/Cron added in the phases that needed
+them), so this phase is **finalization, not first deploy**: verify all bindings/secrets are
+provisioned; optional custom domain + route; remove/secure the demo seed logins (or gate the
+public demo) for a real launch; final remote migration run; full live smoke test of
+upload→evaluate→advance across both editions.
 _Tests:_ post-deploy smoke script against the live Workers URL.
 
 ## Testing strategy (every phase)
@@ -251,8 +268,12 @@ _Tests:_ post-deploy smoke script against the live Workers URL.
 - **Push at each phase boundary** (and mid-phase when convenient). CI also runs on push to
   `main` as a backstop.
 - Commit messages end with the required `Co-Authored-By` trailer.
-- Deploys use the user's already-authenticated `wrangler` CLI. The production
-  `wrangler deploy` (Phase 8) is confirmed with the user before running (outward-facing).
+- Deploys use the user's already-authenticated `wrangler` CLI. A **public demo is live from
+  Phase 2** (`https://startup-jury.jay-komarraju.workers.dev`); **redeploy at each phase
+  boundary** after the green gate so it reflects the latest build. Provisioning new remote
+  resources (R2/Queue/secret) and the redeploy are outward-facing — proceed for the demo, but
+  confirm with the user before anything destructive (deleting resources, custom domains, a
+  "real" launch that removes demo logins).
 
 ## Handoff document (updated after every phase)
 

@@ -8,11 +8,29 @@ the full plan at `docs/PLAN.md` + `git log`.
 ## Status
 
 - **Complete:** Phase 0 — Scaffold & CI · Phase 1 — Data & auth · Phase 2 — Design system & app shell.
+- **Live demo:** deployed to Cloudflare — **https://startup-jury.jay-komarraju.workers.dev**
+  (remote D1 + KV, seeded demo logins, password `demo1234`). Viewer guide: `docs/DEMO.md`.
+  See **Live demo & deploy** below. Keep it current: **redeploy at each phase boundary.**
 - **Next:** Phase 3 — Upload & AI evaluation (R2 upload single/bulk, Queue consumer,
   `ai/evaluate.ts` Claude PDF→structured extraction+scores, `score > 5` gate, Review-decks +
   Evaluation-report screens). See **Resume here (Phase 3)** at the bottom.
 - **Workflow:** commit directly to `main`, no PRs. Green gate (typecheck+lint+tests+build,
   plus `test:e2e` for UI) before each push. Node 22 (`nvm use`).
+
+## Live demo & deploy
+
+- **URL:** https://startup-jury.jay-komarraju.workers.dev · **account:** jay.komarraju@gmail.com
+  (`wrangler` already authenticated).
+- **Provisioned (remote):** D1 `startup-jury-db` (id `6353d3a9-e2f0-459a-9acc-411373197232`)
+  and KV `SESSIONS` (id `a6b70566774d4f03900a05c5c77f1365`) — real ids are in `wrangler.jsonc`
+  (no longer `local-dev-placeholder`). **Not yet provisioned:** R2, Queues, `ANTHROPIC_API_KEY`
+  secret, Cron — add these in the phase that first needs them (R2/Queue/secret = Phase 3).
+- **Redeploy after each phase** (post-green-gate): `npm run build && npx wrangler deploy`; if
+  the phase added migrations, first `npx wrangler d1 migrations apply startup-jury-db --remote`.
+  Then smoke-test the live URL (`/api/health`, a login). `wrangler.jsonc` is the source of truth
+  for bindings — the vite build emits a redirected config the CLI deploys.
+- **Demo is public** with shared seed logins — fine for a preview, but a real launch must gate
+  it / remove demo accounts (tracked in Phase 8).
 
 ## Environment (important)
 
@@ -149,11 +167,17 @@ npm run test:e2e        # Playwright (auto-starts dev server)
   isolated).
 
 ### Phase 2 gotchas
-- **Two wranglers → local-state skew.** The `@cloudflare/vite-plugin` bundles its own
-  `wrangler` (was 4.110 vs the repo's 4.86). Different versions write incompatible
-  `.wrangler/state` (D1/DO) — symptoms were `table _cf_ALARM has 3 columns but 2 values`
-  crashes and a silently-empty seed DB. Fixed by bumping the repo's `wrangler` (and
-  `workers-types`) to match. If this recurs after a plugin bump, realign versions.
+- **Pin `wrangler` to EXACTLY the vite-plugin's bundled version (`4.110.0`).** The
+  `@cloudflare/vite-plugin` bundles its own `wrangler`; a version mismatch with the repo's
+  top-level `wrangler` breaks two ways: (1) different versions write incompatible
+  `.wrangler/state` (D1/DO) — `table _cf_ALARM has 3 columns but 2 values` crashes + silently
+  empty seed DB (seen with 4.86 vs 4.110); (2) going **above** the plugin (4.113) makes
+  `wrangler deploy` reject the plugin-generated build config (`legacy_env` field removed in
+  4.113). Fix = pin the exact bundled version (`"wrangler": "4.110.0"`, `--save-exact`) so npm
+  hoists a single copy (`workers-types` v5 is its optional peer). If the plugin bumps its
+  bundle later, re-pin to match; check with
+  `node -e "require('./node_modules/@cloudflare/vite-plugin/node_modules/wrangler/package.json')"`
+  (absent path = unified/hoisted).
 - **Playwright seeds D1 in the webServer command, not a hook.** Playwright starts `webServer`
   **before** `globalSetup`, so migrating in a hook is too late (dev server boots on an empty DB).
   `e2e:serve` = `rm -rf .wrangler/state && db:migrate:local && dev` guarantees seed-before-serve.
@@ -181,4 +205,7 @@ with real extraction + per-parameter scores (replace the placeholder data blocks
 DB writes; Worker integration test of upload→queue→stage transition; one live-API smoke test
 behind a flag using a real sample PDF. **Acceptance:** a PDF upload flows R2 → (queue) →
 Claude structured scores → correct stage per the `>5` gate → Evaluation report renders. Commit
-directly to `main`; run the green gate + `/code-review` before pushing.
+directly to `main`; run the green gate + `/code-review` before pushing. **Then redeploy** so the
+live demo gains upload+scoring: apply any new migrations `--remote`, `npm run build && npx
+wrangler deploy`, smoke-test the URL. Provision R2 + Queue + `wrangler secret put
+ANTHROPIC_API_KEY` as part of this phase (see **Live demo & deploy**).
