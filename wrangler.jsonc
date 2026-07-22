@@ -22,6 +22,28 @@
       "id": "a6b70566774d4f03900a05c5c77f1365"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "DECKS",
+      "bucket_name": "startup-jury-decks"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "EVAL_QUEUE",
+        "queue": "startup-jury-evals"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "startup-jury-evals",
+        "max_batch_size": 5,
+        "max_batch_timeout": 10,
+        "max_retries": 3
+      }
+    ]
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
