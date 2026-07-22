@@ -12,7 +12,15 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./wrangler.jsonc" },
-      miniflare: { bindings: { TEST_MIGRATIONS: migrations } },
+      miniflare: {
+        bindings: {
+          TEST_MIGRATIONS: migrations,
+          // Forwarded to the flag-gated live Anthropic smoke test only. Named
+          // distinctly from ANTHROPIC_API_KEY so the app binding stays unset.
+          LIVE_ANTHROPIC: process.env.LIVE_ANTHROPIC ?? "",
+          LIVE_ANTHROPIC_KEY: process.env.ANTHROPIC_API_KEY ?? "",
+        },
+      },
     }),
   ],
   test: {

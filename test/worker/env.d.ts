@@ -9,6 +9,13 @@ declare namespace Cloudflare {
     ASSETS: Fetcher;
     DB: D1Database;
     SESSIONS: KVNamespace;
+    DECKS: R2Bucket;
+    EVAL_QUEUE: Queue<import("../../src/server/types").EvalMessage>;
+    ANTHROPIC_API_KEY?: string;
+    ANTHROPIC_MODEL?: string;
     TEST_MIGRATIONS: import("cloudflare:test").D1Migration[];
+    // Flag-gated live Anthropic smoke test (evaluate.live.test.ts) only.
+    LIVE_ANTHROPIC?: string;
+    LIVE_ANTHROPIC_KEY?: string;
   }
 }
