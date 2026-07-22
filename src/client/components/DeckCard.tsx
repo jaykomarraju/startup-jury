@@ -20,6 +20,9 @@ interface DeckProps {
   onClick?: (deck: DeckView) => void;
 }
 
+/** Which deck field fills the row's second column (matches the table header). */
+type SecondaryField = "founder" | "sector";
+
 /** Card presentation of a deck (grid layouts). */
 export function DeckCard({ deck, onClick }: DeckProps) {
   return (
@@ -44,7 +47,11 @@ export function DeckCard({ deck, onClick }: DeckProps) {
 }
 
 /** Table-row presentation of a deck (list layouts). */
-export function DeckRow({ deck, onClick }: DeckProps) {
+export function DeckRow({
+  deck,
+  onClick,
+  secondary = "founder",
+}: DeckProps & { secondary?: SecondaryField }) {
   return (
     <tr
       onClick={() => onClick?.(deck)}
@@ -54,7 +61,7 @@ export function DeckRow({ deck, onClick }: DeckProps) {
         <div className="font-medium text-fg">{deck.name}</div>
         <div className="mt-0.5 text-xs text-fg-muted">{meta(deck)}</div>
       </td>
-      <td className="px-4 py-3 text-sm text-fg-muted">{deck.founder ?? "—"}</td>
+      <td className="px-4 py-3 text-sm text-fg-muted">{deck[secondary] ?? "—"}</td>
       <td className="px-4 py-3 text-sm text-fg-muted">{deck.city ?? "—"}</td>
       <td className="px-4 py-3">
         <ScoreChip value={deck.aiScore} />

@@ -5,6 +5,7 @@ import {
   KpiTile,
   SignalTag,
   DeckCard,
+  DeckRow,
   ScoreBars,
   EvaluationDrawer,
   Sidebar,
@@ -54,6 +55,30 @@ describe("DeckCard", () => {
     expect(screen.getByText("Moderate")).toBeInTheDocument();
     fireEvent.click(screen.getByText("FinStack"));
     expect(onClick).toHaveBeenCalledWith(deck);
+  });
+});
+
+describe("DeckRow", () => {
+  function row(secondary?: "founder" | "sector") {
+    return render(
+      <table>
+        <tbody>
+          <DeckRow deck={deck} secondary={secondary} />
+        </tbody>
+      </table>,
+    );
+  }
+
+  it("shows the founder in the second column by default", () => {
+    row();
+    expect(screen.getByText("Ananya Reddy")).toBeInTheDocument();
+  });
+
+  it("shows the sector when secondary='sector' (VC table)", () => {
+    row("sector");
+    // Sector appears both in the meta line and the dedicated column.
+    expect(screen.getAllByText("FinTech").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("Ananya Reddy")).not.toBeInTheDocument();
   });
 });
 

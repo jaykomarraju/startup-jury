@@ -56,13 +56,25 @@ const SAMPLE_SCORES: ParamScoreView[] = [
   { label: "Climate Impact", weight: 10, value: 8 },
 ];
 
-const PIPELINE_PROGRESS = [
-  { label: "Pending", count: 9, pct: 38, color: "var(--color-signal-moderate)" },
-  { label: "Incomplete", count: 4, pct: 17, color: "var(--color-signal-flagged)" },
-  { label: "AI Evaluated", count: 11, pct: 46, color: "var(--color-signal-strong)" },
-  { label: "Assigned", count: 8, pct: 33, color: "var(--color-navy)" },
-  { label: "Shortlisted", count: 5, pct: 21, color: "var(--color-deepgreen)" },
-];
+const PIPELINE_PROGRESS: Record<
+  Edition,
+  { label: string; count: number; pct: number; color: string }[]
+> = {
+  incubator: [
+    { label: "Pending", count: 9, pct: 38, color: "var(--color-signal-moderate)" },
+    { label: "Incomplete", count: 4, pct: 17, color: "var(--color-signal-flagged)" },
+    { label: "AI Evaluated", count: 11, pct: 46, color: "var(--color-signal-strong)" },
+    { label: "Assigned", count: 8, pct: 33, color: "var(--color-navy)" },
+    { label: "Shortlisted", count: 5, pct: 21, color: "var(--color-deepgreen)" },
+  ],
+  vc: [
+    { label: "Incomplete", count: 4, pct: 17, color: "var(--color-signal-flagged)" },
+    { label: "AI Evaluated", count: 20, pct: 83, color: "var(--color-signal-strong)" },
+    { label: "In Diligence", count: 8, pct: 33, color: "var(--color-signal-moderate)" },
+    { label: "IC Ready", count: 5, pct: 21, color: "var(--color-navy)" },
+    { label: "Onboard Ready", count: 3, pct: 13, color: "var(--color-deepgreen)" },
+  ],
+};
 
 export function DashboardPage() {
   const { user } = useAuth();
@@ -108,7 +120,12 @@ export function DashboardPage() {
             </thead>
             <tbody>
               {decks.map((deck) => (
-                <DeckRow key={deck.id} deck={deck} onClick={setSelected} />
+                <DeckRow
+                  key={deck.id}
+                  deck={deck}
+                  secondary={edition === "incubator" ? "founder" : "sector"}
+                  onClick={setSelected}
+                />
               ))}
             </tbody>
           </table>
@@ -119,7 +136,7 @@ export function DashboardPage() {
         <Card>
           <div className="u-label">Pipeline progress</div>
           <div className="mt-3 flex flex-col gap-2.5">
-            {PIPELINE_PROGRESS.map((p) => (
+            {PIPELINE_PROGRESS[edition].map((p) => (
               <div key={p.label}>
                 <div className="flex items-center justify-between text-xs">
                   <span className="flex items-center gap-1.5 text-fg">
