@@ -1,19 +1,18 @@
 # HANDOFF — ai.STARTUPJURY
 
 Single source of truth for resuming this build in a new/compacted session. Read this +
-the plan at `~/.claude/plans/ok-do-we-need-goofy-barto.md` + `git log`.
+the full plan at `docs/PLAN.md` + `git log`.
 
 ---
 
 ## Status
 
-- **Complete:** Phase 0 — Scaffold & CI · Phase 1 — Data & auth.
-- **Next:** Phase 2 — Design system & app shell (Tailwind brand tokens, fonts, logo assets;
-  shared components; role-based sidebar + route guards; real login → launcher → role landing).
-  Start with the **visual mockup review gate**: render each role's prototype HTML from
-  `STARTUPJURY-TEAM-FOLDER` and match it.
-- **Workflow:** commit directly to `main`, no PRs. Green gate (typecheck+lint+tests+build)
-  before each push. Node 22 (`nvm use`).
+- **Complete:** Phase 0 — Scaffold & CI · Phase 1 — Data & auth · Phase 2 — Design system & app shell.
+- **Next:** Phase 3 — Upload & AI evaluation (R2 upload single/bulk, Queue consumer,
+  `ai/evaluate.ts` Claude PDF→structured extraction+scores, `score > 5` gate, Review-decks +
+  Evaluation-report screens). See **Resume here (Phase 3)** at the bottom.
+- **Workflow:** commit directly to `main`, no PRs. Green gate (typecheck+lint+tests+build,
+  plus `test:e2e` for UI) before each push. Node 22 (`nvm use`).
 
 ## Environment (important)
 
@@ -114,11 +113,72 @@ npm run test:e2e        # Playwright (auto-starts dev server)
 - **Local D1:** apply migrations for manual dev with
   `npx wrangler d1 migrations apply startup-jury-db --local`.
 
-## Resume here (Phase 2)
+## Phase 2 — Design system & app shell (shipped)
 
-Run the visual mockup review gate, then build the design system (Tailwind brand tokens from
-`startupjury_brand_guidelines.docx`: amber #E8A020, navy #1A1E2E, off-white #F5F7F2, military
-green #3B4A3F, deep green #4A6644; DM Sans UI / DM Mono scores), shared components, and the
-role-based app shell (sidebar nav derived from the permission matrix + route guards) wired to
-`/api/auth`. **Acceptance:** each role logs in and sees only its permitted nav (Playwright
-e2e asserts against the matrix); component unit tests pass. Commit directly to `main`.
+- **Deps added:** `react-router-dom` v7; Tailwind v4 (`@tailwindcss/vite`, CSS-first tokens);
+  self-hosted `@fontsource-variable/dm-sans` + `@fontsource/dm-mono`; `lucide-react`;
+  `@testing-library/react`+`jsdom` (client test tier). **Toolchain aligned:** `wrangler`
+  4.86→4.113 and `@cloudflare/workers-types` 4→5 so the standalone CLI and the vite-plugin's
+  bundled wrangler agree on local D1/DO state (see gotcha below).
+- **Design system** (`src/client/index.css` + `theme/`): Tailwind `@theme` fixed brand palette +
+  semantic light/dark runtime tokens (`bg/surface/line/fg/topbar/sidebar/accent/positive`) via
+  `@theme inline`; `data-theme="dark"` variant; uppercase `.u-label`; signal hues.
+  `ThemeProvider`/`useTheme` (persisted to `localStorage`, respects `prefers-color-scheme`).
+  `theme/signals.ts` maps `SignalTag`+`flagged` → pill/color classes.
+- **Components** (`src/client/components/`, all prop-driven, theme-aware, unit-tested):
+  `Logo` (inline-SVG radar + wordmark), `Button/Card/Badge/EmptyState`, `KpiTile`, `SignalTag`,
+  `DeckCard`/`DeckRow`(+`secondary` col)+`ScoreChip`, `ScoreBar(s)` (weighted-total via
+  `shared/scoring`), `EvaluationDrawer` (report slide-over), `Sidebar`/`Topbar`/`AppShell`,
+  `icons.tsx` (lucide registry for nav icon names).
+- **Nav model** (`src/shared/nav.ts`): typed `NavItem` manifest per edition +
+  `navForUser/canAccessNav/navLabel/landingNavId`. Derived from the two Superuser mockups,
+  trimmed per the incubator role×stage matrix and VC pipeline role-gating; **founder** isolated
+  to a `portal` set; jury-personal items marked `exclusive` (no superuser bypass, keeps the
+  superuser superset at 20). `canSeeNav` mirrors `requireRole`'s superuser bypass.
+- **Shell/routing** (`src/client/`): `main.tsx` wraps `ThemeProvider`→`AuthProvider`→
+  `BrowserRouter`. `auth/AuthProvider`+`useAuth` (cookie-session: `/api/auth/me` on mount,
+  `login`, `logout`). Routes: `/login` (branded, seed-login hints), `/app` (RequireAuth) →
+  index redirect to role landing, `/app/:navId` (RequireNav) → `DashboardPage` for `alldecks`
+  else `StubPage`. Guards `RequireAuth`/`RequireNav` mirror server authZ.
+- **Dashboard** (`routes/DashboardPage.tsx`): edition-aware role landing (KPI row, deck table,
+  edition-specific pipeline-progress + cohort-thresholds rail, EvaluationDrawer) with
+  **placeholder data** — live decks API arrives in Phase 3.
+- **Tests (49 unit/worker/client + 16 e2e):** `test/unit/nav.test.ts` (matrix + pipeline
+  cross-checks), `test/client/*` (components + ThemeProvider), `e2e/nav.spec.ts` (all 12 seed
+  roles log in via UI and the sidebar equals `navForUser`; forbidden deep-link guarded; founder
+  isolated).
+
+### Phase 2 gotchas
+- **Two wranglers → local-state skew.** The `@cloudflare/vite-plugin` bundles its own
+  `wrangler` (was 4.110 vs the repo's 4.86). Different versions write incompatible
+  `.wrangler/state` (D1/DO) — symptoms were `table _cf_ALARM has 3 columns but 2 values`
+  crashes and a silently-empty seed DB. Fixed by bumping the repo's `wrangler` (and
+  `workers-types`) to match. If this recurs after a plugin bump, realign versions.
+- **Playwright seeds D1 in the webServer command, not a hook.** Playwright starts `webServer`
+  **before** `globalSetup`, so migrating in a hook is too late (dev server boots on an empty DB).
+  `e2e:serve` = `rm -rf .wrangler/state && db:migrate:local && dev` guarantees seed-before-serve.
+  Note: a cold local `npm run test:e2e` wipes local `.wrangler/state`; devs with a running dev
+  server are unaffected (`reuseExistingServer`).
+- **Fonts self-host** as woff2 via `@fontsource` CSS imports (no runtime CDN). Logo PNGs bundled
+  in `src/client/assets/`; favicon is `public/favicon.png`. Brand doc names SVGs but only PNGs
+  exist in the team folder — the `Logo` component uses an inline SVG for the header mark.
+- **Local dev DB:** `npm run db:migrate:local` (applies Phase 1 migrations to local D1). If
+  workerd/vite processes are orphaned on port 5173, `pkill -f workerd` then re-run.
+
+## Resume here (Phase 3)
+
+Build **Upload & AI evaluation**. Add R2 upload (single + bulk) and a Queue consumer; write
+`src/server/ai/evaluate.ts` — build the extraction+scoring prompt from `parameters` +
+`rubric_anchors` + org system-prompt override, send the R2 PDF as a Claude `document` block
+(model `claude-sonnet-5`; consult the **`claude-api`** skill for request shape + PDF handling),
+parse structured JSON into `deck_extractions` + AI `scores`, and apply the **`score > 5` gate**.
+Wire `src/server/queue.ts` (per-deck consumer) and the single-upload direct path. Add R2 + Queue
+bindings to `wrangler.jsonc`; `ANTHROPIC_API_KEY` via `wrangler secret` (Phase 8 for prod).
+Build the **Review-decks** and **Evaluation-report** screens against the live model — the
+Phase 2 `DashboardPage` deck table + `EvaluationDrawer` are the presentational shells to fill
+with real extraction + per-parameter scores (replace the placeholder data blocks).
+**Tests:** `evaluate.ts` with a **mocked Anthropic response** (deterministic) — parsing, gate,
+DB writes; Worker integration test of upload→queue→stage transition; one live-API smoke test
+behind a flag using a real sample PDF. **Acceptance:** a PDF upload flows R2 → (queue) →
+Claude structured scores → correct stage per the `>5` gate → Evaluation report renders. Commit
+directly to `main`; run the green gate + `/code-review` before pushing.
