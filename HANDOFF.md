@@ -7,13 +7,18 @@ the full plan at `docs/PLAN.md` + `git log`.
 
 ## Status
 
-- **Complete:** Phase 0 — Scaffold & CI · Phase 1 — Data & auth · Phase 2 — Design system & app shell.
+- **Complete:** Phase 0 — Scaffold & CI · Phase 1 — Data & auth · Phase 2 — Design system & app shell ·
+  Phase 3 — Upload & AI evaluation.
 - **Live demo:** deployed to Cloudflare — **https://startup-jury.jay-komarraju.workers.dev**
-  (remote D1 + KV, seeded demo logins, password `demo1234`). Viewer guide: `docs/DEMO.md`.
+  (remote D1 + KV + **R2 + Queue**, seeded demo logins, password `demo1234`). Viewer guide: `docs/DEMO.md`.
   See **Live demo & deploy** below. Keep it current: **redeploy at each phase boundary.**
-- **Next:** Phase 3 — Upload & AI evaluation (R2 upload single/bulk, Queue consumer,
-  `ai/evaluate.ts` Claude PDF→structured extraction+scores, `score > 5` gate, Review-decks +
-  Evaluation-report screens). See **Resume here (Phase 3)** at the bottom.
+- **Next:** Phase 4 — Incubator pipeline (assign → jury eval → shortlist → intro → signup →
+  onboard/archive; founder query loop + stubbed email; incubator role dashboards/nav).
+  See **Resume here (Phase 4)** at the bottom.
+- **⚠️ One open item:** the live demo's `ANTHROPIC_API_KEY` secret. Uploads store to R2 + enqueue,
+  but **live AI scoring stays pending until the secret is set** (see **Live demo & deploy**). The user
+  approved setting it ("Set it now, spend OK"); if it's not yet set, run
+  `wrangler secret put ANTHROPIC_API_KEY` and the flag-gated live smoke test.
 - **Workflow:** commit directly to `main`, no PRs. Green gate (typecheck+lint+tests+build,
   plus `test:e2e` for UI) before each push. Node 22 (`nvm use`).
 
@@ -21,10 +26,14 @@ the full plan at `docs/PLAN.md` + `git log`.
 
 - **URL:** https://startup-jury.jay-komarraju.workers.dev · **account:** jay.komarraju@gmail.com
   (`wrangler` already authenticated).
-- **Provisioned (remote):** D1 `startup-jury-db` (id `6353d3a9-e2f0-459a-9acc-411373197232`)
-  and KV `SESSIONS` (id `a6b70566774d4f03900a05c5c77f1365`) — real ids are in `wrangler.jsonc`
-  (no longer `local-dev-placeholder`). **Not yet provisioned:** R2, Queues, `ANTHROPIC_API_KEY`
-  secret, Cron — add these in the phase that first needs them (R2/Queue/secret = Phase 3).
+- **Provisioned (remote):** D1 `startup-jury-db` (id `6353d3a9-e2f0-459a-9acc-411373197232`),
+  KV `SESSIONS` (id `a6b70566774d4f03900a05c5c77f1365`), **R2 bucket `startup-jury-decks`**, and
+  **Queue `startup-jury-evals`** (id `a8e8467445f0456eadceacabc71f5b37`, producer+consumer). Bindings
+  in `wrangler.jsonc`. The account is on **Workers Paid** (queue consumers deploy fine).
+- **Secret:** `ANTHROPIC_API_KEY` — set with `wrangler secret put ANTHROPIC_API_KEY` (Anthropic
+  console key). **Until set, single-upload returns 202 "pending" and bulk decks sit at `pending_ai`.**
+  No redeploy needed after setting a secret — it applies to the running Worker immediately.
+  **Not yet provisioned:** Cron (Phase 7).
 - **Redeploy after each phase** (post-green-gate): `npm run build && npx wrangler deploy`; if
   the phase added migrations, first `npx wrangler d1 migrations apply startup-jury-db --remote`.
   Then smoke-test the live URL (`/api/health`, a login). `wrangler.jsonc` is the source of truth
@@ -189,23 +198,85 @@ npm run test:e2e        # Playwright (auto-starts dev server)
 - **Local dev DB:** `npm run db:migrate:local` (applies Phase 1 migrations to local D1). If
   workerd/vite processes are orphaned on port 5173, `pkill -f workerd` then re-run.
 
-## Resume here (Phase 3)
+## Phase 3 — Upload & AI evaluation (shipped)
 
-Build **Upload & AI evaluation**. Add R2 upload (single + bulk) and a Queue consumer; write
-`src/server/ai/evaluate.ts` — build the extraction+scoring prompt from `parameters` +
-`rubric_anchors` + org system-prompt override, send the R2 PDF as a Claude `document` block
-(model `claude-sonnet-5`; consult the **`claude-api`** skill for request shape + PDF handling),
-parse structured JSON into `deck_extractions` + AI `scores`, and apply the **`score > 5` gate**.
-Wire `src/server/queue.ts` (per-deck consumer) and the single-upload direct path. Add R2 + Queue
-bindings to `wrangler.jsonc`; `ANTHROPIC_API_KEY` via `wrangler secret` (Phase 8 for prod).
-Build the **Review-decks** and **Evaluation-report** screens against the live model — the
-Phase 2 `DashboardPage` deck table + `EvaluationDrawer` are the presentational shells to fill
-with real extraction + per-parameter scores (replace the placeholder data blocks).
-**Tests:** `evaluate.ts` with a **mocked Anthropic response** (deterministic) — parsing, gate,
-DB writes; Worker integration test of upload→queue→stage transition; one live-API smoke test
-behind a flag using a real sample PDF. **Acceptance:** a PDF upload flows R2 → (queue) →
-Claude structured scores → correct stage per the `>5` gate → Evaluation report renders. Commit
-directly to `main`; run the green gate + `/code-review` before pushing. **Then redeploy** so the
-live demo gains upload+scoring: apply any new migrations `--remote`, `npm run build && npx
-wrangler deploy`, smoke-test the URL. Provision R2 + Queue + `wrangler secret put
-ANTHROPIC_API_KEY` as part of this phase (see **Live demo & deploy**).
+- **Infra:** R2 bucket `DECKS` + Queue `EVAL_QUEUE` (producer+consumer) in `wrangler.jsonc`;
+  provisioned remote (see **Live demo & deploy**). `Env` (`src/server/types.ts`) gains `DECKS`,
+  `EVAL_QUEUE`, optional `ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL`. Migration `0003` adds
+  `decks.founder` (AI-extracted on upload).
+- **AI evaluation** (`src/server/ai/evaluate.ts`): pure builders (`buildTool` — a forced
+  `submit_evaluation` tool whose `key` enum is the edition's parameter keys; `buildSystemPrompt`
+  with org `ai_system_prompt` override; `buildUserPrompt` = rubric + anchor bands), `parseEvaluation`
+  (validate/clamp/dedupe against known keys), `computeResult` (**weighted total over the FULL rubric
+  weight — an unscored param counts 0 so a partial response can't inflate past the `>5` gate**;
+  `!complete` **or** zero scores → `incomplete`/`flagged`; pass → `ai_evaluated` (inc) /
+  `analyst_scoring` (vc); fail → `rejected` (inc) / `archived` (vc)). `callAnthropic` = raw `fetch`
+  to `/v1/messages`, `claude-sonnet-5`, `thinking:disabled`, PDF as base64 `document` block, forced
+  `tool_choice`. `evaluateDeck(env, deckId, { callModel? })` loads deck+params+anchors+org, reads the
+  R2 PDF, calls the model (injectable seam for tests), then D1-batches: delete+insert
+  `deck_extractions` + AI `scores` (`evaluator_kind='ai'`) + an `evaluations` roll-up, updates the
+  deck (`ai_score`/`signal`/`status`/`founder`/`complete`), appends a `pipeline_events` audit row.
+  **Idempotent** (re-eval deletes prior AI rows first).
+- **Queue** (`src/server/queue.ts`): `handleQueue(batch, env, evaluate=evaluateDeck)` — ack on
+  success, `retry()` on throw (wrangler `max_retries: 3`, no DLQ). `index.ts` now exports
+  `{ fetch, queue }` (`ExportedHandler<Env, EvalMessage>`).
+- **Routes** (`src/server/routes/decks.ts`, all `requireAuth`): `GET /api/decks` (edition list →
+  `DeckView`, status→stage label via `pipeline`), `GET /api/decks/:id` (edition-scoped report:
+  extraction + per-parameter AI scores + weighted total + verdict; cross-edition → 404),
+  `POST /api/decks/upload` (single → R2 → **direct** `evaluateDeck`; no key → 202 pending),
+  `POST /api/decks/bulk` (many → R2 → `EVAL_QUEUE.send` per deck). PDF-only, **24 MB cap** (Anthropic
+  32 MB request limit after base64).
+- **Client:** `src/client/api.ts` (typed fetchers); `DashboardPage` fetches `/api/decks`,
+  data-derived KPIs + pipeline-progress rail, opens `EvaluationDrawer` from `/api/decks/:id`;
+  new `UploadPage` (single = evaluate now, bulk = queue) routed for `upload`/`founder-upload`;
+  `.sj-input` utility in `index.css`.
+- **Tests (71 unit/worker/client + 17 e2e; 1 skipped):** `test/worker/evaluate.test.ts` (prompt/tool
+  build, parsing, full-rubric gate incl. partial + zero-score → Incomplete),
+  `test/worker/decks.test.ts` (evaluateDeck DB writes + transition with mocked Anthropic, report
+  endpoints, upload→R2→direct/queue, `handleQueue` ack/retry), `test/worker/evaluate.live.test.ts`
+  (**flag-gated** live smoke test), `e2e/upload.spec.ts` (upload → appears in All decks).
+
+### Phase 3 gotchas
+- **`ai/evaluate.ts` + its tests live under the WORKER tsconfig, not `test/unit`.** The module imports
+  `Env` (which references `R2Bucket`/`Queue`) and uses `D1PreparedStatement`, so it needs
+  `@cloudflare/workers-types`. `tsconfig.json` (client/DOM, covers `test/unit`) has no workers-types —
+  putting evaluate tests there breaks typecheck. They run fine in the workerd pool (pure fns + mocks).
+- **Live smoke test gating.** `test/worker/evaluate.live.test.ts` is `describe.skipIf`'d on Miniflare
+  bindings `LIVE_ANTHROPIC` + `LIVE_ANTHROPIC_KEY`, forwarded from `process.env.LIVE_ANTHROPIC` /
+  `process.env.ANTHROPIC_API_KEY` in `vitest.worker.config.ts`. **Named distinctly from
+  `ANTHROPIC_API_KEY`** so the app binding stays unset during the normal suite (keeps single-upload
+  tests on the deferred 202 path). Run live with:
+  `LIVE_ANTHROPIC=1 ANTHROPIC_API_KEY=sk-... npm test`.
+- **Queue deploy needs the queue to exist first** (`wrangler queues create startup-jury-evals`) and
+  **Workers Paid** — otherwise `wrangler deploy` rejects the consumer. Both are in place.
+- **Model call is raw `fetch`** (no `@anthropic-ai/sdk` dependency in the Worker), per the
+  Cloudflare-only plan. Forced tool-use + `thinking:disabled` keeps the JSON deterministic.
+- **Code-review follow-ups (documented, not blocking Phase 3 acceptance):** single-upload runs the
+  Claude call **synchronously in the request** (10–30s; consider enqueue-and-poll if it bites);
+  bulk upload has no per-file failure isolation / DLQ (a mid-loop `send` throw 500s the batch);
+  `DashboardPage.PASS_STATUSES` hard-codes stage **labels** (fragile if a pipeline label changes) —
+  prefer deriving "advanced" from a gate flag; progress-rail dot color is sampled from the first deck
+  in each status bucket.
+
+## Resume here (Phase 4)
+
+Build the **Incubator pipeline** end-to-end on top of the Phase 1 state machine
+(`src/pipeline/incubator.ts`) and the Phase 3 deck model. Add role-gated stage transitions
+(assign jury → jury evaluation Score/Shortlist/Reject → intro calls → signup → onboard-ready /
+archive) plus the **founder query loop** (Manual Review → Incomplete → Query founder → founder
+response → back to Uploaded) with a **stubbed, tested outbox** for email (real Cloudflare Email is
+Phase 7+). Server: a `POST /api/decks/:id/transition` (or per-action) route that calls
+`performAction(edition, from, action, role)` (already in `src/pipeline`), persists the new
+`status`, writes a `pipeline_events` row, and enforces `requireRole` per transition; `queries`
+CRUD for the founder loop; `scores`/`evaluations` writes for human jury scoring (mirror the AI
+path — `evaluator_kind='human'`, `evaluator_id`). Client: fill the incubator Assign / Evaluate /
+Jury Pipeline / Intro calls / For Sign up / Onboard ready / Archive stub screens with live data
+and the transition actions; wire the founder portal (`founder-*` slugs) upload+query+signup.
+**Visual mockup review gate FIRST** for the incubator role screens (render `AISJ_INC_*` /
+`AISJ_IC_SuserV11` prototypes, screenshot, match layout/copy/interactions). **Tests:** full
+happy-path integration (upload→AI→assign→jury shortlist→intro→signup→onboard) + reject/archive +
+query-loop branch; per-stage authZ (legal/illegal transitions per role); e2e for jury + associate
+happy paths. Keep human scoring feeding the **Score Drift / Evaluator Scores** analytics (AI vs
+human) that land in Phase 7. Green gate + `/code-review`, commit to `main`, **redeploy the demo**
+(no new remote infra expected — D1 migration only if you add tables). Keep scope to Phase 4; do
+not start Phase 5 (VC).
