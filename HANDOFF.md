@@ -14,8 +14,9 @@ the full plan at `docs/PLAN.md` + `git log`.
   (remote D1 + KV + **R2 + Queue + Cron**, seeded demo logins, password `demo1234`). Viewer guide: `docs/DEMO.md`.
   See **Live demo & deploy** below. Keep it current: **redeploy at each phase boundary.**
   Phase 7 redeploy done: migration `0008` applied `--remote`, `wrangler deploy` at version
-  `44df9d5c` (**Cron Trigger `0 8 * * *` now registered**), smoke-tested (cohort 12 evaluated /
-  funnel top 14 / VC capital ₹92 Cr across 8 companies / VC decisions log / cross-edition authZ 403).
+  `c6c5cf60` (post code-review fixes; **Cron Trigger `0 8 * * *` now registered**), smoke-tested
+  (cohort 12 evaluated / funnel top 14 / VC capital ₹92 Cr across 8 companies / scoring 3 distinct
+  evaluators / diligence scoped / VC decisions log / cross-edition authZ 403).
 - **Next:** Phase 8 — Production hardening & final deploy (verify bindings/secrets; optional custom
   domain; secure/remove demo seed logins; final remote migration run; full live smoke test across both
   editions). See **Resume here (Phase 8)**.
@@ -488,10 +489,15 @@ npm run test:e2e        # Playwright (auto-starts dev server)
   render · jury raises a contact message). Green gate passed (typecheck+lint+150 tests+build+27 e2e).
 
 ### Phase 7 gotchas / notes
-- **`/code-review` could not run this session** (the backgrounded agent hit an Anthropic session limit
-  before producing findings). A manual self-review of the diff was done instead (relocated analytics
-  imports to the top of `api.ts`; made the `team` message scope a shared channel). **Re-run
-  `/code-review main` at the start of Phase 8** and fix anything it surfaces on the Phase 7 diff.
+- **`/code-review` ran and its 6 findings were fixed** (commit `55d26f8`): diligence red-flag filter
+  now matches the real signal domain (`weak`/`absent`, not a nonexistent `flagged`) and the clarifications
+  count is scoped to decks in diligence stages; `evaluatorScores` "vs cohort" uses a **leave-one-out** peer
+  consensus (solo-scored decks excluded) so leniency isn't biased toward zero; `scoringSummary` takes a
+  real distinct-evaluator count from the route (not the max scores on any one deck) and reports variance
+  as `null` for single-scorer decks (no false 0-disagreement); and the "Most lenient/Strictest" sublabels
+  use a signed formatter (no `+-0.3`). A first attempt hit an Anthropic session limit before producing
+  findings; the second run completed. (A manual self-review had already relocated analytics imports to the
+  top of `api.ts` and made the `team` message scope a shared channel.)
 - **`shared/analytics.ts` is pure and lives under the client tsconfig** (like `scoring.ts`) — client can
   import its report types directly; the server route imports the same functions. Keep it Env-free so its
   tests stay at the node unit tier.
@@ -508,8 +514,6 @@ npm run test:e2e        # Playwright (auto-starts dev server)
 
 Build **Production hardening & final deploy** (`docs/PLAN.md` Phase 8). The app has been continuously
 deployed since Phase 2, so this is **finalization, not first deploy**. Scope:
-- **Re-run `/code-review main`** on the Phase 7 diff first (it couldn't complete this session — see the
-  Phase 7 gotcha) and fix findings.
 - **Verify all bindings/secrets** are provisioned on the deployed Worker (D1/KV/R2/Queue/**Cron**, and
   `ANTHROPIC_API_KEY`). Confirm the Cron Trigger fires (check the dashboard / `wrangler` cron logs).
 - **Anthropic billing** — the one open functional gap (see ⚠️ under **Status**): add credits, then re-run
