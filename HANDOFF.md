@@ -8,13 +8,13 @@ the full plan at `docs/PLAN.md` + `git log`.
 ## Status
 
 - **Complete:** Phase 0 — Scaffold & CI · Phase 1 — Data & auth · Phase 2 — Design system & app shell ·
-  Phase 3 — Upload & AI evaluation.
+  Phase 3 — Upload & AI evaluation · **Phase 4 — Incubator pipeline.**
 - **Live demo:** deployed to Cloudflare — **https://startup-jury.jay-komarraju.workers.dev**
   (remote D1 + KV + **R2 + Queue**, seeded demo logins, password `demo1234`). Viewer guide: `docs/DEMO.md`.
   See **Live demo & deploy** below. Keep it current: **redeploy at each phase boundary.**
-- **Next:** Phase 4 — Incubator pipeline (assign → jury eval → shortlist → intro → signup →
-  onboard/archive; founder query loop + stubbed email; incubator role dashboards/nav).
-  See **Resume here (Phase 4)** at the bottom.
+- **Next:** Phase 5 — VC pipeline (Analyst → Associate → Partner → Partner call → Investment DD →
+  IC voting → MP decision → Alignment → Term sheet → Legal DD → Onboard; VC dashboards/nav).
+  See **Resume here (Phase 5)** at the bottom.
 - **⚠️ One open item — live scoring blocked on Anthropic BILLING, not on code.** The
   `ANTHROPIC_API_KEY` secret **IS set** on the deployed Worker (verified via `wrangler secret list`),
   and the key authenticates. But the Anthropic account has **$0 credits**, so every real call returns
@@ -266,25 +266,82 @@ npm run test:e2e        # Playwright (auto-starts dev server)
   prefer deriving "advanced" from a gate flag; progress-rail dot color is sampled from the first deck
   in each status bucket.
 
-## Resume here (Phase 4)
+## Phase 4 — Incubator pipeline (shipped)
 
-Build the **Incubator pipeline** end-to-end on top of the Phase 1 state machine
-(`src/pipeline/incubator.ts`) and the Phase 3 deck model. Add role-gated stage transitions
-(assign jury → jury evaluation Score/Shortlist/Reject → intro calls → signup → onboard-ready /
-archive) plus the **founder query loop** (Manual Review → Incomplete → Query founder → founder
-response → back to Uploaded) with a **stubbed, tested outbox** for email (real Cloudflare Email is
-Phase 7+). Server: a `POST /api/decks/:id/transition` (or per-action) route that calls
-`performAction(edition, from, action, role)` (already in `src/pipeline`), persists the new
-`status`, writes a `pipeline_events` row, and enforces `requireRole` per transition; `queries`
-CRUD for the founder loop; `scores`/`evaluations` writes for human jury scoring (mirror the AI
-path — `evaluator_kind='human'`, `evaluator_id`). Client: fill the incubator Assign / Evaluate /
-Jury Pipeline / Intro calls / For Sign up / Onboard ready / Archive stub screens with live data
-and the transition actions; wire the founder portal (`founder-*` slugs) upload+query+signup.
-**Visual mockup review gate FIRST** for the incubator role screens (render `AISJ_INC_*` /
-`AISJ_IC_SuserV11` prototypes, screenshot, match layout/copy/interactions). **Tests:** full
-happy-path integration (upload→AI→assign→jury shortlist→intro→signup→onboard) + reject/archive +
-query-loop branch; per-stage authZ (legal/illegal transitions per role); e2e for jury + associate
-happy paths. Keep human scoring feeding the **Score Drift / Evaluator Scores** analytics (AI vs
-human) that land in Phase 7. Green gate + `/code-review`, commit to `main`, **redeploy the demo**
-(no new remote infra expected — D1 migration only if you add tables). Keep scope to Phase 4; do
-not start Phase 5 (VC).
+- **Pipeline** (`src/pipeline/incubator.ts`): added `pending_ai → manual_review` (`send_to_review`)
+  so the Manual Review node is reachable, and added `program_associate` to `flag_incomplete` (the
+  associate drives the founder-query loop). The AI path still auto-lands decks at
+  `ai_evaluated`/`incomplete`/`rejected` (Phase 3, via `evaluateDeck`, not `performAction`).
+- **Email outbox (stub)** (`src/server/email/outbox.ts` + migration `0004_email_outbox.sql`):
+  `sendEmail` records to the `email_outbox` table (status `sent`); pure `buildQueryEmail` /
+  `buildSignupEmail` composers. **Real Cloudflare Email is Phase 7+** — swap `sendEmail`'s body then,
+  callers unchanged.
+- **Workflow API** (`src/server/routes/pipeline.ts`, mounted at **`/api`** — owns `/queries`, `/jury`,
+  `/parameters` alongside `/decks/:id/*`; auth is scoped to those prefixes, NOT `use("*")`, so the
+  app's JSON 404 on unknown `/api/*` still works):
+  - `POST /decks/:id/transition` `{action,note?}` → `performAction` (per-transition role gate; 403
+    forbidden / 409 unknown_action|terminal), persists status + a `pipeline_events` row.
+  - `POST /decks/:id/assign` `{assigneeId}` (associate/admin) → sets `assigned_to` + `assign_jury`.
+  - `POST /decks/:id/evaluate` `{scores,remarks?}` — **human** jury scoring mirroring the AI path
+    (`evaluator_kind='human'`, `evaluator_id`, full-rubric weighted total; idempotent re-submit);
+    auto-advances `assigned → jury_evaluation`. **Jury may only score decks assigned to them** (403).
+  - Founder loop: `GET/POST /decks/:id/queries` (create sends a stubbed email; a `manual_review`
+    deck is flagged `incomplete` first) + `POST /queries/:id/respond` (founder answers →
+    `founder_response` → back to `uploaded`, `complete=1`).
+  - `POST /decks/:id/send-signup` (associate/admin) → `send_signup` + a stubbed invite email.
+  - `GET /decks/:id/events` (audit feed), `GET /jury`, `GET /parameters`.
+  - **Per-record authZ:** `loadDeck` scopes founders to their own uploads (non-owned → 404), so
+    queries/events/transition/respond can't leak another startup's data.
+- **Decks routes** (`src/server/routes/decks.ts`): list+detail now emit `statusId`, `assignedTo`(+Name),
+  and the caller's allowed `actions` (from `allowedTransitions`) so stage screens render buttons;
+  **founders are scoped to their own decks** in both list and detail.
+- **Client:** `api.ts` fetchers (transition/assign/evaluate/send-signup/queries/respond/jury/
+  parameters/events); `DeckView` gains `statusId/assignedTo/assignedToName/actions`. Screens:
+  `StagePage` (config-driven — Jury Pipeline / Intro calls / For Sign up / Sign up Pipeline /
+  Onboard ready / Archive), `AssignPage`, `EvaluatePage` (rubric sliders + live weighted total;
+  reached via staff **Evaluate** and a jury member's **Assigned** slug), `QueryPage`, and the founder
+  portal (`FounderPortal.tsx`: My Startup / Queries / Sign up). Wired in `App.tsx` `NavRoute` for the
+  incubator edition only (VC keeps stubs).
+- **Demo seed** (`0005_seed_founder_decks.sql`): founder `inc_founder` (Meera Sharma) gets an
+  `incomplete` deck with an open query + a `signup` deck, so the founder portal/query loop/sign-up
+  are live on the demo (the Phase 1 seed decks are all associate-uploaded → founder saw an empty portal).
+- **Tests (90 unit/worker + 20 e2e; 1 skipped):** `test/worker/pipeline.test.ts` (full happy path
+  upload→AI→assign→jury→shortlist→intro→signup→onboard with `pipeline_events` audit, reject/archive,
+  query loop incl. manual_review flag, per-stage authZ 403/409/404, jury-not-assigned 403, PM-assign
+  403, founder read isolation, human-score persistence, list actions), `test/worker/outbox.test.ts`
+  (builders + `sendEmail` persistence), `e2e/incubator.spec.ts` (associate assign · jury score+shortlist
+  · staff query). `/code-review` run and its 6 findings fixed (authZ gaps + dead Reassign action).
+
+### Phase 4 gotchas / notes
+- **Two users named "Rajesh Kumar"** in seed (inc_jury + vc_ic). `GET /jury` is edition-scoped so the
+  incubator Assign dropdown shows one; e2e selects by label safely.
+- **`jurypipeline` nav is admin/jury only** (not associate) — a program_associate deep-linking it
+  correctly hits the "Not available for your role" guard. That's the matrix, not a bug.
+- **Single `assigned_to`** per deck (one jury member). Multi-juror panels + the AI-vs-human **Score
+  Drift / Evaluator Scores** analytics are Phase 7; human scores are already stored to feed them.
+- **`complete_signup` transition is role-gated but not owner-gated** — any incubator founder could
+  complete another's signup. Low-risk on a single-tenant demo; revisit if founders get real accounts.
+- **outbox tests live under the WORKER tsconfig** (same reason as `ai/evaluate.ts` — the module imports
+  `Env`, which needs `@cloudflare/workers-types`).
+
+## Resume here (Phase 5)
+
+Build the **VC pipeline** end-to-end on the Phase 1 state machine (`src/pipeline/vc.ts`) and the
+Phase 4 workflow API — the VC config, engine, and `performAction` gating already exist; this is
+mostly the VC-specific stages + screens. Flow: Analyst (upload, AI eval, core scores) → Associate
+(core+additional, shortlist) → Partner (shortlist) → Partner call (Sponsor to IC / Pass / another
+meeting) → Investment DD (MP approval) → **IC voting** (per-member Invest/Hold/Need more info/Pass)
+→ MP decision (Invest / Pass / Return to partner) → Alignment call → Term sheet → Legal DD → Onboard;
+not-shortlisted → Archived (revivable). **Server:** reuse `POST /api/decks/:id/transition` (VC roles
+already in `vc.ts`); add IC-vote CRUD (`ic_votes` table, per-member vote + aggregation), investment_dd
+/ term_sheets / legal_dd / calls (kind `partner`/`alignment`) writes, and the analyst→associate→partner
+core+additional scoring path (human scores, `evaluator_kind='human'`). **Client:** fill the VC stub
+slugs (`jurypipeline`=Assoc. Pipeline, `partnerpipeline`, `partnercall`, `investmentdd`, `icpipeline`,
+`alignmentcall`, `incuration`=Term sheet Pipeline, `legaldd`, `curation`, `archive`) with live data +
+transitions; wire `NavRoute` for `user.edition === "vc"` (mirror the incubator `StagePage`/`Assign`/
+`Evaluate` patterns). **Visual mockup review gate FIRST**: render `VC Final files/AISJ_VC_*` prototypes,
+screenshot, match. **Tests:** full VC-path integration (analyst→term sheet→onboard) + pass/archive +
+return-to-partner branch; per-member IC vote aggregation; e2e for IC member + partner. Green gate +
+`/code-review`, commit to `main`, **redeploy the demo** (D1 migration only if you add tables — the VC
+tables `investment_dd`/`ic_votes`/`term_sheets`/`legal_dd`/`portfolio` already exist from `0001`). Keep
+scope to Phase 5; do not start Phase 6 (config/plans/credits).
