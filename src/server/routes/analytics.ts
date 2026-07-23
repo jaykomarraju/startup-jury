@@ -184,7 +184,15 @@ analytics.get("/scoring", guard("scoring"), async (c) => {
     aiScore: d.ai_score,
     humanScores: humans.get(d.id) ?? [],
   }));
-  return c.json(scoringSummary(input));
+  // Distinct human evaluators across the edition (the "Evaluators" KPI) — computed
+  // here where evaluator identity is available (the pure aggregator only sees scores).
+  const distinct = await c.env.DB.prepare(
+    "SELECT COUNT(DISTINCT e.evaluator_id) AS n FROM evaluations e JOIN decks d ON d.id = e.deck_id " +
+      "WHERE d.edition = ? AND e.evaluator_id IS NOT NULL AND e.weighted_total IS NOT NULL",
+  )
+    .bind(edition)
+    .first<{ n: number }>();
+  return c.json(scoringSummary(input, distinct?.n ?? 0));
 });
 
 // ── Capital deployment (VC) ──────────────────────────────────────────────────
@@ -232,14 +240,18 @@ analytics.get("/diligence", guard("diligence"), async (c) => {
       .all<{ id: string; name: string; status: string; signal: string | null }>()
   ).results;
   const inDiligence = decks.filter((d) => DILIGENCE_STAGES.includes(d.status));
-  const redFlags = inDiligence.filter((d) => d.signal === "flagged" || d.signal === "weak");
+  // Red flag = the two lowest signal bands (the deck.signal domain is
+  // strong/moderate/weak/absent — see migrations/0002 signalTag).
+  const isRedFlag = (s: string | null) => s === "weak" || s === "absent";
+  const redFlags = inDiligence.filter((d) => isRedFlag(d.signal));
 
-  // Open founder clarifications = unanswered queries on VC decks in diligence.
+  // Open founder clarifications = unanswered queries on decks *in diligence* only.
+  const placeholders = DILIGENCE_STAGES.map(() => "?").join(",");
   const openQ = await c.env.DB.prepare(
     "SELECT COUNT(*) AS n FROM queries q JOIN decks d ON d.id = q.deck_id " +
-      "WHERE d.edition = ? AND q.email_status != 'answered'",
+      `WHERE d.edition = ? AND q.email_status != 'answered' AND d.status IN (${placeholders})`,
   )
-    .bind(edition)
+    .bind(edition, ...DILIGENCE_STAGES)
     .first<{ n: number }>();
   const clarifications = openQ?.n ?? 0;
 
@@ -252,9 +264,12 @@ analytics.get("/diligence", guard("diligence"), async (c) => {
       company: d.name,
       stage: d.status,
       signal: d.signal,
-      status: d.signal === "flagged" || d.signal === "weak" ? "Flagged" : "In progress",
+      status: isRedFlag(d.signal) ? "Flagged" : "In progress",
     })),
-    flags: redFlags.map((d) => ({ company: d.name, flag: d.signal === "flagged" ? "Missing / weak signal" : "Weak overall signal" })),
+    flags: redFlags.map((d) => ({
+      company: d.name,
+      flag: d.signal === "absent" ? "Missing / absent signal" : "Weak overall signal",
+    })),
   });
 });
 

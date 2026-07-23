@@ -256,38 +256,50 @@ export interface EvaluatorReport {
 }
 
 /**
- * Per-evaluator calibration. "vs cohort" compares each evaluator's mean to the
- * mean of the *deck consensus* over the decks they scored (a lenient scorer runs
- * positive). Agreement = 100 − 10 × mean|deviation from the deck consensus|,
- * floored at 0 — a scorer who always lands on the consensus reads ~100%.
+ * Per-evaluator calibration. "vs cohort" is a **leave-one-out** comparison: for
+ * each deck, the evaluator's score minus the mean of the *other* evaluators on
+ * that deck (a lenient scorer runs positive), averaged over the decks with ≥2
+ * scorers. Including the evaluator's own score in the consensus would bias every
+ * delta toward zero (and read exactly 0 on solo-scored decks), so solo decks are
+ * excluded. Agreement = 100 − 10 × mean|leave-one-out deviation|, floored at 0.
  */
 export function evaluatorScores(rows: EvaluationRow[]): EvaluatorReport {
-  // Deck consensus = mean human score for each deck.
-  const byDeck = new Map<string, number[]>();
+  // Per-deck sum + count of all human scores (for leave-one-out consensus).
+  const deckAgg = new Map<string, { sum: number; count: number }>();
   for (const r of rows) {
-    (byDeck.get(r.deckId) ?? byDeck.set(r.deckId, []).get(r.deckId)!).push(r.weightedTotal);
+    const a = deckAgg.get(r.deckId) ?? { sum: 0, count: 0 };
+    a.sum += r.weightedTotal;
+    a.count += 1;
+    deckAgg.set(r.deckId, a);
   }
-  const consensus = new Map<string, number>();
-  for (const [deckId, vals] of byDeck) consensus.set(deckId, mean(vals));
 
   const byEval = new Map<string, EvaluationRow[]>();
   for (const r of rows) {
-    (byEval.get(r.evaluatorId) ?? byEval.set(r.evaluatorId, []).get(r.evaluatorId)!).push(r);
+    const list = byEval.get(r.evaluatorId) ?? [];
+    list.push(r);
+    byEval.set(r.evaluatorId, list);
   }
 
   const evaluators: EvaluatorStat[] = [...byEval.values()].map((evalRows) => {
     const first = evalRows[0];
     const given = evalRows.map((r) => r.weightedTotal);
-    const consensusMean = mean(evalRows.map((r) => consensus.get(r.deckId) ?? r.weightedTotal));
-    const meanAbsDev = mean(evalRows.map((r) => Math.abs(r.weightedTotal - (consensus.get(r.deckId) ?? r.weightedTotal))));
+    const deltas: number[] = [];
+    const devs: number[] = [];
+    for (const r of evalRows) {
+      const agg = deckAgg.get(r.deckId)!;
+      if (agg.count < 2) continue; // no peers → no leave-one-out consensus
+      const peerMean = (agg.sum - r.weightedTotal) / (agg.count - 1);
+      deltas.push(r.weightedTotal - peerMean);
+      devs.push(Math.abs(r.weightedTotal - peerMean));
+    }
     return {
       evaluatorId: first.evaluatorId,
       name: first.evaluatorName,
       role: first.role,
       decksScored: evalRows.length,
       avgGiven: round(mean(given), 1),
-      vsCohort: round(mean(given) - consensusMean, 1),
-      agreement: Math.max(0, Math.round(100 - 10 * meanAbsDev)),
+      vsCohort: round(mean(deltas), 1),
+      agreement: devs.length === 0 ? 100 : Math.max(0, Math.round(100 - 10 * mean(devs))),
     };
   });
   evaluators.sort((a, b) => b.avgGiven - a.avgGiven);
@@ -395,29 +407,35 @@ function leanFor(score: number | null): "Invest" | "Hold" | "Need info" | "Pass"
   return "Pass";
 }
 
-export function scoringSummary(inputs: ScoringInput[]): ScoringSummary {
+/**
+ * @param evaluatorCount distinct human evaluators (supplied by the caller, which
+ *   has evaluator identity — the score arrays here don't carry it).
+ */
+export function scoringSummary(inputs: ScoringInput[], evaluatorCount: number): ScoringSummary {
   const rows: ScoringRow[] = inputs.map((i) => {
     const hasHuman = i.humanScores.length > 0;
+    // Variance needs ≥2 scorers — a single score is not "0 disagreement".
+    const multi = i.humanScores.length >= 2;
     const avg = hasHuman ? mean(i.humanScores) : null;
     return {
       deckId: i.deckId,
       name: i.name,
       ai: i.aiScore === null ? null : round(i.aiScore, 1),
       evaluatorAvg: avg === null ? null : round(avg, 1),
-      variance: hasHuman ? round(stddev(i.humanScores), 1) : null,
+      variance: multi ? round(stddev(i.humanScores), 1) : null,
       spreadLow: hasHuman ? round(Math.min(...i.humanScores), 1) : null,
       spreadHigh: hasHuman ? round(Math.max(...i.humanScores), 1) : null,
       lean: leanFor(avg ?? i.aiScore),
     };
   });
   const scoredRows = rows.filter((r) => r.evaluatorAvg !== null);
-  const uniqueEvaluators = Math.max(0, ...inputs.map((i) => i.humanScores.length));
+  const varianceRows = rows.filter((r) => r.variance !== null);
   return {
     rows: rows.sort((a, b) => (b.ai ?? 0) - (a.ai ?? 0)),
     avgScore: round(mean(scoredRows.map((r) => r.evaluatorAvg as number)), 1),
     dealsScored: scoredRows.length,
-    evaluators: uniqueEvaluators,
-    avgVariance: round(mean(rows.filter((r) => r.variance !== null).map((r) => r.variance as number)), 1),
+    evaluators: evaluatorCount,
+    avgVariance: round(mean(varianceRows.map((r) => r.variance as number)), 1),
   };
 }
 

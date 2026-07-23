@@ -30,6 +30,11 @@ const BAND_COLORS = [
   "var(--color-signal-absent)",
 ];
 
+/** Signed delta with an explicit + on non-negatives (avoids rendering "+-0.3"). */
+function fmtDelta(n: number): string {
+  return `${n >= 0 ? "+" : ""}${n.toFixed(1)}`;
+}
+
 const RECO_TONE: Record<string, "positive" | "amber" | "neutral"> = {
   Recommend: "positive",
   "Hold · clarify": "amber",
@@ -110,8 +115,8 @@ export function EvaluatorScoresPage() {
               stats={[
                 { label: "Active evaluators", value: d.evaluators.length },
                 { label: "Avg agreement", value: `${d.avgAgreement}%`, sublabel: "inter-rater" },
-                { label: "Most lenient", value: d.mostLenient?.name ?? "—", sublabel: d.mostLenient ? `+${d.mostLenient.vsCohort.toFixed(1)} vs cohort` : undefined },
-                { label: "Strictest", value: d.strictest?.name ?? "—", sublabel: d.strictest ? `${d.strictest.vsCohort.toFixed(1)} vs cohort` : undefined },
+                { label: "Most lenient", value: d.mostLenient?.name ?? "—", sublabel: d.mostLenient ? `${fmtDelta(d.mostLenient.vsCohort)} vs cohort` : undefined },
+                { label: "Strictest", value: d.strictest?.name ?? "—", sublabel: d.strictest ? `${fmtDelta(d.strictest.vsCohort)} vs cohort` : undefined },
               ]}
             />
             <Section title="Evaluator calibration">
@@ -132,8 +137,8 @@ export function EvaluatorScoresPage() {
             </Section>
             <Narrative>
               Overall inter-rater agreement is {d.avgAgreement}%.{" "}
-              {d.mostLenient && `${d.mostLenient.name} scores +${d.mostLenient.vsCohort.toFixed(1)} above consensus`}
-              {d.strictest && `, ${d.strictest.name} runs ${d.strictest.vsCohort.toFixed(1)} below`} — worth a
+              {d.mostLenient && `${d.mostLenient.name} scores ${fmtDelta(d.mostLenient.vsCohort)} vs consensus`}
+              {d.strictest && `, ${d.strictest.name} runs ${fmtDelta(d.strictest.vsCohort)}`} — worth a
               calibration check before the committee round.
             </Narrative>
           </div>

@@ -91,17 +91,27 @@ describe("evaluatorScores", () => {
     { evaluatorId: "neu", evaluatorName: "Neutral", role: "jury", deckId: "d2", weightedTotal: 5 },
     { evaluatorId: "str", evaluatorName: "Strict", role: "admin", deckId: "d2", weightedTotal: 4 },
   ];
-  it("computes vs-consensus deltas and flags lenient/strict", () => {
+  it("computes leave-one-out deltas and flags lenient/strict", () => {
     const r = evaluatorScores(rows);
     expect(r.evaluators).toHaveLength(3);
     const len = r.evaluators.find((e) => e.evaluatorId === "len")!;
     const str = r.evaluators.find((e) => e.evaluatorId === "str")!;
-    // Consensus per deck = 7 (d1), 5 (d2). Lenient gives 8/6 → +1 above both.
-    expect(len.vsCohort).toBe(1);
-    expect(str.vsCohort).toBe(-1);
+    // Leave-one-out peer mean for len on d1 = mean(7,6)=6.5 → 8−6.5 = +1.5 (same on d2).
+    expect(len.vsCohort).toBe(1.5);
+    expect(str.vsCohort).toBe(-1.5);
     expect(r.mostLenient!.evaluatorId).toBe("len");
     expect(r.strictest!.evaluatorId).toBe("str");
     expect(r.cohortMean).toBe(6); // mean of all six
+  });
+
+  it("excludes solo-scored decks from the leave-one-out delta", () => {
+    const solo: EvaluationRow[] = [
+      { evaluatorId: "a", evaluatorName: "A", role: "jury", deckId: "only", weightedTotal: 9 },
+    ];
+    const r = evaluatorScores(solo);
+    // No peers → no consensus → delta 0 (not a false lenient reading), agreement 100.
+    expect(r.evaluators[0].vsCohort).toBe(0);
+    expect(r.evaluators[0].agreement).toBe(100);
   });
 });
 
@@ -133,7 +143,7 @@ describe("scoringSummary", () => {
     { deckId: "c", name: "WealthOS", aiScore: 7.8, humanScores: [] }, // pending
   ];
   it("aggregates AI vs evaluator avg + variance", () => {
-    const s = scoringSummary(inputs);
+    const s = scoringSummary(inputs, 3); // caller supplies the distinct-evaluator count
     expect(s.dealsScored).toBe(2);
     expect(s.evaluators).toBe(3);
     const cb = s.rows.find((r) => r.name === "CreditBridge")!;
@@ -145,6 +155,14 @@ describe("scoringSummary", () => {
     expect(wos.evaluatorAvg).toBeNull();
     expect(wos.variance).toBeNull();
     expect(wos.lean).toBe("Hold"); // no human scores → falls back to AI 7.8 → Hold band
+  });
+
+  it("treats a single-scorer deck as having no measurable variance", () => {
+    const s = scoringSummary([{ deckId: "x", name: "Solo", aiScore: 7, humanScores: [8] }], 1);
+    const row = s.rows[0];
+    expect(row.evaluatorAvg).toBe(8); // avg still defined
+    expect(row.variance).toBeNull(); // but variance is not 0
+    expect(s.avgVariance).toBe(0); // no variance rows → mean([]) = 0
   });
 });
 
