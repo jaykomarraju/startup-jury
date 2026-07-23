@@ -8,13 +8,16 @@ the full plan at `docs/PLAN.md` + `git log`.
 ## Status
 
 - **Complete:** Phase 0 — Scaffold & CI · Phase 1 — Data & auth · Phase 2 — Design system & app shell ·
-  Phase 3 — Upload & AI evaluation · Phase 4 — Incubator pipeline · **Phase 5 — VC pipeline.**
+  Phase 3 — Upload & AI evaluation · Phase 4 — Incubator pipeline · Phase 5 — VC pipeline ·
+  **Phase 6 — Config, plans & credits.**
 - **Live demo:** deployed to Cloudflare — **https://startup-jury.jay-komarraju.workers.dev**
   (remote D1 + KV + **R2 + Queue**, seeded demo logins, password `demo1234`). Viewer guide: `docs/DEMO.md`.
   See **Live demo & deploy** below. Keep it current: **redeploy at each phase boundary.**
-- **Next:** Phase 6 — Config, plans & credits (parameter/weight editors, AI-prompt customization,
-  threshold editor, branding, plan-tier gating of additional params, admin-granted credits).
-  See **Resume here (Phase 6)** at the bottom.
+  Phase 6 redeploy done: migration `0007` applied `--remote`, `wrangler deploy` at version
+  `dff7ac43`, smoke-tested (`/api/config` admin 200 / non-admin 403, `/api/config/summary`).
+- **Next:** Phase 7 — Analytics & polish (Cohort summary, Evaluator scores, Score drift, Pipeline
+  funnel; VC Capital Deployment, Portfolio Construction, Scoring Summary, Diligence & Risk, Decision
+  History; tickets/contact; reminder cron; empty/loading/error states). See **Resume here (Phase 7)**.
 - **⚠️ One open item — live scoring blocked on Anthropic BILLING, not on code.** The
   `ANTHROPIC_API_KEY` secret **IS set** on the deployed Worker (verified via `wrangler secret list`),
   and the key authenticates. But the Anthropic account has **$0 credits**, so every real call returns
@@ -376,18 +379,93 @@ npm run test:e2e        # Playwright (auto-starts dev server)
   `ic_member`/`partner`/`admin` + superuser). The `icpipeline` **nav** is `admin`/`ic_member` only, so a
   partner votes via the deep-linked screen / API, not a sidebar item — matches the matrix.
 
-## Resume here (Phase 6)
+## Phase 6 — Config, plans & credits (shipped)
 
-Build **Config, plans & credits** (`docs/PLAN.md` Phase 6). Scope: parameter/weight editors (Core
-Parameters + My Parameters nav slugs — `coreparams`/`myparams`, currently `StubPage`), AI-prompt
-customization (org `ai_system_prompt` override — already read by `src/server/ai/evaluate.ts`
-`buildSystemPrompt`), cohort **threshold editor** (the Best ≥7.0 / Mediocre 5.0–6.9 / Poor <5.0 rail is
-hard-coded in `DashboardPage`; back it with `org_settings`), branding, **plan-tier gating**
-(Standard/Pro/Premium) that hides/shows the **additional/informational** params (the 13 seeded params are
-all core+weighted; add informational params with a `plan` gate), and **admin-granted credits**
-(`org_settings.credits_balance`; decrement on upload in `decks.ts`). **Data:** `parameters`,
-`rubric_anchors`, `org_settings` tables already exist (`0001`); `org_settings` seeds plan tiers in `0002`.
-A weight change must **re-score** (weighted total recompute) — `shared/scoring.ts` `weightedTotal` is the
-seam. **Tests:** weight-change re-scoring math; plan gating hides/shows additional params; credit
-decrement on upload. Green gate + `/code-review`, commit to `main`, **redeploy the demo** (apply new
-migrations `--remote` first if any). Do **not** start Phase 7 (analytics/polish).
+- **Visual gate** first: extracted the Superuser/Admin prototype config panels (`coreparams` Area
+  weights, `myparams` role config, `settings` AI-prompt, `branding`, plans) from the team-folder HTMLs
+  and matched layout/copy. Build decision: fold the admin config superset (weights + thresholds + AI
+  prompt + branding + plan/credits) into **one screen** on the `coreparams` slug (nav already exposes it,
+  admin-only) rather than adding nav items; `myparams` is the plan-gated additional-params screen. Nav
+  (`src/shared/nav.ts`) is **unchanged**, so `nav.spec` is unaffected.
+- **Server** (`src/server/routes/config.ts`, mounted at `/api/config`; admin-gated except `/summary`):
+  - `GET /summary` (any authed user) — safe read subset: `plan`, `additionalEnabled`, thresholds,
+    branding, core + additional params. Drives the dashboard cohort rail + the read-only My Params view.
+  - `GET /` (admin) — full settings incl. `aiSystemPrompt` + `creditsBalance`. **NB: Hono strict routing —
+    the bare mount matches `/api/config` (no trailing slash, what the client calls); `/api/config/` 404s.**
+  - `PUT /parameters` (admin) — update core weights (+ optional renames), then **re-score the edition**
+    via `src/server/config/rescore.ts` (`rescoreEdition`): recompute AI + per-human `evaluations.weighted_total`
+    and `decks.ai_score`/`signal` from persisted `scores` against the new weights, over the full rubric
+    denominator (unscored param = 0, mirrors `evaluate.ts`). **Pipeline stage is never moved** (a weight
+    edit can't rewind a deck); a `flagged` deck keeps its signal.
+  - `PUT /thresholds` (best/mediocre, `best > mediocre` enforced — equal bands rejected),
+    `PUT /ai-prompt` (org `ai_system_prompt`, read by `evaluate.ts buildSystemPrompt`),
+    `PUT /branding`, `PUT /plan`, `POST /credits` (absolute set).
+  - `POST /additional-params` (admin, **plan-gated → 402 `plan_required` on Standard**) + soft-delete
+    `DELETE /additional-params/:id` (informational only; `active=0`, re-scores).
+- **Cohort thresholds are functional, not just display:** `shared/scoring.ts cohortRating(score,best,mediocre)`
+  buckets decks Best/Mediocre/Poor; `DashboardPage` shows per-band **counts** using the configured
+  thresholds, so an edit re-buckets the cohort (fixed a code-review finding that they were inert).
+- **Credits** (`src/server/routes/decks.ts`): `reserveCredits` atomically decrements
+  `org_settings.credits_balance` (conditional `>= n` UPDATE) — one credit per deck, single **and** bulk
+  (bulk is all-or-nothing). `402 no_credits` at an empty balance, before any R2 write. `refundCredits`
+  compensates a store/enqueue failure after reservation (single: refund 1; bulk: refund the un-stored
+  remainder) so a transient error never silently burns credits.
+- **Data:** no schema change (columns existed from `0001`). Migration `0007_config_plans_credits.sql`
+  seeds a generous demo credit balance (50) + **two informational params per edition** (weight 0, so they
+  never move the composite; plan-gated — hidden on Standard, shown on Pro/Premium; seed plan is Premium).
+- **Client:** `routes/ConfigPage.tsx` (`coreparams`, admin — weights w/ live total + re-score, thresholds,
+  AI prompt, branding preview, plan + credits), `routes/MyParamsPage.tsx` (`myparams` — plan-gated
+  additional params, admin add/remove, read-only for other roles), dashboard rail reads config; wired in
+  `App.tsx` NavRoute (edition-agnostic). `api.ts` gains the config fetchers; `Lock` icon added.
+- **Tests (119 unit/worker + 24 e2e; 1 skipped):** unit — `cohortRating` bucketing/re-bucket; worker —
+  `config.test.ts` (per-role authZ 401/403, summary subset, threshold persist + inverted/equal reject,
+  AI-prompt persist, **weight-change re-score math** 1.00→3.57, plan gating 402/enable + delete, credits
+  set/negative), `decks.test.ts` credit-decrement (single -1, at-zero 402 stores nothing, bulk
+  all-or-nothing); e2e — `config.spec.ts` (admin edits weight + thresholds → rail reflects; jury sees
+  read-only My Params). `/code-review` run; 4 of 5 findings fixed (functional thresholds, single + bulk
+  credit refunds, `best==mediocre` guard).
+
+### Phase 6 gotchas / notes
+- **`rescore.ts` + `config/rescore` live under the WORKER tsconfig** (imports `Env`) — same reason as
+  `ai/evaluate.ts`; its integration test is a worker test, and the pure math is unit-tested via `weightedTotal`/
+  `cohortRating`.
+- **Founder-portal uploads consume the org's shared credit pool** (reserveCredits keys on edition, and
+  `founder-upload` posts to `/api/decks/upload`). This is intentional — a founder submission triggers a
+  real AI evaluation, so it legitimately costs a credit; exempting founders would let AI-costing uploads
+  bypass the credit/cost system. Consequence: founders get `402 no_credits` once an admin exhausts credits
+  (code-review finding #4, kept by design). If founder intake should be decoupled from the eval budget,
+  revisit when founders get first-class tenancy.
+- **Thresholds vs signal bands are two different things:** `signalTag` (fixed 8/5/2) is the rubric signal
+  pill; `cohortRating` (admin-tunable) is the Best/Mediocre/Poor cohort classification. Editing thresholds
+  changes the cohort rail, not the signal pills.
+
+## Resume here (Phase 7)
+
+Build **Analytics & polish** (`docs/PLAN.md` Phase 7). Scope:
+- **Incubator analytics** nav slugs (currently `StubPage`): `cohortsummary`, `evaluatorscores`,
+  `scoredrift`, `funnel`, plus the jury-personal `repdecks`/`repscores`/`repdrift`.
+- **VC analytics** nav slugs: `funnel`, `capital` (Capital Deployment & Pacing — fill
+  `portfolio.capital_deployed`, left NULL in Phase 5), `portfolio` (Construction), `scoring`
+  (Scoring Summary), `diligence` (Diligence & Risk), `decisions` (Decision History).
+- **AI-vs-human Score Drift / Evaluator Scores** — human scores are already stored (`scores.evaluator_kind`
+  `'human'` vs `'ai'`, per-evaluator `evaluations`); aggregate them. **Multi-juror panels** (Phase 4 note:
+  decks carry a single `assigned_to`; extend if panels are needed for drift).
+- **Tickets/Contact** (`support`, `contactadmin`, `contactteam` slugs) — `tickets` + `messages` tables
+  exist from `0001`; add routes + screens.
+- **Reminder cron** — add a Cron Trigger to `wrangler.jsonc` + `src/server/scheduled.ts` selecting
+  evaluators with pending assigned decks and sending (stubbed) reminder emails via `email/outbox.ts`.
+  **Not yet provisioned:** Cron (this is where it lands).
+- **Empty/loading/error states** polish across screens.
+
+**Data:** `portfolio.capital_deployed` exists (fill on onboard or via a capital screen); `tickets`,
+`messages`, `pipeline_events` (Decision History) all exist. Add a D1 migration only for new
+tables/columns. **Tests:** analytics aggregation unit tests against seeded AI-vs-human scores; cron
+reminder selects the correct pending decks; e2e dashboard render. Green gate + `/code-review`, commit to
+`main`, **redeploy the demo** (apply new migrations `--remote` first). Then Phase 8 — production hardening.
+
+### Carried-over follow-ups (address if convenient in Phase 7)
+- Single-upload runs Claude **synchronously** in the request (consider enqueue-and-poll);
+  bulk upload has no per-file failure isolation / DLQ (Phase 6 added credit-refund compensation, not a DLQ).
+- `complete_signup` is role-gated but not owner-gated (any incubator founder could complete another's signup).
+- Founder uploads couple external intake to the internal credit budget (see Phase 6 gotchas) — revisit
+  with real founder tenancy.
