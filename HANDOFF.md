@@ -7,19 +7,21 @@ the full plan at `docs/PLAN.md` + `git log`.
 
 ## Status
 
-- **Complete:** Phase 0 — Scaffold & CI · Phase 1 — Data & auth · Phase 2 — Design system & app shell ·
-  Phase 3 — Upload & AI evaluation · Phase 4 — Incubator pipeline · Phase 5 — VC pipeline ·
-  Phase 6 — Config, plans & credits · **Phase 7 — Analytics & polish.**
+- **PROJECT COMPLETE — all 9 phases (0–8) shipped and on `main`.** Phase 0 — Scaffold & CI ·
+  Phase 1 — Data & auth · Phase 2 — Design system & app shell · Phase 3 — Upload & AI evaluation ·
+  Phase 4 — Incubator pipeline · Phase 5 — VC pipeline · Phase 6 — Config, plans & credits ·
+  Phase 7 — Analytics & polish · **Phase 8 — Production hardening & final deploy.** The app is in
+  maintenance mode — see **Project complete / maintenance** at the bottom.
 - **Live demo:** deployed to Cloudflare — **https://startup-jury.jay-komarraju.workers.dev**
   (remote D1 + KV + **R2 + Queue + Cron**, seeded demo logins, password `demo1234`). Viewer guide: `docs/DEMO.md`.
-  See **Live demo & deploy** below. Keep it current: **redeploy at each phase boundary.**
-  Phase 7 redeploy done: migration `0008` applied `--remote`, `wrangler deploy` at version
-  `c6c5cf60` (post code-review fixes; **Cron Trigger `0 8 * * *` now registered**), smoke-tested
-  (cohort 12 evaluated / funnel top 14 / VC capital ₹92 Cr across 8 companies / scoring 3 distinct
-  evaluators / diligence scoped / VC decisions log / cross-edition authZ 403).
-- **Next:** Phase 8 — Production hardening & final deploy (verify bindings/secrets; optional custom
-  domain; secure/remove demo seed logins; final remote migration run; full live smoke test across both
-  editions). See **Resume here (Phase 8)**.
+  See **Live demo & deploy** below. Phase 8 verified all 5 bindings + the `ANTHROPIC_API_KEY` secret
+  on the deployed Worker (`wrangler versions view`), API-confirmed the Cron `0 8 * * *` schedule is
+  registered, and added a **post-deploy smoke script** (`npm run smoke`, 26 checks) that is green
+  against the live URL across both editions incl. cross-edition + intra-VC authZ 403s.
+- **Demo access decision (Phase 8, with the user):** the shared seed logins stay **open and
+  documented** — the user wants multi-role end-to-end walkthroughs for a stakeholder demo. No gate,
+  no password rotation. A custom domain was **deferred** (keep the `workers.dev` URL; addable later
+  with no code change). Both are outward-facing choices the user confirmed.
 - **⚠️ One open item — live scoring blocked on Anthropic BILLING, not on code.** The
   `ANTHROPIC_API_KEY` secret **IS set** on the deployed Worker (verified via `wrangler secret list`),
   and the key authenticates. But the Anthropic account has **$0 credits**, so every real call returns
@@ -510,28 +512,63 @@ npm run test:e2e        # Playwright (auto-starts dev server)
   bucket regardless of how far they actually got. Good enough for the demo funnel; revisit if exact
   exit-stage attribution is needed.
 
-## Resume here (Phase 8)
+## Phase 8 — Production hardening & final deploy (shipped)
 
-Build **Production hardening & final deploy** (`docs/PLAN.md` Phase 8). The app has been continuously
-deployed since Phase 2, so this is **finalization, not first deploy**. Scope:
-- **Verify all bindings/secrets** are provisioned on the deployed Worker (D1/KV/R2/Queue/**Cron**, and
-  `ANTHROPIC_API_KEY`). Confirm the Cron Trigger fires (check the dashboard / `wrangler` cron logs).
-- **Anthropic billing** — the one open functional gap (see ⚠️ under **Status**): add credits, then re-run
-  the flag-gated live smoke test (Phase 3 gotcha) + a real demo upload so scoring works end-to-end.
-- **Secure the public demo for a real launch** — the demo uses shared seed logins (`demo1234`) and a
-  generous seeded credit balance; gate the public demo or remove/rotate demo accounts (confirm with the
-  user before anything that changes the live demo's accessibility).
-- **Optional custom domain + route** (confirm with the user first — outward-facing).
-- **Final remote migration run + full live smoke test** of upload→evaluate→advance across **both** editions
-  and a spot-check of every analytics screen against live data.
-- Post-deploy smoke script against the live Workers URL.
+Finalization, not first deploy (the app has been continuously deployed since Phase 2). No schema or
+Worker-behavior change this phase — the work was verification, a post-deploy smoke harness, and doc/launch
+hardening.
 
-### Carried-over follow-ups (address if convenient in Phase 8)
-- Single-upload runs Claude **synchronously** in the request (consider enqueue-and-poll);
-  bulk upload has no per-file failure isolation / DLQ (Phase 6 added credit-refund compensation, not a DLQ).
-- `complete_signup` is role-gated but not owner-gated (any incubator founder could complete another's signup).
-- Founder uploads couple external intake to the internal credit budget (see Phase 6 gotchas) — revisit
-  with real founder tenancy.
-- **Multi-juror drift**: decks still carry a single `assigned_to`; the Phase 7 analytics attribute human
-  scores per evaluator from `evaluations` rows (seeded across multiple evaluators), but the live scoring
-  UI still assigns one juror per deck. Extend assignment if true multi-juror panels are required.
+- **Bindings/secrets/cron verified on the deployed Worker.** `wrangler versions view <id>` on the live
+  version confirms handlers `fetch, queue, scheduled` + all bindings: `DB` (D1), `SESSIONS` (KV), `DECKS`
+  (R2), `EVAL_QUEUE` (Queue), `ASSETS`, and secret `ANTHROPIC_API_KEY`. The Cron `0 8 * * *` schedule is
+  **API-confirmed registered** (`GET /accounts/:acct/workers/scripts/startup-jury/schedules`). Workers
+  invocation analytics over the last 3 days: 0 errors. **To watch a real cron firing:** Cloudflare
+  dashboard → Workers → startup-jury → Triggers → Cron (last-run) after 08:00 UTC, or `wrangler tail` at
+  that time. (Didn't fire a mutating cron against the demo seed to "prove" it — the `scheduled` handler is
+  deployed + unit-tested in `test/worker/scheduled.test.ts`.)
+- **Post-deploy smoke script** (`scripts/smoke.mjs`, `npm run smoke [url]`, `SMOKE_URL=` env override):
+  read-only / non-mutating — health, auth gate + bad-creds 401, both-edition logins, decks/config/analytics
+  reads, **cross-edition authZ 403** (incubator→capital, VC→cohort) and an **intra-VC role gate**
+  (analyst→capital 403). Runs as **role-gated principals, not superuser** (incubator admin `nisha.kapoor`,
+  VC partner `ishaan.sethi`, VC analyst `rhea.nair`), so `canAccessNav` is genuinely exercised. **26 checks,
+  green against the live URL.**
+- **Remote migrations:** `wrangler d1 migrations list … --remote` → **no migrations to apply** (0008 was
+  the last, applied in Phase 7). Redeployed the demo at the phase boundary.
+- **Demo guide refresh** (`docs/DEMO.md`): rewrote the stale "coming next" section — upload/AI scoring, the
+  full pipeline for both editions, analytics, config/credits, and the founder portal are all **live now**;
+  added an AI-scoring note (built; live scoring needs Anthropic account credits).
+- **Launch decisions (with the user):** keep the shared seed logins **open + documented** (the user wants
+  multi-role end-to-end demos); **defer** a custom domain (keep `workers.dev`). Both recorded under
+  **Status**.
+- **Anthropic billing** remains the single functional gap (⚠️ under **Status**) — the user adds credits at
+  console.anthropic.com before the stakeholder demo; then live upload→score→advance works with **no code
+  change**. Verify via the Phase 3 flag-gated live smoke test + one real demo upload.
+- **Tests:** three tiers stayed green (typecheck + lint + **152 tests / 1 skipped** + build + **27 e2e**);
+  `/code-review main` ran and its 5 findings (all smoke-script robustness/coverage) were fixed in `32d9f34`.
+
+### Carried-over follow-ups — resolution
+- **`complete_signup` owner-gating: already closed.** `loadDeck` (pipeline.ts) scopes founders to
+  `uploaded_by === user.id`, so a founder gets 404 on another founder's deck — they can only ever complete
+  **their own** signup. No code change needed (the Phase 4 gotcha predates that guard).
+- **Left as documented maintenance items** (architectural, not hardening; and not exercised while Anthropic
+  is at $0): single-upload runs Claude **synchronously** in-request (consider enqueue-and-poll); bulk upload
+  has no per-file DLQ (has credit-refund compensation, not a DLQ); founder uploads couple external intake to
+  the internal credit budget (by design — see Phase 6 gotchas); **multi-juror drift** — decks carry a single
+  `assigned_to` while Phase 7 analytics attribute human scores per evaluator from seeded `evaluations` rows.
+
+## Project complete / maintenance
+
+All 9 phases (0–8) are shipped, green, and on `main`; the app is live at
+**https://startup-jury.jay-komarraju.workers.dev**. There is **no next phase.** For ongoing maintenance:
+
+- **Enable live AI scoring:** add credits at console.anthropic.com → Plans & Billing (the `ANTHROPIC_API_KEY`
+  secret is already set). No code/deploy change — uploads then score end-to-end. Verify with the Phase 3
+  flag-gated live smoke test and one real demo upload.
+- **After any change:** run the green gate (`npm run typecheck && npm run lint && npm test && npm run build`,
+  `+ npm run test:e2e` for UI), then `npm run build && npx wrangler deploy`, apply new migrations
+  `--remote` first if any, and finish with **`npm run smoke`** against the live URL. Commit direct to `main`
+  with the `Co-Authored-By` trailer; keep `wrangler` pinned at `4.110.0` (Phase 2 gotcha).
+- **For a wider public launch:** revisit the open demo access (gate via Cloudflare Access or rotate the
+  shared password) and consider a custom domain — both deferred by choice, neither is a code change.
+- The **carried-over follow-ups** above (sync upload / DLQ, founder-credit coupling, multi-juror panels) are
+  the natural next feature work if the product goes beyond a single-tenant demo.
