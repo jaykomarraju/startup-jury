@@ -15,10 +15,15 @@ the full plan at `docs/PLAN.md` + `git log`.
 - **Next:** Phase 4 — Incubator pipeline (assign → jury eval → shortlist → intro → signup →
   onboard/archive; founder query loop + stubbed email; incubator role dashboards/nav).
   See **Resume here (Phase 4)** at the bottom.
-- **⚠️ One open item:** the live demo's `ANTHROPIC_API_KEY` secret. Uploads store to R2 + enqueue,
-  but **live AI scoring stays pending until the secret is set** (see **Live demo & deploy**). The user
-  approved setting it ("Set it now, spend OK"); if it's not yet set, run
-  `wrangler secret put ANTHROPIC_API_KEY` and the flag-gated live smoke test.
+- **⚠️ One open item — live scoring blocked on Anthropic BILLING, not on code.** The
+  `ANTHROPIC_API_KEY` secret **IS set** on the deployed Worker (verified via `wrangler secret list`),
+  and the key authenticates. But the Anthropic account has **$0 credits**, so every real call returns
+  `400 invalid_request_error: "Your credit balance is too low…"`. The request shape is proven valid
+  (it reaches Anthropic's billing gate, not an auth/validation error). **To finish: add credits at
+  console.anthropic.com → Plans & Billing, then re-run the flag-gated live smoke test** (command in
+  **Phase 3 gotchas**) and a real upload on the demo — **no code/config change needed**. Until then,
+  uploads store to R2 + enqueue but scoring fails gracefully (single-upload → `202 pending`; bulk
+  decks retry 3× then drop, staying at `pending_ai`).
 - **Workflow:** commit directly to `main`, no PRs. Green gate (typecheck+lint+tests+build,
   plus `test:e2e` for UI) before each push. Node 22 (`nvm use`).
 
@@ -30,10 +35,10 @@ the full plan at `docs/PLAN.md` + `git log`.
   KV `SESSIONS` (id `a6b70566774d4f03900a05c5c77f1365`), **R2 bucket `startup-jury-decks`**, and
   **Queue `startup-jury-evals`** (id `a8e8467445f0456eadceacabc71f5b37`, producer+consumer). Bindings
   in `wrangler.jsonc`. The account is on **Workers Paid** (queue consumers deploy fine).
-- **Secret:** `ANTHROPIC_API_KEY` — set with `wrangler secret put ANTHROPIC_API_KEY` (Anthropic
-  console key). **Until set, single-upload returns 202 "pending" and bulk decks sit at `pending_ai`.**
-  No redeploy needed after setting a secret — it applies to the running Worker immediately.
-  **Not yet provisioned:** Cron (Phase 7).
+- **Secret:** `ANTHROPIC_API_KEY` — **already set** on the deployed Worker (`wrangler secret list`
+  shows it). No redeploy needed after a secret change — it applies to the running Worker immediately.
+  **Live scoring is blocked only by the Anthropic account's $0 credit balance** (see the ⚠️ item under
+  **Status**) — add credits, no other change required. **Not yet provisioned:** Cron (Phase 7).
 - **Redeploy after each phase** (post-green-gate): `npm run build && npx wrangler deploy`; if
   the phase added migrations, first `npx wrangler d1 migrations apply startup-jury-db --remote`.
   Then smoke-test the live URL (`/api/health`, a login). `wrangler.jsonc` is the source of truth
@@ -245,8 +250,11 @@ npm run test:e2e        # Playwright (auto-starts dev server)
   bindings `LIVE_ANTHROPIC` + `LIVE_ANTHROPIC_KEY`, forwarded from `process.env.LIVE_ANTHROPIC` /
   `process.env.ANTHROPIC_API_KEY` in `vitest.worker.config.ts`. **Named distinctly from
   `ANTHROPIC_API_KEY`** so the app binding stays unset during the normal suite (keeps single-upload
-  tests on the deferred 202 path). Run live with:
-  `LIVE_ANTHROPIC=1 ANTHROPIC_API_KEY=sk-... npm test`.
+  tests on the deferred 202 path). Run just the live file with:
+  `LIVE_ANTHROPIC=1 ANTHROPIC_API_KEY=sk-... npx vitest run test/worker/evaluate.live.test.ts`
+  (or `… npm test` for the whole suite). **Status:** last run returned `400 credit balance too low` —
+  the key is valid and the payload is accepted; it's purely the Anthropic account's $0 balance. Add
+  credits, then this passes and a real demo upload scores end-to-end.
 - **Queue deploy needs the queue to exist first** (`wrangler queues create startup-jury-evals`) and
   **Workers Paid** — otherwise `wrangler deploy` rejects the consumer. Both are in place.
 - **Model call is raw `fetch`** (no `@anthropic-ai/sdk` dependency in the Worker), per the
