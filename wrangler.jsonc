@@ -44,6 +44,10 @@
       }
     ]
   },
+  "triggers": {
+    // Daily evaluator-reminder sweep (src/server/scheduled.ts). 08:00 UTC.
+    "crons": ["0 8 * * *"]
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1

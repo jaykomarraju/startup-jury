@@ -6,7 +6,7 @@
 
 import type { Env } from "../types";
 
-export type EmailKind = "founder_query" | "signup_invite";
+export type EmailKind = "founder_query" | "signup_invite" | "evaluator_reminder";
 
 export interface OutboundEmail {
   kind: EmailKind;
@@ -65,6 +65,24 @@ export function buildQueryEmail(args: {
       "Before we can complete the review, our team needs a little more detail:\n\n" +
       `${args.questions}\n\n` +
       "Please reply through your founder portal and we'll pick the review back up.\n\n" +
+      "— The ai.STARTUPJURY team",
+  };
+}
+
+/** Compose the evaluator reminder listing a member's pending assigned decks. */
+export function buildReminderEmail(args: {
+  evaluatorName: string;
+  deckNames: string[];
+}): { subject: string; body: string } {
+  const n = args.deckNames.length;
+  const list = args.deckNames.map((d) => `  • ${d}`).join("\n");
+  return {
+    subject: `Reminder: ${n} deck${n === 1 ? "" : "s"} awaiting your evaluation`,
+    body:
+      `Hi ${args.evaluatorName},\n\n` +
+      `You have ${n} deck${n === 1 ? "" : "s"} assigned and awaiting your score:\n\n` +
+      `${list}\n\n` +
+      "Please open your pipeline in ai.STARTUPJURY to complete the evaluation.\n\n" +
       "— The ai.STARTUPJURY team",
   };
 }

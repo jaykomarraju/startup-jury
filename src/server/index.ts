@@ -4,7 +4,10 @@ import auth from "./routes/auth";
 import decks from "./routes/decks";
 import pipeline from "./routes/pipeline";
 import config from "./routes/config";
+import analytics from "./routes/analytics";
+import { tickets, messages } from "./routes/support";
 import { handleQueue } from "./queue";
+import { runReminders } from "./scheduled";
 
 export type { Env } from "./types";
 
@@ -20,6 +23,9 @@ app.get("/api/health", (c) =>
 
 app.route("/api/auth", auth);
 app.route("/api/config", config);
+app.route("/api/analytics", analytics);
+app.route("/api/tickets", tickets);
+app.route("/api/messages", messages);
 app.route("/api/decks", decks);
 // Workflow endpoints (transitions, assign, jury scoring, queries, signup,
 // audit, lookups). Mounted at /api so it can own /queries, /jury, /parameters
@@ -41,5 +47,10 @@ export default {
   fetch: app.fetch,
   async queue(batch: MessageBatch<EvalMessage>, env: Env) {
     await handleQueue(batch, env);
+  },
+  // Cron Trigger (wrangler.jsonc `triggers.crons`): sweep for evaluators with
+  // decks still awaiting their score and send stubbed reminder emails.
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(runReminders(env));
   },
 } satisfies ExportedHandler<Env, EvalMessage>;
