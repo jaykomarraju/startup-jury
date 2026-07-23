@@ -18,8 +18,13 @@ const BASE = (
 ).replace(/\/$/, "");
 
 const DEMO_PASSWORD = "demo1234";
-const INC_ADMIN = "nisha.kapoor@demo.startupjury.ai";
-const VC_MP = "aarav.khanna@demo.startupjury.ai";
+// Deliberately NOT the superuser (Managing Partner) logins: superuser bypasses
+// every nav guard, so authZ checks would pass vacuously. The incubator admin and
+// the VC partner/analyst are ordinary role-gated principals, so the report reads
+// and 403s below genuinely exercise canAccessNav.
+const INC_ADMIN = "nisha.kapoor@demo.startupjury.ai"; // incubator admin (not superuser)
+const VC_PARTNER = "ishaan.sethi@demo.startupjury.ai"; // VC partner — sees all VC reports
+const VC_ANALYST = "rhea.nair@demo.startupjury.ai"; // VC analyst — sees only Scoring
 
 let passed = 0;
 let failed = 0;
@@ -57,9 +62,15 @@ async function req(method, path, { token, body } = {}) {
   } catch {
     /* non-JSON (e.g. SPA HTML fallback) */
   }
-  // Extract the session token from Set-Cookie, if present.
-  let sessionToken = null;
+  // Extract the session token from Set-Cookie, if present. Prefer getSetCookie()
+  // (Node ≥18.15 / modern undici), falling back to the raw combined header so the
+  // script also works on older runtimes.
   const setCookie = res.headers.getSetCookie?.() ?? [];
+  if (setCookie.length === 0) {
+    const raw = res.headers.get("set-cookie");
+    if (raw) setCookie.push(raw);
+  }
+  let sessionToken = null;
   for (const c of setCookie) {
     const m = c.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`));
     if (m && m[1] && m[1] !== "") sessionToken = m[1];
@@ -120,10 +131,12 @@ async function main() {
 
     const decks = await req("GET", "/api/decks", { token: inc.token });
     const list = Array.isArray(decks.json?.decks) ? decks.json.decks : decks.json;
+    // Assert the endpoint is healthy and shaped as a list — NOT that seed data
+    // exists (an empty cohort is a valid 200, e.g. a freshly-migrated env).
     check(
-      "GET /api/decks → non-empty list",
-      decks.status === 200 && Array.isArray(list) && list.length > 0,
-      `HTTP ${decks.status}, len ${Array.isArray(list) ? list.length : "n/a"}`,
+      "GET /api/decks → 200 list",
+      decks.status === 200 && Array.isArray(list),
+      `HTTP ${decks.status}, ${Array.isArray(list) ? `len ${list.length}` : "not-array"}`,
     );
 
     const summary = await req("GET", "/api/config/summary", { token: inc.token });
@@ -150,12 +163,13 @@ async function main() {
     );
   }
 
-  // 4. VC edition reads.
+  // 4. VC edition reads — as a partner (role-gated, NOT superuser), so the report
+  //    guards are genuinely exercised.
   console.log("vc edition");
-  const vc = await login(VC_MP);
+  const vc = await login(VC_PARTNER);
   check(
-    "login VC managing partner → edition vc",
-    vc.user?.edition === "vc",
+    "login VC partner → edition vc, role partner",
+    vc.user?.edition === "vc" && vc.user?.role === "partner",
     JSON.stringify(vc.user),
   );
   {
@@ -166,10 +180,29 @@ async function main() {
     const decks = await req("GET", "/api/decks", { token: vc.token });
     const list = Array.isArray(decks.json?.decks) ? decks.json.decks : decks.json;
     check(
-      "VC GET /api/decks → non-empty list",
-      decks.status === 200 && Array.isArray(list) && list.length > 0,
+      "VC GET /api/decks → 200 list",
+      decks.status === 200 && Array.isArray(list),
       `HTTP ${decks.status}`,
     );
+    // Cross-edition authZ: a VC user must not read an incubator-only report.
+    const cohort = await req("GET", "/api/analytics/cohort", { token: vc.token });
+    check("VC → /api/analytics/cohort → 403", cohort.status === 403, `HTTP ${cohort.status}`);
+  }
+
+  // 4b. Intra-VC authZ: an analyst sees only Scoring — capital must 403. (Not a
+  //     superuser, so this is a real per-role guard check, not a vacuous pass.)
+  console.log("vc role gating");
+  const analyst = await login(VC_ANALYST);
+  check(
+    "login VC analyst → role analyst",
+    analyst.user?.role === "analyst" && analyst.user?.edition === "vc",
+    JSON.stringify(analyst.user),
+  );
+  {
+    const scoring = await req("GET", "/api/analytics/scoring", { token: analyst.token });
+    check("analyst → /api/analytics/scoring → 200", scoring.status === 200, `HTTP ${scoring.status}`);
+    const capital = await req("GET", "/api/analytics/capital", { token: analyst.token });
+    check("analyst → /api/analytics/capital → 403", capital.status === 403, `HTTP ${capital.status}`);
   }
 
   // 5. Logout.
@@ -178,6 +211,7 @@ async function main() {
     const out = await req("POST", "/api/auth/logout", { token: inc.token });
     check("POST /api/auth/logout → 200", out.status === 200, `HTTP ${out.status}`);
     await req("POST", "/api/auth/logout", { token: vc.token });
+    await req("POST", "/api/auth/logout", { token: analyst.token });
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);
