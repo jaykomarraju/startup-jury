@@ -33,6 +33,9 @@ interface DeckRow {
   uploaded_by: string | null;
 }
 
+// VC human-scoring stages (analyst core scores, then associate + partner review).
+const VC_SCORING_STAGES = ["analyst_scoring", "associate_review", "partner_review"];
+
 /** Parse a JSON body, tolerating malformed/empty payloads as an empty object. */
 async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
   return (await c.req.json().catch(() => ({}))) as Partial<T>;
@@ -62,11 +65,9 @@ function eventId(deckId: string): string {
 interface TransitionBody {
   action: string;
   note: string;
-  /** Term-sheet details captured when issuing a term sheet (VC). */
+  /** Term-sheet details captured when issuing a term sheet (VC alignment call). */
   valuation?: string;
   ownership?: string;
-  /** Capital deployed captured on onboard (VC portfolio). */
-  capitalDeployed?: string;
 }
 
 /**
@@ -126,14 +127,13 @@ function transitionSideEffects(
           .prepare("INSERT INTO legal_dd (id, deck_id, notes, created_at) VALUES (?, ?, ?, ?)")
           .bind(rid("ldd"), deckId, body.note ?? null, ts),
       ];
-    // Onboard → a portfolio position (capital deployed).
+    // Onboard → a portfolio position. Capital-deployed is entered later in the
+    // Capital Deployment analytics (Phase 7); the position is created here.
     case "complete_legal_dd":
       return [
         db
-          .prepare(
-            "INSERT INTO portfolio (id, deck_id, capital_deployed, onboarded_at) VALUES (?, ?, ?, ?)",
-          )
-          .bind(rid("pf"), deckId, body.capitalDeployed ?? null, ts),
+          .prepare("INSERT INTO portfolio (id, deck_id, onboarded_at) VALUES (?, ?, ?)")
+          .bind(rid("pf"), deckId, ts),
       ];
     default:
       return [];
@@ -232,6 +232,11 @@ pipeline.post(
     // may score any). Keeps AI-vs-jury drift analytics attributable.
     if (user.role === "jury" && deck.assigned_to !== user.id) {
       return c.json({ error: "not_assigned" }, 403);
+    }
+    // VC evaluators score only while the deal is in a scoring stage — not after it
+    // has advanced to a partner call / diligence / IC or been archived.
+    if (deck.edition === "vc" && !VC_SCORING_STAGES.includes(deck.status)) {
+      return c.json({ error: "not_in_scoring_stage" }, 409);
     }
 
     const body = await readBody<{ scores: ScoreInput[]; remarks: string }>(c);
@@ -535,8 +540,9 @@ pipeline.post(
   },
 );
 
-/** GET /decks/:id/ic-votes — every IC member's vote + the aggregated tally. */
-pipeline.get("/decks/:id/ic-votes", async (c) => {
+/** GET /decks/:id/ic-votes — every IC member's vote + the aggregated tally.
+ *  Committee-only: individual ballots are confidential to the committee (+ MP). */
+pipeline.get("/decks/:id/ic-votes", requireRole("ic_member", "partner", "admin"), async (c) => {
   const deck = await loadDeck(c, c.req.param("id"));
   if (!deck) return c.json({ error: "not_found" }, 404);
   const rows = (
@@ -609,6 +615,22 @@ pipeline.get("/decks/:id/events", async (c) => {
     createdAt: r.created_at,
   }));
   return c.json({ events });
+});
+
+/** GET /decks/:id/my-scores — the caller's own human scores (prefills the form so
+ *  reopening a scored deck shows the saved values, not defaults). */
+pipeline.get("/decks/:id/my-scores", async (c) => {
+  const deck = await loadDeck(c, c.req.param("id"));
+  if (!deck) return c.json({ error: "not_found" }, 404);
+  const rows = (
+    await c.env.DB.prepare(
+      "SELECT p.key AS key, s.value AS value FROM scores s JOIN parameters p ON p.id = s.parameter_id " +
+        "WHERE s.deck_id = ? AND s.evaluator_kind = 'human' AND s.evaluator_id = ? ORDER BY p.sort_order",
+    )
+      .bind(deck.id, c.var.user.id)
+      .all<{ key: string; value: number }>()
+  ).results;
+  return c.json({ scores: rows });
 });
 
 /** GET /jury — assignable jury members in the caller's edition (Assign screen). */

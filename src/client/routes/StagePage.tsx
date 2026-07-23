@@ -30,6 +30,9 @@ export interface StageConfig {
   secondary?: { label: string; field: "founder" | "sector" };
   /** Hide the Action column (read-only screens like Archive). */
   readOnly?: boolean;
+  /** Optional inline fields captured for one action (e.g. term-sheet valuation /
+   *  ownership on Issue term sheet), passed to the transition as extra body fields. */
+  capture?: { action: string; fields: { name: "valuation" | "ownership"; label: string }[] };
 }
 
 // Actions handled by dedicated screens rather than inline buttons here.
@@ -51,6 +54,8 @@ export function StagePage({ config }: { config: StageConfig }) {
   } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Per-deck captured fields for the config's capture action (term-sheet details).
+  const [captured, setCaptured] = useState<Record<string, { valuation?: string; ownership?: string }>>({});
 
   const load = useCallback(() => {
     return listDecks()
@@ -86,7 +91,10 @@ export function StagePage({ config }: { config: StageConfig }) {
     setError(null);
     try {
       if (action.action === "send_signup") await sendSignup(deck.id);
-      else await transitionDeck(deck.id, action.action);
+      else {
+        const extra = config.capture?.action === action.action ? captured[deck.id] : undefined;
+        await transitionDeck(deck.id, action.action, undefined, extra);
+      }
       await load();
     } catch {
       setError(`Couldn't ${action.label.toLowerCase()}. Try again.`);
@@ -156,6 +164,25 @@ export function StagePage({ config }: { config: StageConfig }) {
                     <td className="px-4 py-3 text-sm text-fg-muted">{deck.status ?? "—"}</td>
                     {!config.readOnly && (
                       <td className="px-4 py-3">
+                        {config.capture && actions.some((a) => a.action === config.capture!.action) && (
+                          <div className="mb-2 flex justify-end gap-1.5">
+                            {config.capture.fields.map((f) => (
+                              <input
+                                key={f.name}
+                                className="sj-input h-8 w-24 py-0 text-xs"
+                                placeholder={f.label}
+                                aria-label={f.label}
+                                value={captured[deck.id]?.[f.name] ?? ""}
+                                onChange={(e) =>
+                                  setCaptured((cap) => ({
+                                    ...cap,
+                                    [deck.id]: { ...cap[deck.id], [f.name]: e.target.value },
+                                  }))
+                                }
+                              />
+                            ))}
+                          </div>
+                        )}
                         <div className="flex justify-end gap-2">
                           {actions.length === 0 && <span className="text-xs text-fg-muted">—</span>}
                           {actions.map((a) => (
@@ -236,6 +263,13 @@ export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
     subtitle: "Post-IC term alignment with the founder · confirm valuation and key terms, then issue the term sheet.",
     statuses: ["alignment_call"],
     secondary: VC_SECTOR,
+    capture: {
+      action: "issue_term_sheet",
+      fields: [
+        { name: "valuation", label: "Valuation" },
+        { name: "ownership", label: "Ownership" },
+      ],
+    },
     emptyTitle: "No alignment calls",
     emptyDescription: "Deals the Managing Partner approves for investment appear here.",
   },

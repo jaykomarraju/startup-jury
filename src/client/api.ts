@@ -48,11 +48,17 @@ function postJson<T>(path: string, body?: unknown): Promise<T> {
   }).then((r) => json<T>(r));
 }
 
+/** Extra fields some VC transitions capture (e.g. term-sheet valuation/ownership). */
+export interface TransitionExtra {
+  valuation?: string;
+  ownership?: string;
+}
+
 /** Apply a role-gated pipeline action to a deck. */
-export function transitionDeck(id: string, action: string, note?: string) {
+export function transitionDeck(id: string, action: string, note?: string, extra?: TransitionExtra) {
   return postJson<{ ok: true; status: string; label: string }>(
     `/api/decks/${id}/transition`,
-    { action, note },
+    { action, note, ...extra },
   );
 }
 
@@ -142,6 +148,11 @@ export interface RubricParameter {
 
 export function listParameters(): Promise<{ parameters: RubricParameter[] }> {
   return fetch("/api/parameters").then((r) => json(r));
+}
+
+/** The caller's own saved human scores for a deck (prefills the scoring form). */
+export function getMyScores(id: string): Promise<{ scores: { key: string; value: number }[] }> {
+  return fetch(`/api/decks/${id}/my-scores`).then((r) => json(r));
 }
 
 // ── Phase 5 — VC pipeline ─────────────────────────────────────────────────────

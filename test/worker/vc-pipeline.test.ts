@@ -188,6 +188,29 @@ describe("VC branches: pass/archive and return-to-partner", () => {
   });
 });
 
+describe("VC scoring prefill", () => {
+  it("GET /my-scores returns the caller's saved human scores", async () => {
+    const id = "vc_myscores";
+    await seedVcDeck(id, "analyst_scoring");
+    const analyst = await login(ANALYST);
+    const keys = await paramKeys();
+    await post(`/api/decks/${id}/evaluate`, analyst, {
+      scores: keys.map((key) => ({ key, value: 6 })),
+    });
+    const body = (await (await get(`/api/decks/${id}/my-scores`, analyst)).json()) as {
+      scores: Array<{ key: string; value: number }>;
+    };
+    expect(body.scores.length).toBe(keys.length);
+    expect(body.scores.every((s) => s.value === 6)).toBe(true);
+    // Another evaluator sees none of the analyst's scores (own-scores scoped).
+    const partner = await login(PARTNER);
+    const other = (await (await get(`/api/decks/${id}/my-scores`, partner)).json()) as {
+      scores: unknown[];
+    };
+    expect(other.scores.length).toBe(0);
+  });
+});
+
 describe("IC vote aggregation", () => {
   it("tallies per-member votes, picks a recommendation, and lets a member change their vote", async () => {
     const id = "vc_ic_agg";
@@ -259,6 +282,24 @@ describe("VC per-stage authorization", () => {
     await seedVcDeck(id, "ic_review");
     const analyst = await login(ANALYST);
     expect((await post(`/api/decks/${id}/ic-vote`, analyst, { vote: "invest" })).status).toBe(403);
+  });
+
+  it("a non-committee VC user cannot read the confidential IC ballots (403)", async () => {
+    const id = "vc_authz_ballots";
+    await seedVcDeck(id, "ic_review");
+    const analyst = await login(ANALYST);
+    expect((await get(`/api/decks/${id}/ic-votes`, analyst)).status).toBe(403);
+  });
+
+  it("a VC evaluator cannot score a deal past the scoring stages (409)", async () => {
+    const id = "vc_authz_latescore";
+    await seedVcDeck(id, "ic_review");
+    const analyst = await login(ANALYST);
+    const keys = await paramKeys();
+    const res = await post(`/api/decks/${id}/evaluate`, analyst, {
+      scores: keys.map((key) => ({ key, value: 7 })),
+    });
+    expect(res.status).toBe(409);
   });
 
   it("an unknown action from a VC stage is a 409", async () => {
