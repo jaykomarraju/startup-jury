@@ -8,13 +8,13 @@ the full plan at `docs/PLAN.md` + `git log`.
 ## Status
 
 - **Complete:** Phase 0 — Scaffold & CI · Phase 1 — Data & auth · Phase 2 — Design system & app shell ·
-  Phase 3 — Upload & AI evaluation · **Phase 4 — Incubator pipeline.**
+  Phase 3 — Upload & AI evaluation · Phase 4 — Incubator pipeline · **Phase 5 — VC pipeline.**
 - **Live demo:** deployed to Cloudflare — **https://startup-jury.jay-komarraju.workers.dev**
   (remote D1 + KV + **R2 + Queue**, seeded demo logins, password `demo1234`). Viewer guide: `docs/DEMO.md`.
   See **Live demo & deploy** below. Keep it current: **redeploy at each phase boundary.**
-- **Next:** Phase 5 — VC pipeline (Analyst → Associate → Partner → Partner call → Investment DD →
-  IC voting → MP decision → Alignment → Term sheet → Legal DD → Onboard; VC dashboards/nav).
-  See **Resume here (Phase 5)** at the bottom.
+- **Next:** Phase 6 — Config, plans & credits (parameter/weight editors, AI-prompt customization,
+  threshold editor, branding, plan-tier gating of additional params, admin-granted credits).
+  See **Resume here (Phase 6)** at the bottom.
 - **⚠️ One open item — live scoring blocked on Anthropic BILLING, not on code.** The
   `ANTHROPIC_API_KEY` secret **IS set** on the deployed Worker (verified via `wrangler secret list`),
   and the key authenticates. But the Anthropic account has **$0 credits**, so every real call returns
@@ -324,24 +324,70 @@ npm run test:e2e        # Playwright (auto-starts dev server)
 - **outbox tests live under the WORKER tsconfig** (same reason as `ai/evaluate.ts` — the module imports
   `Env`, which needs `@cloudflare/workers-types`).
 
-## Resume here (Phase 5)
+## Phase 5 — VC pipeline (shipped)
 
-Build the **VC pipeline** end-to-end on the Phase 1 state machine (`src/pipeline/vc.ts`) and the
-Phase 4 workflow API — the VC config, engine, and `performAction` gating already exist; this is
-mostly the VC-specific stages + screens. Flow: Analyst (upload, AI eval, core scores) → Associate
-(core+additional, shortlist) → Partner (shortlist) → Partner call (Sponsor to IC / Pass / another
-meeting) → Investment DD (MP approval) → **IC voting** (per-member Invest/Hold/Need more info/Pass)
-→ MP decision (Invest / Pass / Return to partner) → Alignment call → Term sheet → Legal DD → Onboard;
-not-shortlisted → Archived (revivable). **Server:** reuse `POST /api/decks/:id/transition` (VC roles
-already in `vc.ts`); add IC-vote CRUD (`ic_votes` table, per-member vote + aggregation), investment_dd
-/ term_sheets / legal_dd / calls (kind `partner`/`alignment`) writes, and the analyst→associate→partner
-core+additional scoring path (human scores, `evaluator_kind='human'`). **Client:** fill the VC stub
-slugs (`jurypipeline`=Assoc. Pipeline, `partnerpipeline`, `partnercall`, `investmentdd`, `icpipeline`,
-`alignmentcall`, `incuration`=Term sheet Pipeline, `legaldd`, `curation`, `archive`) with live data +
-transitions; wire `NavRoute` for `user.edition === "vc"` (mirror the incubator `StagePage`/`Assign`/
-`Evaluate` patterns). **Visual mockup review gate FIRST**: render `VC Final files/AISJ_VC_*` prototypes,
-screenshot, match. **Tests:** full VC-path integration (analyst→term sheet→onboard) + pass/archive +
-return-to-partner branch; per-member IC vote aggregation; e2e for IC member + partner. Green gate +
-`/code-review`, commit to `main`, **redeploy the demo** (D1 migration only if you add tables — the VC
-tables `investment_dd`/`ic_votes`/`term_sheets`/`legal_dd`/`portfolio` already exist from `0001`). Keep
-scope to Phase 5; do not start Phase 6 (config/plans/credits).
+- **Visual review gate** done first: the `VC Final files/AISJ_VC_*.html` prototypes are interactive
+  (`window.showPanel('<slug>')` renders each nav screen — panel ids == `nav.ts` slugs). Screens matched
+  per role; details in the `phase5-vc-visual-gate` memory. Build decision: the generic `StagePage`
+  renders role-gated transition buttons from `deck.actions`, covering most VC stages; dedicated screens
+  only for IC voting and scoring.
+- **Server** (`src/server/routes/pipeline.ts`, mounted at `/api`):
+  - **IC voting** — `POST /decks/:id/ic-vote` `{vote,comment?}` (roles `ic_member`/`partner`/`admin`+MP;
+    only at `ic_review`; one vote per member, idempotent replace) + `GET /decks/:id/ic-votes`
+    (**committee-only read** — ballots are confidential) returning per-member ballots, the aggregated
+    `tally`, plurality `recommendation` (invest breaks ties upward), and the caller's `myVote`.
+  - **Transition side-effects** (`transitionSideEffects`, keyed by action, folded into the existing
+    `POST /decks/:id/transition` batch): `sponsor_to_ic`/`another_meeting`/`pass_at_call` → a `partner`
+    `calls` row; `mp_approve_dd` → an approved `investment_dd`; `issue_term_sheet` → an `alignment`
+    `calls` row **+** a `term_sheets` row (valuation/ownership from the body); `start_legal_dd` →
+    `legal_dd`; `complete_legal_dd` → a `portfolio` position. VC action names don't collide with
+    incubator ones, so incubator transitions never trigger these.
+  - **VC human scoring** — `POST /decks/:id/evaluate` generalized to `analyst`/`associate`/`partner`
+    (`evaluator_kind='human'`, full-rubric weighted total); **guarded to the VC scoring stages**
+    (`analyst_scoring`/`associate_review`/`partner_review`) so a late score can't overwrite a deal in
+    diligence/IC/archived. `GET /decks/:id/my-scores` returns the caller's saved scores (form prefill).
+- **Client:** `IcVotePage` (`icpipeline` — committee master-detail: per-member vote buttons + rationale,
+  live tally + recommendation, ballots list with comments, MP close-vote + final decision transitions);
+  `VcEvaluatePage` (`evaluate` + `assign`/Submit — rubric scoring, prefilled from `my-scores`, then
+  role-gated advance actions); `StagePage` `VC_STAGE_CONFIG` drives `jurypipeline` (Assoc. Pipeline),
+  `partnerpipeline`, `partnercall`, `investmentdd`, `alignmentcall` (with inline **term-sheet valuation/
+  ownership capture** on Issue term sheet), `incuration` (Term sheet Pipeline), `legaldd`, `curation`
+  (Onboard ready), `archive`. `App.tsx` `NavRoute` has a `user.edition === "vc"` branch; `api.ts` gains
+  IC-vote + `my-scores` fetchers and a `transitionDeck` `extra` arg.
+- **Demo seed** (`0006_seed_vc_decks.sql`): VC decks across every stage (`partner_call` … `onboard_ready`
+  + `archived`) so each VC screen is live on the demo, plus seed IC ballots on `CreditBridge` (ic_review)
+  and a closed vote on `DockFlow` (mp_decision). No new tables — the VC domain tables already exist from `0001`.
+- **Tests (104 unit/worker + 22 e2e; 1 skipped):** `test/worker/vc-pipeline.test.ts` (full VC path
+  analyst→onboard with the `pipeline_events` audit + every side-effect row, pass/archive + return-to-
+  partner branches, IC vote aggregation incl. vote-change, per-stage authZ 403/409, committee-only ballot
+  read, late-score 409, `my-scores` prefill scoping); `e2e/vc.spec.ts` (partner sponsors from partner
+  call; IC member casts a vote). `/code-review` run and its 6 findings fixed (commit `76d63e4`).
+
+### Phase 5 gotchas / notes
+- **Two "Rajesh Kumar" users** (inc_jury + vc_ic). VC e2e/tests use the VC login `rajesh.kumar.vc@…`.
+- **MP decision surfaces on the IC Pipeline screen:** `mp_decision` decks appear in `IcVotePage`
+  alongside `ic_review` ones — the MP closes the vote (superuser-only `close_ic_vote`) then renders
+  Invest / Pass / Return to partner there (superuser-only), matching `vc.ts`.
+- **`calls`/`term_sheets`/`legal_dd`/`investment_dd`/`portfolio` writes are transition side-effects**,
+  not separate endpoints — the prototype's per-stage dropdowns just advance state, so the domain row is
+  recorded as the deck moves. `portfolio.capital_deployed` is left NULL (entered in Phase 7 Capital
+  Deployment analytics); the position row is created on onboard.
+- **`partner` can cast IC votes** (partners sit on the committee — the endpoint allows
+  `ic_member`/`partner`/`admin` + superuser). The `icpipeline` **nav** is `admin`/`ic_member` only, so a
+  partner votes via the deep-linked screen / API, not a sidebar item — matches the matrix.
+
+## Resume here (Phase 6)
+
+Build **Config, plans & credits** (`docs/PLAN.md` Phase 6). Scope: parameter/weight editors (Core
+Parameters + My Parameters nav slugs — `coreparams`/`myparams`, currently `StubPage`), AI-prompt
+customization (org `ai_system_prompt` override — already read by `src/server/ai/evaluate.ts`
+`buildSystemPrompt`), cohort **threshold editor** (the Best ≥7.0 / Mediocre 5.0–6.9 / Poor <5.0 rail is
+hard-coded in `DashboardPage`; back it with `org_settings`), branding, **plan-tier gating**
+(Standard/Pro/Premium) that hides/shows the **additional/informational** params (the 13 seeded params are
+all core+weighted; add informational params with a `plan` gate), and **admin-granted credits**
+(`org_settings.credits_balance`; decrement on upload in `decks.ts`). **Data:** `parameters`,
+`rubric_anchors`, `org_settings` tables already exist (`0001`); `org_settings` seeds plan tiers in `0002`.
+A weight change must **re-score** (weighted total recompute) — `shared/scoring.ts` `weightedTotal` is the
+seam. **Tests:** weight-change re-scoring math; plan gating hides/shows additional params; credit
+decrement on upload. Green gate + `/code-review`, commit to `main`, **redeploy the demo** (apply new
+migrations `--remote` first if any). Do **not** start Phase 7 (analytics/polish).
