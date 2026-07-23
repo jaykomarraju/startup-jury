@@ -12,6 +12,7 @@ import {
 } from "../components";
 import type { DeckView } from "../types";
 import { listDecks, getDeck, getConfigSummary } from "../api";
+import { cohortRating } from "../../shared/scoring";
 
 interface Kpi {
   label: string;
@@ -114,6 +115,17 @@ export function DashboardPage() {
   }, [selected]);
 
   const kpis = useMemo(() => computeKpis(decks ?? []), [decks]);
+
+  // Bucket evaluated decks by the admin-configured cohort thresholds so an edit
+  // actually re-classifies the cohort (not just the rail's labels).
+  const ratingCounts = useMemo(() => {
+    const counts = { best: 0, mediocre: 0, poor: 0 };
+    for (const d of decks ?? []) {
+      if (d.aiScore === undefined) continue;
+      counts[cohortRating(d.aiScore, thresholds.best, thresholds.mediocre)] += 1;
+    }
+    return counts;
+  }, [decks, thresholds]);
 
   // Pipeline-progress rail: counts per distinct status present (top 5).
   const progress = useMemo(() => {
@@ -223,9 +235,27 @@ export function DashboardPage() {
         <Card>
           <div className="u-label">Cohort rating thresholds</div>
           <ul className="mt-3 flex flex-col gap-1.5 text-sm">
-            <li className="flex justify-between"><span className="text-fg">Best</span><span className="font-mono text-fg-muted">≥ {thresholds.best.toFixed(1)}</span></li>
-            <li className="flex justify-between"><span className="text-fg">Mediocre</span><span className="font-mono text-fg-muted">{thresholds.mediocre.toFixed(1)} – {(thresholds.best - 0.1).toFixed(1)}</span></li>
-            <li className="flex justify-between"><span className="text-fg">Poor</span><span className="font-mono text-fg-muted">&lt; {thresholds.mediocre.toFixed(1)}</span></li>
+            <li className="flex items-center justify-between gap-2">
+              <span className="text-fg">Best</span>
+              <span className="flex items-center gap-2">
+                <span className="font-mono text-fg-muted">≥ {thresholds.best.toFixed(1)}</span>
+                <span className="rounded bg-surface-2 px-1.5 font-mono text-xs text-fg">{ratingCounts.best}</span>
+              </span>
+            </li>
+            <li className="flex items-center justify-between gap-2">
+              <span className="text-fg">Mediocre</span>
+              <span className="flex items-center gap-2">
+                <span className="font-mono text-fg-muted">{thresholds.mediocre.toFixed(1)} – {(thresholds.best - 0.1).toFixed(1)}</span>
+                <span className="rounded bg-surface-2 px-1.5 font-mono text-xs text-fg">{ratingCounts.mediocre}</span>
+              </span>
+            </li>
+            <li className="flex items-center justify-between gap-2">
+              <span className="text-fg">Poor</span>
+              <span className="flex items-center gap-2">
+                <span className="font-mono text-fg-muted">&lt; {thresholds.mediocre.toFixed(1)}</span>
+                <span className="rounded bg-surface-2 px-1.5 font-mono text-xs text-fg">{ratingCounts.poor}</span>
+              </span>
+            </li>
           </ul>
         </Card>
       </aside>

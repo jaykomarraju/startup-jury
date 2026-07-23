@@ -198,6 +198,15 @@ async function reserveCredits(c: Context<AppEnv>, n: number): Promise<boolean> {
   return res.meta.changes === 1;
 }
 
+/** Return `n` reserved credits — used to compensate when a store fails after the
+ *  reservation, so a transient R2/DB error never silently burns credits. */
+async function refundCredits(c: Context<AppEnv>, n: number): Promise<void> {
+  if (n <= 0) return;
+  await c.env.DB.prepare("UPDATE org_settings SET credits_balance = credits_balance + ? WHERE edition = ?")
+    .bind(n, c.var.user.edition)
+    .run();
+}
+
 /** POST /api/decks/upload — single deck → R2 → evaluate directly (synchronous). */
 decks.post("/upload", async (c) => {
   const form = await c.req.formData().catch(() => null);
@@ -216,7 +225,14 @@ decks.post("/upload", async (c) => {
     program: (form?.get("program") as string) || undefined,
     cohort: (form?.get("cohort") as string) || undefined,
   };
-  const id = await storeDeck(c, file, meta);
+  let id: string;
+  try {
+    id = await storeDeck(c, file, meta);
+  } catch (err) {
+    // Store failed after the credit was reserved — give it back, then surface.
+    await refundCredits(c, 1);
+    throw err;
+  }
 
   try {
     const result = await evaluateDeck(c.env, id);
@@ -239,10 +255,17 @@ decks.post("/bulk", async (c) => {
   if (!(await reserveCredits(c, files.length))) return c.json({ error: "no_credits" }, 402);
 
   const deckIds: string[] = [];
-  for (const file of files) {
-    const id = await storeDeck(c, file, { name: file.name.replace(/\.pdf$/i, "") });
-    await c.env.EVAL_QUEUE.send({ deckId: id });
-    deckIds.push(id);
+  try {
+    for (const file of files) {
+      const id = await storeDeck(c, file, { name: file.name.replace(/\.pdf$/i, "") });
+      await c.env.EVAL_QUEUE.send({ deckId: id });
+      deckIds.push(id);
+    }
+  } catch (err) {
+    // Refund the credits reserved for files we didn't get to store/enqueue, so a
+    // mid-batch failure only charges for the decks that actually landed.
+    await refundCredits(c, files.length - deckIds.length);
+    throw err;
   }
   return c.json({ count: deckIds.length, deckIds });
 });

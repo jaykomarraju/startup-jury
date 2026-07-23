@@ -24,3 +24,17 @@ export function signalTag(value: number): SignalTag {
   if (value >= 2) return "weak";
   return "absent";
 }
+
+/**
+ * Cohort rating band (Best / Mediocre / Poor) from the org's *configurable*
+ * thresholds (org_settings.threshold_best/threshold_mediocre). Distinct from the
+ * fixed rubric signal bands above — this is the admin-tunable classification the
+ * dashboard cohort rail uses, so editing thresholds actually re-buckets decks.
+ */
+export type CohortRating = "best" | "mediocre" | "poor";
+
+export function cohortRating(score: number, best: number, mediocre: number): CohortRating {
+  if (score >= best) return "best";
+  if (score >= mediocre) return "mediocre";
+  return "poor";
+}

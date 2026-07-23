@@ -225,7 +225,7 @@ config.put("/thresholds", requireRole("admin"), async (c) => {
   if (![best, mediocre].every((n) => Number.isFinite(n) && n >= 0 && n <= 10)) {
     return c.json({ error: "invalid_threshold" }, 400);
   }
-  if (best < mediocre) return c.json({ error: "best_below_mediocre" }, 400);
+  if (best <= mediocre) return c.json({ error: "best_below_mediocre" }, 400);
   await c.env.DB.prepare(
     "UPDATE org_settings SET threshold_best = ?, threshold_mediocre = ? WHERE edition = ?",
   )

@@ -77,6 +77,9 @@ describe("thresholds + AI prompt", () => {
 
     const bad = await req("PUT", "/api/config/thresholds", admin, { best: 4, mediocre: 6 });
     expect(bad.status).toBe(400);
+    // Equal bands would leave the Mediocre band empty/inverted — reject them too.
+    const equal = await req("PUT", "/api/config/thresholds", admin, { best: 6, mediocre: 6 });
+    expect(equal.status).toBe(400);
   });
 
   it("admin persists the AI system prompt (read back by the evaluator)", async () => {
