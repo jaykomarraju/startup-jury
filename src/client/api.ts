@@ -2,6 +2,7 @@
 // the session cookie automatically.
 import type { DeckView } from "./types";
 import type { ExtractionSlide, ParamScoreView } from "./components";
+import type { Plan } from "../shared/plans";
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error(`request failed: ${res.status}`);
@@ -191,4 +192,99 @@ export function listIcVotes(id: string): Promise<IcVotes> {
 /** Cast (or replace) this IC member's vote on a deck in IC review. */
 export function castIcVote(id: string, vote: IcVoteValue, comment?: string) {
   return postJson<{ ok: true; vote: IcVoteValue }>(`/api/decks/${id}/ic-vote`, { vote, comment });
+}
+
+// ── Phase 6 — Config, plans & credits ─────────────────────────────────────────
+
+export interface ConfigParam {
+  id: string;
+  key: string;
+  name: string;
+  weight: number;
+  informational: boolean;
+  roleScope?: string;
+}
+
+/** Safe read subset available to any authed user (dashboard rail + My Params). */
+export interface ConfigSummary {
+  plan: Plan;
+  additionalEnabled: boolean;
+  thresholdBest: number;
+  thresholdMediocre: number;
+  branding: Record<string, unknown>;
+  coreParams: ConfigParam[];
+  additionalParams: ConfigParam[];
+}
+
+export function getConfigSummary(): Promise<ConfigSummary> {
+  return fetch("/api/config/summary").then((r) => json(r));
+}
+
+/** Full admin settings (adds the AI prompt + credits balance). */
+export interface FullConfig extends ConfigSummary {
+  creditsBalance: number;
+  aiSystemPrompt: string;
+}
+
+export function getConfig(): Promise<FullConfig> {
+  return fetch("/api/config").then((r) => json(r));
+}
+
+function putJson<T>(path: string, body: unknown): Promise<T> {
+  return fetch(path, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<T>(r));
+}
+
+export interface WeightUpdate {
+  id: string;
+  weight: number;
+  name?: string;
+}
+
+/** Update core parameter weights — the server re-scores the whole edition. */
+export function updateWeights(params: WeightUpdate[]) {
+  return putJson<{ ok: true; rescored: { decks: number; evaluations: number }; coreParams: ConfigParam[] }>(
+    "/api/config/parameters",
+    { params },
+  );
+}
+
+export function updateThresholds(best: number, mediocre: number) {
+  return putJson<{ ok: true; thresholdBest: number; thresholdMediocre: number }>(
+    "/api/config/thresholds",
+    { best, mediocre },
+  );
+}
+
+export function updateAiPrompt(prompt: string) {
+  return putJson<{ ok: true; aiSystemPrompt: string }>("/api/config/ai-prompt", { prompt });
+}
+
+export function updateBranding(branding: Record<string, unknown>) {
+  return putJson<{ ok: true; branding: Record<string, unknown> }>("/api/config/branding", { branding });
+}
+
+export function updatePlan(plan: Plan) {
+  return putJson<{ ok: true; plan: Plan; additionalEnabled: boolean }>("/api/config/plan", { plan });
+}
+
+export function updateCredits(credits: number) {
+  return postJson<{ ok: true; creditsBalance: number }>("/api/config/credits", { credits });
+}
+
+export function addAdditionalParam(name: string, weight = 0, informational = true) {
+  return postJson<{ ok: true; param: ConfigParam }>("/api/config/additional-params", {
+    name,
+    weight,
+    informational,
+  });
+}
+
+export function deleteAdditionalParam(id: string) {
+  return fetch(`/api/config/additional-params/${id}`, { method: "DELETE" }).then((r) =>
+    json<{ ok: true }>(r),
+  );
 }

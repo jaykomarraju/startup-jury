@@ -11,7 +11,7 @@ import {
   type ExtractionSlide,
 } from "../components";
 import type { DeckView } from "../types";
-import { listDecks, getDeck } from "../api";
+import { listDecks, getDeck, getConfigSummary } from "../api";
 
 interface Kpi {
   label: string;
@@ -82,12 +82,18 @@ export function DashboardPage() {
     verdict?: string;
     weightedTotal?: number;
   } | null>(null);
+  // Cohort thresholds are org config (admin-editable); default to the spec bands
+  // until the summary loads.
+  const [thresholds, setThresholds] = useState({ best: 7.0, mediocre: 5.0 });
 
   useEffect(() => {
     let live = true;
     listDecks()
       .then((r) => live && setDecks(r.decks))
       .catch(() => live && setDecks([]));
+    getConfigSummary()
+      .then((c) => live && setThresholds({ best: c.thresholdBest, mediocre: c.thresholdMediocre }))
+      .catch(() => {});
     return () => {
       live = false;
     };
@@ -217,9 +223,9 @@ export function DashboardPage() {
         <Card>
           <div className="u-label">Cohort rating thresholds</div>
           <ul className="mt-3 flex flex-col gap-1.5 text-sm">
-            <li className="flex justify-between"><span className="text-fg">Best</span><span className="font-mono text-fg-muted">≥ 7.0</span></li>
-            <li className="flex justify-between"><span className="text-fg">Mediocre</span><span className="font-mono text-fg-muted">5.0 – 6.9</span></li>
-            <li className="flex justify-between"><span className="text-fg">Poor</span><span className="font-mono text-fg-muted">&lt; 5.0</span></li>
+            <li className="flex justify-between"><span className="text-fg">Best</span><span className="font-mono text-fg-muted">≥ {thresholds.best.toFixed(1)}</span></li>
+            <li className="flex justify-between"><span className="text-fg">Mediocre</span><span className="font-mono text-fg-muted">{thresholds.mediocre.toFixed(1)} – {(thresholds.best - 0.1).toFixed(1)}</span></li>
+            <li className="flex justify-between"><span className="text-fg">Poor</span><span className="font-mono text-fg-muted">&lt; {thresholds.mediocre.toFixed(1)}</span></li>
           </ul>
         </Card>
       </aside>

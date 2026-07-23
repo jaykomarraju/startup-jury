@@ -12,6 +12,8 @@ import { EvaluatePage } from "./routes/EvaluatePage";
 import { VcEvaluatePage } from "./routes/VcEvaluatePage";
 import { IcVotePage } from "./routes/IcVotePage";
 import { QueryPage } from "./routes/QueryPage";
+import { ConfigPage } from "./routes/ConfigPage";
+import { MyParamsPage } from "./routes/MyParamsPage";
 import { FounderHomePage, FounderQueriesPage, FounderSignupPage } from "./routes/FounderPortal";
 import { landingNavId } from "../shared/nav";
 
@@ -38,6 +40,11 @@ function NavRoute() {
 
   if (navId === "alldecks") return <DashboardPage />;
   if (navId === "upload" || navId === "founder-upload") return <UploadPage />;
+
+  // Config screens (Phase 6) — edition-agnostic, role-gated by nav (coreparams
+  // is admin-only; myparams is visible to all roles, editable by admins).
+  if (navId === "coreparams") return <ConfigPage />;
+  if (navId === "myparams") return <MyParamsPage />;
 
   // Founder portal.
   if (navId === "founder-home") return <FounderHomePage />;
