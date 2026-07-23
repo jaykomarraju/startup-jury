@@ -22,15 +22,13 @@ the full plan at `docs/PLAN.md` + `git log`.
   documented** — the user wants multi-role end-to-end walkthroughs for a stakeholder demo. No gate,
   no password rotation. A custom domain was **deferred** (keep the `workers.dev` URL; addable later
   with no code change). Both are outward-facing choices the user confirmed.
-- **⚠️ One open item — live scoring blocked on Anthropic BILLING, not on code.** The
-  `ANTHROPIC_API_KEY` secret **IS set** on the deployed Worker (verified via `wrangler secret list`),
-  and the key authenticates. But the Anthropic account has **$0 credits**, so every real call returns
-  `400 invalid_request_error: "Your credit balance is too low…"`. The request shape is proven valid
-  (it reaches Anthropic's billing gate, not an auth/validation error). **To finish: add credits at
-  console.anthropic.com → Plans & Billing, then re-run the flag-gated live smoke test** (command in
-  **Phase 3 gotchas**) and a real upload on the demo — **no code/config change needed**. Until then,
-  uploads store to R2 + enqueue but scoring fails gracefully (single-upload → `202 pending`; bulk
-  decks retry 3× then drop, staying at `pending_ai`).
+- **✅ Live AI scoring VERIFIED WORKING (2026-07-23).** Anthropic credits were added and a real
+  single-upload against the live Worker returned `200 evaluated:true` in ~12s — Claude extracted the
+  slides and returned structured per-parameter scores (the earlier `$0 credit balance` 400 is gone).
+  The `ANTHROPIC_API_KEY` secret is set on the deployed Worker; no code/config change was needed. The
+  verification deck was removed and its credit refunded afterward, so the demo seed stays pristine.
+  Graceful degradation still applies if the account is ever out of credits (single-upload → `202
+  pending`; bulk decks retry 3× then drop at `pending_ai`).
 - **Workflow:** commit directly to `main`, no PRs. Green gate (typecheck+lint+tests+build,
   plus `test:e2e` for UI) before each push. Node 22 (`nvm use`).
 
@@ -540,9 +538,10 @@ hardening.
 - **Launch decisions (with the user):** keep the shared seed logins **open + documented** (the user wants
   multi-role end-to-end demos); **defer** a custom domain (keep `workers.dev`). Both recorded under
   **Status**.
-- **Anthropic billing** remains the single functional gap (⚠️ under **Status**) — the user adds credits at
-  console.anthropic.com before the stakeholder demo; then live upload→score→advance works with **no code
-  change**. Verify via the Phase 3 flag-gated live smoke test + one real demo upload.
+- **Anthropic billing — resolved & verified (2026-07-23).** Credits were added; a real single-upload
+  against the live Worker returned `200 evaluated:true` in ~12s with structured slide extraction + 15
+  per-parameter scores (the `$0` 400 is gone). Verification deck deleted + credit refunded afterward, so
+  the demo seed is unchanged. Live upload→score→advance now works with no code change.
 - **Tests:** three tiers stayed green (typecheck + lint + **152 tests / 1 skipped** + build + **27 e2e**);
   `/code-review main` ran and its 5 findings (all smoke-script robustness/coverage) were fixed in `32d9f34`.
 
@@ -561,9 +560,10 @@ hardening.
 All 9 phases (0–8) are shipped, green, and on `main`; the app is live at
 **https://startup-jury.jay-komarraju.workers.dev**. There is **no next phase.** For ongoing maintenance:
 
-- **Enable live AI scoring:** add credits at console.anthropic.com → Plans & Billing (the `ANTHROPIC_API_KEY`
-  secret is already set). No code/deploy change — uploads then score end-to-end. Verify with the Phase 3
-  flag-gated live smoke test and one real demo upload.
+- **Live AI scoring is on** (verified 2026-07-23 — see Status). The `ANTHROPIC_API_KEY` secret is set and
+  the account has credits; uploads score end-to-end. If scoring ever regresses to `202 pending`, check the
+  Anthropic account's credit balance first (uploads degrade gracefully on a billing error — it's not a
+  code fault). Re-verify with the Phase 3 flag-gated live smoke test or one real demo upload.
 - **After any change:** run the green gate (`npm run typecheck && npm run lint && npm test && npm run build`,
   `+ npm run test:e2e` for UI), then `npm run build && npx wrangler deploy`, apply new migrations
   `--remote` first if any, and finish with **`npm run smoke`** against the live URL. Commit direct to `main`
