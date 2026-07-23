@@ -9,15 +9,16 @@ the full plan at `docs/PLAN.md` + `git log`.
 
 - **Complete:** Phase 0 — Scaffold & CI · Phase 1 — Data & auth · Phase 2 — Design system & app shell ·
   Phase 3 — Upload & AI evaluation · Phase 4 — Incubator pipeline · Phase 5 — VC pipeline ·
-  **Phase 6 — Config, plans & credits.**
+  Phase 6 — Config, plans & credits · **Phase 7 — Analytics & polish.**
 - **Live demo:** deployed to Cloudflare — **https://startup-jury.jay-komarraju.workers.dev**
-  (remote D1 + KV + **R2 + Queue**, seeded demo logins, password `demo1234`). Viewer guide: `docs/DEMO.md`.
+  (remote D1 + KV + **R2 + Queue + Cron**, seeded demo logins, password `demo1234`). Viewer guide: `docs/DEMO.md`.
   See **Live demo & deploy** below. Keep it current: **redeploy at each phase boundary.**
-  Phase 6 redeploy done: migration `0007` applied `--remote`, `wrangler deploy` at version
-  `dff7ac43`, smoke-tested (`/api/config` admin 200 / non-admin 403, `/api/config/summary`).
-- **Next:** Phase 7 — Analytics & polish (Cohort summary, Evaluator scores, Score drift, Pipeline
-  funnel; VC Capital Deployment, Portfolio Construction, Scoring Summary, Diligence & Risk, Decision
-  History; tickets/contact; reminder cron; empty/loading/error states). See **Resume here (Phase 7)**.
+  Phase 7 redeploy done: migration `0008` applied `--remote`, `wrangler deploy` at version
+  `44df9d5c` (**Cron Trigger `0 8 * * *` now registered**), smoke-tested (cohort 12 evaluated /
+  funnel top 14 / VC capital ₹92 Cr across 8 companies / VC decisions log / cross-edition authZ 403).
+- **Next:** Phase 8 — Production hardening & final deploy (verify bindings/secrets; optional custom
+  domain; secure/remove demo seed logins; final remote migration run; full live smoke test across both
+  editions). See **Resume here (Phase 8)**.
 - **⚠️ One open item — live scoring blocked on Anthropic BILLING, not on code.** The
   `ANTHROPIC_API_KEY` secret **IS set** on the deployed Worker (verified via `wrangler secret list`),
   and the key authenticates. But the Anthropic account has **$0 credits**, so every real call returns
@@ -41,7 +42,8 @@ the full plan at `docs/PLAN.md` + `git log`.
 - **Secret:** `ANTHROPIC_API_KEY` — **already set** on the deployed Worker (`wrangler secret list`
   shows it). No redeploy needed after a secret change — it applies to the running Worker immediately.
   **Live scoring is blocked only by the Anthropic account's $0 credit balance** (see the ⚠️ item under
-  **Status**) — add credits, no other change required. **Not yet provisioned:** Cron (Phase 7).
+  **Status**) — add credits, no other change required. **Cron is now provisioned** (Phase 7 —
+  `triggers.crons: ["0 8 * * *"]`, the daily evaluator-reminder sweep; confirmed registered at deploy).
 - **Redeploy after each phase** (post-green-gate): `npm run build && npx wrangler deploy`; if
   the phase added migrations, first `npx wrangler d1 migrations apply startup-jury-db --remote`.
   Then smoke-test the live URL (`/api/health`, a login). `wrangler.jsonc` is the source of truth
@@ -439,33 +441,93 @@ npm run test:e2e        # Playwright (auto-starts dev server)
   pill; `cohortRating` (admin-tunable) is the Best/Mediocre/Poor cohort classification. Editing thresholds
   changes the cohort rail, not the signal pills.
 
-## Resume here (Phase 7)
+## Phase 7 — Analytics & polish (shipped)
 
-Build **Analytics & polish** (`docs/PLAN.md` Phase 7). Scope:
-- **Incubator analytics** nav slugs (currently `StubPage`): `cohortsummary`, `evaluatorscores`,
-  `scoredrift`, `funnel`, plus the jury-personal `repdecks`/`repscores`/`repdrift`.
-- **VC analytics** nav slugs: `funnel`, `capital` (Capital Deployment & Pacing — fill
-  `portfolio.capital_deployed`, left NULL in Phase 5), `portfolio` (Construction), `scoring`
-  (Scoring Summary), `diligence` (Diligence & Risk), `decisions` (Decision History).
-- **AI-vs-human Score Drift / Evaluator Scores** — human scores are already stored (`scores.evaluator_kind`
-  `'human'` vs `'ai'`, per-evaluator `evaluations`); aggregate them. **Multi-juror panels** (Phase 4 note:
-  decks carry a single `assigned_to`; extend if panels are needed for drift).
-- **Tickets/Contact** (`support`, `contactadmin`, `contactteam` slugs) — `tickets` + `messages` tables
-  exist from `0001`; add routes + screens.
-- **Reminder cron** — add a Cron Trigger to `wrangler.jsonc` + `src/server/scheduled.ts` selecting
-  evaluators with pending assigned decks and sending (stubbed) reminder emails via `email/outbox.ts`.
-  **Not yet provisioned:** Cron (this is where it lands).
-- **Empty/loading/error states** polish across screens.
+- **Visual gate** first: extracted every report panel (incubator `cohortsummary`/`evaluatorscores`/
+  `scoredrift`/`funnel`; VC `funnel`/`capital`/`portfolio`/`scoring`/`diligence`/`decisions`) from the
+  Superuser/Admin/per-role prototype HTMLs and matched header/KPI-row/chart/table/AI-narrative layout +
+  copy. Charts follow the **dataviz** skill: single-hue magnitude bars, signal hues for score bands, a
+  green/red diverging pair for drift, text always in ink tokens (never the series colour), every chart
+  paired with a table so identity is never colour-alone.
+- **Pure aggregation** (`src/shared/analytics.ts`) — `buildFunnel` (cumulative reached-stage counts +
+  step conversion, per-edition stage map), `cohortSummary` (distribution bands / recommendation buckets /
+  sector mix / ranking), `evaluatorScores` (per-evaluator avg, vs-consensus delta, agreement),
+  `scoreDrift` (AI vs human final, band changes, agreement), `scoringSummary` (AI vs evaluator avg +
+  σ variance + spread + lean), `capitalDeployment`, `portfolioConstruction`, `decisionHistory` +
+  `decisionKind`. No Env/DB import → **unit-tested at the node tier** (`test/unit/analytics.test.ts`).
+- **Analytics API** (`src/server/routes/analytics.ts`, mounted `/api/analytics`, `use("*", requireAuth)`):
+  `/funnel` (edition-aware), `/cohort`, `/evaluators`, `/drift` (incubator); `/scoring`, `/capital`,
+  `/portfolio`, `/diligence`, `/decisions` (VC); `/my/decks`, `/my/scores`, `/my/drift` (jury-personal).
+  The route does the D1 queries and hands rows to the pure module. **AuthZ is nav-derived:** a `guard(slug)`
+  middleware enforces `canAccessNav(edition, role, slug)` — the same predicate that shows the sidebar item
+  (superuser bypass built in; jury-personal reports are `exclusive`, no bypass). So a cross-edition slug
+  (incubator admin → VC `capital`) and founders both 403 automatically, in lock-step with the nav.
+- **Tickets & Contact** (`src/server/routes/support.ts`): `tickets` router — `POST /api/tickets` (any
+  authed; billing-keyword auto-routes `billing_routed`), `GET /api/tickets` + `POST /:id/status` (admin);
+  `messages` router — `POST /api/messages` + `GET /api/messages?scope=admin|team` (**`team` is a shared
+  broadcast; `admin` is a private inbox — admins see all, others see only their own sent**). Screens:
+  `routes/SupportPages.tsx` (`TicketsPage` admin triage, `ContactPage` scope from the nav slug).
+- **Reminder cron** (`src/server/scheduled.ts`): `selectReminders` (pure, one reminder per evaluator) +
+  `runReminders(env)` (selects incubator decks parked at `assigned` with an assignee → stubbed
+  `evaluator_reminder` emails via `email/outbox.ts`). Wired to `scheduled` in `index.ts` and a Cron
+  Trigger `triggers.crons: ["0 8 * * *"]` in `wrangler.jsonc` — **now provisioned on the deployed Worker.**
+- **Client:** `routes/analytics/AnalyticsKit.tsx` (chart/table primitives + `useReport` loading/error/empty
+  hook + `ReportShell`/`ReportBody`), `IncubatorReports.tsx` (Cohort/Evaluator/Drift + shared `FunnelPage`),
+  `VcReports.tsx` (Capital/Portfolio/Scoring/Diligence/Decisions), `JuryReports.tsx` (Rep*). Typed
+  fetchers in `api.ts` (report types re-exported from `shared/analytics`). Wired in `App.tsx` NavRoute
+  (analytics slugs edition-agnostic; nav guard restricts per edition/role).
+- **Data:** migration `0008_seed_analytics.sql` — more incubator decks across stages; human `evaluations`
+  from 4 incubator + 3 VC evaluators (calibration + drift + variance); one AI "top driver" score per
+  incubator deck; a VC funded **portfolio** with `capital_deployed` (₹92 Cr / 8 companies vs ₹300 Cr
+  committed); VC `pipeline_events` for the decision log; sample tickets + messages. No schema change.
+- **Tests (150 unit/worker + 27 e2e; 1 skipped):** `test/unit/analytics.test.ts` (every aggregator),
+  `test/worker/analytics.test.ts` (real aggregates from seed + per-role/cross-edition authZ 403 + 401),
+  `test/worker/support.test.ts` (ticket create/list/close, message send/list/inbox authZ),
+  `test/worker/scheduled.test.ts` (`selectReminders` grouping + `runReminders` picks TaxPilot for
+  `inc_jury` + outbox row), `e2e/analytics.spec.ts` (incubator cohort/funnel render · VC capital/decisions
+  render · jury raises a contact message). Green gate passed (typecheck+lint+150 tests+build+27 e2e).
 
-**Data:** `portfolio.capital_deployed` exists (fill on onboard or via a capital screen); `tickets`,
-`messages`, `pipeline_events` (Decision History) all exist. Add a D1 migration only for new
-tables/columns. **Tests:** analytics aggregation unit tests against seeded AI-vs-human scores; cron
-reminder selects the correct pending decks; e2e dashboard render. Green gate + `/code-review`, commit to
-`main`, **redeploy the demo** (apply new migrations `--remote` first). Then Phase 8 — production hardening.
+### Phase 7 gotchas / notes
+- **`/code-review` could not run this session** (the backgrounded agent hit an Anthropic session limit
+  before producing findings). A manual self-review of the diff was done instead (relocated analytics
+  imports to the top of `api.ts`; made the `team` message scope a shared channel). **Re-run
+  `/code-review main` at the start of Phase 8** and fix anything it surfaces on the Phase 7 diff.
+- **`shared/analytics.ts` is pure and lives under the client tsconfig** (like `scoring.ts`) — client can
+  import its report types directly; the server route imports the same functions. Keep it Env-free so its
+  tests stay at the node unit tier.
+- **`scoringSummary.evaluators`** is the max scorers on any single deck (a proxy headcount — the pure
+  input carries only score arrays, not evaluator ids). Fine for the demo; pass distinct ids if an exact
+  count is ever needed.
+- **Cron selection is incubator-shaped** (`status = 'assigned'`) — VC has no `assigned` stage, so the
+  sweep is a no-op there today. Broaden the query if VC gets an equivalent "awaiting evaluator" stage.
+- **Funnel exit mapping is approximate** — `rejected`/`archived` fold back to the AI-Evaluated/Screened
+  bucket regardless of how far they actually got. Good enough for the demo funnel; revisit if exact
+  exit-stage attribution is needed.
 
-### Carried-over follow-ups (address if convenient in Phase 7)
+## Resume here (Phase 8)
+
+Build **Production hardening & final deploy** (`docs/PLAN.md` Phase 8). The app has been continuously
+deployed since Phase 2, so this is **finalization, not first deploy**. Scope:
+- **Re-run `/code-review main`** on the Phase 7 diff first (it couldn't complete this session — see the
+  Phase 7 gotcha) and fix findings.
+- **Verify all bindings/secrets** are provisioned on the deployed Worker (D1/KV/R2/Queue/**Cron**, and
+  `ANTHROPIC_API_KEY`). Confirm the Cron Trigger fires (check the dashboard / `wrangler` cron logs).
+- **Anthropic billing** — the one open functional gap (see ⚠️ under **Status**): add credits, then re-run
+  the flag-gated live smoke test (Phase 3 gotcha) + a real demo upload so scoring works end-to-end.
+- **Secure the public demo for a real launch** — the demo uses shared seed logins (`demo1234`) and a
+  generous seeded credit balance; gate the public demo or remove/rotate demo accounts (confirm with the
+  user before anything that changes the live demo's accessibility).
+- **Optional custom domain + route** (confirm with the user first — outward-facing).
+- **Final remote migration run + full live smoke test** of upload→evaluate→advance across **both** editions
+  and a spot-check of every analytics screen against live data.
+- Post-deploy smoke script against the live Workers URL.
+
+### Carried-over follow-ups (address if convenient in Phase 8)
 - Single-upload runs Claude **synchronously** in the request (consider enqueue-and-poll);
   bulk upload has no per-file failure isolation / DLQ (Phase 6 added credit-refund compensation, not a DLQ).
 - `complete_signup` is role-gated but not owner-gated (any incubator founder could complete another's signup).
 - Founder uploads couple external intake to the internal credit budget (see Phase 6 gotchas) — revisit
   with real founder tenancy.
+- **Multi-juror drift**: decks still carry a single `assigned_to`; the Phase 7 analytics attribute human
+  scores per evaluator from `evaluations` rows (seeded across multiple evaluators), but the live scoring
+  UI still assigns one juror per deck. Extend assignment if true multi-juror panels are required.
