@@ -110,14 +110,13 @@ export function AssignPage() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end">
-                      <Button
-                        size="sm"
-                        variant={deck.statusId === "assigned" ? "secondary" : "primary"}
-                        disabled={busy !== null}
-                        onClick={() => assign(deck)}
-                      >
-                        {busy === deck.id ? "…" : deck.statusId === "assigned" ? "Reassign" : "Assign"}
-                      </Button>
+                      {deck.statusId === "assigned" ? (
+                        <span className="text-xs text-fg-muted">Assigned</span>
+                      ) : (
+                        <Button size="sm" variant="primary" disabled={busy !== null} onClick={() => assign(deck)}>
+                          {busy === deck.id ? "…" : "Assign"}
+                        </Button>
+                      )}
                     </div>
                   </td>
                 </tr>

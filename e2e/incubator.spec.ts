@@ -24,9 +24,9 @@ test("program associate assigns an AI-gated deck to a jury member", async ({ pag
   await row.locator("select").selectOption({ label: "Rajesh Kumar" });
   await row.getByRole("button", { name: "Assign" }).click();
 
-  // The row flips to the assignee badge + a Reassign button.
-  await expect(row.getByRole("button", { name: "Reassign" })).toBeVisible();
+  // The row flips to the assignee badge + a read-only "Assigned" state.
   await expect(row.getByText("Rajesh Kumar")).toBeVisible();
+  await expect(row.getByText("Assigned", { exact: true })).toBeVisible();
 });
 
 test("jury member scores an assigned deck and shortlists it", async ({ page }) => {

@@ -38,13 +38,21 @@ async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
   return (await c.req.json().catch(() => ({}))) as Partial<T>;
 }
 
-/** Load a deck scoped to the caller's edition (cross-edition → null). */
+/**
+ * Load a deck scoped to the caller's edition. Founders are additionally scoped to
+ * their own submissions (non-owned → null, i.e. 404) so the portal can never read
+ * another startup's deck, queries, or audit trail.
+ */
 async function loadDeck(c: Context<AppEnv>, id: string): Promise<DeckRow | null> {
-  return c.env.DB.prepare(
+  const user = c.var.user;
+  const row = await c.env.DB.prepare(
     "SELECT id, edition, name, status, founder, assigned_to, uploaded_by FROM decks WHERE id = ? AND edition = ?",
   )
-    .bind(id, c.var.user.edition)
+    .bind(id, user.edition)
     .first<DeckRow>();
+  if (!row) return null;
+  if (user.role === "founder" && row.uploaded_by !== user.id) return null;
+  return row;
 }
 
 function eventId(deckId: string): string {
@@ -82,7 +90,9 @@ pipeline.post("/decks/:id/transition", async (c) => {
 /** POST /decks/:id/assign — set the jury assignee and advance to Assigned. */
 pipeline.post(
   "/decks/:id/assign",
-  requireRole("program_associate", "program_manager", "admin"),
+  // assign_jury's pipeline roles are associate/admin/superuser — keep the coarse
+  // gate in lock-step so a program_manager isn't admitted only to hit an inner 403.
+  requireRole("program_associate", "admin"),
   async (c) => {
     const user = c.var.user;
     const deck = await loadDeck(c, c.req.param("id"));
@@ -135,6 +145,11 @@ pipeline.post(
     const user = c.var.user;
     const deck = await loadDeck(c, c.req.param("id"));
     if (!deck) return c.json({ error: "not_found" }, 404);
+    // A jury member may only score the decks assigned to them (staff — PM/admin —
+    // may score any). Keeps AI-vs-jury drift analytics attributable.
+    if (user.role === "jury" && deck.assigned_to !== user.id) {
+      return c.json({ error: "not_assigned" }, 403);
+    }
 
     const body = await readBody<{ scores: ScoreInput[]; remarks: string }>(c);
     const rawScores = Array.isArray(body.scores) ? body.scores : [];
@@ -306,13 +321,13 @@ pipeline.post("/queries/:id/respond", async (c) => {
   const deck = await loadDeck(c, query.deck_id);
   if (!deck) return c.json({ error: "not_found" }, 404);
 
-  // A founder may only answer queries on their own deck; staff (admin/superuser)
-  // may respond on their behalf.
-  const isOwner = deck.uploaded_by === user.id;
-  if (user.role === "founder" && !isOwner) return c.json({ error: "forbidden" }, 403);
-  if (!["founder", "admin", "superuser"].includes(user.role) && !isOwner) {
-    return c.json({ error: "forbidden" }, 403);
-  }
+  // Who may record a founder response mirrors the founder_response transition
+  // roles: the founder (loadDeck already guarantees ownership) or staff relaying
+  // on their behalf (associate/admin/superuser).
+  const canRespond =
+    user.role === "founder" ||
+    ["program_associate", "admin", "superuser"].includes(user.role);
+  if (!canRespond) return c.json({ error: "forbidden" }, 403);
 
   const body = await readBody<{ response: string }>(c);
   const response = typeof body.response === "string" ? body.response.trim() : "";

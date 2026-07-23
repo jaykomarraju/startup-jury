@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, Button, Badge, ScoreChip, SignalTag, EmptyState } from "../components";
+import { useAuth } from "../auth/useAuth";
 import type { DeckView } from "../types";
 import {
   listDecks,
@@ -18,6 +19,7 @@ import { weightedTotal } from "../../shared/scoring";
  * into Jury Evaluation server-side.
  */
 export function EvaluatePage() {
+  const { user } = useAuth();
   const [decks, setDecks] = useState<DeckView[] | null>(null);
   const [params, setParams] = useState<RubricParameter[]>([]);
   const [selected, setSelected] = useState<DeckView | null>(null);
@@ -39,8 +41,14 @@ export function EvaluatePage() {
   }, [load]);
 
   const rows = useMemo(
-    () => (decks ?? []).filter((d) => d.statusId === "assigned" || d.statusId === "jury_evaluation"),
-    [decks],
+    () =>
+      (decks ?? []).filter((d) => {
+        const inStage = d.statusId === "assigned" || d.statusId === "jury_evaluation";
+        // A jury member only scores decks assigned to them (server enforces this
+        // too); staff (PM/admin) may score any in-stage deck.
+        return inStage && (user?.role !== "jury" || d.assignedTo === user.id);
+      }),
+    [decks, user],
   );
 
   function selectDeck(deck: DeckView) {

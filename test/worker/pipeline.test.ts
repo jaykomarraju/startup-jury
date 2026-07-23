@@ -254,7 +254,7 @@ describe("per-stage authorization", () => {
     expect(res.status).toBe(403);
   });
 
-  it("a founder cannot answer another founder's query (403)", async () => {
+  it("a founder cannot answer another founder's query (404 — deck not owned)", async () => {
     const id = "authz_query_owner";
     await seedDeck(id, "incomplete", { uploadedBy: "inc_pa" });
     const pa = await login(PA);
@@ -263,6 +263,34 @@ describe("per-stage authorization", () => {
       await post(`/api/decks/${id}/queries`, pa, { questions: "?" })
     ).json()) as { queryId: string };
     const res = await post(`/api/queries/${queryId}/respond`, founder, { response: "x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("a founder cannot read another founder's queries or events (404)", async () => {
+    const id = "authz_founder_read";
+    await seedDeck(id, "incomplete", { uploadedBy: "inc_pa" });
+    const founder = await login(FOUNDER);
+    expect((await get(`/api/decks/${id}/queries`, founder)).status).toBe(404);
+    expect((await get(`/api/decks/${id}/events`, founder)).status).toBe(404);
+  });
+
+  it("a jury member cannot score a deck assigned to someone else (403)", async () => {
+    const id = "authz_jury_notmine";
+    await seedDeck(id, "assigned");
+    // assigned_to defaults to null (not inc_jury).
+    const jury = await login(JURY);
+    const keys = await paramKeys();
+    const res = await post(`/api/decks/${id}/evaluate`, jury, {
+      scores: keys.map((key) => ({ key, value: 6 })),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("a program_manager is rejected by the assign endpoint gate (403)", async () => {
+    const id = "authz_assign_pm";
+    await seedDeck(id, "ai_evaluated");
+    const pm = await login(PM);
+    const res = await post(`/api/decks/${id}/assign`, pm, { assigneeId: "inc_jury" });
     expect(res.status).toBe(403);
   });
 
