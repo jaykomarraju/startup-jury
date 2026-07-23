@@ -37,3 +37,109 @@ export function uploadSingle(form: FormData): Promise<SingleUploadResult> {
 export function uploadBulk(form: FormData): Promise<{ count: number; deckIds: string[] }> {
   return fetch("/api/decks/bulk", { method: "POST", body: form }).then((r) => json(r));
 }
+
+// ── Phase 4 — workflow actions ────────────────────────────────────────────────
+
+function postJson<T>(path: string, body?: unknown): Promise<T> {
+  return fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  }).then((r) => json<T>(r));
+}
+
+/** Apply a role-gated pipeline action to a deck. */
+export function transitionDeck(id: string, action: string, note?: string) {
+  return postJson<{ ok: true; status: string; label: string }>(
+    `/api/decks/${id}/transition`,
+    { action, note },
+  );
+}
+
+/** Assign a jury member and advance the deck to Assigned. */
+export function assignDeck(id: string, assigneeId: string) {
+  return postJson<{ ok: true; status: string; assignedToName: string }>(
+    `/api/decks/${id}/assign`,
+    { assigneeId },
+  );
+}
+
+export interface HumanScoreInput {
+  key: string;
+  value: number;
+  comment?: string;
+}
+
+/** Submit this jury member's per-parameter scores (mirrors the AI path). */
+export function submitJuryScores(id: string, scores: HumanScoreInput[], remarks?: string) {
+  return postJson<{ ok: true; weightedTotal: number; signal: string; status: string }>(
+    `/api/decks/${id}/evaluate`,
+    { scores, remarks },
+  );
+}
+
+/** Advance a shortlisted/intro deck to Signup and send the (stubbed) invite. */
+export function sendSignup(id: string) {
+  return postJson<{ ok: true; status: string }>(`/api/decks/${id}/send-signup`);
+}
+
+export interface QueryView {
+  id: string;
+  deck_id: string;
+  questions: string;
+  email_status: string;
+  founder_response: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export function listQueries(id: string): Promise<{ queries: QueryView[] }> {
+  return fetch(`/api/decks/${id}/queries`).then((r) => json(r));
+}
+
+export function createQuery(id: string, questions: string) {
+  return postJson<{ ok: true; queryId: string; emailStatus: string }>(
+    `/api/decks/${id}/queries`,
+    { questions },
+  );
+}
+
+export function respondQuery(queryId: string, response: string) {
+  return postJson<{ ok: true; status: string }>(`/api/queries/${queryId}/respond`, { response });
+}
+
+export interface PipelineEvent {
+  id: string;
+  fromStage: string | null;
+  fromLabel: string | null;
+  toStage: string;
+  toLabel: string;
+  action: string;
+  note: string | null;
+  actorName: string;
+  createdAt: string;
+}
+
+export function getDeckEvents(id: string): Promise<{ events: PipelineEvent[] }> {
+  return fetch(`/api/decks/${id}/events`).then((r) => json(r));
+}
+
+export interface JuryMember {
+  id: string;
+  name: string;
+  initials: string;
+}
+
+export function listJury(): Promise<{ jury: JuryMember[] }> {
+  return fetch("/api/jury").then((r) => json(r));
+}
+
+export interface RubricParameter {
+  key: string;
+  name: string;
+  weight: number;
+}
+
+export function listParameters(): Promise<{ parameters: RubricParameter[] }> {
+  return fetch("/api/parameters").then((r) => json(r));
+}

@@ -58,19 +58,19 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role) {
   };
 }
 
-/** GET /api/decks — every deck in the caller's edition (Review-decks table). */
+/** GET /api/decks — decks in the caller's edition (Review-decks table).
+ *  Founders are isolated to their own submissions (portal scope). */
 decks.get("/", async (c) => {
-  const { edition, role } = c.var.user;
-  const rows = (
-    await c.env.DB.prepare(
-      "SELECT d.id, d.name, d.sector, d.stage, d.city, d.founder, d.ai_score, d.signal, d.status, " +
-        "d.assigned_to, u.name AS assigned_to_name " +
-        "FROM decks d LEFT JOIN users u ON u.id = d.assigned_to " +
-        "WHERE d.edition = ? ORDER BY d.created_at DESC",
-    )
-      .bind(edition)
-      .all<DeckRow>()
-  ).results;
+  const { id, edition, role } = c.var.user;
+  const base =
+    "SELECT d.id, d.name, d.sector, d.stage, d.city, d.founder, d.ai_score, d.signal, d.status, " +
+    "d.assigned_to, u.name AS assigned_to_name " +
+    "FROM decks d LEFT JOIN users u ON u.id = d.assigned_to WHERE d.edition = ?";
+  const stmt =
+    role === "founder"
+      ? c.env.DB.prepare(`${base} AND d.uploaded_by = ? ORDER BY d.created_at DESC`).bind(edition, id)
+      : c.env.DB.prepare(`${base} ORDER BY d.created_at DESC`).bind(edition);
+  const rows = (await stmt.all<DeckRow>()).results;
   return c.json({ decks: rows.map((r) => toDeckView(edition, r, role)) });
 });
 
@@ -82,16 +82,18 @@ const VERDICT_LABELS: Record<string, string> = {
 
 /** GET /api/decks/:id — extraction + per-parameter AI scores (report drawer). */
 decks.get("/:id", async (c) => {
-  const { edition, role } = c.var.user;
+  const { id: userId, edition, role } = c.var.user;
   const id = c.req.param("id");
   const row = await c.env.DB.prepare(
     "SELECT d.id, d.name, d.sector, d.stage, d.city, d.founder, d.ai_score, d.signal, d.status, " +
-      "d.assigned_to, u.name AS assigned_to_name " +
+      "d.assigned_to, d.uploaded_by, u.name AS assigned_to_name " +
       "FROM decks d LEFT JOIN users u ON u.id = d.assigned_to WHERE d.id = ? AND d.edition = ?",
   )
     .bind(id, edition)
-    .first<DeckRow>();
+    .first<DeckRow & { uploaded_by: string | null }>();
   if (!row) return c.json({ error: "not_found" }, 404);
+  // Founders may only open their own submissions.
+  if (role === "founder" && row.uploaded_by !== userId) return c.json({ error: "not_found" }, 404);
 
   const extraction = (
     await c.env.DB.prepare(

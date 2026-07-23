@@ -17,4 +17,17 @@ export interface DeckView {
   signal?: DeckSignal;
   /** Pipeline status label (e.g. "AI Evaluated", "Shortlisted"). */
   status?: string;
+  /** Raw pipeline stage id (e.g. "shortlisted") for filtering/gating. */
+  statusId?: string;
+  assignedTo?: string;
+  assignedToName?: string;
+  /** Transitions the current user may perform from this deck's stage. */
+  actions?: DeckAction[];
+}
+
+/** A role-permitted transition surfaced as an action button. */
+export interface DeckAction {
+  action: string;
+  label: string;
+  to: string;
 }

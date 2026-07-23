@@ -6,6 +6,11 @@ import { LoginPage } from "./routes/LoginPage";
 import { DashboardPage } from "./routes/DashboardPage";
 import { UploadPage } from "./routes/UploadPage";
 import { StubPage } from "./routes/StubPage";
+import { StagePage, INCUBATOR_STAGE_CONFIG } from "./routes/StagePage";
+import { AssignPage } from "./routes/AssignPage";
+import { EvaluatePage } from "./routes/EvaluatePage";
+import { QueryPage } from "./routes/QueryPage";
+import { FounderHomePage, FounderQueriesPage, FounderSignupPage } from "./routes/FounderPortal";
 import { landingNavId } from "../shared/nav";
 
 /** /login — redirect to the app if already authenticated. */
@@ -23,11 +28,30 @@ function LandingRedirect() {
   return <Navigate to={`/app/${landingNavId(user.edition, user.role)}`} replace />;
 }
 
-/** Dashboard for "alldecks", Upload for the upload slugs; others are stubs. */
+/** Maps a nav slug to its live screen; unbuilt slugs fall through to StubPage. */
 function NavRoute() {
   const { navId } = useParams();
+  const { user } = useAuth();
+  if (!navId || !user) return <StubPage />;
+
   if (navId === "alldecks") return <DashboardPage />;
   if (navId === "upload" || navId === "founder-upload") return <UploadPage />;
+
+  // Founder portal.
+  if (navId === "founder-home") return <FounderHomePage />;
+  if (navId === "founder-queries") return <FounderQueriesPage />;
+  if (navId === "founder-signup") return <FounderSignupPage />;
+
+  // Incubator staff workflow screens (Phase 4). VC keeps stubs until Phase 5.
+  if (user.edition === "incubator") {
+    if (navId === "assign") return <AssignPage />;
+    // Staff "Evaluate" and a jury member's "Assigned" both open the scoring form.
+    if (navId === "evaluate" || navId === "jassigned") return <EvaluatePage />;
+    if (navId === "query") return <QueryPage />;
+    const stage = INCUBATOR_STAGE_CONFIG[navId];
+    if (stage) return <StagePage config={stage} />;
+  }
+
   return <StubPage />;
 }
 
