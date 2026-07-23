@@ -3,6 +3,7 @@ import type { AppEnv, Env, EvalMessage } from "./types";
 import auth from "./routes/auth";
 import decks from "./routes/decks";
 import pipeline from "./routes/pipeline";
+import config from "./routes/config";
 import { handleQueue } from "./queue";
 
 export type { Env } from "./types";
@@ -18,6 +19,7 @@ app.get("/api/health", (c) =>
 );
 
 app.route("/api/auth", auth);
+app.route("/api/config", config);
 app.route("/api/decks", decks);
 // Workflow endpoints (transitions, assign, jury scoring, queries, signup,
 // audit, lookups). Mounted at /api so it can own /queries, /jury, /parameters

@@ -183,12 +183,30 @@ function isPdf(file: unknown): file is File {
   );
 }
 
+/**
+ * Atomically reserve `n` upload credits from the caller's edition. The
+ * conditional UPDATE only succeeds when the balance covers `n`, so concurrent
+ * uploads can't drive it negative. Returns false when there aren't enough
+ * credits (→ 402, before any R2 write). Admins top the balance up in Config.
+ */
+async function reserveCredits(c: Context<AppEnv>, n: number): Promise<boolean> {
+  const res = await c.env.DB.prepare(
+    "UPDATE org_settings SET credits_balance = credits_balance - ? WHERE edition = ? AND credits_balance >= ?",
+  )
+    .bind(n, c.var.user.edition, n)
+    .run();
+  return res.meta.changes === 1;
+}
+
 /** POST /api/decks/upload — single deck → R2 → evaluate directly (synchronous). */
 decks.post("/upload", async (c) => {
   const form = await c.req.formData().catch(() => null);
   const file = form?.get("file");
   if (!isPdf(file)) return c.json({ error: "pdf_required" }, 400);
   if (file.size > MAX_PDF_BYTES) return c.json({ error: "pdf_too_large" }, 413);
+
+  // One upload = one credit; reserve before storing so an empty balance blocks.
+  if (!(await reserveCredits(c, 1))) return c.json({ error: "no_credits" }, 402);
 
   const meta: DeckMeta = {
     name: (form?.get("name") as string) || undefined,
@@ -215,6 +233,10 @@ decks.post("/bulk", async (c) => {
   const files = (form?.getAll("files") ?? []).filter(isPdf);
   if (files.length === 0) return c.json({ error: "pdf_required" }, 400);
   if (files.some((f) => f.size > MAX_PDF_BYTES)) return c.json({ error: "pdf_too_large" }, 413);
+
+  // Reserve one credit per file up front — all-or-nothing, so a partial batch
+  // never uploads on an insufficient balance.
+  if (!(await reserveCredits(c, files.length))) return c.json({ error: "no_credits" }, 402);
 
   const deckIds: string[] = [];
   for (const file of files) {

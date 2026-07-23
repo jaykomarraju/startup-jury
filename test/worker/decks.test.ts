@@ -218,6 +218,56 @@ describe("upload → R2 → (queue/direct)", () => {
   });
 });
 
+describe("upload consumes credits", () => {
+  function pdfForm(field: string, names: string[]): FormData {
+    const form = new FormData();
+    for (const name of names) {
+      form.append(field, new File([new Uint8Array([37, 80, 68, 70])], name, { type: "application/pdf" }));
+    }
+    return form;
+  }
+  async function setCredits(n: number) {
+    await env.DB.prepare("UPDATE org_settings SET credits_balance = ? WHERE edition = 'incubator'").bind(n).run();
+  }
+  async function credits(): Promise<number> {
+    const row = await env.DB.prepare("SELECT credits_balance FROM org_settings WHERE edition = 'incubator'").first<{
+      credits_balance: number;
+    }>();
+    return row!.credits_balance;
+  }
+
+  it("single upload decrements one credit", async () => {
+    const cookie = await login("sunita.rao@demo.startupjury.ai");
+    await setCredits(5);
+    const res = await SELF.fetch(`${BASE}/api/decks/upload`, { method: "POST", headers: { Cookie: cookie }, body: pdfForm("file", ["c.pdf"]) });
+    expect(res.status).toBe(202); // stored + deferred (no API key)
+    expect(await credits()).toBe(4);
+  });
+
+  it("blocks a single upload at a zero balance (and stores nothing)", async () => {
+    const cookie = await login("sunita.rao@demo.startupjury.ai");
+    await setCredits(0);
+    const before = await env.DB.prepare("SELECT COUNT(*) AS n FROM decks WHERE edition = 'incubator'").first<{ n: number }>();
+    const res = await SELF.fetch(`${BASE}/api/decks/upload`, { method: "POST", headers: { Cookie: cookie }, body: pdfForm("file", ["z.pdf"]) });
+    expect(res.status).toBe(402);
+    const after = await env.DB.prepare("SELECT COUNT(*) AS n FROM decks WHERE edition = 'incubator'").first<{ n: number }>();
+    expect(after!.n).toBe(before!.n);
+  });
+
+  it("bulk upload is all-or-nothing against the balance", async () => {
+    const cookie = await login("sunita.rao@demo.startupjury.ai");
+    await setCredits(2);
+    // 3 files but only 2 credits → rejected, balance untouched.
+    const short = await SELF.fetch(`${BASE}/api/decks/bulk`, { method: "POST", headers: { Cookie: cookie }, body: pdfForm("files", ["a.pdf", "b.pdf", "c.pdf"]) });
+    expect(short.status).toBe(402);
+    expect(await credits()).toBe(2);
+    // 2 files, 2 credits → succeeds, balance drained.
+    const ok = await SELF.fetch(`${BASE}/api/decks/bulk`, { method: "POST", headers: { Cookie: cookie }, body: pdfForm("files", ["a.pdf", "b.pdf"]) });
+    expect(ok.status).toBe(200);
+    expect(await credits()).toBe(0);
+  });
+});
+
 describe("handleQueue", () => {
   function batch(deckIds: string[]): { batch: MessageBatch<EvalMessage>; acked: string[]; retried: string[] } {
     const acked: string[] = [];
