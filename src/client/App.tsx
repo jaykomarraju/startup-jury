@@ -6,9 +6,11 @@ import { LoginPage } from "./routes/LoginPage";
 import { DashboardPage } from "./routes/DashboardPage";
 import { UploadPage } from "./routes/UploadPage";
 import { StubPage } from "./routes/StubPage";
-import { StagePage, INCUBATOR_STAGE_CONFIG } from "./routes/StagePage";
+import { StagePage, INCUBATOR_STAGE_CONFIG, VC_STAGE_CONFIG } from "./routes/StagePage";
 import { AssignPage } from "./routes/AssignPage";
 import { EvaluatePage } from "./routes/EvaluatePage";
+import { VcEvaluatePage } from "./routes/VcEvaluatePage";
+import { IcVotePage } from "./routes/IcVotePage";
 import { QueryPage } from "./routes/QueryPage";
 import { FounderHomePage, FounderQueriesPage, FounderSignupPage } from "./routes/FounderPortal";
 import { landingNavId } from "../shared/nav";
@@ -42,13 +44,22 @@ function NavRoute() {
   if (navId === "founder-queries") return <FounderQueriesPage />;
   if (navId === "founder-signup") return <FounderSignupPage />;
 
-  // Incubator staff workflow screens (Phase 4). VC keeps stubs until Phase 5.
+  // Incubator staff workflow screens (Phase 4).
   if (user.edition === "incubator") {
     if (navId === "assign") return <AssignPage />;
     // Staff "Evaluate" and a jury member's "Assigned" both open the scoring form.
     if (navId === "evaluate" || navId === "jassigned") return <EvaluatePage />;
     if (navId === "query") return <QueryPage />;
     const stage = INCUBATOR_STAGE_CONFIG[navId];
+    if (stage) return <StagePage config={stage} />;
+  }
+
+  // VC pipeline screens (Phase 5).
+  if (user.edition === "vc") {
+    // "Evaluate" and "Submit" both open the rubric scoring + advance flow.
+    if (navId === "evaluate" || navId === "assign") return <VcEvaluatePage />;
+    if (navId === "icpipeline") return <IcVotePage />;
+    const stage = VC_STAGE_CONFIG[navId];
     if (stage) return <StagePage config={stage} />;
   }
 

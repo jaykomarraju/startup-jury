@@ -194,6 +194,87 @@ export function StagePage({ config }: { config: StageConfig }) {
   );
 }
 
+const VC_SECTOR = { label: "Sector", field: "sector" as const };
+
+/** Config for each VC stage nav slug rendered by StagePage. IC voting (`icpipeline`)
+ *  and scoring (`evaluate`) are dedicated screens, not config-driven. */
+export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
+  jurypipeline: {
+    title: "Assoc. Pipeline",
+    subtitle: "Track every deck through analyst + associate scoring — shortlist to partner or archive.",
+    statuses: ["analyst_scoring", "associate_review"],
+    secondary: VC_SECTOR,
+    emptyTitle: "No decks in associate review",
+    emptyDescription: "Decks land here after AI evaluation for core + additional scoring.",
+  },
+  partnerpipeline: {
+    title: "Partner Pipeline",
+    subtitle: "Shortlisted deals under partner review — advance to a partner call or archive.",
+    statuses: ["partner_review"],
+    secondary: VC_SECTOR,
+    emptyTitle: "No decks in partner review",
+    emptyDescription: "Associate-shortlisted deals appear here for the partner.",
+  },
+  partnercall: {
+    title: "Partner call",
+    subtitle: "Partner conviction call with the founder · sponsor the deal to IC, pass, or hold another meeting.",
+    statuses: ["partner_call"],
+    secondary: VC_SECTOR,
+    emptyTitle: "No partner calls scheduled",
+    emptyDescription: "Deals advanced by the partner appear here for the conviction call.",
+  },
+  investmentdd: {
+    title: "Investment DD",
+    subtitle: "Pre-IC investment diligence · Managing Partner approval before the deal reaches IC.",
+    statuses: ["investment_dd"],
+    secondary: VC_SECTOR,
+    emptyTitle: "Nothing in diligence",
+    emptyDescription: "Sponsored deals appear here for pre-IC diligence and MP approval.",
+  },
+  alignmentcall: {
+    title: "Alignment call",
+    subtitle: "Post-IC term alignment with the founder · confirm valuation and key terms, then issue the term sheet.",
+    statuses: ["alignment_call"],
+    secondary: VC_SECTOR,
+    emptyTitle: "No alignment calls",
+    emptyDescription: "Deals the Managing Partner approves for investment appear here.",
+  },
+  incuration: {
+    title: "Term sheet Pipeline",
+    subtitle: "Deals with a term sheet in motion · track drafting, issue and signing, then start legal DD.",
+    statuses: ["term_sheet"],
+    secondary: VC_SECTOR,
+    emptyTitle: "No term sheets in motion",
+    emptyDescription: "Deals with an issued term sheet appear here.",
+  },
+  legaldd: {
+    title: "Legal DD",
+    subtitle: "Post-signing confirmatory & legal diligence · clear all items before the round closes.",
+    statuses: ["legal_dd"],
+    secondary: VC_SECTOR,
+    emptyTitle: "No deals in legal DD",
+    emptyDescription: "Term-sheet deals move here for legal diligence.",
+  },
+  curation: {
+    title: "Onboard ready",
+    subtitle: "Funded companies joining the portfolio — cleared legal DD and ready to onboard.",
+    statuses: ["onboard_ready"],
+    secondary: VC_SECTOR,
+    readOnly: true,
+    emptyTitle: "No companies onboarded yet",
+    emptyDescription: "Deals that clear legal DD land here as portfolio companies.",
+  },
+  archive: {
+    title: "Archive",
+    subtitle: "Deals removed from the active pipeline — passed or not shortlisted.",
+    statuses: ["archived"],
+    secondary: VC_SECTOR,
+    readOnly: true,
+    emptyTitle: "Archive is empty",
+    emptyDescription: "Passed and not-shortlisted deals are kept here for the record.",
+  },
+};
+
 /** Config for each incubator stage nav slug rendered by StagePage. */
 export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
   jurypipeline: {

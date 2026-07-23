@@ -143,3 +143,41 @@ export interface RubricParameter {
 export function listParameters(): Promise<{ parameters: RubricParameter[] }> {
   return fetch("/api/parameters").then((r) => json(r));
 }
+
+// ── Phase 5 — VC pipeline ─────────────────────────────────────────────────────
+
+export type IcVoteValue = "invest" | "hold" | "need_more_info" | "pass";
+
+/** Human-readable labels for the four IC vote options. */
+export const IC_VOTE_LABELS: Record<IcVoteValue, string> = {
+  invest: "Invest",
+  hold: "Hold",
+  need_more_info: "Need more info",
+  pass: "Pass",
+};
+
+export interface IcVote {
+  id: string;
+  memberId: string;
+  memberName: string;
+  vote: IcVoteValue;
+  comment: string | null;
+  createdAt: string;
+}
+
+export interface IcVotes {
+  votes: IcVote[];
+  tally: Record<IcVoteValue, number>;
+  total: number;
+  recommendation: IcVoteValue | null;
+  myVote: IcVoteValue | null;
+}
+
+export function listIcVotes(id: string): Promise<IcVotes> {
+  return fetch(`/api/decks/${id}/ic-votes`).then((r) => json(r));
+}
+
+/** Cast (or replace) this IC member's vote on a deck in IC review. */
+export function castIcVote(id: string, vote: IcVoteValue, comment?: string) {
+  return postJson<{ ok: true; vote: IcVoteValue }>(`/api/decks/${id}/ic-vote`, { vote, comment });
+}
