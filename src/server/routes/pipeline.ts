@@ -59,6 +59,87 @@ function eventId(deckId: string): string {
   return `${deckId}_evt_${crypto.randomUUID()}`;
 }
 
+interface TransitionBody {
+  action: string;
+  note: string;
+  /** Term-sheet details captured when issuing a term sheet (VC). */
+  valuation?: string;
+  ownership?: string;
+  /** Capital deployed captured on onboard (VC portfolio). */
+  capitalDeployed?: string;
+}
+
+/**
+ * Domain-table writes that accompany a VC pipeline transition, keyed by action.
+ * The prototype's per-stage dropdowns just advance the deck; we record the
+ * corresponding call / investment-DD / term-sheet / legal-DD / portfolio row as a
+ * side effect so the audit and downstream analytics (Phase 7) have real data.
+ */
+function transitionSideEffects(
+  env: AppEnv["Bindings"],
+  deckId: string,
+  userId: string,
+  action: string,
+  body: Partial<TransitionBody>,
+  ts: string,
+): D1PreparedStatement[] {
+  const db = env.DB;
+  const rid = (p: string) => `${p}_${crypto.randomUUID()}`;
+  switch (action) {
+    // Partner call outcomes log a partner-kind call.
+    case "sponsor_to_ic":
+    case "another_meeting":
+    case "pass_at_call":
+      return [
+        db
+          .prepare(
+            "INSERT INTO calls (id, deck_id, kind, remarks, created_by, created_at) VALUES (?, ?, 'partner', ?, ?, ?)",
+          )
+          .bind(rid("call"), deckId, body.note ?? null, userId, ts),
+      ];
+    // MP approves the deal for IC → an approved investment-DD record.
+    case "mp_approve_dd":
+      return [
+        db
+          .prepare(
+            "INSERT INTO investment_dd (id, deck_id, notes, mp_approved, created_at) VALUES (?, ?, ?, 1, ?)",
+          )
+          .bind(rid("idd"), deckId, body.note ?? null, ts),
+      ];
+    // Issuing the term sheet closes the alignment call and records the term sheet.
+    case "issue_term_sheet":
+      return [
+        db
+          .prepare(
+            "INSERT INTO calls (id, deck_id, kind, remarks, created_by, created_at) VALUES (?, ?, 'alignment', ?, ?, ?)",
+          )
+          .bind(rid("call"), deckId, body.note ?? null, userId, ts),
+        db
+          .prepare(
+            "INSERT INTO term_sheets (id, deck_id, valuation, ownership, notes, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+          )
+          .bind(rid("ts"), deckId, body.valuation ?? null, body.ownership ?? null, body.note ?? null, ts),
+      ];
+    case "start_legal_dd":
+      return [
+        db
+          .prepare("INSERT INTO legal_dd (id, deck_id, notes, created_at) VALUES (?, ?, ?, ?)")
+          .bind(rid("ldd"), deckId, body.note ?? null, ts),
+      ];
+    // Onboard → a portfolio position (capital deployed).
+    case "complete_legal_dd":
+      return [
+        db
+          .prepare(
+            "INSERT INTO portfolio (id, deck_id, capital_deployed, onboarded_at) VALUES (?, ?, ?, ?)",
+          )
+          .bind(rid("pf"), deckId, body.capitalDeployed ?? null, ts),
+      ];
+    default:
+      return [];
+  }
+}
+
 // ── Stage transitions ─────────────────────────────────────────────────────────
 
 /** POST /decks/:id/transition — apply a role-gated pipeline action. */
@@ -67,7 +148,7 @@ pipeline.post("/decks/:id/transition", async (c) => {
   const deck = await loadDeck(c, c.req.param("id"));
   if (!deck) return c.json({ error: "not_found" }, 404);
 
-  const body = await readBody<{ action: string; note: string }>(c);
+  const body = await readBody<TransitionBody>(c);
   const action = typeof body.action === "string" ? body.action : "";
   const result = performAction(deck.edition, deck.status, action, user.role);
   if (!result.ok) {
@@ -81,6 +162,7 @@ pipeline.post("/decks/:id/transition", async (c) => {
     c.env.DB.prepare(
       "INSERT INTO pipeline_events (id, deck_id, actor_id, from_stage, to_stage, action, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     ).bind(eventId(deck.id), deck.id, user.id, deck.status, to, action, body.note ?? null, ts),
+    ...transitionSideEffects(c.env, deck.id, user.id, action, body, ts),
   ]);
   return c.json({ ok: true, status: to, label: getStage(deck.edition, to)?.label ?? to });
 });
@@ -137,10 +219,11 @@ interface ScoreInput {
   comment?: string | null;
 }
 
-/** POST /decks/:id/evaluate — record this jury member's per-parameter scores. */
+/** POST /decks/:id/evaluate — record this evaluator's per-parameter scores.
+ *  Incubator: jury/staff. VC: analyst/associate/partner core+additional scoring. */
 pipeline.post(
   "/decks/:id/evaluate",
-  requireRole("jury", "program_manager", "admin"),
+  requireRole("jury", "program_manager", "admin", "analyst", "associate", "partner"),
   async (c) => {
     const user = c.var.user;
     const deck = await loadDeck(c, c.req.param("id"));
@@ -403,6 +486,94 @@ pipeline.post(
     return c.json({ ok: true, status: to });
   },
 );
+
+// ── VC: Investment Committee voting ───────────────────────────────────────────
+
+const IC_VOTES = ["invest", "hold", "need_more_info", "pass"] as const;
+type IcVoteValue = (typeof IC_VOTES)[number];
+
+interface IcVoteRow {
+  id: string;
+  member_id: string;
+  member_name: string | null;
+  vote: IcVoteValue;
+  comment: string | null;
+  created_at: string;
+}
+
+/** Empty per-option tally. */
+function emptyTally(): Record<IcVoteValue, number> {
+  return { invest: 0, hold: 0, need_more_info: 0, pass: 0 };
+}
+
+/**
+ * POST /decks/:id/ic-vote — record (or replace) this IC member's vote on a deck
+ * in IC review. One vote per member per deck; re-voting overwrites the prior one.
+ */
+pipeline.post(
+  "/decks/:id/ic-vote",
+  requireRole("ic_member", "partner", "admin"),
+  async (c) => {
+    const user = c.var.user;
+    const deck = await loadDeck(c, c.req.param("id"));
+    if (!deck) return c.json({ error: "not_found" }, 404);
+    if (deck.edition !== "vc") return c.json({ error: "not_vc" }, 400);
+    if (deck.status !== "ic_review") return c.json({ error: "not_in_ic_review" }, 409);
+
+    const body = await readBody<{ vote: string; comment: string }>(c);
+    const vote = body.vote as IcVoteValue;
+    if (!IC_VOTES.includes(vote)) return c.json({ error: "invalid_vote" }, 400);
+
+    const ts = new Date().toISOString();
+    await c.env.DB.batch([
+      c.env.DB.prepare("DELETE FROM ic_votes WHERE deck_id = ? AND member_id = ?").bind(deck.id, user.id),
+      c.env.DB.prepare(
+        "INSERT INTO ic_votes (id, deck_id, member_id, vote, comment, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).bind(`icv_${crypto.randomUUID()}`, deck.id, user.id, vote, body.comment ?? null, ts),
+    ]);
+    return c.json({ ok: true, vote });
+  },
+);
+
+/** GET /decks/:id/ic-votes — every IC member's vote + the aggregated tally. */
+pipeline.get("/decks/:id/ic-votes", async (c) => {
+  const deck = await loadDeck(c, c.req.param("id"));
+  if (!deck) return c.json({ error: "not_found" }, 404);
+  const rows = (
+    await c.env.DB.prepare(
+      "SELECT v.id, v.member_id, v.vote, v.comment, v.created_at, u.name AS member_name " +
+        "FROM ic_votes v LEFT JOIN users u ON u.id = v.member_id WHERE v.deck_id = ? ORDER BY v.created_at",
+    )
+      .bind(deck.id)
+      .all<IcVoteRow>()
+  ).results;
+
+  const tally = emptyTally();
+  for (const r of rows) tally[r.vote] += 1;
+  const total = rows.length;
+  // Recommendation = the plurality option (invest breaks ties upward); null when
+  // no votes are in yet.
+  let recommendation: IcVoteValue | null = null;
+  if (total > 0) {
+    recommendation = IC_VOTES.reduce((best, v) => (tally[v] > tally[best] ? v : best), IC_VOTES[0]);
+  }
+  const myVote = rows.find((r) => r.member_id === c.var.user.id)?.vote ?? null;
+
+  return c.json({
+    votes: rows.map((r) => ({
+      id: r.id,
+      memberId: r.member_id,
+      memberName: r.member_name ?? "IC member",
+      vote: r.vote,
+      comment: r.comment,
+      createdAt: r.created_at,
+    })),
+    tally,
+    total,
+    recommendation,
+    myVote,
+  });
+});
 
 // ── Audit + lookups ───────────────────────────────────────────────────────────
 
