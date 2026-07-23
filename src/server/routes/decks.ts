@@ -5,8 +5,8 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
-import type { Edition } from "../../shared/roles";
-import { getStage } from "../../pipeline";
+import type { Edition, Role } from "../../shared/roles";
+import { getStage, allowedTransitions } from "../../pipeline";
 import { requireAuth } from "../auth/middleware";
 import { evaluateDeck } from "../ai/evaluate";
 
@@ -23,13 +23,24 @@ interface DeckRow {
   ai_score: number | null;
   signal: string | null;
   status: string;
+  assigned_to?: string | null;
+  assigned_to_name?: string | null;
 }
 
 function statusLabel(edition: Edition, status: string): string {
   return getStage(edition, status)?.label ?? status;
 }
 
-function toDeckView(edition: Edition, row: DeckRow) {
+/** Transitions the current role may perform from a deck's stage (action buttons). */
+function actionsFor(edition: Edition, status: string, role: Role) {
+  return allowedTransitions(edition, status, role).map((t) => ({
+    action: t.action,
+    label: t.label,
+    to: t.to,
+  }));
+}
+
+function toDeckView(edition: Edition, row: DeckRow, role: Role) {
   return {
     id: row.id,
     name: row.name,
@@ -40,20 +51,27 @@ function toDeckView(edition: Edition, row: DeckRow) {
     aiScore: row.ai_score ?? undefined,
     signal: (row.signal as string | null) ?? undefined,
     status: statusLabel(edition, row.status),
+    statusId: row.status,
+    assignedTo: row.assigned_to ?? undefined,
+    assignedToName: row.assigned_to_name ?? undefined,
+    actions: actionsFor(edition, row.status, role),
   };
 }
 
 /** GET /api/decks — every deck in the caller's edition (Review-decks table). */
 decks.get("/", async (c) => {
-  const edition = c.var.user.edition;
+  const { edition, role } = c.var.user;
   const rows = (
     await c.env.DB.prepare(
-      "SELECT id, name, sector, stage, city, founder, ai_score, signal, status FROM decks WHERE edition = ? ORDER BY created_at DESC",
+      "SELECT d.id, d.name, d.sector, d.stage, d.city, d.founder, d.ai_score, d.signal, d.status, " +
+        "d.assigned_to, u.name AS assigned_to_name " +
+        "FROM decks d LEFT JOIN users u ON u.id = d.assigned_to " +
+        "WHERE d.edition = ? ORDER BY d.created_at DESC",
     )
       .bind(edition)
       .all<DeckRow>()
   ).results;
-  return c.json({ decks: rows.map((r) => toDeckView(edition, r)) });
+  return c.json({ decks: rows.map((r) => toDeckView(edition, r, role)) });
 });
 
 const VERDICT_LABELS: Record<string, string> = {
@@ -64,10 +82,12 @@ const VERDICT_LABELS: Record<string, string> = {
 
 /** GET /api/decks/:id — extraction + per-parameter AI scores (report drawer). */
 decks.get("/:id", async (c) => {
-  const edition = c.var.user.edition;
+  const { edition, role } = c.var.user;
   const id = c.req.param("id");
   const row = await c.env.DB.prepare(
-    "SELECT id, name, sector, stage, city, founder, ai_score, signal, status FROM decks WHERE id = ? AND edition = ?",
+    "SELECT d.id, d.name, d.sector, d.stage, d.city, d.founder, d.ai_score, d.signal, d.status, " +
+      "d.assigned_to, u.name AS assigned_to_name " +
+      "FROM decks d LEFT JOIN users u ON u.id = d.assigned_to WHERE d.id = ? AND d.edition = ?",
   )
     .bind(id, edition)
     .first<DeckRow>();
@@ -103,7 +123,7 @@ decks.get("/:id", async (c) => {
     .first<{ weighted_total: number | null; verdict: string | null }>();
 
   return c.json({
-    deck: toDeckView(edition, row),
+    deck: toDeckView(edition, row, role),
     extraction,
     scores,
     weightedTotal: evaluation?.weighted_total ?? row.ai_score ?? undefined,

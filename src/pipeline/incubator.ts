@@ -29,6 +29,15 @@ export const incubatorPipeline: PipelineConfig = {
       label: "Submit for AI evaluation",
       roles: ["founder", "program_associate", "program_manager", "admin", "superuser"],
     },
+    // A human reviewer can pull a pending deck into manual review (the AI path
+    // otherwise auto-lands decks at ai_evaluated/incomplete via evaluateDeck).
+    {
+      from: "pending_ai",
+      to: "manual_review",
+      action: "send_to_review",
+      label: "Send to manual review",
+      roles: ["program_manager", "program_associate", "admin", "superuser"],
+    },
     // Manual review outcome: proceed to AI gate, or flag as incomplete.
     {
       from: "manual_review",
@@ -42,7 +51,7 @@ export const incubatorPipeline: PipelineConfig = {
       to: "incomplete",
       action: "flag_incomplete",
       label: "Flag incomplete",
-      roles: ["program_manager", "admin", "superuser"],
+      roles: ["program_manager", "program_associate", "admin", "superuser"],
     },
     // Founder answers a clarification query → deck re-enters intake.
     {

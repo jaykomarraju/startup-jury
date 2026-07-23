@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { AppEnv, Env, EvalMessage } from "./types";
 import auth from "./routes/auth";
 import decks from "./routes/decks";
+import pipeline from "./routes/pipeline";
 import { handleQueue } from "./queue";
 
 export type { Env } from "./types";
@@ -18,6 +19,10 @@ app.get("/api/health", (c) =>
 
 app.route("/api/auth", auth);
 app.route("/api/decks", decks);
+// Workflow endpoints (transitions, assign, jury scoring, queries, signup,
+// audit, lookups). Mounted at /api so it can own /queries, /jury, /parameters
+// alongside its /decks/:id/* actions.
+app.route("/api", pipeline);
 
 // Unknown API routes return JSON 404 (never the SPA) so client `response.json()`
 // fails loudly instead of silently parsing index.html.
