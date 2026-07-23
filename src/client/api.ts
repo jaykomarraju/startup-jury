@@ -288,3 +288,92 @@ export function deleteAdditionalParam(id: string) {
     json<{ ok: true }>(r),
   );
 }
+
+// ── Phase 7 — Analytics ───────────────────────────────────────────────────────
+
+import type {
+  FunnelReport,
+  CohortSummary,
+  EvaluatorReport,
+  DriftReport,
+  ScoringSummary,
+  CapitalReport,
+  PortfolioReport,
+  DecisionReport,
+} from "../shared/analytics";
+
+export type {
+  FunnelReport,
+  CohortSummary,
+  EvaluatorReport,
+  DriftReport,
+  ScoringSummary,
+  CapitalReport,
+  PortfolioReport,
+  DecisionReport,
+} from "../shared/analytics";
+
+export const getFunnel = () => fetch("/api/analytics/funnel").then((r) => json<FunnelReport>(r));
+export const getCohortSummary = () => fetch("/api/analytics/cohort").then((r) => json<CohortSummary>(r));
+export const getEvaluatorScores = () => fetch("/api/analytics/evaluators").then((r) => json<EvaluatorReport>(r));
+export const getScoreDrift = () => fetch("/api/analytics/drift").then((r) => json<DriftReport>(r));
+export const getScoringSummary = () => fetch("/api/analytics/scoring").then((r) => json<ScoringSummary>(r));
+export const getCapital = () => fetch("/api/analytics/capital").then((r) => json<CapitalReport>(r));
+export const getPortfolio = () => fetch("/api/analytics/portfolio").then((r) => json<PortfolioReport>(r));
+export const getDecisions = () => fetch("/api/analytics/decisions").then((r) => json<DecisionReport>(r));
+
+export interface DiligenceReport {
+  inDiligence: number;
+  redFlags: number;
+  clarifications: number;
+  onTrack: number;
+  items: Array<{ company: string; stage: string; signal: string | null; status: string }>;
+  flags: Array<{ company: string; flag: string }>;
+}
+export const getDiligence = () => fetch("/api/analytics/diligence").then((r) => json<DiligenceReport>(r));
+
+// Jury-personal reports.
+export interface MyDecksReport {
+  evaluated: number;
+  avgGiven: number;
+  shortlisted: number;
+  pending: number;
+  decks: Array<{ id: string; name: string; status: string; score: number }>;
+}
+export const getMyDecks = () => fetch("/api/analytics/my/decks").then((r) => json<MyDecksReport>(r));
+
+export interface MyScoresReport {
+  rows: Array<{ id: string; name: string; ai: number | null; mine: number }>;
+}
+export const getMyReportScores = () => fetch("/api/analytics/my/scores").then((r) => json<MyScoresReport>(r));
+
+export const getMyDrift = () => fetch("/api/analytics/my/drift").then((r) => json<DriftReport>(r));
+
+// ── Phase 7 — Tickets & Contact ───────────────────────────────────────────────
+
+export interface Ticket {
+  id: string;
+  subject: string;
+  body: string | null;
+  status: string;
+  billingRouted: boolean;
+  createdAt: string;
+  creator: string;
+}
+export const listTickets = () => fetch("/api/tickets").then((r) => json<{ tickets: Ticket[] }>(r));
+export const createTicket = (subject: string, body: string, billing: boolean) =>
+  postJson<{ ok: true; id: string; billingRouted: boolean }>("/api/tickets", { subject, body, billing });
+export const setTicketStatus = (id: string, status: "open" | "closed") =>
+  postJson<{ ok: true; status: string }>(`/api/tickets/${id}/status`, { status });
+
+export interface ContactMessage {
+  id: string;
+  body: string;
+  toScope: string;
+  createdAt: string;
+  sender: string;
+}
+export const listMessages = (scope: "admin" | "team") =>
+  fetch(`/api/messages?scope=${scope}`).then((r) => json<{ messages: ContactMessage[]; inbox: boolean }>(r));
+export const sendMessage = (toScope: "admin" | "team", body: string) =>
+  postJson<{ ok: true; id: string }>("/api/messages", { toScope, body });

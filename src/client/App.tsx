@@ -15,6 +15,21 @@ import { QueryPage } from "./routes/QueryPage";
 import { ConfigPage } from "./routes/ConfigPage";
 import { MyParamsPage } from "./routes/MyParamsPage";
 import { FounderHomePage, FounderQueriesPage, FounderSignupPage } from "./routes/FounderPortal";
+import { TicketsPage, ContactPage } from "./routes/SupportPages";
+import {
+  CohortSummaryPage,
+  EvaluatorScoresPage,
+  ScoreDriftPage,
+  FunnelPage,
+} from "./routes/analytics/IncubatorReports";
+import { RepDecksPage, RepScoresPage, RepDriftPage } from "./routes/analytics/JuryReports";
+import {
+  CapitalPage,
+  PortfolioPage,
+  ScoringPage,
+  DiligencePage,
+  DecisionsPage,
+} from "./routes/analytics/VcReports";
 import { landingNavId } from "../shared/nav";
 
 /** /login — redirect to the app if already authenticated. */
@@ -45,6 +60,25 @@ function NavRoute() {
   // is admin-only; myparams is visible to all roles, editable by admins).
   if (navId === "coreparams") return <ConfigPage />;
   if (navId === "myparams") return <MyParamsPage />;
+
+  // Analytics reports (Phase 7). Funnel is shared; the rest are edition-specific
+  // but the nav guard already restricts visibility per edition/role.
+  if (navId === "funnel") return <FunnelPage />;
+  if (navId === "cohortsummary") return <CohortSummaryPage />;
+  if (navId === "evaluatorscores") return <EvaluatorScoresPage />;
+  if (navId === "scoredrift") return <ScoreDriftPage />;
+  if (navId === "repdecks") return <RepDecksPage />;
+  if (navId === "repscores") return <RepScoresPage />;
+  if (navId === "repdrift") return <RepDriftPage />;
+  if (navId === "capital") return <CapitalPage />;
+  if (navId === "portfolio") return <PortfolioPage />;
+  if (navId === "scoring") return <ScoringPage />;
+  if (navId === "diligence") return <DiligencePage />;
+  if (navId === "decisions") return <DecisionsPage />;
+
+  // Tickets + Contact (Phase 7).
+  if (navId === "support") return <TicketsPage />;
+  if (navId === "contactadmin" || navId === "contactteam") return <ContactPage />;
 
   // Founder portal.
   if (navId === "founder-home") return <FounderHomePage />;
