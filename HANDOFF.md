@@ -555,6 +555,37 @@ hardening.
   the internal credit budget (by design — see Phase 6 gotchas); **multi-juror drift** — decks carry a single
   `assigned_to` while Phase 7 analytics attribute human scores per evaluator from seeded `evaluations` rows.
 
+## Demo docs + end-to-end validation (2026-07-23)
+
+Post-completion session (docs + live validation, **no feature or behavior change**):
+
+- **Two demo docs added** (`docs/`): `DEMO-AUDIENCE.md` (shareable, non-technical
+  overview — editions, live URL, seed-login tables, 5-min try-it path) and
+  `DEMO-RUNBOOK.md` (presenter script — ~12-min narrative, exact login order +
+  click-path for both editions, per-screen talking points, credit notes, and a
+  fallback/troubleshooting + rehearsal-reset section). A ready-to-upload sample
+  deck lives at `docs/demo-assets/gridbloom-sample-deck.pdf`.
+- **Full live end-to-end test passed against the deployed Worker (32/32 checks).**
+  `npm run smoke` = 26/26. Then a real upload for **both editions**: Claude scored
+  the sample deck live (incubator **7.77**, VC **7.87**, both signal _moderate_,
+  gate passed) → landed at `ai_evaluated` / `analyst_scoring` → report renders
+  (extraction + per-parameter scores + weighted total + verdict) → advanced through
+  pipeline transitions (inc: assign→jury_eval→shortlist→intro; VC: core-scores→
+  associate→partner→partner_call) with the `pipeline_events` audit log written →
+  analytics endpoints 200 per edition.
+- **Runbook gotcha discovered + documented:** the rubric includes a **weight-10
+  `climate_impact` ("Climate Impact & Integrity")** parameter. A deck with no
+  climate/impact angle scores ~0 there, dragging the weighted total under the `>5`
+  gate → deck lands **Incomplete**, not the pass stage (verified: a thin fintech
+  deck → 4.9/Incomplete vs the climate deck → 7.8/AI-Evaluated). Demo with a
+  well-rounded, climate-relevant deck (the sample PDF is built to pass). This is
+  captured in the runbook's "Which PDF to upload" section.
+- **Seed kept pristine.** All 4 test decks (2 exploratory Incomplete + 2 passing)
+  deleted — R2 PDFs removed, D1 rows deleted (explicit child deletes + cascade),
+  and the 2 credits/edition refunded. Verified `leftover_deck=0`, no orphan child
+  rows, `credits_balance = 50` for both editions.
+- Green gate stayed green (typecheck + lint + **152 tests / 1 skipped** + build).
+
 ## Project complete / maintenance
 
 All 9 phases (0–8) are shipped, green, and on `main`; the app is live at
