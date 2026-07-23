@@ -14,4 +14,16 @@ export default tseslint.config(
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    // Standalone Node scripts (e.g. the post-deploy smoke test) run under the
+    // Node runtime, not the bundler — declare the runtime globals they use.
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        process: "readonly",
+        console: "readonly",
+        fetch: "readonly",
+      },
+    },
+  },
 );

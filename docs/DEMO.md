@@ -5,9 +5,9 @@
 
 > _Venture intelligence first._ ai.STARTUPJURY is an AI-powered pitch-deck
 > evaluation platform for **incubators / accelerators** and **VC firms**. This is
-> an early, working preview — it shows the real product's look, navigation, and
-> role-based access. The deeper workflows (AI scoring, uploads, pipeline actions,
-> analytics) are on the way; see **"What's live vs. coming"** below.
+> the full working product — real role-based access, uploads, AI scoring, the
+> complete pipeline for both editions, analytics, and configuration. See
+> **"What's live"** below.
 
 ---
 
@@ -63,26 +63,35 @@ production. That role-based access control is real and fully working in this dem
 | Investment Associate | `sunita.rao.vc@demo.startupjury.ai` | Sourcing, screening, associate pipeline |
 | Analyst | `rhea.nair@demo.startupjury.ai` | Upload + evaluate + scoring only |
 
-## What's live vs. coming
+## What's live
 
-**Live in this demo**
+The full product is built and deployed. In this demo you can:
 
-- The full **brand design system** (colors, typography, logo, light + dark themes).
-- **Real sign-in** and **role-based navigation** — each role sees only its
+- Use the full **brand design system** (colors, typography, logo, light + dark themes).
+- **Sign in** with real, **role-based navigation** — each role sees only its
   permitted areas (this is the actual permission model, not a mockup).
-- Both the **Incubator** and **VC** editions, each with its own dashboard,
-  pipeline stages, and menu.
-- The **dashboard, deck list, and Evaluation Report** screens.
+- Explore both the **Incubator** and **VC** editions, each with its own dashboard,
+  deck list, pipeline stages, and menu.
+- **Upload a pitch deck (PDF)** and have **Claude read and score it** against the
+  weighted scoring rubric, then open the **Evaluation Report** (extracted slides +
+  per-parameter scores + weighted total). _(See the note on AI scoring below.)_
+- **Move deals through the pipeline** — assign to jury, score, shortlist, schedule
+  intro/partner/alignment calls, IC voting, term sheets, legal DD, onboarding,
+  archive — with a full audit log of every transition.
+- Run the **founder query loop** (Incomplete → query → founder response → re-intake)
+  from the isolated **Founder portal**.
+- View **analytics** — Cohort summary, Evaluator scores, Score drift, Pipeline
+  funnel (incubator); Capital deployment, Portfolio construction, Scoring summary,
+  Diligence & risk, Decision history (VC).
+- **Configure** the platform (admin) — parameter weights (with live re-scoring),
+  cohort thresholds, AI system prompt, branding, plan tier, and admin-granted
+  **credits**; raise **support tickets** and **contact** messages.
 
-**Coming next (in build)**
-
-- **Upload a pitch deck (PDF)** and have **AI read and score it** against the
-  scoring rubric (the numbers you see today are illustrative sample data).
-- **Moving deals through the pipeline** — assign to jury, shortlist, schedule
-  calls, IC voting, term sheets, onboarding, archive, etc.
-- **Founder query loop**, **analytics** (cohort summary, score drift, funnel,
-  portfolio), **configuration** (parameters, weights, thresholds, branding), and
-  **plan/credit** management.
+> **AI scoring note:** the scoring engine is fully built and calls Claude directly
+> on the uploaded PDF. Live scoring requires the platform's Anthropic API account to
+> have credits; if it is out of credits, an upload is still stored and queued but
+> stays at "pending" instead of scoring. The dashboard/report numbers in the seeded
+> demo cohort are illustrative sample data.
 
 ## Good to know
 

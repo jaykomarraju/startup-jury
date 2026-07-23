@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "smoke": "node scripts/smoke.mjs",
     "db:migrate:local": "wrangler d1 migrations apply startup-jury-db --local",
     "e2e:serve": "rm -rf .wrangler/state && npm run db:migrate:local && npm run dev",
     "cf-typegen": "wrangler types"
