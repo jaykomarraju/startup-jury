@@ -3,6 +3,16 @@
 import type { DeckView } from "./types";
 import type { ExtractionSlide, ParamScoreView } from "./components";
 import type { Plan } from "../shared/plans";
+import type {
+  FunnelReport,
+  CohortSummary,
+  EvaluatorReport,
+  DriftReport,
+  ScoringSummary,
+  CapitalReport,
+  PortfolioReport,
+  DecisionReport,
+} from "../shared/analytics";
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error(`request failed: ${res.status}`);
@@ -290,17 +300,6 @@ export function deleteAdditionalParam(id: string) {
 }
 
 // ── Phase 7 — Analytics ───────────────────────────────────────────────────────
-
-import type {
-  FunnelReport,
-  CohortSummary,
-  EvaluatorReport,
-  DriftReport,
-  ScoringSummary,
-  CapitalReport,
-  PortfolioReport,
-  DecisionReport,
-} from "../shared/analytics";
 
 export type {
   FunnelReport,

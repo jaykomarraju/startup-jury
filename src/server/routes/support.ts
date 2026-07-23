@@ -83,31 +83,34 @@ tickets.post("/:id/status", requireRole("admin"), async (c) => {
 const messages = new Hono<AppEnv>();
 messages.use("*", requireAuth);
 
-/** GET /api/messages?scope=admin|team — the caller's sent messages in that scope;
- *  admins additionally see every message addressed to 'admin'. */
+/** GET /api/messages?scope=admin|team.
+ *  - `team`: a shared team channel — everyone in the edition sees every message.
+ *  - `admin`: private to the admins — an admin/superuser sees the whole inbox,
+ *    while other roles see only the messages they themselves sent to admin. */
 messages.get("/", async (c) => {
   const user = c.var.user;
   const scope = c.req.query("scope") === "team" ? "team" : "admin";
   const isAdmin = user.role === "admin" || user.role === "superuser";
-  // Admin inbox for the 'admin' scope: all messages; otherwise the caller's own.
-  const rows =
-    isAdmin && scope === "admin"
-      ? (
-          await c.env.DB.prepare(
-            "SELECT m.id, m.body, m.to_scope, m.created_at, u.name AS sender FROM messages m " +
-              "LEFT JOIN users u ON u.id = m.from_id WHERE m.edition = ? AND m.to_scope = ? ORDER BY m.created_at DESC",
-          )
-            .bind(user.edition, scope)
-            .all<{ id: string; body: string; to_scope: string; created_at: string; sender: string | null }>()
-        ).results
-      : (
-          await c.env.DB.prepare(
-            "SELECT m.id, m.body, m.to_scope, m.created_at, u.name AS sender FROM messages m " +
-              "LEFT JOIN users u ON u.id = m.from_id WHERE m.edition = ? AND m.to_scope = ? AND m.from_id = ? ORDER BY m.created_at DESC",
-          )
-            .bind(user.edition, scope, user.id)
-            .all<{ id: string; body: string; to_scope: string; created_at: string; sender: string | null }>()
-        ).results;
+  // `team` is a broadcast (all rows); `admin` is an inbox admins see in full but
+  // other roles see only their own sent messages.
+  const sharedView = scope === "team" || isAdmin;
+  const rows = sharedView
+    ? (
+        await c.env.DB.prepare(
+          "SELECT m.id, m.body, m.to_scope, m.created_at, u.name AS sender FROM messages m " +
+            "LEFT JOIN users u ON u.id = m.from_id WHERE m.edition = ? AND m.to_scope = ? ORDER BY m.created_at DESC",
+        )
+          .bind(user.edition, scope)
+          .all<{ id: string; body: string; to_scope: string; created_at: string; sender: string | null }>()
+      ).results
+    : (
+        await c.env.DB.prepare(
+          "SELECT m.id, m.body, m.to_scope, m.created_at, u.name AS sender FROM messages m " +
+            "LEFT JOIN users u ON u.id = m.from_id WHERE m.edition = ? AND m.to_scope = ? AND m.from_id = ? ORDER BY m.created_at DESC",
+        )
+          .bind(user.edition, scope, user.id)
+          .all<{ id: string; body: string; to_scope: string; created_at: string; sender: string | null }>()
+      ).results;
   return c.json({
     messages: rows.map((m) => ({
       id: m.id,
@@ -116,7 +119,8 @@ messages.get("/", async (c) => {
       createdAt: m.created_at,
       sender: m.sender ?? "—",
     })),
-    inbox: isAdmin && scope === "admin",
+    // `inbox` = show sender names (a shared/admin view) vs "You" (own sent list).
+    inbox: sharedView,
   });
 });
 
