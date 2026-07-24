@@ -1,13 +1,22 @@
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Upload as UploadIcon, FileCheck } from "lucide-react";
+import { Upload as UploadIcon, FileCheck, Loader2, FileText } from "lucide-react";
 import { Card, Button, SignalTag } from "../components";
 import { uploadSingle, uploadBulk, type SingleUploadResult } from "../api";
 import type { DeckSignal } from "../theme/signals";
 
 type Method = "single" | "bulk";
+/** null = idle; drives the staged progress panel during a single upload. */
+type Phase = "uploading" | "scoring";
 
 const STAGES = ["Pre-seed", "Seed", "Series A", "Series B+"];
+
+/** Human-readable file size, e.g. "2.4 MB". */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 /**
  * Upload screen (Evaluation → Upload). Single upload evaluates the PDF directly
@@ -18,6 +27,7 @@ export function UploadPage() {
   const navigate = useNavigate();
   const [method, setMethod] = useState<Method>("single");
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<Phase | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [single, setSingle] = useState<SingleUploadResult | null>(null);
   const [bulk, setBulk] = useState<{ count: number } | null>(null);
@@ -28,6 +38,9 @@ export function UploadPage() {
   const [stage, setStage] = useState(STAGES[1]);
   const [sector, setSector] = useState("");
   const [city, setCity] = useState("");
+  // Selected-file readouts so the user always sees what they picked.
+  const [picked, setPicked] = useState<{ name: string; size: number } | null>(null);
+  const [bulkPicked, setBulkPicked] = useState<{ name: string; size: number }[]>([]);
 
   async function submitSingle(e: React.FormEvent) {
     e.preventDefault();
@@ -36,6 +49,10 @@ export function UploadPage() {
     setError(null);
     setBusy(true);
     setSingle(null);
+    // Staged status: the request stores to R2 then scores with Claude in one
+    // synchronous call, so surface an "uploading" beat before the longer "scoring".
+    setPhase("uploading");
+    const toScoring = setTimeout(() => setPhase("scoring"), 1200);
     try {
       const form = new FormData();
       form.set("file", file);
@@ -47,7 +64,9 @@ export function UploadPage() {
     } catch {
       setError("Upload failed. Try again.");
     } finally {
+      clearTimeout(toScoring);
       setBusy(false);
+      setPhase(null);
     }
   }
 
@@ -108,9 +127,29 @@ export function UploadPage() {
         <Card>
           <form className="flex flex-col gap-4" onSubmit={submitSingle}>
             <label className="flex cursor-pointer flex-col items-center gap-2 rounded-lg border border-dashed border-line px-4 py-8 text-center hover:bg-surface-2">
-              <UploadIcon className="h-5 w-5 text-fg-muted" />
-              <span className="text-sm text-fg">Choose a pitch deck (PDF)</span>
-              <input ref={singleFile} type="file" accept="application/pdf" className="sr-only" onChange={() => setSingle(null)} />
+              {picked ? (
+                <>
+                  <FileText className="h-5 w-5 text-accent" />
+                  <span className="text-sm font-medium text-fg">{picked.name}</span>
+                  <span className="text-xs text-fg-muted">{formatBytes(picked.size)} · click to change</span>
+                </>
+              ) : (
+                <>
+                  <UploadIcon className="h-5 w-5 text-fg-muted" />
+                  <span className="text-sm text-fg">Choose a pitch deck (PDF)</span>
+                </>
+              )}
+              <input
+                ref={singleFile}
+                type="file"
+                accept="application/pdf"
+                className="sr-only"
+                onChange={(e) => {
+                  setSingle(null);
+                  const f = e.target.files?.[0];
+                  setPicked(f ? { name: f.name, size: f.size } : null);
+                }}
+              />
             </label>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Startup name">
@@ -133,7 +172,27 @@ export function UploadPage() {
             </div>
           </form>
 
-          {single && (
+          {busy && (
+            <div className="mt-4 rounded-lg border border-line bg-surface-2 px-4 py-3">
+              <div className="flex items-center gap-2 text-sm text-fg">
+                <Loader2 className="h-4 w-4 animate-spin text-accent" />
+                <span>
+                  {phase === "scoring"
+                    ? "Reading slides & scoring with Claude… (~10–20s)"
+                    : "Uploading deck…"}
+                </span>
+                {picked && <span className="truncate text-fg-muted">· {picked.name}</span>}
+              </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface">
+                <div
+                  className="h-full animate-pulse rounded-full bg-accent transition-[width] duration-700"
+                  style={{ width: phase === "scoring" ? "85%" : "35%" }}
+                />
+              </div>
+            </div>
+          )}
+
+          {single && !busy && (
             <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-line bg-surface-2 px-4 py-3">
               {single.evaluated && single.result ? (
                 <div className="flex items-center gap-2 text-sm text-fg">
@@ -157,16 +216,54 @@ export function UploadPage() {
         <Card>
           <form className="flex flex-col gap-4" onSubmit={submitBulk}>
             <label className="flex cursor-pointer flex-col items-center gap-2 rounded-lg border border-dashed border-line px-4 py-8 text-center hover:bg-surface-2">
-              <UploadIcon className="h-5 w-5 text-fg-muted" />
-              <span className="text-sm text-fg">Choose multiple pitch decks (PDF)</span>
-              <input ref={bulkFiles} type="file" accept="application/pdf" multiple className="sr-only" onChange={() => setBulk(null)} />
+              {bulkPicked.length > 0 ? (
+                <>
+                  <FileText className="h-5 w-5 text-accent" />
+                  <span className="text-sm font-medium text-fg">
+                    {bulkPicked.length} deck{bulkPicked.length === 1 ? "" : "s"} selected · click to change
+                  </span>
+                </>
+              ) : (
+                <>
+                  <UploadIcon className="h-5 w-5 text-fg-muted" />
+                  <span className="text-sm text-fg">Choose multiple pitch decks (PDF)</span>
+                </>
+              )}
+              <input
+                ref={bulkFiles}
+                type="file"
+                accept="application/pdf"
+                multiple
+                className="sr-only"
+                onChange={(e) => {
+                  setBulk(null);
+                  setBulkPicked(Array.from(e.target.files ?? []).map((f) => ({ name: f.name, size: f.size })));
+                }}
+              />
             </label>
+            {bulkPicked.length > 0 && (
+              <ul className="flex flex-col gap-1 text-xs text-fg-muted">
+                {bulkPicked.map((f) => (
+                  <li key={f.name} className="flex items-center justify-between gap-2 truncate">
+                    <span className="truncate">{f.name}</span>
+                    <span className="shrink-0">{formatBytes(f.size)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
             <div className="flex items-center justify-end">
               <Button type="submit" disabled={busy}>{busy ? "Uploading…" : "Upload & queue"}</Button>
             </div>
           </form>
 
-          {bulk && (
+          {busy && (
+            <div className="mt-4 flex items-center gap-2 rounded-lg border border-line bg-surface-2 px-4 py-3 text-sm text-fg">
+              <Loader2 className="h-4 w-4 animate-spin text-accent" />
+              Uploading {bulkPicked.length || ""} deck{bulkPicked.length === 1 ? "" : "s"} & queuing for AI evaluation…
+            </div>
+          )}
+
+          {bulk && !busy && (
             <div className="mt-4 flex items-center justify-between rounded-lg border border-line bg-surface-2 px-4 py-3">
               <span className="text-sm text-fg">
                 {bulk.count} deck{bulk.count === 1 ? "" : "s"} queued for AI evaluation.
