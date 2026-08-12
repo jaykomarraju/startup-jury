@@ -721,7 +721,7 @@ each finish session). Landed so far:
     now writes an outbox + token row for every Incomplete deck — including in tests.
 
 - **Session 7 — De-stub VC screens + ICS scheduling + issue log + the §9 pending bug** (commit
-  `SESSION7SHA`). Migration `0018`. **No nav slug renders `StubPage` in either edition any more.**
+  `29c78e1`). Migration `0018`. **No nav slug renders `StubPage` in either edition any more.**
   - **Scheduling / ICS.** New pure **`src/shared/ics.ts`** (RFC 5545 VCALENDAR/VEVENT — CRLF, 75-octet
     folding that never splits a multi-byte char, TEXT escaping, UTC-only, ORGANIZER/ATTENDEE, SEQUENCE,
     optional VALARM; 23 unit tests). New **`src/server/routes/calls.ts`** (`/api/calls`): list (deckId /

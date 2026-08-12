@@ -119,7 +119,7 @@ Full parity + all asks. Check items off as sessions land them.
 | 4 | Roles & permissions — PM authority, Associate/Analyst, user mgmt/mentor, admin console/account/credits | ✅ Done | `4467bf7` (+ docs) | 2026-08-12 |
 | 5 | Automation — shortlist floor, AI determinism, duplicates/returning, upload validation, deck versioning | ✅ Done | `aebe362`, `28c331e` (+ docs) | 2026-08-12 |
 | 6 | Incomplete-deck resubmit loop + real email | ✅ Done | `2b385ff` (+ docs) | 2026-08-12 |
-| 7 | De-stub VC screens + ICS scheduling + issue log + pending-bug fix | ✅ Done | `SESSION7SHA` (+ docs) | 2026-08-12 |
+| 7 | De-stub VC screens + ICS scheduling + issue log + pending-bug fix | ✅ Done | `29c78e1` (+ docs) | 2026-08-12 |
 | 8 | Polish, full e2e, docs, final deploy | ⬜ Not started | — | — |
 
 Legend: ⬜ Not started · 🔶 In progress · ✅ Done.
@@ -644,7 +644,7 @@ _(Append newest at the bottom. One entry per completed session.)_
     S5; unrelated to this session's code.
 
 - **2026-08-12 — Session 7 (De-stub VC screens + ICS scheduling + issue log + the §9 pending bug) shipped.**
-  Commit `SESSION7SHA` (+ this doc commit). **There are no `StubPage` slugs left in either edition.**
+  Commit `29c78e1` (+ this doc commit). **There are no `StubPage` slugs left in either edition.**
   Scheduling is real (universal `.ics`), the team has an in-app issue log, and the "stuck at Pending AI"
   bug is fully fixed end to end. Green gate: typecheck + lint + **379 unit/worker/client (1 skipped)** +
   build + **52 e2e**. Deployed (DLQ created + remote D1 migrated first — `0018`) + `npm run smoke`
