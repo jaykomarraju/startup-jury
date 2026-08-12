@@ -46,11 +46,11 @@ Full parity + all asks. Check items off as sessions land them.
 - [x] **Rescore guard** — only allow re-score when the **deck content changed** OR the **admin criteria/prompt changed**; otherwise block with an "already scored" alert
 
 ### Program & cohort hierarchy + configuration (Sessions 2–3)
-- [ ] `programs` + `cohorts` tables (Sector→Program→Cohort); decks FK; backfill migration
-- [ ] **Program is the umbrella** over everything; an org-admin creates programs; every evaluation belongs to a program
-- [ ] Program-level **project details**, incl. **VC fund fields** (fund size / allocated / deployed) that feed the Capital Deployment report
-- [ ] **First-run / org config** (incubator or VC name, branding) + **Set up wizard** (Org type → Configure → Select → Team)
-- [ ] Program/Cohort **filter dropdowns** in toolbar; "Applies to" program+cohort on parameters
+- [x] `programs` + `cohorts` tables (Sector→Program→Cohort); decks FK; backfill migration _(S2, migrations 0011/0012 — also a `sectors` table)_
+- [x] **Program is the umbrella** over everything; an org-admin creates programs; every evaluation belongs to a program _(S2)_
+- [x] Program-level **project details**, incl. **VC fund fields** (fund size / allocated / deployed) that feed the Capital Deployment report _(S2)_
+- [x] **First-run / org config** (incubator or VC name, branding) + **Set up wizard** (Org type → Configure → Select → Team) _(S2)_
+- [x] Program/Cohort **filter dropdowns** in toolbar; "Applies to" program+cohort on parameters _(S2)_
 - [ ] **Parameter model:** core **13** (=100% composite) + **up to 3 role-scoped additional** params per role → **13 + 9 = 22** per edition; additional are **AI-scored (assistive)** + owned/remarked by their role, shown separately (own average), NOT folded into the 100%
 - [ ] Additional params are a **default list they can change**, each with a **configurable prompt**
 - [ ] **Plan gating:** Standard = no config (default 13) · Pro = configure core 13 · Premium = configure the additional 3
@@ -111,7 +111,7 @@ Full parity + all asks. Check items off as sessions land them.
 | # | Session | Status | Landed commit(s) | Date |
 |---|---------|--------|------------------|------|
 | 1 | Evaluator Workbench | ✅ Done | `3f3bd30` (+ docs) | 2026-08-11 |
-| 2 | Program & Cohort hierarchy + config wizard (+ VC fund fields) | ⬜ Not started | — | — |
+| 2 | Program & Cohort hierarchy + config wizard (+ VC fund fields) | ✅ Done | `c70cbcd` (+ docs) | 2026-08-11 |
 | 3 | Parameter model — core 13 + role-scoped additional (AI-scored) + prompts + plan gating | ⬜ Not started | — | — |
 | 4 | Roles & permissions — PM authority, Associate/Analyst, user mgmt/mentor, admin console/account/credits | ⬜ Not started | — | — |
 | 5 | Automation — shortlist floor, AI determinism, duplicates/returning, upload validation, deck versioning | ⬜ Not started | — | — |
@@ -294,6 +294,50 @@ _(Append newest at the bottom. One entry per completed session.)_
     `criteria_version`, so the incubator workbench e2e asserts the control's presence and the block itself
     is covered by worker + client tests.
 
+- **2026-08-11 — Session 2 (Program & Cohort hierarchy + config wizard) shipped.** Commit `c70cbcd` (+ this
+  doc commit). Sector → Program → Cohort is now the umbrella over everything, with VC fund economics feeding
+  the Capital Deployment report. Green gate: typecheck + lint + **179 unit/worker (1 skipped)** + build +
+  **31 e2e**. Deployed (remote D1 migrated first) + `npm run smoke` 26/26; live-verified the new endpoints +
+  capital numbers on the deployed Worker.
+  - **Schema (migrations 0011 + 0012).** `0011` adds **`sectors`** (id, edition, name, active), **`programs`**
+    (id, edition, sector, name, description, **fund_size/fund_allocated/capital_deployed**, active) and
+    **`cohorts`** (id, program_id FK, name, starts_on/ends_on, active); adds **`decks.program_id`/`cohort_id`**
+    (+ indexes) and does a **generic backfill** from the free-text `decks.program`/`cohort` using
+    `ROW_NUMBER()`-derived deterministic ids (old text columns kept until S8). `0012` enriches for the demo:
+    sectors per edition, program sectors/descriptions, **VC fund data (Fund II = 300/210/92; Deep Tech Fund
+    left NULL so `SUM(fund_size)` = the old 300 constant)**, and cohort dates. Backfill result: incubator →
+    Fintech Accelerator / Climate Cohort / SaaS Accelerator (+ Cohort 5/6 nested); VC → Deep Tech Fund /
+    Fund II. **`Climate Cohort` is a program name, not a cohort** (the word is a coincidence) — the backfill
+    handles it correctly since it reads `decks.program`.
+  - **API (`src/server/routes/programs.ts`, mounted `/api/programs`).** `GET /` (any authed — feeds the
+    toolbar filters, the Applies-to selector and the wizard) returns `{ sectors, programs:[{…, cohorts:[…]}] }`,
+    active-only unless `?all=1` (admin). Admin/superuser CRUD: `POST/DELETE /sectors`, `POST / · PUT/DELETE
+    /:id` (programs, incl. fund fields, partial-update semantics — a fund key is only overwritten when
+    present), `POST /:id/cohorts · PUT/DELETE /cohorts/:id`. All **edition-scoped** (cross-edition mutation →
+    404). Hierarchy changes do **not** bump `criteria_version` (no scoring impact).
+  - **Capital report wired to the DB.** `analytics.ts /capital` now sums the edition's **active programs'**
+    `fund_size` (committed) + `fund_allocated` (allocated), falling back to the old `FUND_COMMITTED=300`
+    constant only when no program carries a size. `CapitalReport` gains **`allocated`/`allocatedPct`**;
+    `capitalDeployment(rows, committed, allocated=0)` (3rd arg optional — back-compat). `deployed` is still
+    the sum of `portfolio.capital_deployed` (per-company, drives byCompany/median). Client CapitalPage adds
+    **Committed + Allocated tiles** and an Allocated bar.
+  - **Client.** New **`SetupWizard`** at `/app/setup` (Settings nav item `setup`, admin-only, icon `Wrench`):
+    4 steps — Org type (writes `branding.orgName/orgType`, merges onto existing branding), Configure (real
+    sector/program/cohort CRUD), Select (writes the active context), Team (read-only owner + a note that full
+    user management lands in S4). New **`src/client/activeContext.ts`** — a per-edition localStorage store
+    (`useSyncExternalStore`) shared by the dashboard toolbar filters, the upload form and the Applies-to card.
+    Dashboard gets **Program/Cohort filter dropdowns** (+ a **first-run banner** when 0 programs) that re-fetch
+    `GET /api/decks?programId=&cohortId=`. ConfigPage gets an **"Applies to"** card. UploadPage gets
+    **Program/Cohort selectors** (default from active context) → `storeDeck` now writes `program_id/cohort_id`
+    (legacy text columns left NULL on new uploads; they're dropped in S8).
+  - **Gotchas for later sessions:** (1) **New uploads set `program_id`/`cohort_id`, NOT the legacy
+    `program`/`cohort` text** — anything still reading the old columns sees NULL for post-S2 decks (they're
+    deprecated; S8 drops them). (2) The capital test asserts `committed=300` — it comes from **Fund II's**
+    seeded `fund_size`; if S3+ adds VC programs with fund sizes to the seed, that sum changes (soft-deleted /
+    `active=0` programs are excluded). (3) The superuser nav superset is now **21** (added `setup`) — the
+    `nav.test.ts` length assertion tracks it. (4) `program.sector` is **free text matched against
+    `sectors.name`**, not an FK — deleting a sector doesn't rewrite programs that reference it.
+
 ---
 
 ## 7. CURRENT NEXT-SESSION PROMPT
@@ -305,35 +349,43 @@ You are continuing the ai.STARTUPJURY finishing build. This is a FRESH session w
 
 START by reading, in order:
 1. docs/FINISH-PLAN.md  (the master plan — read ALL of it, especially §8 meeting clarifications, §9 known
-   issues, and the §6 Progress Log entry for Session 1 — what shipped + gotchas left for you)
+   issues, and the §6 Progress Log entries for Sessions 1 & 2 — what shipped + gotchas left for you)
 2. HANDOFF.md           (architecture, bindings, workflow, gotchas)
 Recall the project memories (startup-jury-completion-gap, startup-jury-requirements-sources,
-startup-jury-open-scope-decisions, startup-jury-meeting-clarifications, phase5-vc-visual-gate). Open the
-prototype /Users/jayanthkomarraju/Downloads/STARTUPJURY-TEAM-FOLDER/Incubator Final files/AISJ_IC_SuserV11.HTM
-(Set up wizard ~7009–7178, toolbar Program/Cohort filters ~825–843, "Applies to" ~3269) — the target UI.
+startup-jury-open-scope-decisions, startup-jury-meeting-clarifications, phase5-vc-visual-gate). Open BOTH
+prototypes' parameter screens (the target UI) and CONFIRM the exact additional-param owners per edition:
+/Users/jayanthkomarraju/Downloads/STARTUPJURY-TEAM-FOLDER/Incubator Final files/AISJ_IC_SuserV11.HTM
+(Core Parameters 13-param array ~3910; My Parameters / role-configurable ~3252–3312) and the VC Superuser
+prototype (VC My Parameters ~4411) under "VC Final files/".
 
-YOUR JOB THIS SESSION: complete **Session 2 — Program & Cohort hierarchy + configuration wizard** exactly
-as specified in docs/FINISH-PLAN.md §4:
-- Schema migration: `programs` (id, edition, sector, name, description, VC **fund_size/fund_allocated/
-  capital_deployed**, active) + `cohorts` (id, program_id FK, name, dates, active); add
-  `decks.program_id`/`cohort_id`; backfill from the existing free-text `decks.program`/`cohort` (keep the
-  old columns until Session 8).
-- API (new programs.ts or extend config.ts): CRUD sectors/programs/cohorts + list for filters
-  (admin/superuser gate for now — full PM ownership lands in Session 4).
-- First-run / org config (incubator or VC name + branding) + a **Set up wizard** (Org type → Configure →
-  Select → Team) reachable from Settings.
-- Toolbar **Program/Cohort filter dropdowns** feeding the decks list; **"Applies to"** program+cohort on
-  parameters.
-Program is the umbrella over everything; VC program fund fields must feed the Capital Deployment report.
+YOUR JOB THIS SESSION: complete **Session 3 — Parameter model: core 13 + role-scoped additional (AI-scored)
++ prompts + plan gating** exactly as specified in docs/FINISH-PLAN.md §4 (Session 3):
+- **Additional params first-class** — role-scoped (Incubator: **program_associate, program_manager, jury**;
+  VC: **analyst/associate, partner, ic_member** — CONFIRM from the prototype), **up to 3 per role**, default
+  examples that can be **renamed** with a **configurable AI prompt** each. Total 13 + 9 = **22** per edition.
+- **AI scores them (assistive)** — pass the additional-param prompts to `evaluate.ts` and store their AI
+  scores, but keep the weighted composite = **core 13 (=100%)**; surface additional AI+human scores
+  separately (own average), NOT folded into the 100%.
+- **Human ownership** — the owning role scores/remarks its ≤3 additional params (extend the eval form /
+  My Parameters).
+- **Plan gating** — Standard: no config · Pro: configure core 13 · Premium: configure additional 3 (402/hide).
+- Update the **rescore-guard** trigger set so an admin criteria/prompt change is a valid re-score reason
+  (criteria_version already bumps on add/delete/prompt — confirm it covers the additional-param prompt edits).
+
+Context from Session 2 you'll build on: `parameters` already has `informational` + `role_scope` columns and
+the config API has `POST/DELETE /api/config/additional-params` (informational, plan-gated) that bump
+`criteria_version`; `evaluate.ts` already includes active params in the tool enum. The `programs`/`cohorts`
+hierarchy + Applies-to selector now exist (Session 2) if you want per-program scoping — but the composite
+stays edition-level. NB: new uploads set `decks.program_id/cohort_id`, not the legacy text columns.
 
 Be thorough — spend the tokens: use parallel subagents for discovery, write unit/worker/e2e tests, and
 follow the Standing Rules in §2 (green gate; commit to main with the Co-Authored-By trailer; wrangler
-pinned 4.110.0; deploy — **`wrangler d1 migrations apply startup-jury-db --remote` FIRST** — + npm run
-smoke at the end; keep the demo seed live). Node 22 via `nvm use`. If port 5173 is busy, e2e takes
-`E2E_PORT=<free port>`.
+pinned 4.110.0; deploy — **`wrangler d1 migrations apply startup-jury-db --remote` FIRST** if you add a
+migration — + npm run smoke at the end; keep the demo seed live). Node 22 via `nvm use`. If port 5173 is
+busy, e2e takes `E2E_PORT=<free port>`.
 
 BEFORE FINISHING: do the §5 End-of-session checklist — check off §1 items, update the §3 tracker, append
-a §6 Progress Log entry, and replace this §7 prompt with the Session 3 prompt. Commit the updated plan to main.
+a §6 Progress Log entry, and replace this §7 prompt with the Session 4 prompt. Commit the updated plan to main.
 ```
 
 ### Next-session prompt template (for future sessions)

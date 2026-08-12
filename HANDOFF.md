@@ -621,3 +621,17 @@ each finish session). Landed so far:
   bump `criteria_version`; `evaluateDeck` stamps the AI roll-up. New dep: **`pdfjs-dist@4.10.38`** (pinned).
   Single upload now **enqueues on a synchronous eval error** (partial fix for the `pending_ai` stranding
   bug; full fix is Session 7). Playwright port is **`E2E_PORT`-overridable**.
+
+- **Session 2 — Program & Cohort hierarchy + config wizard** (commit `c70cbcd`). **Sector → Program → Cohort**
+  is the umbrella over everything. New schema (migrations `0011`/`0012`): `sectors`, `programs`
+  (edition, sector, name, description, VC **`fund_size`/`fund_allocated`/`capital_deployed`**, active),
+  `cohorts` (program_id FK, name, dates, active); `decks.program_id`/`cohort_id` FKs **generically backfilled**
+  from the free-text `decks.program`/`cohort` (old text columns kept until Session 8). New route
+  **`src/server/routes/programs.ts`** (`/api/programs`): read for any authed user (feeds filters / wizard /
+  Applies-to), admin/superuser CRUD for sectors/programs/cohorts, all edition-scoped. The VC **Capital
+  Deployment** report now sources committed/allocated from the programs' fund fields (`CapitalReport` gains
+  `allocated`/`allocatedPct`; fallback `FUND_COMMITTED=300` only when no program has a size). Client: a
+  **Set up wizard** (`SetupWizard`, `/app/setup`, Settings nav `setup`, admin-only) — Org type → Configure →
+  Select → Team; a per-edition **active-context** store (`src/client/activeContext.ts`); dashboard
+  **Program/Cohort toolbar filters** + first-run banner; an **"Applies to"** card on Core Parameters; and
+  **Program/Cohort selectors** on Upload. New uploads write `program_id/cohort_id` (legacy text left NULL).
