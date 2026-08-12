@@ -204,3 +204,59 @@ describe("decks — program/cohort filter", () => {
     expect(none.decks.length).toBe(0);
   });
 });
+
+// ── Session 4 — owner-scoped cohort management (Program Manager) ──────────────
+
+const INC_PM = "raj.kumar@demo.startupjury.ai"; // program_manager (leads incubator programs)
+
+describe("programs — PM owner-scoped cohorts", () => {
+  it("a program manager manages cohorts for programs they lead (create/update/delete)", async () => {
+    const pm = await login(INC_PM);
+    const list = await listPrograms(pm);
+    // The seed makes inc_pm the owner of the incubator programs.
+    const owned = list.programs.find((p) => p.name === "Fintech Accelerator")!;
+    expect((owned as { ownerId?: string }).ownerId).toBe("inc_pm");
+
+    const created = await req("POST", `/api/programs/${owned.id}/cohorts`, pm, {
+      name: "PM Cohort 2026-Q3",
+      startsOn: "2026-07-01",
+    });
+    expect(created.status).toBe(200);
+    const cohortId = ((await created.json()) as { cohort: { id: string } }).cohort.id;
+
+    const updated = await req("PUT", `/api/programs/cohorts/${cohortId}`, pm, { name: "PM Cohort 2026-Q4" });
+    expect(updated.status).toBe(200);
+    const removed = await req("DELETE", `/api/programs/cohorts/${cohortId}`, pm);
+    expect(removed.status).toBe(200);
+  });
+
+  it("a program manager cannot manage cohorts for a program they don't lead (403)", async () => {
+    // A freshly admin-created program has no owner → the PM doesn't lead it.
+    const admin = await login(INC_ADMIN);
+    const prog = await req("POST", "/api/programs", admin, { name: "Unowned Program" });
+    const progId = ((await prog.json()) as { program: ProgramView }).program.id;
+
+    const pm = await login(INC_PM);
+    const denied = await req("POST", `/api/programs/${progId}/cohorts`, pm, { name: "Nope" });
+    expect(denied.status).toBe(403);
+
+    // The admin can still manage that program's cohorts.
+    const ok = await req("POST", `/api/programs/${progId}/cohorts`, admin, { name: "Admin Cohort" });
+    expect(ok.status).toBe(200);
+  });
+
+  it("sector + program CRUD stays admin-only — a PM is rejected (403)", async () => {
+    const pm = await login(INC_PM);
+    expect((await req("POST", "/api/programs/sectors", pm, { name: "PM Sector" })).status).toBe(403);
+    expect((await req("POST", "/api/programs", pm, { name: "PM Program" })).status).toBe(403);
+  });
+
+  it("a program associate cannot manage cohorts at all (403)", async () => {
+    const pa = await login(INC_PA);
+    const admin = await login(INC_ADMIN);
+    const list = await listPrograms(admin);
+    const anyProgram = list.programs[0];
+    const denied = await req("POST", `/api/programs/${anyProgram.id}/cohorts`, pa, { name: "PA Cohort" });
+    expect(denied.status).toBe(403);
+  });
+});

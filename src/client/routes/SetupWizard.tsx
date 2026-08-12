@@ -2,8 +2,12 @@
 // of the workspace: Org type → Configure (sectors / programs / cohorts) →
 // Select (active context) → Team. The Configure step drives the real
 // Program/Cohort hierarchy API; the Select step writes the active context shared
-// with the dashboard toolbar filters and the upload form. Admin/superuser only
-// (nav-gated); full Program-Manager ownership + team management land in Session 4.
+// with the dashboard toolbar filters and the upload form.
+//
+// Session 4 — role-scoped seats. admin/superuser get full editing. A program
+// MANAGER can manage cohorts for the programs they LEAD (owner-scoped; sectors +
+// programs stay org-admin-owned). A program ASSOCIATE is read-only ("Standard
+// seat") — the server enforces all of this; the wizard reflects it.
 
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -18,11 +22,12 @@ import {
   Trash2,
   Check,
   Target,
+  Lock,
 } from "lucide-react";
 import { Card, Button, Badge, EmptyState } from "../components";
 import { useAuth } from "../auth/useAuth";
 import { useActiveContext } from "../activeContext";
-import { editionLabel } from "../../shared/roles";
+import { editionLabel, type Role } from "../../shared/roles";
 import {
   listPrograms,
   getConfigSummary,
@@ -45,11 +50,34 @@ const ORG_TYPES = [
   { id: "investor", label: "Investor", icon: TrendingUp, blurb: "VC firm or angel network — manage deal flow, analysts and the IC pipeline." },
 ] as const;
 
+/** How much of the wizard a role may edit. */
+type Seat = "full" | "cohorts" | "readonly";
+function seatFor(role: Role | undefined): Seat {
+  if (role === "admin" || role === "superuser") return "full";
+  if (role === "program_manager") return "cohorts"; // owner-scoped cohorts only
+  return "readonly"; // program_associate (Standard seat) + any other role
+}
+
+/** The gold "Standard seat" read-only banner shown to a program associate. */
+function StandardSeatBanner() {
+  return (
+    <div className="flex items-start gap-2.5 rounded-lg border border-amber/40 bg-amber/10 px-4 py-3 text-sm text-fg">
+      <Lock className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
+      <p>
+        <span className="font-medium">Read-only — Standard seat.</span> Set up is view-only on your seat, so
+        you can't add or edit sectors, programs or cohorts here. Ask a Super User, Program Manager or Admin to
+        make changes.
+      </p>
+    </div>
+  );
+}
+
 export function SetupWizard() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const edition = user?.edition ?? "incubator";
   const [, setCtx] = useActiveContext(edition);
+  const seat = seatFor(user?.role);
 
   const [step, setStep] = useState(0);
   const [data, setData] = useState<ProgramsResponse | null>(null);
@@ -108,6 +136,8 @@ export function SetupWizard() {
 
       <Stepper step={step} />
 
+      {seat === "readonly" && <StandardSeatBanner />}
+
       {step === 0 && (
         <OrgTypeStep
           edition={edition}
@@ -115,14 +145,23 @@ export function SetupWizard() {
           setOrgType={setOrgType}
           orgName={orgName}
           setOrgName={setOrgName}
+          readOnly={seat !== "full"}
           onNext={async () => {
-            await saveOrg();
+            if (seat === "full") await saveOrg();
             setStep(1);
           }}
         />
       )}
       {step === 1 && (
-        <ConfigureStep data={data} reload={reload} edition={edition} onBack={() => setStep(0)} onNext={() => setStep(2)} />
+        <ConfigureStep
+          data={data}
+          reload={reload}
+          edition={edition}
+          seat={seat}
+          userId={user.id}
+          onBack={() => setStep(0)}
+          onNext={() => setStep(2)}
+        />
       )}
       {step === 2 && (
         <SelectStep data={data} edition={edition} setCtx={setCtx} onBack={() => setStep(1)} onNext={() => setStep(3)} />
@@ -172,6 +211,7 @@ function OrgTypeStep({
   setOrgType,
   orgName,
   setOrgName,
+  readOnly,
   onNext,
 }: {
   edition: "incubator" | "vc";
@@ -179,6 +219,7 @@ function OrgTypeStep({
   setOrgType: (v: string) => void;
   orgName: string;
   setOrgName: (v: string) => void;
+  readOnly: boolean;
   onNext: () => void;
 }) {
   return (
@@ -196,9 +237,10 @@ function OrgTypeStep({
             <button
               key={o.id}
               type="button"
+              disabled={readOnly}
               onClick={() => setOrgType(o.id)}
-              className={`flex flex-col gap-2 rounded-lg border p-4 text-left transition ${
-                selected ? "border-accent bg-accent/5" : "border-line hover:bg-surface-2"
+              className={`flex flex-col gap-2 rounded-lg border p-4 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                selected ? "border-accent bg-accent/5" : "border-line enabled:hover:bg-surface-2"
               }`}
             >
               <Icon className={`h-5 w-5 ${selected ? "text-accent" : "text-fg-muted"}`} />
@@ -211,8 +253,9 @@ function OrgTypeStep({
       <label className="mt-5 flex max-w-md flex-col gap-1">
         <span className="text-xs font-medium text-fg-muted">Organisation name</span>
         <input
-          className="sj-input h-9"
+          className="sj-input h-9 disabled:opacity-60"
           value={orgName}
+          disabled={readOnly}
           onChange={(e) => setOrgName(e.target.value)}
           placeholder="e.g. Horizon Ventures"
         />
@@ -232,21 +275,32 @@ function ConfigureStep({
   data,
   reload,
   edition,
+  seat,
+  userId,
   onBack,
   onNext,
 }: {
   data: ProgramsResponse | null;
   reload: () => Promise<unknown>;
   edition: "incubator" | "vc";
+  seat: Seat;
+  userId: string;
   onBack: () => void;
   onNext: () => void;
 }) {
   if (!data) return <Card><p className="text-sm text-fg-muted">Loading…</p></Card>;
+  // Sectors + programs are org-admin-owned; a PM edits cohorts for programs they lead.
+  const orgEditable = seat === "full";
   return (
     <div className="flex flex-col gap-4">
-      <SectorsEditor data={data} reload={reload} />
-      <ProgramsEditor data={data} reload={reload} edition={edition} />
-      <CohortsEditor data={data} reload={reload} />
+      {seat === "cohorts" && (
+        <div className="rounded-lg border border-line bg-surface-2 px-4 py-2.5 text-sm text-fg-muted">
+          You can manage cohorts for the programs you lead. Sectors and programs are managed by an admin.
+        </div>
+      )}
+      <SectorsEditor data={data} reload={reload} readOnly={!orgEditable} />
+      <ProgramsEditor data={data} reload={reload} edition={edition} readOnly={!orgEditable} />
+      <CohortsEditor data={data} reload={reload} seat={seat} userId={userId} />
       <div className="flex justify-between">
         <Button variant="ghost" onClick={onBack}>
           <ArrowLeft className="h-4 w-4" /> Back
@@ -259,7 +313,15 @@ function ConfigureStep({
   );
 }
 
-function SectorsEditor({ data, reload }: { data: ProgramsResponse; reload: () => Promise<unknown> }) {
+function SectorsEditor({
+  data,
+  reload,
+  readOnly,
+}: {
+  data: ProgramsResponse;
+  reload: () => Promise<unknown>;
+  readOnly: boolean;
+}) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -288,25 +350,29 @@ function SectorsEditor({ data, reload }: { data: ProgramsResponse; reload: () =>
         {data.sectors.map((s) => (
           <span key={s.id} className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface-2 px-2.5 py-1 text-sm text-fg">
             {s.name}
-            <button type="button" aria-label={`Remove ${s.name}`} onClick={() => remove(s.id)} className="text-fg-muted hover:text-signal-flagged">
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
+            {!readOnly && (
+              <button type="button" aria-label={`Remove ${s.name}`} onClick={() => remove(s.id)} className="text-fg-muted hover:text-signal-flagged">
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            )}
           </span>
         ))}
       </div>
-      <div className="mt-3 flex gap-2">
-        <input
-          className="sj-input h-9 max-w-xs"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), add())}
-          placeholder="e.g. HealthTech"
-          aria-label="New sector name"
-        />
-        <Button size="sm" variant="secondary" onClick={add} disabled={busy || !name.trim()}>
-          <Plus className="h-4 w-4" /> Add sector
-        </Button>
-      </div>
+      {!readOnly && (
+        <div className="mt-3 flex gap-2">
+          <input
+            className="sj-input h-9 max-w-xs"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), add())}
+            placeholder="e.g. HealthTech"
+            aria-label="New sector name"
+          />
+          <Button size="sm" variant="secondary" onClick={add} disabled={busy || !name.trim()}>
+            <Plus className="h-4 w-4" /> Add sector
+          </Button>
+        </div>
+      )}
     </Card>
   );
 }
@@ -315,10 +381,12 @@ function ProgramsEditor({
   data,
   reload,
   edition,
+  readOnly,
 }: {
   data: ProgramsResponse;
   reload: () => Promise<unknown>;
   edition: "incubator" | "vc";
+  readOnly: boolean;
 }) {
   const isVc = edition === "vc";
   const [name, setName] = useState("");
@@ -378,58 +446,85 @@ function ProgramsEditor({
               </div>
               {p.description && <p className="mt-0.5 truncate text-xs text-fg-muted">{p.description}</p>}
             </div>
-            <button type="button" aria-label={`Remove ${p.name}`} onClick={() => remove(p.id)} className="shrink-0 text-fg-muted hover:text-signal-flagged">
-              <Trash2 className="h-4 w-4" />
-            </button>
+            {!readOnly && (
+              <button type="button" aria-label={`Remove ${p.name}`} onClick={() => remove(p.id)} className="shrink-0 text-fg-muted hover:text-signal-flagged">
+                <Trash2 className="h-4 w-4" />
+              </button>
+            )}
           </li>
         ))}
       </ul>
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <label className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-fg-muted">Program name</span>
-          <input className="sj-input h-9" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Climate Cohort" />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-fg-muted">Sector</span>
-          <select className="sj-input h-9" value={sector} onChange={(e) => setSector(e.target.value)}>
-            <option value="">—</option>
-            {data.sectors.map((s) => (
-              <option key={s.id} value={s.name}>{s.name}</option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 sm:col-span-2">
-          <span className="text-xs font-medium text-fg-muted">Description</span>
-          <input className="sj-input h-9" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What this program invests in / accelerates" />
-        </label>
-        {isVc && (
-          <>
+      {!readOnly && (
+        <>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-medium text-fg-muted">Fund size (₹ Cr)</span>
-              <input type="number" min={0} className="sj-input h-9" value={fundSize} onChange={(e) => setFundSize(e.target.value)} placeholder="e.g. 300" />
+              <span className="text-xs font-medium text-fg-muted">Program name</span>
+              <input className="sj-input h-9" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Climate Cohort" />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-medium text-fg-muted">Allocated (₹ Cr)</span>
-              <input type="number" min={0} className="sj-input h-9" value={fundAllocated} onChange={(e) => setFundAllocated(e.target.value)} placeholder="e.g. 210" />
+              <span className="text-xs font-medium text-fg-muted">Sector</span>
+              <select className="sj-input h-9" value={sector} onChange={(e) => setSector(e.target.value)}>
+                <option value="">—</option>
+                {data.sectors.map((s) => (
+                  <option key={s.id} value={s.name}>{s.name}</option>
+                ))}
+              </select>
             </label>
-          </>
-        )}
-      </div>
-      <div className="mt-3">
-        <Button size="sm" variant="secondary" onClick={add} disabled={busy || !name.trim()}>
-          <Plus className="h-4 w-4" /> Add program
-        </Button>
-      </div>
+            <label className="flex flex-col gap-1 sm:col-span-2">
+              <span className="text-xs font-medium text-fg-muted">Description</span>
+              <input className="sj-input h-9" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What this program invests in / accelerates" />
+            </label>
+            {isVc && (
+              <>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-medium text-fg-muted">Fund size (₹ Cr)</span>
+                  <input type="number" min={0} className="sj-input h-9" value={fundSize} onChange={(e) => setFundSize(e.target.value)} placeholder="e.g. 300" />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-medium text-fg-muted">Allocated (₹ Cr)</span>
+                  <input type="number" min={0} className="sj-input h-9" value={fundAllocated} onChange={(e) => setFundAllocated(e.target.value)} placeholder="e.g. 210" />
+                </label>
+              </>
+            )}
+          </div>
+          <div className="mt-3">
+            <Button size="sm" variant="secondary" onClick={add} disabled={busy || !name.trim()}>
+              <Plus className="h-4 w-4" /> Add program
+            </Button>
+          </div>
+        </>
+      )}
     </Card>
   );
 }
 
-function CohortsEditor({ data, reload }: { data: ProgramsResponse; reload: () => Promise<unknown> }) {
+function CohortsEditor({
+  data,
+  reload,
+  seat,
+  userId,
+}: {
+  data: ProgramsResponse;
+  reload: () => Promise<unknown>;
+  seat: Seat;
+  userId: string;
+}) {
   const [programId, setProgramId] = useState("");
   const [name, setName] = useState("");
   const [startsOn, setStartsOn] = useState("");
   const [endsOn, setEndsOn] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Which programs' cohorts this seat may manage: all (full) / owned (PM) / none.
+  const editable = new Set(
+    seat === "full"
+      ? data.programs.map((p) => p.id)
+      : seat === "cohorts"
+        ? data.programs.filter((p) => p.ownerId === userId).map((p) => p.id)
+        : [],
+  );
+  const canAdd = seat === "full" || seat === "cohorts";
+  const addablePrograms = data.programs.filter((p) => editable.has(p.id));
 
   async function add() {
     if (!programId || !name.trim() || busy) return;
@@ -469,43 +564,52 @@ function CohortsEditor({ data, reload }: { data: ProgramsResponse; reload: () =>
                 <span key={ch.id} className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface-2 px-2.5 py-1 text-sm text-fg">
                   {ch.name}
                   {ch.startsOn && <span className="text-xs text-fg-muted">· {ch.startsOn}</span>}
-                  <button type="button" aria-label={`Remove ${ch.name}`} onClick={() => remove(ch.id)} className="text-fg-muted hover:text-signal-flagged">
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  {editable.has(p.id) && (
+                    <button type="button" aria-label={`Remove ${ch.name}`} onClick={() => remove(ch.id)} className="text-fg-muted hover:text-signal-flagged">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </span>
               ))}
             </div>
           </li>
         ))}
       </ul>
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <label className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-fg-muted">Program</span>
-          <select className="sj-input h-9" value={programId} onChange={(e) => setProgramId(e.target.value)}>
-            <option value="">Select a program…</option>
-            {data.programs.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-fg-muted">Cohort name</span>
-          <input className="sj-input h-9" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Cohort 2026-A" />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-fg-muted">Starts</span>
-          <input type="date" className="sj-input h-9" value={startsOn} onChange={(e) => setStartsOn(e.target.value)} />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-fg-muted">Ends</span>
-          <input type="date" className="sj-input h-9" value={endsOn} onChange={(e) => setEndsOn(e.target.value)} />
-        </label>
-      </div>
-      <div className="mt-3">
-        <Button size="sm" variant="secondary" onClick={add} disabled={busy || !programId || !name.trim()}>
-          <Plus className="h-4 w-4" /> Add cohort
-        </Button>
-      </div>
+      {canAdd && (
+        <>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-fg-muted">Program</span>
+              <select className="sj-input h-9" value={programId} onChange={(e) => setProgramId(e.target.value)}>
+                <option value="">Select a program…</option>
+                {addablePrograms.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-fg-muted">Cohort name</span>
+              <input className="sj-input h-9" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Cohort 2026-A" />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-fg-muted">Starts</span>
+              <input type="date" className="sj-input h-9" value={startsOn} onChange={(e) => setStartsOn(e.target.value)} />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-fg-muted">Ends</span>
+              <input type="date" className="sj-input h-9" value={endsOn} onChange={(e) => setEndsOn(e.target.value)} />
+            </label>
+          </div>
+          <div className="mt-3">
+            <Button size="sm" variant="secondary" onClick={add} disabled={busy || !programId || !name.trim()}>
+              <Plus className="h-4 w-4" /> Add cohort
+            </Button>
+          </div>
+          {seat === "cohorts" && addablePrograms.length === 0 && (
+            <p className="mt-2 text-xs text-fg-muted">You don't lead any programs yet — ask an admin to assign one.</p>
+          )}
+        </>
+      )}
     </Card>
   );
 }

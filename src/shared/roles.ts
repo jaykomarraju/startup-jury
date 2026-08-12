@@ -85,6 +85,16 @@ export function isRoleInEdition(role: Role, edition: Edition): boolean {
   return (ROLES_BY_EDITION[edition] as readonly string[]).includes(role);
 }
 
+/**
+ * Roles an admin/superuser may CREATE via user management (the Admin console).
+ * Excludes `superuser` (one owner per account) and `founder` (founders are
+ * external self-registrants, not staff created by an admin). Shared by the
+ * `POST /api/users` validation and the client create-user dropdown so they agree.
+ */
+export function creatableStaffRoles(edition: Edition): Role[] {
+  return ROLES_BY_EDITION[edition].filter((r) => r !== "superuser" && r !== "founder");
+}
+
 export function roleLabel(edition: Edition, role: Role): string {
   return ROLE_LABELS[edition][role] ?? role;
 }

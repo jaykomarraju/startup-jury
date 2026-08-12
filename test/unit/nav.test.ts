@@ -25,9 +25,13 @@ describe("nav manifest", () => {
     const su = ids(navForUser("incubator", "superuser"));
     expect(su).not.toContain("repscores");
     expect(su).not.toContain("jassigned");
-    // Includes the Settings "Set up" wizard (Session 2).
+    // Includes the Settings "Set up" wizard (Session 2) and the Session 4
+    // admin/account/billing screens.
     expect(su).toContain("setup");
-    expect(su).toHaveLength(21);
+    expect(su).toContain("admin");
+    expect(su).toContain("account");
+    expect(su).toContain("billing");
+    expect(su).toHaveLength(24);
   });
 
   it("founder sees only the founder portal; internal roles never see portal items", () => {
@@ -86,8 +90,12 @@ describe("nav manifest", () => {
     const pm = new Set(ids(navForUser("incubator", "program_manager")));
     expect(pm).toContain("upload");
     expect(pm).toContain("assign");
+    // PM is the decision maker (Session 4): oversees the jury pipeline + decides
+    // the intro call. Still not the executor's sign-up task.
+    expect(pm).toContain("jurypipeline");
+    expect(pm).toContain("introcalls");
+    expect(pm).toContain("setup");
     expect(pm).not.toContain("forsignup");
-    expect(pm).not.toContain("jurypipeline");
   });
 
   // ── VC trimming (pipeline role-gating + IC member mockup) ────────────────────

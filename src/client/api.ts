@@ -329,6 +329,14 @@ export function updateCredits(credits: number) {
   return postJson<{ ok: true; creditsBalance: number }>("/api/config/credits", { credits });
 }
 
+/** Buy a credit pack (simulated demo top-up — adds credits, no real payment). */
+export function purchaseCredits(credits: number) {
+  return postJson<{ ok: true; purchased: number; creditsBalance: number }>(
+    "/api/config/credits/purchase",
+    { credits },
+  );
+}
+
 /** Add a role-scoped additional param (Premium; ≤3 per role). */
 export function addAdditionalParam(name: string, roleScope: string, prompt?: string) {
   return postJson<{ ok: true; param: ConfigParam }>("/api/config/additional-params", {
@@ -373,6 +381,8 @@ export interface ProgramView {
   fundSize?: number;
   fundAllocated?: number;
   capitalDeployed?: number;
+  /** The Program Manager who leads this program (owner-scoped cohort management). */
+  ownerId?: string;
   active: boolean;
   cohorts: CohortView[];
 }
@@ -424,6 +434,51 @@ export function createSector(name: string) {
 }
 export function deleteSector(id: string) {
   return fetch(`/api/programs/sectors/${id}`, { method: "DELETE" }).then((r) => json<{ ok: true }>(r));
+}
+
+// ── Session 4 — User management (Admin console) ───────────────────────────────
+
+export interface UserView {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  roleLabel: string;
+  /** 'staff' | 'mentor' — mentor is a directory user-type, not a pipeline role. */
+  userType: string;
+  initials: string;
+  active: boolean;
+}
+
+export function listUsers(): Promise<{ users: UserView[] }> {
+  return fetch("/api/users").then((r) => json(r));
+}
+
+export interface CreateUserInput {
+  name: string;
+  email: string;
+  /** Required for a staff member; ignored for a mentor. */
+  role?: string;
+  /** 'staff' (default) or 'mentor'. */
+  userType?: "staff" | "mentor";
+}
+
+/** Create a team member or mentor. Returns the created user + a one-time
+ *  temporary password for the admin to relay. */
+export function createUser(input: CreateUserInput) {
+  return postJson<{ ok: true; tempPassword: string; user: UserView }>("/api/users", input);
+}
+
+/** Update a user's active flag, name, or role (staff only for re-roling). */
+export function updateUser(
+  id: string,
+  patch: { active?: boolean; role?: string; name?: string },
+): Promise<{ ok: true; user: UserView }> {
+  return fetch(`/api/users/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  }).then((r) => json(r));
 }
 
 // ── Phase 7 — Analytics ───────────────────────────────────────────────────────

@@ -1,8 +1,13 @@
 import type { PipelineConfig } from "./types";
 
-// Incubator pipeline — mirrors INC_DIAGRAM_2 and the role×stage permission matrix.
-// superuser + admin have full access at every stage; other roles act at specific
-// stages per the matrix.
+// Incubator pipeline — mirrors INC_DIAGRAM_2 and the role×stage permission matrix,
+// reconciled with the Jul-24 demo decision that the Program Manager is the
+// DECISION MAKER (the role matrix image predates it). superuser + admin have full
+// access at every stage. The program_manager assigns jury, makes/overrides the
+// shortlist decision, and decides (schedules, or delegates to the associate) the
+// intro call; the program_associate stays the frontline EXECUTOR (assign, schedule
+// on the PM's direction, send signup, run the founder-query loop). Jury still
+// scores + shortlists their assigned decks.
 export const incubatorPipeline: PipelineConfig = {
   edition: "incubator",
   initialStage: "uploaded",
@@ -62,12 +67,14 @@ export const incubatorPipeline: PipelineConfig = {
       roles: ["founder", "program_associate", "admin", "superuser"],
     },
     // AI gate (score > 5 enforced in the evaluation service, not here).
+    // The PM (decision maker) can assign jury; the associate (executor) does the
+    // day-to-day assignment.
     {
       from: "ai_evaluated",
       to: "assigned",
       action: "assign_jury",
       label: "Assign jury",
-      roles: ["program_associate", "admin", "superuser"],
+      roles: ["program_manager", "program_associate", "admin", "superuser"],
     },
     {
       from: "ai_evaluated",
@@ -83,26 +90,30 @@ export const incubatorPipeline: PipelineConfig = {
       label: "Begin jury evaluation",
       roles: ["jury", "admin", "superuser"],
     },
+    // Jury scores + shortlists their assigned decks; the PM (decision maker) may
+    // also make or override the shortlist / reject decision.
     {
       from: "jury_evaluation",
       to: "shortlisted",
       action: "shortlist",
       label: "Shortlist",
-      roles: ["jury", "admin", "superuser"],
+      roles: ["jury", "program_manager", "admin", "superuser"],
     },
     {
       from: "jury_evaluation",
       to: "rejected",
       action: "reject",
       label: "Reject",
-      roles: ["jury", "admin", "superuser"],
+      roles: ["jury", "program_manager", "admin", "superuser"],
     },
+    // Shortlist routes to the PM, who decides + schedules the intro call (or
+    // delegates the scheduling to the associate, who keeps the action too).
     {
       from: "shortlisted",
       to: "intro",
       action: "schedule_intro",
       label: "Schedule intro call",
-      roles: ["program_associate", "admin", "superuser"],
+      roles: ["program_manager", "program_associate", "admin", "superuser"],
     },
     {
       from: "intro",

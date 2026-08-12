@@ -71,6 +71,22 @@ describe("incubator role permissions", () => {
     ).toBe(true);
   });
 
+  it("program manager holds decision authority: assign, shortlist/reject and schedule intro", () => {
+    // PM is the decision maker (Jul-24 demo) — can assign jury...
+    expect(performAction("incubator", "ai_evaluated", "assign_jury", "program_manager").ok).toBe(true);
+    // ...make or override the shortlist / reject decision...
+    expect(performAction("incubator", "jury_evaluation", "shortlist", "program_manager")).toEqual({
+      ok: true,
+      to: "shortlisted",
+    });
+    expect(performAction("incubator", "jury_evaluation", "reject", "program_manager")).toEqual({
+      ok: true,
+      to: "rejected",
+    });
+    // ...and decide/schedule the intro call once a deck is shortlisted.
+    expect(performAction("incubator", "shortlisted", "schedule_intro", "program_manager").ok).toBe(true);
+  });
+
   it("founder completes signup but cannot shortlist", () => {
     expect(performAction("incubator", "signup", "complete_signup", "founder").ok).toBe(true);
     expect(performAction("incubator", "jury_evaluation", "shortlist", "founder")).toEqual({
@@ -109,6 +125,24 @@ describe("vc role permissions", () => {
       performAction("vc", "associate_review", "shortlist_to_partner", "associate").ok,
     ).toBe(true);
     expect(performAction("vc", "partner_review", "advance_to_call", "analyst")).toEqual({
+      ok: false,
+      error: "forbidden",
+    });
+  });
+
+  it("investment associate is one shade senior to the analyst", () => {
+    // Analyst uploads + scores (submit_for_ai, submit_core_scores)...
+    expect(performAction("vc", "uploaded", "submit_for_ai", "analyst").ok).toBe(true);
+    expect(performAction("vc", "analyst_scoring", "submit_core_scores", "analyst").ok).toBe(true);
+    // ...but only the associate makes the shortlist-to-partner call; the analyst
+    // (who can be an intern) cannot.
+    expect(performAction("vc", "associate_review", "shortlist_to_partner", "analyst")).toEqual({
+      ok: false,
+      error: "forbidden",
+    });
+    // The associate is the frontline scorer + reviewer; the partner (not the
+    // associate) sponsors the deal to IC.
+    expect(performAction("vc", "partner_call", "sponsor_to_ic", "associate")).toEqual({
       ok: false,
       error: "forbidden",
     });

@@ -376,5 +376,34 @@ config.post("/credits", requireRole("admin"), async (c) => {
   return c.json({ ok: true, creditsBalance: credits });
 });
 
+// ── Buy credits (self-serve top-up) ───────────────────────────────────────────
+//
+// The "Buy credits" screen mirrors the prototype's pay-as-you-go packs (Pro /
+// Premium, 20–50 credits). This is a DEMO TOP-UP: it ADDS the pack's credits to
+// the balance and records NO payment details. There is no real payment
+// integration — collecting card / UPI / bank credentials is deliberately out of
+// scope. The client labels it clearly as a simulated purchase.
+config.post("/credits/purchase", requireRole("admin"), async (c) => {
+  const edition = c.var.user.edition;
+  const body = await readBody<{ credits: number }>(c);
+  const credits = Number(body.credits);
+  // A pack adds 1..1000 credits (1000 = the largest enterprise pack).
+  if (!Number.isInteger(credits) || credits < 1 || credits > 1000) {
+    return c.json({ error: "invalid_pack" }, 400);
+  }
+  // Atomic increment so a concurrent upload/reserve can't clobber the top-up.
+  await c.env.DB.prepare(
+    "UPDATE org_settings SET credits_balance = credits_balance + ? WHERE edition = ?",
+  )
+    .bind(credits, edition)
+    .run();
+  const row = await c.env.DB.prepare(
+    "SELECT credits_balance FROM org_settings WHERE edition = ?",
+  )
+    .bind(edition)
+    .first<{ credits_balance: number }>();
+  return c.json({ ok: true, purchased: credits, creditsBalance: row?.credits_balance ?? 0 });
+});
+
 export { config };
 export default config;

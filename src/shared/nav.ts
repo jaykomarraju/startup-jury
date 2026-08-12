@@ -54,19 +54,23 @@ const INCUBATOR_NAV: NavItem[] = [
   { id: "assign", label: "Assign", icon: "UserPlus", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"] },
   { id: "jassigned", label: "Assigned", icon: "UserCheck", section: "Evaluation", roles: ["jury"], exclusive: true },
   {
+    // PM (decision maker) oversees jury shortlist/reject decisions here; jury sees
+    // their own evaluated decks.
     id: "jurypipeline",
     label: "Jury Pipeline",
     icon: "Gavel",
     section: "Evaluation",
-    roles: ["admin", "jury"],
+    roles: ["admin", "program_manager", "jury"],
     labelOverrides: { jury: "Evaluated" },
   },
   {
+    // The intro-call decision surface: shortlist routes to the PM, who schedules
+    // (or delegates to the associate). Jury sees the calls they're on.
     id: "introcalls",
     label: "Intro calls",
     icon: "Phone",
     section: "Evaluation",
-    roles: ["admin", "program_associate", "jury"],
+    roles: ["admin", "program_manager", "program_associate", "jury"],
     labelOverrides: { jury: "My Intro calls" },
   },
   { id: "forsignup", label: "For Sign up", icon: "Send", section: "Evaluation", roles: ["admin", "program_associate"] },
@@ -91,7 +95,11 @@ const INCUBATOR_NAV: NavItem[] = [
   // Settings
   { id: "coreparams", label: "Core Parameters", icon: "SlidersHorizontal", section: "Settings", roles: ["admin"] },
   { id: "myparams", label: "My Parameters", icon: "Sliders", section: "Settings", roles: ["admin", "program_manager", "program_associate", "jury"] },
-  { id: "setup", label: "Set up", icon: "Wrench", section: "Settings", roles: ["admin"] },
+  // PM manages cohorts for programs they lead; PA sees Set up read-only (Standard seat).
+  { id: "setup", label: "Set up", icon: "Wrench", section: "Settings", roles: ["admin", "program_manager", "program_associate"] },
+  { id: "account", label: "My account", icon: "UserCog", section: "Settings", roles: ["admin", "program_manager", "program_associate", "jury"] },
+  { id: "admin", label: "Admin console", icon: "Building2", section: "Settings", roles: ["admin"] },
+  { id: "billing", label: "Buy credits", icon: "CreditCard", section: "Settings", roles: ["admin"] },
   // Collaborate
   { id: "contactadmin", label: "Contact Admin", icon: "Mail", section: "Collaborate", roles: ["admin", "program_manager", "program_associate", "jury"] },
   { id: "contactteam", label: "Contact team", icon: "MessagesSquare", section: "Collaborate", roles: ["admin", "program_manager", "program_associate", "jury"] },
@@ -143,6 +151,9 @@ const VC_NAV: NavItem[] = [
   { id: "coreparams", label: "Core Parameters", icon: "SlidersHorizontal", section: "Settings", roles: ["admin"] },
   { id: "myparams", label: "My Parameters", icon: "Sliders", section: "Settings", roles: ["admin", "partner", "ic_member", "associate", "analyst"] },
   { id: "setup", label: "Set up", icon: "Wrench", section: "Settings", roles: ["admin"] },
+  { id: "account", label: "My account", icon: "UserCog", section: "Settings", roles: ["admin", "partner", "ic_member", "associate", "analyst"] },
+  { id: "admin", label: "Admin console", icon: "Building2", section: "Settings", roles: ["admin"] },
+  { id: "billing", label: "Buy credits", icon: "CreditCard", section: "Settings", roles: ["admin"] },
   // Collaborate
   { id: "contactadmin", label: "Contact Admin", icon: "Mail", section: "Collaborate", roles: ["admin", "partner", "ic_member", "associate", "analyst"] },
   { id: "contactteam", label: "Contact team", icon: "MessagesSquare", section: "Collaborate", roles: ["admin", "partner", "ic_member", "associate", "analyst"] },

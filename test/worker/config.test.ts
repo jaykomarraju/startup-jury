@@ -260,3 +260,42 @@ describe("admin-granted credits", () => {
     expect((await req("POST", "/api/config/credits", admin, { credits: -1 })).status).toBe(400);
   });
 });
+
+// ── Session 4 — Buy credits (self-serve simulated top-up) ────────────────────
+
+async function creditsBalance(): Promise<number> {
+  const row = await env.DB.prepare(
+    "SELECT credits_balance FROM org_settings WHERE edition = 'incubator'",
+  ).first<{ credits_balance: number }>();
+  return row!.credits_balance;
+}
+
+describe("buy credits (top-up)", () => {
+  it("an admin buys a pack — the balance increments atomically", async () => {
+    const admin = await login(ADMIN);
+    const before = await creditsBalance();
+    const res = await req("POST", "/api/config/credits/purchase", admin, { credits: 20 });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { purchased: number; creditsBalance: number };
+    expect(body.purchased).toBe(20);
+    expect(body.creditsBalance).toBe(before + 20);
+    expect(await creditsBalance()).toBe(before + 20);
+
+    // A second pack adds on top (not an absolute set).
+    await req("POST", "/api/config/credits/purchase", admin, { credits: 35 });
+    expect(await creditsBalance()).toBe(before + 55);
+  });
+
+  it("rejects invalid pack sizes (0, over the cap, non-integer)", async () => {
+    const admin = await login(ADMIN);
+    expect((await req("POST", "/api/config/credits/purchase", admin, { credits: 0 })).status).toBe(400);
+    expect((await req("POST", "/api/config/credits/purchase", admin, { credits: 1001 })).status).toBe(400);
+    expect((await req("POST", "/api/config/credits/purchase", admin, { credits: 2.5 })).status).toBe(400);
+  });
+
+  it("a non-admin cannot buy credits (403)", async () => {
+    const jury = await login(JURY);
+    const res = await req("POST", "/api/config/credits/purchase", jury, { credits: 20 });
+    expect(res.status).toBe(403);
+  });
+});

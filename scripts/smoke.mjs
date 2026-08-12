@@ -149,6 +149,17 @@ async function main() {
       `HTTP ${summary.status}`,
     );
 
+    // User management roster (Session 4) — admin-gated read.
+    const users = await req("GET", "/api/users", { token: inc.token });
+    check(
+      "GET /api/users → 200 roster with roles",
+      users.status === 200 &&
+        Array.isArray(users.json?.users) &&
+        users.json.users.length > 0 &&
+        typeof users.json.users[0]?.roleLabel === "string",
+      `HTTP ${users.status}`,
+    );
+
     for (const slug of ["cohort", "funnel", "evaluators", "drift"]) {
       const a = await req("GET", `/api/analytics/${slug}`, { token: inc.token });
       check(`GET /api/analytics/${slug} → 200`, a.status === 200, `HTTP ${a.status}`);

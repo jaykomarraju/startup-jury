@@ -336,12 +336,28 @@ describe("per-stage authorization", () => {
     expect(evalRow!.weighted_total).toBeCloseTo(0.7, 2);
   });
 
-  it("a program_manager is rejected by the assign endpoint gate (403)", async () => {
+  it("a program_manager can assign jury (decision authority — Jul-24 demo)", async () => {
     const id = "authz_assign_pm";
     await seedDeck(id, "ai_evaluated");
     const pm = await login(PM);
     const res = await post(`/api/decks/${id}/assign`, pm, { assigneeId: "inc_jury" });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; assignedTo: string };
+    expect(body.status).toBe("assigned");
+    expect(body.assignedTo).toBe("inc_jury");
+  });
+
+  it("a program_manager can make the shortlist decision + schedule the intro call", async () => {
+    // Jury shortlist routes to the PM, who decides and schedules the intro call.
+    const id = "authz_pm_decide";
+    await seedDeck(id, "jury_evaluation");
+    const pm = await login(PM);
+    const shortlist = await post(`/api/decks/${id}/transition`, pm, { action: "shortlist" });
+    expect(shortlist.status).toBe(200);
+    const intro = await post(`/api/decks/${id}/transition`, pm, { action: "schedule_intro" });
+    expect(intro.status).toBe(200);
+    const body = (await intro.json()) as { status: string };
+    expect(body.status).toBe("intro");
   });
 
   it("cross-edition decks are invisible (404)", async () => {

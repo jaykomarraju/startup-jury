@@ -172,9 +172,10 @@ pipeline.post("/decks/:id/transition", async (c) => {
 /** POST /decks/:id/assign — set the jury assignee and advance to Assigned. */
 pipeline.post(
   "/decks/:id/assign",
-  // assign_jury's pipeline roles are associate/admin/superuser — keep the coarse
-  // gate in lock-step so a program_manager isn't admitted only to hit an inner 403.
-  requireRole("program_associate", "admin"),
+  // assign_jury's pipeline roles are PM/associate/admin/superuser (the PM is the
+  // decision maker; the associate the executor) — keep the coarse gate in lock-step
+  // with the pipeline config so the admitted roles match the inner performAction.
+  requireRole("program_manager", "program_associate", "admin"),
   async (c) => {
     const user = c.var.user;
     const deck = await loadDeck(c, c.req.param("id"));

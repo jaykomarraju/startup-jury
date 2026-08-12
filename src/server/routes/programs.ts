@@ -1,9 +1,10 @@
 // Session 2 — Program & Cohort hierarchy API. Sector → Program → Cohort is the
 // umbrella over everything an edition does. Reads (list) are available to any
 // authed user so the toolbar filter dropdowns, the "Applies to" selector and the
-// Set up wizard can populate; mutations are admin/superuser-gated for now (full
-// Program-Manager ownership lands in Session 4). VC programs carry fund
-// economics (size / allocated / deployed) that feed the Capital Deployment report.
+// Set up wizard can populate. Sector/program CRUD is admin/superuser-gated
+// (org-admins create programs); cohort CRUD is admin/superuser OR the owning
+// Program Manager (Session 4 — owner-scoped via programs.owner_id). VC programs
+// carry fund economics (size / allocated / deployed) that feed Capital Deployment.
 
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -28,6 +29,7 @@ interface ProgramRow {
   fund_size: number | null;
   fund_allocated: number | null;
   capital_deployed: number | null;
+  owner_id: string | null;
   active: number;
   sort_order: number;
 }
@@ -76,6 +78,7 @@ function toProgramView(p: ProgramRow, cohorts: CohortRow[]) {
     fundSize: p.fund_size ?? undefined,
     fundAllocated: p.fund_allocated ?? undefined,
     capitalDeployed: p.capital_deployed ?? undefined,
+    ownerId: p.owner_id ?? undefined,
     active: p.active === 1,
     cohorts: cohorts.filter((ch) => ch.program_id === p.id).map(toCohortView),
   };
@@ -83,6 +86,14 @@ function toProgramView(p: ProgramRow, cohorts: CohortRow[]) {
 
 function isAdmin(c: Context<AppEnv>): boolean {
   return c.var.user.role === "admin" || c.var.user.role === "superuser";
+}
+
+/** A caller may manage a program's cohorts if they're admin/superuser, OR the
+ *  program_manager who LEADS that program (owner-scoped, per the Jul-24 demo).
+ *  Sector/program CRUD stays admin-only (org-admins create programs). */
+function canManageCohorts(c: Context<AppEnv>, ownerId: string | null): boolean {
+  if (isAdmin(c)) return true;
+  return c.var.user.role === "program_manager" && ownerId !== null && ownerId === c.var.user.id;
 }
 
 // ── Read: the whole hierarchy for the caller's edition ───────────────────────
@@ -105,7 +116,7 @@ programs.get("/", async (c) => {
 
   const progRows = (
     await c.env.DB.prepare(
-      `SELECT id, sector, name, description, fund_size, fund_allocated, capital_deployed, active, sort_order ` +
+      `SELECT id, sector, name, description, fund_size, fund_allocated, capital_deployed, owner_id, active, sort_order ` +
         `FROM programs WHERE edition = ?${activeClause} ORDER BY sort_order, name`,
     )
       .bind(edition)
@@ -219,7 +230,7 @@ programs.put("/:id", requireRole("admin"), async (c) => {
   const edition = c.var.user.edition;
   const id = c.req.param("id");
   const existing = await c.env.DB.prepare(
-    "SELECT id, sector, name, description, fund_size, fund_allocated, capital_deployed, active, sort_order FROM programs WHERE id = ? AND edition = ?",
+    "SELECT id, sector, name, description, fund_size, fund_allocated, capital_deployed, owner_id, active, sort_order FROM programs WHERE id = ? AND edition = ?",
   )
     .bind(id, edition)
     .first<ProgramRow>();
@@ -293,16 +304,18 @@ programs.delete("/:id", requireRole("admin"), async (c) => {
 
 // ── Cohorts ──────────────────────────────────────────────────────────────────
 
-programs.post("/:id/cohorts", requireRole("admin"), async (c) => {
+programs.post("/:id/cohorts", requireRole("program_manager", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const programId = c.req.param("id");
   // The program must exist in the caller's edition.
   const prog = await c.env.DB.prepare(
-    "SELECT id FROM programs WHERE id = ? AND edition = ?",
+    "SELECT id, owner_id FROM programs WHERE id = ? AND edition = ?",
   )
     .bind(programId, edition)
-    .first<{ id: string }>();
+    .first<{ id: string; owner_id: string | null }>();
   if (!prog) return c.json({ error: "not_found" }, 404);
+  // A program_manager may only manage cohorts for programs they lead.
+  if (!canManageCohorts(c, prog.owner_id)) return c.json({ error: "forbidden" }, 403);
 
   const body = await readBody<{ name: string; startsOn: string; endsOn: string }>(c);
   const name = typeof body.name === "string" ? body.name.trim() : "";
@@ -327,21 +340,23 @@ programs.post("/:id/cohorts", requireRole("admin"), async (c) => {
   });
 });
 
-/** Confirm a cohort belongs to a program in the caller's edition. */
+/** Confirm a cohort belongs to a program in the caller's edition. Carries the
+ *  owning program's owner_id so cohort mutations can be owner-scoped. */
 async function loadCohort(c: Context<AppEnv>, cohortId: string, edition: Edition) {
   return c.env.DB.prepare(
-    "SELECT c.id, c.program_id, c.name, c.starts_on, c.ends_on, c.active, c.sort_order " +
+    "SELECT c.id, c.program_id, c.name, c.starts_on, c.ends_on, c.active, c.sort_order, p.owner_id AS owner_id " +
       "FROM cohorts c JOIN programs p ON p.id = c.program_id WHERE c.id = ? AND p.edition = ?",
   )
     .bind(cohortId, edition)
-    .first<CohortRow>();
+    .first<CohortRow & { owner_id: string | null }>();
 }
 
-programs.put("/cohorts/:cohortId", requireRole("admin"), async (c) => {
+programs.put("/cohorts/:cohortId", requireRole("program_manager", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const cohortId = c.req.param("cohortId");
   const existing = await loadCohort(c, cohortId, edition);
   if (!existing) return c.json({ error: "not_found" }, 404);
+  if (!canManageCohorts(c, existing.owner_id)) return c.json({ error: "forbidden" }, 403);
 
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const name =
@@ -378,11 +393,12 @@ programs.put("/cohorts/:cohortId", requireRole("admin"), async (c) => {
   });
 });
 
-programs.delete("/cohorts/:cohortId", requireRole("admin"), async (c) => {
+programs.delete("/cohorts/:cohortId", requireRole("program_manager", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const cohortId = c.req.param("cohortId");
   const existing = await loadCohort(c, cohortId, edition);
   if (!existing) return c.json({ error: "not_found" }, 404);
+  if (!canManageCohorts(c, existing.owner_id)) return c.json({ error: "forbidden" }, 403);
   await c.env.DB.prepare("UPDATE cohorts SET active = 0 WHERE id = ?").bind(cohortId).run();
   return c.json({ ok: true });
 });
