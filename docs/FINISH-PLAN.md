@@ -826,9 +826,10 @@ exactly as specified in docs/FINISH-PLAN.md §4 (Session 8):
 3. **Comprehensive e2e + brand polish** across every screen and role added in Sessions 1–7 (workbench,
    setup wizard, 22 params, admin console/account/credits, automation, resubmit, calls/ICS, issue log,
    AI-health banner). Check the brand doc for colour/type, theme-aware light+dark, CSP-safe.
-4. **Refresh the demo seed** so every screen is live and coherent, and **resolve `CloudBridge`**
-   (`deck_1a5467f7…`) — the real §9 victim on the live demo. By now the `*/10` cron has either scored it
-   or marked it failed; whichever it is, leave the demo in a deliberate, explainable state.
+4. **Refresh the demo seed** so every screen is live and coherent. Note `CloudBridge`
+   (`deck_1a5467f7…`), the real §9 victim, was re-driven at the end of S7 and now sits at **`incomplete`**
+   (missing `founderEmail`/`founderPhone`) — decide whether to keep it as a second live resubmit-loop demo
+   case or clean it up, but leave it deliberate and explainable either way.
 5. **Docs:** update `HANDOFF.md` (mark the finish track complete), `docs/DEMO.md`, `docs/DEMO-AUDIENCE.md`,
    `docs/DEMO-RUNBOOK.md` (add the new screens to the click-path) and the runbook's troubleshooting.
 
@@ -839,9 +840,12 @@ pure builder `src/shared/ics.ts`, API `src/server/routes/calls.ts` (`/api/calls`
 content for the Workers binding, NOT base64). The internal issue log lives on `tickets.category='issue'`.
 The §9 bug is fully fixed: dead-letter queue `startup-jury-evals-dlq`, a `*/10 * * * *` cron sweep
 (`src/server/ai/health.ts`), a once-only credit refund, `POST /api/decks/:id/retry-ai`, and `aiState`/
-`aiError` on every deck view. **Watch out:** `decks.created_at` is SQLite's `"YYYY-MM-DD HH:MM:SS"` while
-this codebase writes ISO-8601 — comparing them as raw strings is wrong (a space sorts before "T"); use
-`datetime(x) <= datetime(y)`. Latest migration is `0018`; next is `0019`.
+`aiError` on every deck view — and **live AI scoring works again**: S7 found that `claude-sonnet-5`
+**rejects `temperature` with a 400**, so Session 5's `temperature: 0` had been failing every real upload
+and stranding its deck at `pending_ai` since S5. **Never re-add `temperature`/`top_p`/`top_k` to
+`callAnthropic`** — a test asserts they stay absent. **Also watch out:** `decks.created_at` is SQLite's
+`"YYYY-MM-DD HH:MM:SS"` while this codebase writes ISO-8601 — comparing them as raw strings is wrong (a
+space sorts before "T"); use `datetime(x) <= datetime(y)`. Latest migration is `0018`; next is `0019`.
 
 Be thorough — spend the tokens: use parallel subagents for discovery, write unit/worker/e2e tests, and
 follow the Standing Rules in §2 (green gate; commit to main with the Co-Authored-By trailer; wrangler
