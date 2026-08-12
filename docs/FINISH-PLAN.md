@@ -62,12 +62,12 @@ Full parity + all asks. Check items off as sessions land them.
 - [x] **Mentor** = a **user-type**, not a role (role matrix + prototype dropdowns confirm) — `users.user_type` _(S4)_
 - [x] **Admin console / My account / Buy credits** flows built (Buy credits = a simulated demo top-up, no real payment capture) _(S4)_
 
-### Automation & intake (Session 5)
-- [ ] **Per-program minimum shortlist threshold** in the admin dashboard; the system **blocks** a juror from shortlisting a deck scoring **below** the program's threshold
-- [ ] **AI determinism** — minimize run-to-run score variance (target ≤10%); rescore guard prevents needless re-runs
-- [ ] **Duplicate / returning-startup flags** — soft alert on likely duplicate (cost-driven) and a **history tag** when a known company returns (e.g. seed→Series A); not a hard block
-- [ ] **Upload validation** — required founder/contact columns (founder, email, phone, city, sector) enforced; **PDF-only**; missing detail → **Incomplete**
-- [ ] **Deck versioning** — re-uploads saved as a new version with history
+### Automation & intake (Session 5) ✅
+- [x] **Per-program minimum shortlist threshold** in the admin dashboard; the system **blocks** a juror from shortlisting a deck scoring **below** the program's threshold _(S5, `programs.shortlist_min`)_
+- [x] **AI determinism** — minimize run-to-run score variance (target ≤10%); rescore guard prevents needless re-runs _(S5, `temperature: 0`)_
+- [x] **Duplicate / returning-startup flags** — soft alert on likely duplicate (cost-driven) and a **history tag** when a known company returns (e.g. seed→Series A); not a hard block _(S5)_
+- [x] **Upload validation** — required founder/contact columns (founder, email, phone, city, sector) enforced; **PDF-only**; missing detail → **Incomplete** _(S5)_
+- [x] **Deck versioning** — re-uploads saved as a new version with history _(S5, `deck_versions`)_
 
 ### Incomplete-deck resubmit loop + real email (Session 6)
 - [ ] **Real email** via Cloudflare Email (replaces stub outbox)
@@ -114,7 +114,7 @@ Full parity + all asks. Check items off as sessions land them.
 | 2 | Program & Cohort hierarchy + config wizard (+ VC fund fields) | ✅ Done | `c70cbcd` (+ docs) | 2026-08-11 |
 | 3 | Parameter model — core 13 + role-scoped additional (AI-scored) + prompts + plan gating | ✅ Done | `f19b50b` (+ docs) | 2026-08-12 |
 | 4 | Roles & permissions — PM authority, Associate/Analyst, user mgmt/mentor, admin console/account/credits | ✅ Done | `4467bf7` (+ docs) | 2026-08-12 |
-| 5 | Automation — shortlist floor, AI determinism, duplicates/returning, upload validation, deck versioning | ⬜ Not started | — | — |
+| 5 | Automation — shortlist floor, AI determinism, duplicates/returning, upload validation, deck versioning | ✅ Done | `aebe362` (+ docs) | 2026-08-12 |
 | 6 | Incomplete-deck resubmit loop + real email | ⬜ Not started | — | — |
 | 7 | De-stub VC screens + ICS scheduling + issue log + pending-bug fix | ⬜ Not started | — | — |
 | 8 | Polish, full e2e, docs, final deploy | ⬜ Not started | — | — |
@@ -452,6 +452,98 @@ _(Append newest at the bottom. One entry per completed session.)_
     ICS) — S4 only verified the permissions. (5) `POST /api/users` returns the plaintext **`tempPassword`
     once** (no email yet); Session 6's real email should send it instead of surfacing it in the UI.
 
+- **2026-08-12 — Session 5 (Automation) shipped.** Commit `aebe362` (+ this doc commit). Intake now has real
+  guardrails: a **per-program shortlist floor**, **deterministic AI scoring**, **soft duplicate / returning
+  flags**, **required founder-detail validation → Incomplete**, and **deck versioning**. Green gate: typecheck
+  + lint + **252 unit/worker (1 skipped)** + build + **40 e2e**. Deployed (remote D1 migrated first — `0016`)
+  + `npm run smoke` **27/27**; **live-verified** on the deployed Worker (the floor returned a real
+  `409 below_shortlist_minimum` with its message, the deck did not move, `versions` served 200, and
+  `shortlistMin`/`decisionScore`/`shortlistBlocked` render on the deck view). The verification program+deck
+  were inserted straight into remote D1 and **deleted afterwards** (`leftover_deck=0`, no credits spent), so
+  the demo seed is untouched.
+  - **Per-program shortlist floor.** Migration `0016` adds **`programs.shortlist_min`** (NULL = no floor).
+    `routes/pipeline.ts` gates the two human "this deck moves forward on merit" actions — **`shortlist`**
+    (incubator, jury_evaluation→shortlisted) and **`shortlist_to_partner`** (VC, associate_review→
+    partner_review) — returning **409 `below_shortlist_minimum`** with `{message, score, minimum,
+    programName}`. The check runs **after** `performAction`'s role gate, so a forbidden action still 403s
+    first. The floor is **uniform — a superuser is held to it too** (§8: "the system prevents it"); the
+    escape hatch is an admin lowering the floor, which is an auditable config change rather than a silent
+    per-deck override. Non-shortlist transitions (e.g. `reject`) are never blocked.
+  - **The deck is judged on its `decisionScore`, not `ai_score`.** New pure
+    `shared/scoring.ts decisionScore(aiScore, humanTotals[])` = the AI composite averaged with the **mean of
+    the human composites** — the composite form of the workbench's **AI · My · Average** column, so the
+    number the floor rejects is the number the evaluator was looking at. AI-only when there are no human
+    evaluations; **null (⇒ blocked) when the deck is unscored**. Deck list + detail now carry
+    `decisionScore` / `shortlistMin` / `shortlistBlocked`, so `EvaluatePage` shows a live
+    "Shortlist minimum 5.5 · this deck 6.11" hint next to the Shortlist button.
+  - **Admin UI.** `PUT/POST /api/programs` accept **`shortlistMin`** (0–10, blank clears; `400
+    invalid_shortlist_min`; present-key-only semantics like the fund fields). The **Set up wizard** gains the
+    field on the create form plus an **inline per-program editor** so an existing program's floor can be
+    raised/lowered without re-creating it.
+  - **AI determinism.** `callAnthropic` now sends **`temperature: 0`** on top of the existing
+    `thinking: { type: "disabled" }` + forced `tool_choice`. **The Messages API has no seed parameter** —
+    temperature 0 is the strongest lever available. Prompt construction was already deterministic
+    (`sort_order`ed params, sorted anchor bands). **Residual-variance expectation (documented in
+    `ai/evaluate.ts`):** most re-runs identical; occasional single-parameter ±1 drift from serving-stack
+    non-determinism; composite within roughly ±0.3/10 — inside the ~10% target. The real protection is still
+    the S1 **rescore guard** (we don't re-run at all unless content or criteria changed).
+  - **Upload validation → Incomplete.** Required columns = **founder, email, phone, city, sector** (exactly
+    the prototype's `founder && email && phone && city && sector` completeness rule). New pure
+    **`src/shared/intake.ts`** owns `missingIntakeFields` / `mergeIntakeDetails` / normalisation /
+    validation. The single-upload form now collects founder+email+phone; the model extracts all five (new
+    `founder_email`/`founder_phone`/`city`/`sector` tool fields, told explicitly to return **null rather
+    than guess**); `evaluateDeck` merges with the **typed value winning** and the extraction filling blanks
+    (which is how a bulk upload gets its details). **Anything still missing forces `status='incomplete'`,
+    `complete=0` regardless of score**, and is stored as a CSV in **`decks.missing_fields`** — Session 6's
+    resubmit email reads exactly that column. The Upload screen renders the prototype's
+    "AI-extracted details" table with **"not captured"** cells and a Complete/Incomplete pill.
+  - **Bulk per-row errors.** `POST /api/decks/bulk` no longer 413s the whole batch on one oversized file or
+    silently drops a non-PDF: each file is validated individually and reported in **`results[]`**
+    (`{file, ok, deckId?, error?, flag?, note?}`); credits are reserved for the **accepted** files only,
+    still all-or-nothing. `400 pdf_required` only when *every* file is rejected (the response still carries
+    `results` so the UI can say which).
+  - **Duplicate / returning flags (soft, never blocking).** `classifyIntake` matches a submission against
+    the edition's decks on **name / founder / email / phone** (names normalised past legal suffixes —
+    "GreenGrid Energy Pvt Ltd" == "greengrid energy"; phones keyed on the last 10 digits). A match is
+    **returning** when the earlier application already concluded (exit/terminal stage), the funding stage
+    moved (seed→Series A), or the cohort differs; otherwise **duplicate**. Duplicate outranks returning.
+    Stored on `decks.intake_flag` / `intake_flag_note` / `related_deck_id`. The check runs **before the AI
+    call** (cost-driven — each run spends a credit) and again **inside `evaluateDeck`** with the extracted
+    founder details, which is what catches duplicates in a bulk upload (filenames only up front).
+  - **Deck versioning.** New **`deck_versions`** table (v1 backfilled for every deck with an `r2_key`).
+    **`POST /api/decks/:id/version`** (staff + the owning founder) stores the new PDF at
+    `decks/<id>_v<n>.pdf` **beside** the old object, appends a version row, re-points `decks.r2_key` and
+    **bumps `content_version`** — which is exactly the signal the S1 rescore guard waits on, so the deck is
+    **re-scored automatically** (queue fallback on a model error). **`GET /api/decks/:id/versions`** serves
+    the history. v1 keeps the historical `decks/<id>.pdf` key so every pre-S5 object still resolves.
+    This is the mechanism Session 6's incomplete-resubmit loop drives.
+  - **Prototype reality check (mined all 13 prototype HTMLs).** The **upload validation** copy is real and
+    was matched ("Uploaded decks — AI-extracted details", the `Deck | Founder name | Email ID | Phone
+    number | City | Sector | Status` table, "not captured", Complete/Incomplete pills). The **shortlist
+    threshold, duplicate/returning flags, deck versioning and bulk per-row errors do NOT exist anywhere in
+    the prototypes** — they are §8-only asks, so their UI is our invention. (The only "threshold" in the
+    prototypes is the static Best/Mediocre/Poor cohort-rating legend, already built in Phase 6, with a dead
+    "Save & apply" button.) Prototypes also say "PDF or PPTX" — §8's **PDF-only is final**, so that stands.
+  - **Deviation:** the prototype's juror screen has **no Shortlist control at all** (Submit / Save draft /
+    Re-assign only); shortlisting lives on the admin/PM jury-pipeline. Our app has had a jury Shortlist
+    button since Phase 4 per §8 ("the jury still does the shortlisting"), so the floor guards both surfaces.
+  - **Gotchas for later sessions:** (1) **`evaluateDeck` now forces Incomplete on missing founder detail**,
+    so every mocked `callModel` must return `founder_email`/`founder_phone`/`city`/`sector` or the deck lands
+    `incomplete` — four existing worker tests were updated for this. (2) **No shortlist floor is seeded on
+    Fintech Accelerator on purpose**: its demo decks (FinStack/InsureFlow) carry only ONE seeded AI parameter
+    score each, so the parallel `config.spec` weight edit re-scores them over the full 13-weight denominator
+    and `ai_score` collapses 8.6 → 0.87 — a floor there would then block the demo's canonical jury shortlist
+    after an unrelated config change. Climate Cohort's decks have the full 13-param breakdown (0010) and are
+    stable, so the seeded floors are **Climate Cohort 5.5 · Deep Tech Fund 5.5 · Fund II 6.5**, with Fintech
+    and SaaS Accelerator as the "no floor" case. (3) The floor **block** is covered exhaustively in
+    `test/worker/automation.test.ts` rather than e2e — raising a seeded program's floor in a spec would race
+    the parallel incubator/config specs. (4) `json()` in `src/client/api.ts` now throws a typed **`ApiError`**
+    (status + parsed body) instead of a bare `Error`; existing `.catch(() => …)` callers are unaffected.
+    (5) A **re-upload costs a credit** (it triggers a real AI run), consistent with every other evaluation.
+    (6) Running the full worker suite occasionally logs a Miniflare `EnvironmentTeardownError` /
+    "Dropped message … on queue" after the run — the new upload tests leave retrying queue messages behind
+    (there is still no DLQ; that's §9/Session 7). **Exit code stays 0**; it is log noise, not a failure.
+
 ---
 
 ## 7. CURRENT NEXT-SESSION PROMPT
@@ -463,43 +555,45 @@ You are continuing the ai.STARTUPJURY finishing build. This is a FRESH session w
 
 START by reading, in order:
 1. docs/FINISH-PLAN.md  (the master plan — read ALL of it, especially §8 meeting clarifications, §9 known
-   issues, and the §6 Progress Log entries for Sessions 1–4 — what shipped + gotchas left for you)
+   issues, and the §6 Progress Log entries for Sessions 1–5 — what shipped + gotchas left for you)
 2. HANDOFF.md           (architecture, bindings, workflow, gotchas)
 Recall the project memories (startup-jury-completion-gap, startup-jury-requirements-sources,
 startup-jury-open-scope-decisions, startup-jury-meeting-clarifications, phase5-vc-visual-gate). Open the
-prototypes most relevant to intake/automation: the incubator Superuser "AISJ_IC_SuserV11.HTM" (upload panel
-~1091, shortlist-threshold / cohort thresholds, admin dashboard) and "AISJ_INC_Jury_V3.html" (shortlist
-action), plus the VC Superuser "AISJ_VC_Superuser_V6.html". Live copies: https://aisj-incubator-v2.netlify.app
-· https://aisj-venturecapitalv2.netlify.app
+prototypes most relevant to the founder loop: the incubator Superuser "AISJ_IC_SuserV11.HTM" (Query panel,
+"Parameters needing response" / "Send to Query", the Incomplete-decks screen) and the founder-facing
+clarification form. Live copies: https://aisj-incubator-v2.netlify.app ·
+https://aisj-venturecapitalv2.netlify.app
 
-YOUR JOB THIS SESSION: complete **Session 5 — Automation** exactly as specified in docs/FINISH-PLAN.md §4
-(Session 5):
-- **Per-program shortlist floor** — admin sets a **minimum score per program**; the system **blocks** a juror
-  from shortlisting a deck scoring **below** the program's threshold, with a clear message. (Jury still does the
-  shortlisting — this is a guardrail, not auto-shortlist.) Store the floor on the program. NB: the incubator
-  shortlist is action `shortlist` (jury_evaluation→shortlisted, gated jury/PM/admin/superuser); enforce the
-  floor in `pipeline.ts` when that action runs, using the deck's `ai_score` (or the final composite) vs the
-  program's floor. Programs already carry `owner_id` (S4); add e.g. `programs.shortlist_min`.
-- **AI determinism** — minimize run-to-run score variance (target ≤10%): set a deterministic temperature/seed
-  in `evaluate.ts callAnthropic`; the rescore guard (S1) already prevents needless re-runs. Document the
-  residual-variance expectation.
-- **Duplicate / returning-startup flags** — at upload match on name/founder/email: a soft **duplicate alert**
-  (cost-driven, not a block) + a **returning-company history tag** when a known company re-applies (seed→Series
-  A). Soft alerts only.
-- **Upload validation** — enforce required founder/contact columns (founder, email, phone, city, sector);
-  **PDF-only** (already enforced — keep); missing detail → **Incomplete**. Bulk: AI extraction fills details;
-  surface per-row errors.
-- **Deck versioning** — a re-upload saves a **new version** with history (this feeds the S6 incomplete-resubmit
-  loop). Note S1 added `decks.content_version` (currently only bumped by config); wire real deck versioning here.
+YOUR JOB THIS SESSION: complete **Session 6 — Incomplete-deck resubmit loop + real email** exactly as
+specified in docs/FINISH-PLAN.md §4 (Session 6):
+- **Real email via Cloudflare Email Sending** — replace the stub body of `src/server/email/outbox.ts`
+  `sendEmail` (keep `email_outbox` as the audit log); add the binding/secret to `wrangler.jsonc`. Load the
+  `cloudflare-email-service` skill first. **⚠️ ASK THE USER for the sending domain/address if it is not
+  already recorded here** — it was not captured in Sessions 1–5.
+- **Auto-notify on Incomplete** — when `evaluateDeck` lands a deck at `status='incomplete'`, automatically
+  email the founder a **tokenized link** listing the **missing/feedback sections**. Session 5 already stores
+  exactly what is missing: `decks.missing_fields` (a CSV of the `src/shared/intake.ts` field keys — parse it
+  with `parseMissingFields`, label it with `INTAKE_FIELD_LABELS`/`describeMissingFields`), plus the
+  `deck_extractions.missing` slide flags for the deck sections (traction/team/ask/…). The recipient is
+  `decks.founder_email` (S5) falling back to the uploader's email.
+- **Resubmit loop** — the tokenized link opens a founder page showing the feedback sections + a re-upload
+  control → **auto re-score** → the deck returns to the evaluator. **The versioning half is already built:**
+  `POST /api/decks/:id/version` (S5) stores a new version, bumps `content_version` and re-runs `evaluateDeck`
+  automatically; `GET /api/decks/:id/versions` serves the history. So Session 6 = the token, the public
+  founder page, the email, and wiring them to that endpoint. No separate Q&A form — feedback sections only
+  (§8).
 
-**Touch:** `src/server/routes/decks.ts`, `src/server/ai/evaluate.ts`, `src/client/routes/UploadPage.tsx`,
-`src/server/routes/config.ts` (or `programs.ts` for the per-program floor), `src/shared/scoring.ts`, + a migration.
+**Touch:** `src/server/email/outbox.ts`, `src/server/ai/evaluate.ts` (fire the notification),
+`src/server/routes/` (a public tokenized founder route — note it must bypass `requireAuth`),
+`src/client/routes/FounderPortal.tsx` (or a new public page), `wrangler.jsonc`, + a migration for the token.
 
-Context from S1–S4 you'll build on: uploads set `decks.program_id`/`cohort_id` (legacy text cols still exist,
-dropped in S8); `evaluateDeck` scores 22 params (13 core = 100% composite + 9 informational); the AI gate is
-`>5` weighted; single-upload enqueues to `EVAL_QUEUE` on a synchronous error (partial pending-bug mitigation —
-full fix is S7). Programs have `owner_id` + a PM-owner model (S4). `POST /api/users` exists (S4). Keep the demo
-seed pristine (S8 refreshes it).
+Context from S1–S5 you build on: `decks.missing_fields` / `founder_email` / `founder_phone` / `intake_flag`
+and the `deck_versions` table all exist (migration 0016); a missing required column already forces a deck
+Incomplete regardless of score; `evaluateDeck` scores 22 params (13 core = 100% composite + 9 informational)
+at `temperature: 0`; the per-program shortlist floor blocks below-threshold shortlists with 409
+`below_shortlist_minimum`; the client `json()` helper now throws a typed `ApiError`. Keep the demo seed
+pristine (S8 refreshes it) — `inc_deck_payroute` and `inc_deck_meera_incomplete` are seeded with real
+`missing_fields`, so they are your demo fixtures for the loop.
 
 Be thorough — spend the tokens: use parallel subagents for discovery, write unit/worker/e2e tests, and
 follow the Standing Rules in §2 (green gate; commit to main with the Co-Authored-By trailer; wrangler
@@ -508,7 +602,7 @@ migration — + npm run smoke at the end; keep the demo seed live). Node 22 via 
 busy, e2e takes `E2E_PORT=<free port>`. NB: if `wrangler … --remote` hits a transient `code 7403`, just retry.
 
 BEFORE FINISHING: do the §5 End-of-session checklist — check off §1 items, update the §3 tracker, append
-a §6 Progress Log entry, and replace this §7 prompt with the Session 6 prompt. Commit the updated plan to main.
+a §6 Progress Log entry, and replace this §7 prompt with the Session 7 prompt. Commit the updated plan to main.
 ```
 
 ### Next-session prompt template (for future sessions)

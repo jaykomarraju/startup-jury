@@ -658,3 +658,32 @@ each finish session). Landed so far:
   purchase`, atomic increment; **no real payment / card capture** — out of scope). Nav superuser superset
   21→24 (`admin`/`account`/`billing`). Investment Associate vs Analyst (VC) verified + test-locked (the VC
   intro-call screen + ICS is Session 7).
+
+- **Session 5 — Automation** (commit `aebe362`). Migration `0016` adds **`programs.shortlist_min`**,
+  `decks.founder_email`/`founder_phone`/`missing_fields`/`intake_flag`/`intake_flag_note`/`related_deck_id`,
+  and a **`deck_versions`** table (v1 backfilled for every deck with an `r2_key`).
+  - **Per-program shortlist floor.** `routes/pipeline.ts` gates the `shortlist` (incubator) and
+    `shortlist_to_partner` (VC) actions → **409 `below_shortlist_minimum`** with an evaluator-facing
+    `message`. The deck is judged on **`shared/scoring.ts decisionScore`** = the AI composite averaged with
+    the mean human composite (the composite form of the workbench's AI · My · Average column). Uniform for
+    every role incl. superuser; the escape hatch is an admin lowering the floor in **Set up** (a new
+    per-program field + inline editor). Deck views carry `shortlistMin`/`decisionScore`/`shortlistBlocked`.
+  - **AI determinism.** `callAnthropic` sends **`temperature: 0`** (plus the existing `thinking: disabled`
+    + forced `tool_choice`). The Messages API has no seed param; the residual-variance expectation is
+    documented in `ai/evaluate.ts`.
+  - **Upload validation.** Required columns = founder, email, phone, city, sector. The form collects them,
+    the model extracts them (new `founder_email`/`founder_phone`/`city`/`sector` tool fields), and
+    `mergeIntakeDetails` lets the **typed value win**. Anything still missing forces **Incomplete**
+    regardless of score and is stored in `decks.missing_fields` (Session 6 emails exactly this list).
+    **Bulk upload now reports per-file errors** (`results[]`) instead of 413-ing the whole batch.
+  - **Duplicate / returning flags.** Pure **`src/shared/intake.ts`** (normalisation + `classifyIntake`) with
+    the DB-backed **`src/server/intake.ts`**. Matches on name / founder / email / phone: a live same-stage
+    match = soft **duplicate** alert (run *before* the AI call — each run costs a credit), a
+    concluded / stage-moved / different-cohort match = **returning** history tag. Never blocks;
+    `evaluateDeck` re-checks after extraction (that's what catches bulk duplicates).
+  - **Deck versioning.** **`POST /api/decks/:id/version`** (staff + the owning founder) stores the new PDF
+    at `decks/<id>_v<n>.pdf`, appends to `deck_versions`, re-points `r2_key` and bumps `content_version` —
+    which **unblocks the Session-1 rescore guard**, so the new version is scored automatically. Plus
+    **`GET /api/decks/:id/versions`**. This is the mechanism Session 6's resubmit loop drives.
+  - New client `ApiError` (carries status + JSON error body) so the workbench/stage screens can surface the
+    floor's message verbatim.
