@@ -12,7 +12,15 @@ and older notes ever disagree, **§8 wins.**
 
 ---
 
-## 0. How to use this document — READ FIRST, every session
+## 0. How to use this document
+
+> **✅ The finish track is COMPLETE — all 8 sessions shipped (2026-08-11 → 2026-08-12).** There is no
+> next session; §7 records the one open item (the email sending domain, an external step). What
+> follows is the plan as executed, kept as the record of what was decided and why. **§8 (the meeting
+> clarifications) and §9 (known issues) remain the authoritative reference** for anyone maintaining
+> the app.
+
+### The per-session procedure that was followed
 
 Each build session is a **fresh Claude session with zero memory of the others.** Before doing anything:
 
@@ -80,14 +88,19 @@ Full parity + all asks. Check items off as sessions land them.
 - [x] Internal **issue log** (in-app admin tracker) so the team logs testing issues in one place _(S7, `tickets.category='issue'`)_
 - [x] Investigate/fix the **stuck-at-"pending"** upload bug (§9) _(S7 — DLQ + cron sweep + credit refund + real failure reason)_
 
-### Polish & ship (Session 8)
-- [ ] **Set the email sending domain** — onboard it, set `vars.EMAIL_FROM` in `wrangler.jsonc`, redeploy,
-      and do the **live inbox test** Session 6 could not (see the S6 §6 log). Then make `POST /api/users`
-      email the temp password instead of surfacing it in the UI (Session 4's leftover).
-- [ ] Brand polish; remove deprecated free-text program/cohort columns once migrated
-- [ ] e2e coverage for every new screen/role; full green gate
-- [ ] HANDOFF.md + demo docs + runbook updated; seed refreshed (programs/cohorts/params/fund data) so every screen is live
-- [ ] Final `npm run smoke` green against the live URL
+### Polish & ship (Session 8) ✅
+- [x] **`POST /api/users` emails the temp password** (Session 4's leftover) — `buildAccountInviteEmail`
+      + `deliverInvite`, with the credential returned only when delivery genuinely didn't happen _(S8)_
+- [⚠️] **Set the email sending domain** — **NOT DONE: the domain is still not onboarded** (confirmed
+      with the user, 2026-08-12). This is the one item the finish track could not close, because it is
+      an external DNS/dashboard step, not code. Delivery is audit-only and **no live inbox test has
+      ever been run**. To go live: onboard the domain, set `vars.EMAIL_FROM`, `npx wrangler deploy` —
+      **no code change.** Everything downstream (Incomplete notices, `.ics` call invites, user
+      invites) starts delivering on that one line.
+- [x] Brand polish; **deprecated free-text `decks.program`/`cohort` dropped** _(S8, migration 0019)_
+- [x] e2e coverage for every new screen/role; full green gate _(S8, `e2e/coverage.spec.ts`, 69 e2e)_
+- [x] HANDOFF.md + demo docs + runbook updated; seed refreshed so every screen is live _(S8, 0020)_
+- [x] Final `npm run smoke` green against the live URL _(S8, **40/40**)_
 
 ---
 
@@ -120,7 +133,7 @@ Full parity + all asks. Check items off as sessions land them.
 | 5 | Automation — shortlist floor, AI determinism, duplicates/returning, upload validation, deck versioning | ✅ Done | `aebe362`, `28c331e` (+ docs) | 2026-08-12 |
 | 6 | Incomplete-deck resubmit loop + real email | ✅ Done | `2b385ff` (+ docs) | 2026-08-12 |
 | 7 | De-stub VC screens + ICS scheduling + issue log + pending-bug fix | ✅ Done | `29c78e1` (+ docs) | 2026-08-12 |
-| 8 | Polish, full e2e, docs, final deploy | ⬜ Not started | — | — |
+| 8 | Polish, full e2e, docs, final deploy | ✅ Done | `7a011f7` (+ docs) | 2026-08-12 |
 
 Legend: ⬜ Not started · 🔶 In progress · ✅ Done.
 
@@ -790,93 +803,148 @@ _(Append newest at the bottom. One entry per completed session.)_
     test). (7) `StagePage` no longer owns `introcalls`/`partnercall`/`alignmentcall`; a future session
     adding a stage config for those slugs will be **shadowed** by `CallsPage`, which is checked first.
 
+
+- **2026-08-12 — Session 8 (Polish, full e2e, docs, final deploy) shipped. THE FINISH TRACK IS
+  COMPLETE.** Commit `7a011f7` (+ this doc commit). Green gate: typecheck + lint + **400
+  unit/worker/client (1 skipped)** + build + **69 e2e** (52 → 69). Deployed (remote D1 migrated first —
+  `0019` + `0020`) + `npm run smoke` **40/40** (6 new checks). Live-verified on the deployed Worker.
+  - **⚠️ THE ONE THING THAT DID NOT SHIP: the email sending domain is still not onboarded.** The user
+    was asked at the top of this session and confirmed it isn't ready, so per the session brief this
+    did **not** block — everything else shipped. Delivery remains audit-only (`status='recorded'`) and
+    **the live inbox test has still never been run**; that half of the §4 Session-6 acceptance
+    criterion is the finish track's single open item. It is an external DNS/dashboard step, not code:
+    onboard the domain → set `vars.EMAIL_FROM` in `wrangler.jsonc` → `npx wrangler deploy`. The
+    `send_email` binding is deployed (`env.EMAIL (unrestricted)` in the deploy output) and every
+    composer, attachment and dedupe key is built and tested.
+  - **`POST /api/users` now emails the temp password — Session 4's leftover, closed.** New pure
+    **`buildAccountInviteEmail`** (text + HTML, escaped, correct English article for the role label)
+    and **`emailDeliveryConfigured(env)`**. `users.ts` gained **`deliverInvite()`**, which sends and
+    then reports what actually happened: the response carries `tempPassword` **only when the mail did
+    not get through** (`skipped` — no verified domain — or `failed`). That is deliberately driven by
+    the outbox's real `status`, not by configuration alone: S6's gotcha #4 warned that mailing a
+    credential over a dead transport would silently strand every new user, and this is the shape that
+    can't. **`OutboundEmail` gained `auditBody`** so the outbox — a durable log — records
+    `[redacted]` instead of the plaintext password. Three worker tests cover all three branches,
+    including recovering the password from the sent message and logging in with it.
+  - **Migration `0019` — `decks.program` / `decks.cohort` dropped.** A subagent inventory confirmed
+    **no code anywhere outside `migrations/` had read them since Session 2** — only the 0002/0005/0006/
+    0008 seed inserts and the 0011 backfill that consumed them, all of which run *before* 0019, so a
+    fresh replay is unaffected. **A plain `ALTER TABLE … DROP COLUMN` was the right call, not the
+    twelve-step rebuild the plan anticipated:** SQLite only rejects DROP COLUMN for an indexed /
+    view-referenced / generated column, and neither of these is any of those — whereas a rebuild would
+    have meant re-creating **eleven inbound `ON DELETE CASCADE` foreign keys** by hand, which is the
+    genuinely risky option. Verified locally first; regression tests assert both columns are gone and
+    all four `decks` indexes survived.
+  - **Migration `0020` — the demo-seed refresh (no schema change).** A seed audit found the demo was
+    coherent only on the two decks Session 1 hand-wrote. Fixed:
+    1. **Full 13-parameter AI breakdowns for all 28 remaining scored decks.** Previously *two* decks
+       had one; every other deck advertised an `ai_score` in the list with an empty breakdown behind
+       it. The values were **solved so the weighted total over the full 13-weight rubric reproduces
+       each deck's existing `ai_score` exactly** — the same arithmetic `weightedTotal()` and
+       `rescoreEdition()` use — so an admin weight edit re-scores from the rows without the headline
+       jumping. That **retires the Session-5 gotcha** that a weight edit collapsed FinStack/InsureFlow
+       from 8.6 to 0.87 (they had one score row against a 13-weight denominator), which had made the
+       demo fragile to an unrelated config change. Scores are **whole numbers 0–10**, the shape the
+       live model returns, generated deterministically (no `Math.random`) with rationale text keyed to
+       each score's band, and a per-deck check that the arithmetic actually closes.
+    2. **A latent Session-1 inconsistency fixed:** 0010's hand-written TaxPilot and WealthOS
+       breakdowns weight out to **5.93 / 8.06**, not the **6.2 / 8.1** the deck rows advertised. The
+       composite now derives from its own evidence (the scores carry hand-written rationales that must
+       keep matching their values). Both stay in the same signal band, and no test asserted the old
+       numbers.
+    3. **New fixtures for the newest surfaces.** **PitchLoop** — incubator, seeded `pending_ai` with
+       `ai_failed_at` + a real failure reason, so the §9 AI-health banner and "Re-run AI" have
+       something to render. It is safe: `sweepStuckEvaluations` filters on `ai_failed_at IS NULL`, so
+       the `*/10` cron will never re-drive it or spend a credit. **Northbeam Robotics** — VC,
+       Incomplete with missing intake columns, extraction sections marked missing, and a founder
+       query, because the whole query/resubmit surface had been incubator-only and the VC Query screen
+       matched exactly one deck with no thread on it.
+    4. Also: the **returning-company** flag on `vc_deck_agrichainvc` (the seed already contained the
+       case the feature exists for — AgriChain applying to a second VC fund — it was just never
+       flagged); `investment_dd` / `term_sheets` / `legal_dd` rows for the decks parked in those
+       stages (those rows are normally *transition side effects*, so seed-placed decks never got one);
+       non-`open` ticket/issue states and a **rescheduled call at `ics_sequence = 1`** so the
+       SEQUENCE-bump path is demoable; org **branding** (`branding_json` was `{}`, so `orgName()` made
+       the Incomplete email say "the programme"); the missing `sectors` rows incl. Fund II's
+       `Multi-sector`; and `program_id` for the **real uploaded decks**, which had `NULL` and were
+       therefore hidden by the toolbar filters.
+  - **CloudBridge (`deck_1a5467f7…`) — KEPT, deliberately.** It is the finish track's best artifact: a
+    real deck that sat at `pending_ai` for 19 days, was re-driven by the Session-7 sweep, and landed
+    **Incomplete** because `founderEmail`/`founderPhone` genuinely are absent from its PDF. Its
+    original token was only ever stored as a hash, so `0020` revokes it and mints a fresh readable demo
+    link — **`/resubmit/aisj-demo-cloudbridge-resubmit-2026`** — verified live: it returns Claude's own
+    extraction of the two missing sections (Traction, Ask/CTA) with no session at all.
+  - **Brand / theme / a11y pass** against `startupjury_brand_guidelines.docx`. The audit found **zero
+    hex literals and zero raw Tailwind palette classes** in the sixteen finish-track screens — the
+    design system had held — but two real theme bugs: `text-white` on amber in the Set up stepper
+    (**2.43:1**, below AA, on the most-looked-at element of that screen) and the Research button's
+    fixed `bg-navy`, which in dark theme measured **1.06:1 against its own surface** — the control was
+    invisible on a core demo path. Both fixed with semantic pairings. Also unified the **three**
+    divergent table-header styles onto the house markup, gave the calls modal
+    `role="dialog"`/`aria-modal`/document-level Escape and the brand scrim, turned `StagePage`'s
+    `<td onClick>` into a real button, labelled the icon-only pills, aligned two page wrappers, and
+    replaced the wizard's stale "team management is coming to the Admin console" copy (it shipped in
+    S4). **CSP audit clean** — no CDN, external font, remote image, `eval` or `dangerouslySetInnerHTML`
+    anywhere; the pdf.js worker is self-hosted; the only outbound URLs are the Research menu's, opened
+    by explicit user action with `noopener,noreferrer`. **No CSP header was added** — doing it properly
+    needs `img-src data:` (the deck viewer renders pages as data URIs), `style-src 'unsafe-inline'` and
+    `worker-src blob:`, and getting it wrong blanks the deck viewer; noted as follow-up work rather
+    than risked on the last day.
+  - **The Export button does something.** It had been a live-looking, handler-less button since Phase 2
+    on **All decks and every stage screen**. New pure **`src/client/exportCsv.ts`** exports the
+    on-screen table (post-filter, in order) as RFC 4180 CSV with a UTF-8 BOM, and **defuses
+    spreadsheet formula injection** on the attacker-influenced columns — a founder picks their own
+    company name, and Excel executes a cell opening with `= + - @`. Client-side on purpose: the rows
+    are already loaded, so there's no round-trip and no new authZ surface. `GET /api/decks` now also
+    returns `programName`/`cohortName` (the `programs` join already existed for `shortlist_min`).
+  - **e2e coverage sweep — `e2e/coverage.spec.ts`, 17 tests, 52 → 69.** An inventory found whole
+    families with no browser coverage: **every `StagePage` slug in both editions** (twelve), the
+    **founder portal** (four screens, nav-only until now), **eight of the twelve** analytics reports
+    incl. all three jury-exclusive ones, the support queue, the team channel, the AI-health banner,
+    the Upload intake table, and the Set up wizard's last two steps. All added, all read-only on shared
+    state (the suite is `fullyParallel` over one D1 — S5/S6/S7 each recorded a real race). The headline
+    addition is a **regression guard that walks every nav slug for a superuser in both editions and
+    asserts none renders `StubPage`** — the property the whole finish track was aiming at, previously
+    asserted only on the two screens Session 7 happened to de-stub.
+  - Fixed a React **`key`-spread warning** in `ScoreBars` that the fuller seed made visible on every
+    report drawer: a score carries the *parameter* key (Session 1, so the client can join scores to the
+    rubric), and spreading it into JSX made React read it as the reconciliation key.
+  - **Live verification (deployed Worker).** `credits_balance` **42 / 49 — unchanged** (no credit was
+    spent this session); **42 decks, 0 without a program**; **0 composite/breakdown mismatches**; **0
+    decks stuck at `pending_ai`** other than the deliberate PitchLoop fixture; both `decks.program` and
+    `decks.cohort` gone; both resubmit links live and the superseded CloudBridge token revoked.
+  - **Follow-ups deliberately NOT taken** (recorded so nobody assumes they were missed): a real CSP
+    header (see above); `deck_extractions` for the 28 newly-broken-down decks (they have no R2 object,
+    and inventing extracted slide text for a PDF that doesn't exist would put a lie in the report
+    drawer — the empty state is the honest answer); and a `deck_versions` row for any seeded deck, for
+    the same reason Session 6 declined it.
+
 ---
 
-## 7. CURRENT NEXT-SESSION PROMPT
+## 7. FINISH TRACK COMPLETE — no next session
 
-> Copy-paste the block below into a brand-new Claude Code session (in this repo) to run the next session.
+**All 8 sessions shipped between 2026-08-11 and 2026-08-12.** The §3 tracker is fully ✅ and every §1
+box is ticked. Target delivery was Saturday 15 Aug 2026, 09:00 IST; the scope landed on 12 Aug.
 
-```
-You are continuing the ai.STARTUPJURY finishing build. This is a FRESH session with no prior context.
-This is the LAST session — everything ships at the end of it.
+Live: **https://startup-jury.jay-komarraju.workers.dev** · final commit `7a011f7` ·
+green gate typecheck + lint + **400** unit/worker/client + build + **69** e2e · `npm run smoke` **40/40**.
 
-START by reading, in order:
-1. docs/FINISH-PLAN.md  (the master plan — read ALL of it, especially §8 meeting clarifications, §9 known
-   issues, and the §6 Progress Log entries for Sessions 1–7 — what shipped + the gotchas left for you)
-2. HANDOFF.md           (architecture, bindings, workflow, gotchas)
-Recall the project memories (startup-jury-completion-gap, startup-jury-requirements-sources,
-startup-jury-open-scope-decisions, startup-jury-meeting-clarifications, phase5-vc-visual-gate,
-startup-jury-email-domain). Prototypes live in `/Users/jayanthkomarraju/Downloads/STARTUPJURY-TEAM-FOLDER/`
-(Incubator + VC "Final files"); live copies: https://aisj-incubator-v2.netlify.app ·
-https://aisj-venturecapitalv2.netlify.app
+**One item is open, and it is not code.** The **email sending domain is still not onboarded**, so
+delivery is audit-only and the live inbox test has never run. To switch it on:
 
-YOUR JOB THIS SESSION: complete **Session 8 — Polish, full e2e, docs, final deploy, demo readiness**
-exactly as specified in docs/FINISH-PLAN.md §4 (Session 8):
-1. **Email sending domain — the one blocking external step.** ASK THE USER FIRST whether the domain is
-   onboarded. If yes: set `vars.EMAIL_FROM` in `wrangler.jsonc` to a verified address, `npx wrangler
-   deploy`, and do the **live inbox test** Sessions 6 and 7 could not (an Incomplete-deck resubmit mail
-   AND a call invite with its `.ics` attachment — confirm the attachment actually lands and imports).
-   Then make `POST /api/users` **email** the temp password instead of returning it in the response body
-   (Session 4's leftover; compose it like `buildIncompleteEmail`). If the domain is still NOT ready, do
-   NOT block — say so plainly in the §6 log and ship everything else.
-2. **Drop the deprecated free-text columns** `decks.program`/`decks.cohort` (Session 2 deprecated them;
-   new uploads have written `program_id`/`cohort_id` only since S2). Grep for readers FIRST — check the
-   seed migrations and analytics. Migration `0019`; SQLite needs a table rebuild for a DROP COLUMN on an
-   older schema, so verify locally before `--remote`.
-3. **Comprehensive e2e + brand polish** across every screen and role added in Sessions 1–7 (workbench,
-   setup wizard, 22 params, admin console/account/credits, automation, resubmit, calls/ICS, issue log,
-   AI-health banner). Check the brand doc for colour/type, theme-aware light+dark, CSP-safe.
-4. **Refresh the demo seed** so every screen is live and coherent. Note `CloudBridge`
-   (`deck_1a5467f7…`), the real §9 victim, was re-driven at the end of S7 and now sits at **`incomplete`**
-   (missing `founderEmail`/`founderPhone`) — decide whether to keep it as a second live resubmit-loop demo
-   case or clean it up, but leave it deliberate and explainable either way.
-5. **Docs:** update `HANDOFF.md` (mark the finish track complete), `docs/DEMO.md`, `docs/DEMO-AUDIENCE.md`,
-   `docs/DEMO-RUNBOOK.md` (add the new screens to the click-path) and the runbook's troubleshooting.
+1. Onboard the domain — Cloudflare Dashboard → Compute & AI → Email Service → Email Sending → Onboard
+   Domain (this adds the SPF/DKIM records). NB the current wrangler OAuth token lacks the email scope,
+   so `wrangler email sending …` returns `Unauthorized [code: 2036]` — use the dashboard, or re-login.
+2. Set `vars.EMAIL_FROM` in `wrangler.jsonc` to a verified address on it (optionally `EMAIL_REPLY_TO`).
+3. `npx wrangler deploy`.
 
-**Context from Session 7 you build on:** no nav slug renders `StubPage` any more. Scheduling is real —
-pure builder `src/shared/ics.ts`, API `src/server/routes/calls.ts` (`/api/calls`), screen
-`src/client/routes/CallsPage.tsx` (serves incubator `introcalls` and VC `introcalls`/`partnercall`/
-`alignmentcall`; it SHADOWS `StagePage` for those slugs). `sendEmail` now takes `attachments` (raw string
-content for the Workers binding, NOT base64). The internal issue log lives on `tickets.category='issue'`.
-The §9 bug is fully fixed: dead-letter queue `startup-jury-evals-dlq`, a `*/10 * * * *` cron sweep
-(`src/server/ai/health.ts`), a once-only credit refund, `POST /api/decks/:id/retry-ai`, and `aiState`/
-`aiError` on every deck view — and **live AI scoring works again**: S7 found that `claude-sonnet-5`
-**rejects `temperature` with a 400**, so Session 5's `temperature: 0` had been failing every real upload
-and stranding its deck at `pending_ai` since S5. **Never re-add `temperature`/`top_p`/`top_k` to
-`callAnthropic`** — a test asserts they stay absent. **Also watch out:** `decks.created_at` is SQLite's
-`"YYYY-MM-DD HH:MM:SS"` while this codebase writes ISO-8601 — comparing them as raw strings is wrong (a
-space sorts before "T"); use `datetime(x) <= datetime(y)`. Latest migration is `0018`; next is `0019`.
+That is the entire change. Incomplete-deck notices, `.ics` call invites and new-user invites all start
+delivering, and `POST /api/users` stops returning the temporary password because the recipient will
+have it. Then do the live inbox test Sessions 6, 7 and 8 could not: trigger an Incomplete resubmit mail
+and a call invite, and confirm the `.ics` attachment lands and imports into a real calendar.
 
-Be thorough — spend the tokens: use parallel subagents for discovery, write unit/worker/e2e tests, and
-follow the Standing Rules in §2 (green gate; commit to main with the Co-Authored-By trailer; wrangler
-pinned 4.110.0; deploy — **`wrangler d1 migrations apply startup-jury-db --remote` FIRST** if you add a
-migration — + npm run smoke at the end; keep the demo seed live and pristine). Node 22 via `nvm use`. If
-port 5173 is busy, e2e takes `E2E_PORT=<free port>`. NB: if `wrangler … --remote` hits a transient
-`code 7403`, just retry.
-
-BEFORE FINISHING: do the §5 End-of-session checklist — tick EVERY remaining §1 box, mark the §3 tracker
-row ✅, append the final §6 Progress Log entry, and replace this §7 prompt with a short "finish track
-complete" note. Commit the updated plan to main.
-```
-
-### Next-session prompt template (for future sessions)
-
-```
-You are continuing the ai.STARTUPJURY finishing build. This is a FRESH session with no prior context.
-
-START by reading: docs/FINISH-PLAN.md (ALL of it — esp. §8 and §9) + HANDOFF.md; recall the project
-memories; open the prototype(s) named in this session's §4 spec.
-
-YOUR JOB THIS SESSION: complete **Session <N> — <title>** exactly as specified in docs/FINISH-PLAN.md §4.
-Check the §6 Progress Log for what the previous session changed and any notes left for you (email domain,
-mentor decision, additional-param owners, etc.).
-
-Be thorough — spend the tokens (parallel subagents, real tests, follow §2 Standing Rules: green gate,
-commit to main, wrangler 4.110.0, deploy + npm run smoke, keep the seed live).
-
-BEFORE FINISHING: do the §5 End-of-session checklist — update §1/§3, append a §6 log entry, and replace
-the §7 prompt with the Session <N+1> prompt. Commit the updated plan to main.
-```
+For anything else, the app is in **maintenance mode** — see `HANDOFF.md` → *Project complete /
+maintenance* for the standing change procedure (green gate → migrate `--remote` → deploy → smoke).
 
 ---
 
@@ -958,8 +1026,14 @@ Concrete decisions from the recorded demo with Chandrasekhar (product), Ravi, Ka
   See the Session-7 §6 entry for the timestamp-comparison bug found while verifying this.
   _(Session 1's partial mitigation — single upload falling back to `EVAL_QUEUE.send` — is still in place
   and is now the first line of defence rather than the only one.)_
-  **One live victim remains as a real-world test case:** `CloudBridge` (`deck_1a5467f7…`, incubator,
-  uploaded 2026-07-24) sat at `pending_ai` for 19 days. The new cron will re-drive it; Session 8 should
-  confirm where it landed and leave the demo in a deliberate state.
+  **The one live victim is resolved.** `CloudBridge` (`deck_1a5467f7…`, incubator, uploaded
+  2026-07-24) sat at `pending_ai` for 19 days. The Session-7 cron re-drove it, which is how the
+  `temperature` bug was found; after the fix it re-scored and landed **`incomplete`**, because
+  `founderEmail`/`founderPhone` genuinely are absent from its PDF — the Session-5 rule working
+  correctly. **Session 8 KEPT it deliberately** as a second, fully real resubmit-loop demo case (a
+  genuine deck, a genuine failure, a genuine recovery) and minted it a readable demo link,
+  `/resubmit/aisj-demo-cloudbridge-resubmit-2026`. Production has **0 decks at `pending_ai`** other
+  than `inc_deck_pitchloop`, the deliberate AI-health fixture seeded by `0020` (which the sweep skips
+  because its `ai_failed_at` is set).
 - **E42 sample** scored ~3.4 (missing team/traction/ask → Incomplete). That's correct behavior, not a bug —
   it's the canonical "incomplete deck" demo case for the resubmit loop.
