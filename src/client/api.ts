@@ -574,10 +574,22 @@ export interface CreateUserInput {
   userType?: "staff" | "mentor";
 }
 
-/** Create a team member or mentor. Returns the created user + a one-time
- *  temporary password for the admin to relay. */
+/** The fate of the new account's invite email. `delivered` is true only when
+ *  Cloudflare accepted the message — in which case the temporary password is
+ *  NOT returned, because the recipient already has it. */
+export interface InviteResult {
+  delivered: boolean;
+  status: "sent" | "failed" | "recorded" | "skipped";
+}
+
+/** Create a team member or mentor. The temporary password is emailed to them;
+ *  it comes back in the response only when the mail could not be delivered
+ *  (no sending domain configured yet), for the admin to relay. */
 export function createUser(input: CreateUserInput) {
-  return postJson<{ ok: true; tempPassword: string; user: UserView }>("/api/users", input);
+  return postJson<{ ok: true; tempPassword?: string; invite: InviteResult; user: UserView }>(
+    "/api/users",
+    input,
+  );
 }
 
 /** Update a user's active flag, name, or role (staff only for re-roling). */

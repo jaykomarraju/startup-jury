@@ -149,19 +149,19 @@ export function QueryPage() {
         />
       ) : (
         <Card flush>
-          <div className="u-label border-b border-line px-4 py-3 text-fg-muted">
+          <div className="u-label border-b border-line px-4 py-3">
             Founder queries · {rows.length}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[880px] text-left">
               <thead>
-                <tr className="u-label border-b border-line text-fg-muted">
-                  <th className="px-4 py-2">Startup</th>
-                  <th className="px-4 py-2">Founder</th>
-                  <th className="px-4 py-2">Phone</th>
-                  <th className="px-4 py-2">Email</th>
-                  <th className="px-4 py-2">Status</th>
-                  <th className="px-4 py-2">Parameters needing response</th>
+                <tr className="border-b border-line text-fg-muted">
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Startup</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Founder</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Phone</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Email</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Status</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Parameters needing response</th>
                 </tr>
               </thead>
               <tbody>

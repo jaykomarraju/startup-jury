@@ -74,7 +74,33 @@ The full product is built and deployed. In this demo you can:
   deck list, pipeline stages, and menu.
 - **Upload a pitch deck (PDF)** and have **Claude read and score it** against the
   weighted scoring rubric, then open the **Evaluation Report** (extracted slides +
-  per-parameter scores + weighted total). _(See the note on AI scoring below.)_
+  per-parameter scores + weighted total).
+- Work a deck in the **evaluator workbench** — the actual PDF rendered in-app
+  (click a slide to enlarge, next/prev), the **AI's score and reasoning for every
+  parameter**, **AI · My · Average** columns where the average updates live as you
+  score, "deck 3 of 5" progress across your queue, and a **Research** button that
+  opens your *own* ChatGPT / Claude / Perplexity / Gemini / Copilot in a new tab.
+- See the **rescore guard** in action: the AI will not re-score a deck unless its
+  content changed or an admin changed the criteria — it tells you so instead.
+- Browse the **Sector → Program → Cohort** hierarchy, filter the deck list by
+  program and cohort, and run the four-step **Set up wizard**.
+- See the **22-parameter rubric**: 13 weighted core areas that make up the score,
+  plus up to 3 additional AI-assisted parameters per role, each with its own
+  editable prompt (Premium plan).
+- Watch the **guardrails** work — a per-program **minimum shortlist score** that
+  blocks a shortlist below it, **duplicate / returning-company** flags, and
+  **upload validation** that marks a deck **Incomplete** when required founder
+  details are missing.
+- Follow the **Incomplete → resubmit loop**: the founder is emailed a secure link,
+  sees exactly which sections are missing, re-uploads a corrected deck as a **new
+  version**, and it is re-scored automatically. Try it with no login at all:
+  **/resubmit/aisj-demo-nimbushr-resubmit-2026**
+- **Schedule intro / partner / alignment calls** with any participants (team +
+  founder, any email domain) and download the universal **`.ics`** invite.
+- **Manage your team** in the Admin console (create jurors, staff and mentors),
+  view **My account**, and top up **credits**.
+- Log testing issues in the in-app **Issue log**, and **export** any deck table
+  to CSV.
 - **Move deals through the pipeline** — assign to jury, score, shortlist, schedule
   intro/partner/alignment calls, IC voting, term sheets, legal DD, onboarding,
   archive — with a full audit log of every transition.
@@ -87,11 +113,17 @@ The full product is built and deployed. In this demo you can:
   cohort thresholds, AI system prompt, branding, plan tier, and admin-granted
   **credits**; raise **support tickets** and **contact** messages.
 
-> **AI scoring note:** the scoring engine is fully built and calls Claude directly
-> on the uploaded PDF. Live scoring requires the platform's Anthropic API account to
-> have credits; if it is out of credits, an upload is still stored and queued but
-> stays at "pending" instead of scoring. The dashboard/report numbers in the seeded
-> demo cohort are illustrative sample data.
+> **AI scoring note:** live scoring is **on and verified** — upload a PDF and
+> Claude reads the slides and scores them in about 10–20 seconds. If the platform's
+> Anthropic account ever runs out of credits, the deck is still stored and the app
+> now **says so plainly** on the dashboard (with the real reason and a "Re-run AI"
+> button) instead of leaving it silently stuck. The numbers on the seeded demo
+> cohort are illustrative sample data.
+
+> **Email note:** the app composes and records every message it would send
+> (Incomplete notices, call invites with their `.ics`, new-user invites). Actual
+> delivery switches on the moment a verified sending domain is configured — until
+> then messages are recorded rather than sent, and the app never claims otherwise.
 
 ## Good to know
 

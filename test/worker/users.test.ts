@@ -1,5 +1,6 @@
-import { SELF } from "cloudflare:test";
-import { describe, it, expect } from "vitest";
+import { SELF, env } from "cloudflare:test";
+import { describe, it, expect, vi } from "vitest";
+import type { EmailSender } from "../../src/server/email/outbox";
 
 // User management (Session 4) — POST/GET/PATCH /api/users, superuser/admin-gated,
 // edition-scoped. Mentor is a user-type. NB: worker-test storage is isolated
@@ -159,6 +160,130 @@ describe("user management — create", () => {
       name: "X", email: "x5@vcfirm.io", role: "program_manager",
     });
     expect(bad.status).toBe(400);
+  });
+});
+
+describe("user management — the invite email carries the temp password (Session 8)", () => {
+  // The Worker under SELF.fetch reads the same `env` object the test holds, so a
+  // stub `send_email` binding can be installed for a single test and removed
+  // again. Everything else in this file runs with delivery UNconfigured, which
+  // is also production's state until the sending domain is onboarded.
+
+  it("without a sending domain the password is returned for the admin to relay", async () => {
+    const admin = await login(INC_ADMIN);
+    const res = await req("POST", "/api/users", admin, {
+      name: "Relay Case",
+      email: "relay.case@newteam.io",
+      role: "jury",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      tempPassword?: string;
+      invite: { delivered: boolean; status: string };
+    };
+    expect(body.invite).toEqual({ delivered: false, status: "skipped" });
+    // The credential must still reach the admin — otherwise the new account is
+    // unreachable, which is exactly why Session 6 deferred this change.
+    expect(typeof body.tempPassword).toBe("string");
+    const cookie = await login("relay.case@newteam.io", body.tempPassword!);
+    expect(cookie).not.toBe("");
+
+    // Nothing was recorded either: no send was attempted at all.
+    const audited = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM email_outbox WHERE kind = 'account_invite' AND to_email = ?",
+    )
+      .bind("relay.case@newteam.io")
+      .first<{ n: number }>();
+    expect(audited?.n).toBe(0);
+  });
+
+  it("with delivery configured the password is emailed and withheld from the response", async () => {
+    const sent: Parameters<EmailSender["send"]>[0][] = [];
+    const stub: EmailSender = {
+      send: vi.fn(async (m) => {
+        sent.push(m);
+        return { messageId: "msg_invite_1" };
+      }),
+    };
+    const original = { EMAIL: env.EMAIL, EMAIL_FROM: env.EMAIL_FROM };
+    Object.assign(env, { EMAIL: stub, EMAIL_FROM: "no-reply@example.test" });
+
+    try {
+      const admin = await login(INC_ADMIN);
+      const res = await req("POST", "/api/users", admin, {
+        name: "Mailed Juror",
+        email: "mailed.juror@newteam.io",
+        role: "jury",
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        tempPassword?: string;
+        invite: { delivered: boolean; status: string };
+      };
+
+      expect(body.invite).toEqual({ delivered: true, status: "sent" });
+      // The whole point: the credential is no longer in the API response.
+      expect(body.tempPassword).toBeUndefined();
+
+      expect(sent).toHaveLength(1);
+      const mail = sent[0];
+      expect(mail.to).toBe("mailed.juror@newteam.io");
+      expect(mail.subject).toContain("ai.STARTUPJURY");
+      expect(mail.text).toContain("Hi Mailed Juror,");
+      expect(mail.text).toContain("/login");
+      // Names the inviting admin and the role they were given.
+      expect(mail.text).toContain("Nisha Kapoor");
+      expect(mail.text).toContain("Jury Member");
+
+      // The password only exists in the message — recover it and prove it works.
+      const match = /Temporary password: (\S+)/.exec(mail.text ?? "");
+      expect(match).not.toBeNull();
+      const cookie = await login("mailed.juror@newteam.io", match![1]);
+      expect(cookie).not.toBe("");
+
+      // …and the durable audit log must NOT contain the credential.
+      const row = await env.DB.prepare(
+        "SELECT body, status FROM email_outbox WHERE kind = 'account_invite' AND to_email = ?",
+      )
+        .bind("mailed.juror@newteam.io")
+        .first<{ body: string; status: string }>();
+      expect(row?.status).toBe("sent");
+      expect(row?.body).not.toContain(match![1]);
+      expect(row?.body).toContain("[redacted]");
+    } finally {
+      Object.assign(env, original);
+    }
+  });
+
+  it("a delivery failure falls back to relaying the password", async () => {
+    const stub: EmailSender = {
+      send: vi.fn(async () => {
+        throw new Error("550 sender not verified");
+      }),
+    };
+    const original = { EMAIL: env.EMAIL, EMAIL_FROM: env.EMAIL_FROM };
+    Object.assign(env, { EMAIL: stub, EMAIL_FROM: "no-reply@example.test" });
+
+    try {
+      const admin = await login(INC_ADMIN);
+      const res = await req("POST", "/api/users", admin, {
+        name: "Bounced Invite",
+        email: "bounced.invite@newteam.io",
+        role: "jury",
+      });
+      const body = (await res.json()) as {
+        tempPassword?: string;
+        invite: { delivered: boolean; status: string };
+      };
+      // The user WAS created — a mail problem must not roll that back — and the
+      // admin keeps a way to get them in.
+      expect(res.status).toBe(200);
+      expect(body.invite).toEqual({ delivered: false, status: "failed" });
+      expect(typeof body.tempPassword).toBe("string");
+      expect(await login("bounced.invite@newteam.io", body.tempPassword!)).not.toBe("");
+    } finally {
+      Object.assign(env, original);
+    }
   });
 });
 

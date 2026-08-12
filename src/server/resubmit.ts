@@ -139,7 +139,8 @@ export async function missingSections(env: Env, deckId: string): Promise<string[
   return rows.results.map((r) => r.label);
 }
 
-async function orgName(env: Env, edition: string): Promise<string | null> {
+/** The org's configured display name from `org_settings.branding_json`, if set. */
+export async function orgName(env: Env, edition: string): Promise<string | null> {
   const row = await env.DB.prepare("SELECT branding_json FROM org_settings WHERE edition = ?")
     .bind(edition)
     .first<{ branding_json: string }>();

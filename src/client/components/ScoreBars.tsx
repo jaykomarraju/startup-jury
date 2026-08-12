@@ -48,8 +48,12 @@ export function ScoreBars({ scores, total, showTotal = true }: ScoreBarsProps) {
   const weighted = total ?? weightedTotal(scores);
   return (
     <div className="flex flex-col gap-2.5">
-      {scores.map((s) => (
-        <ScoreBar key={s.label} {...s} />
+      {/* `key` is destructured out on purpose: a score carries the PARAMETER
+          key (Session 1, so the client can join scores to the rubric), and
+          spreading it into JSX makes React read it as the reconciliation key
+          and warn. The React key is the parameter key where we have one. */}
+      {scores.map(({ key, ...bar }) => (
+        <ScoreBar key={key ?? bar.label} {...bar} />
       ))}
       {showTotal && (
         <div className="mt-1 flex items-center justify-between border-t border-line pt-2.5">

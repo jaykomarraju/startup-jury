@@ -12,6 +12,7 @@ import {
   type ExtractionSlide,
 } from "../components";
 import type { DeckView } from "../types";
+import { exportDecks } from "../exportCsv";
 import { listDecks, getDeck, getConfigSummary, listPrograms, retryDeckAi, type ProgramView,
   type DeckVersionView,
 } from "../api";
@@ -242,7 +243,14 @@ export function DashboardPage() {
                 </option>
               ))}
             </select>
-            <Button variant="secondary" size="sm">Export</Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={!decks || decks.length === 0}
+              onClick={() => exportDecks(activeProgram?.name ?? "All decks", decks ?? [])}
+            >
+              Export
+            </Button>
           </div>
         </div>
 

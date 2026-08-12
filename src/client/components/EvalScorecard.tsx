@@ -270,7 +270,7 @@ export function EvalScorecard({
             <span className="u-label">Additional parameters · your lens</span>
             <span className="text-[10px] text-fg-muted">Assistive — not in the composite</span>
           </div>
-          <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-4 border-b border-line px-3 py-1.5">
+          <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-4 border-b border-line bg-surface-2 px-3 py-2">
             <span className="u-label">Parameter</span>
             <span className="u-label w-12 text-center">AI</span>
             <span className="u-label w-32 text-center">My</span>

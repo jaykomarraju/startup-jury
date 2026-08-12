@@ -8,18 +8,29 @@
 // mentor row carries user_type='mentor' + role='mentor' (no pipeline/nav power).
 // Ordinary team members are user_type='staff' with a real edition role.
 //
-// New users get a generated TEMPORARY PASSWORD (returned once to the admin, who
-// relays it) — mirrors the prototype's "issue a temporary password" model. Real
-// email invites arrive with Cloudflare Email in Session 6.
+// New users get a generated TEMPORARY PASSWORD. Session 8 makes that an actual
+// EMAIL (`buildAccountInviteEmail`) rather than a value the admin copies off the
+// screen — but only when the Worker can genuinely deliver mail. See
+// `deliverInvite` below: if the sending domain isn't onboarded, emailing the
+// credential would silently strand the new account, so the response still
+// carries the password and the console tells the admin to relay it. Setting
+// `vars.EMAIL_FROM` flips the whole thing over with no further code change.
 
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { AppEnv } from "../types";
+import type { AppEnv, Env } from "../types";
 import type { Edition, Role } from "../../shared/roles";
 import { creatableStaffRoles, roleLabel } from "../../shared/roles";
 import { requireAuth, requireRole } from "../auth/middleware";
 import { hashPassword } from "../auth/password";
 import { getUserByEmail } from "../db";
+import {
+  buildAccountInviteEmail,
+  emailDeliveryConfigured,
+  sendEmail,
+  type SentEmail,
+} from "../email/outbox";
+import { orgName } from "../resubmit";
 
 const users = new Hono<AppEnv>();
 users.use("*", requireAuth);
@@ -55,6 +66,69 @@ function tempPassword(): string {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Sign-in URL for the invite. Mirrors `resubmitLink`'s base resolution. */
+function loginUrl(env: Env): string {
+  const base = (env.APP_BASE_URL || "https://startup-jury.jay-komarraju.workers.dev").replace(
+    /\/+$/,
+    "",
+  );
+  return `${base}/login`;
+}
+
+/**
+ * Email the new account its temporary password, and report whether the credential
+ * actually left the building.
+ *
+ * `delivered` is driven by the outbox's real `status`, not merely by
+ * configuration: an accepted send ('sent') is the only case where it is safe to
+ * withhold the password from the admin. A 'recorded' (no domain onboarded) or
+ * 'failed' send keeps the old relay-it-yourself behaviour, so a new user can
+ * never be locked out by a transport problem. A send is attempted whenever
+ * delivery is configured — the audit row is written either way.
+ */
+async function deliverInvite(
+  env: Env,
+  args: {
+    edition: Edition;
+    name: string;
+    email: string;
+    roleLabel: string;
+    tempPassword: string;
+    invitedByName: string;
+  },
+): Promise<{ delivered: boolean; status: SentEmail["status"] | "skipped" }> {
+  if (!emailDeliveryConfigured(env)) return { delivered: false, status: "skipped" };
+
+  const invite = buildAccountInviteEmail({
+    name: args.name,
+    roleLabel: args.roleLabel,
+    tempPassword: args.tempPassword,
+    loginUrl: loginUrl(env),
+    orgName: await orgName(env, args.edition),
+    invitedByName: args.invitedByName,
+  });
+
+  try {
+    const sent = await sendEmail(env, {
+      kind: "account_invite",
+      toEmail: args.email,
+      toName: args.name,
+      subject: invite.subject,
+      body: invite.body,
+      html: invite.html,
+      // The outbox is durable; the temporary password must not be in it.
+      auditBody: invite.body.replace(args.tempPassword, "[redacted]"),
+    });
+    return { delivered: sent.status === "sent", status: sent.status };
+  } catch (err) {
+    // sendEmail swallows delivery errors; only an outbox write can throw. The
+    // user row is already committed, so degrade to relay-it-yourself rather
+    // than 500-ing a creation that succeeded.
+    console.error("account invite could not be recorded:", err);
+    return { delivered: false, status: "failed" };
+  }
+}
 
 /** Whether an admin/superuser may CREATE this role for their edition (excludes
  *  superuser + founder — see shared `creatableStaffRoles`). */
@@ -105,8 +179,9 @@ interface CreateUserBody {
 }
 
 /** POST /api/users — create a team member or mentor (Super User / Admin).
- *  Body: { name, email, role, userType? }. Returns the created user + a
- *  one-time temporary password for the admin to relay. */
+ *  Body: { name, email, role, userType? }. The one-time temporary password is
+ *  EMAILED to the new user; it is returned in the response only when the mail
+ *  could not actually be delivered (see `deliverInvite`). */
 users.post("/", requireRole("admin"), async (c) => {
   const edition = c.var.user.edition;
   const body = await readBody<CreateUserBody>(c);
@@ -145,9 +220,21 @@ users.post("/", requireRole("admin"), async (c) => {
     .bind(id, name, email, passwordHash, role, edition, initials, userType)
     .run();
 
+  const invite = await deliverInvite(c.env, {
+    edition,
+    name,
+    email,
+    roleLabel: displayRole(edition, role, userType),
+    tempPassword: password,
+    invitedByName: c.var.user.name,
+  });
+
   return c.json({
     ok: true,
-    tempPassword: password,
+    // Withheld once the invite is genuinely on its way — the credential then
+    // lives only in the recipient's inbox.
+    ...(invite.delivered ? {} : { tempPassword: password }),
+    invite,
     user: toUserView(edition, {
       id,
       name,

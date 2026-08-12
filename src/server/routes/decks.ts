@@ -43,9 +43,11 @@ const DECK_COLUMNS =
 // of this deck's human evaluations (the other half of the decision score).
 const DECK_JOINS =
   "LEFT JOIN users u ON u.id = d.assigned_to " +
-  "LEFT JOIN programs pr ON pr.id = d.program_id";
+  "LEFT JOIN programs pr ON pr.id = d.program_id " +
+  "LEFT JOIN cohorts co ON co.id = d.cohort_id";
 const DECK_DERIVED =
   "u.name AS assigned_to_name, pr.shortlist_min AS shortlist_min, " +
+  "pr.name AS program_name, co.name AS cohort_name, " +
   "(SELECT AVG(e.weighted_total) FROM evaluations e WHERE e.deck_id = d.id AND e.evaluator_id IS NOT NULL) AS human_avg";
 
 interface DeckRow {
@@ -70,6 +72,8 @@ interface DeckRow {
   ai_failed_at: string | null;
   assigned_to?: string | null;
   assigned_to_name?: string | null;
+  program_name?: string | null;
+  cohort_name?: string | null;
   shortlist_min?: number | null;
   human_avg?: number | null;
 }
@@ -137,6 +141,8 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role) {
     aiAttempts: row.ai_attempts ?? 0,
     assignedTo: row.assigned_to ?? undefined,
     assignedToName: row.assigned_to_name ?? undefined,
+    programName: row.program_name ?? undefined,
+    cohortName: row.cohort_name ?? undefined,
     actions: actionsFor(edition, row.status, role),
   };
 }

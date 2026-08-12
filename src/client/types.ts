@@ -52,6 +52,9 @@ export interface DeckView {
   aiAttempts?: number;
   assignedTo?: string;
   assignedToName?: string;
+  /** The program / cohort this deck sits under (Session 2 hierarchy). */
+  programName?: string;
+  cohortName?: string;
   /** Transitions the current user may perform from this deck's stage. */
   actions?: DeckAction[];
 }

@@ -11,6 +11,7 @@ import {
   type ExtractionSlide,
 } from "../components";
 import type { DeckView, DeckAction } from "../types";
+import { exportDecks } from "../exportCsv";
 import {
   listDecks,
   getDeck,
@@ -124,7 +125,14 @@ export function StagePage({ config }: { config: StageConfig }) {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Badge tone="info">{rows.length}</Badge>
-          <Button variant="secondary" size="sm">Export</Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={rows.length === 0}
+            onClick={() => exportDecks(config.title, rows)}
+          >
+            Export
+          </Button>
         </div>
       </div>
 
@@ -162,8 +170,14 @@ export function StagePage({ config }: { config: StageConfig }) {
                 const actions = (deck.actions ?? []).filter((a) => !EXCLUDED_ACTIONS.has(a.action));
                 return (
                   <tr key={deck.id} className="border-t border-line">
-                    <td className="cursor-pointer px-4 py-3" onClick={() => setSelected(deck)}>
-                      <div className="font-medium text-fg hover:underline">{deck.name}</div>
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
+                        className="text-left font-medium text-fg hover:underline"
+                        onClick={() => setSelected(deck)}
+                      >
+                        {deck.name}
+                      </button>
                       <div className="mt-0.5 text-xs text-fg-muted">
                         {[deck.sector, deck.stage, deck.city].filter(Boolean).join(" · ")}
                       </div>

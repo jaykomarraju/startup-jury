@@ -128,20 +128,22 @@ export function IssueLogPage() {
   }
 
   return (
-    <div className="p-5">
-      <h1 className="text-xl font-semibold text-fg">Issue log</h1>
-      <p className="mb-5 mt-1 text-sm text-fg-muted">
+    <div className="flex flex-col gap-5 p-5">
+      <div>
+        <h1 className="text-xl font-semibold text-fg">Issue log</h1>
+        <p className="mt-0.5 max-w-2xl text-sm text-fg-muted">
         The team's internal tracker — log anything you hit while testing so it lands in one place.
         {isAdmin ? " As an admin you can also triage, assign and close." : " An admin triages from here."}
-      </p>
+        </p>
+      </div>
 
       {error ? (
-        <div className="mb-4 rounded-lg border border-signal-weak/40 bg-signal-weak/10 px-3 py-2 text-sm text-fg">
+        <div className="rounded-lg border border-signal-weak/40 bg-signal-weak/10 px-3 py-2 text-sm text-fg">
           {error}
         </div>
       ) : null}
 
-      <Card className="mb-5">
+      <Card>
         <h2 className="mb-3 text-sm font-semibold text-fg">Log an issue</h2>
         <div className="flex flex-col gap-3">
           <input
@@ -216,14 +218,14 @@ export function IssueLogPage() {
           <div className="overflow-x-auto">
             <table className="w-full min-w-[860px] text-left">
               <thead>
-                <tr className="u-label border-b border-line text-fg-muted">
-                  <th className="px-4 py-2">Issue</th>
-                  <th className="px-4 py-2">Area</th>
-                  <th className="px-4 py-2">Severity</th>
-                  <th className="px-4 py-2">Status</th>
-                  <th className="px-4 py-2">Owner</th>
-                  <th className="px-4 py-2">Raised</th>
-                  <th className="px-4 py-2">Age</th>
+                <tr className="border-b border-line text-fg-muted">
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Issue</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Area</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Severity</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Status</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Owner</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Raised</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Age</th>
                 </tr>
               </thead>
               <tbody>

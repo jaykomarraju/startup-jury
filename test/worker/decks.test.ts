@@ -322,3 +322,52 @@ describe("handleQueue", () => {
     expect(retried).toEqual(["boom"]);
   });
 });
+
+describe("schema — the deprecated free-text program/cohort columns are gone (0019)", () => {
+  it("decks carries program_id/cohort_id and NOT program/cohort", async () => {
+    const cols = (
+      await env.DB.prepare("SELECT name FROM pragma_table_info('decks')").all<{ name: string }>()
+    ).results.map((r) => r.name);
+
+    // Session 2 replaced these with the real hierarchy FKs; Session 8 dropped them.
+    expect(cols).not.toContain("program");
+    expect(cols).not.toContain("cohort");
+    expect(cols).toContain("program_id");
+    expect(cols).toContain("cohort_id");
+  });
+
+  it("the DROP COLUMN kept the table's indexes intact", async () => {
+    const idx = (
+      await env.DB.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'decks'",
+      ).all<{ name: string }>()
+    ).results.map((r) => r.name);
+
+    expect(idx).toContain("idx_decks_edition_status");
+    expect(idx).toContain("idx_decks_program");
+    expect(idx).toContain("idx_decks_cohort");
+    expect(idx).toContain("idx_decks_pending_ai");
+  });
+
+  it("every SEEDED deck still resolves its program through the FK, not the old text", async () => {
+    // Scoped to the migration-seeded decks (`inc_deck_*` / `vc_deck_*`): the
+    // upload tests in this file create decks with no program at all, which is a
+    // legitimate state (the toolbar filters just don't match them).
+    const row = await env.DB.prepare(
+      "SELECT COUNT(*) AS total, " +
+        "SUM(CASE WHEN p.id IS NULL THEN 1 ELSE 0 END) AS unresolved " +
+        "FROM decks d LEFT JOIN programs p ON p.id = d.program_id " +
+        "WHERE d.id LIKE 'inc\\_deck\\_%' ESCAPE '\\' OR d.id LIKE 'vc\\_deck\\_%' ESCAPE '\\'",
+    ).first<{ total: number; unresolved: number }>();
+    expect(row!.total).toBeGreaterThan(0);
+    expect(row!.unresolved).toBe(0);
+  });
+
+  it("no deck anywhere points at a program that does not exist", async () => {
+    const dangling = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM decks d LEFT JOIN programs p ON p.id = d.program_id " +
+        "WHERE d.program_id IS NOT NULL AND p.id IS NULL",
+    ).first<{ n: number }>();
+    expect(dangling!.n).toBe(0);
+  });
+});

@@ -231,10 +231,22 @@ export function CallsPage({ config }: { config: CallsConfig }) {
     }
   }
 
-  function closeModal() {
+  const closeModal = useCallback(() => {
     setModalDeck(null);
     setEditing(null);
-  }
+  }, []);
+
+  // Escape closes the scheduling modal, matching the deck viewer's lightbox.
+  // Listening on the document rather than the dialog element means it works
+  // before the user has focused anything inside.
+  useEffect(() => {
+    if (!modalDeck) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeModal();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [modalDeck, closeModal]);
 
   function draftParticipants(): DraftParticipant[] {
     const out: DraftParticipant[] = [];
@@ -345,8 +357,8 @@ export function CallsPage({ config }: { config: CallsConfig }) {
   const selectedCount = Object.values(picked).filter(Boolean).length + (founderEmail.trim() ? 1 : 0) + extras.length;
 
   return (
-    <div className="p-5">
-      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+    <div className="flex flex-col gap-5 p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <h1 className="text-xl font-semibold text-fg">{heading}</h1>
           <p className="mt-1 text-sm text-fg-muted">{config.subtitle}</p>
@@ -355,12 +367,12 @@ export function CallsPage({ config }: { config: CallsConfig }) {
       </div>
 
       {error ? (
-        <div className="mb-4 rounded-lg border border-signal-weak/40 bg-signal-weak/10 px-3 py-2 text-sm text-fg">
+        <div className="rounded-lg border border-signal-weak/40 bg-signal-weak/10 px-3 py-2 text-sm text-fg">
           {error}
         </div>
       ) : null}
       {notice ? (
-        <div className="mb-4 rounded-lg border border-positive/40 bg-positive/10 px-3 py-2 text-sm text-fg">
+        <div className="rounded-lg border border-positive/40 bg-positive/10 px-3 py-2 text-sm text-fg">
           {notice}
         </div>
       ) : null}
@@ -374,14 +386,14 @@ export function CallsPage({ config }: { config: CallsConfig }) {
           <div className="overflow-x-auto">
             <table className="w-full min-w-[980px] text-left">
               <thead>
-                <tr className="u-label border-b border-line text-fg-muted">
-                  <th className="px-4 py-2">Startup</th>
-                  <th className="px-4 py-2">AI score</th>
-                  <th className="px-4 py-2">Avg. score</th>
-                  <th className="px-4 py-2">Call scheduled</th>
-                  <th className="px-4 py-2">Call date</th>
-                  <th className="px-4 py-2">Participants</th>
-                  <th className="px-4 py-2 text-right">Actions</th>
+                <tr className="border-b border-line text-fg-muted">
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Startup</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">AI score</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Avg. score</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Call scheduled</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Call date</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Participants</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -501,7 +513,12 @@ export function CallsPage({ config }: { config: CallsConfig }) {
       )}
 
       {modalDeck ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-navy/40 p-4 backdrop-blur-[1px]"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${editing ? "Reschedule" : "Schedule"} ${config.title.toLowerCase()} for ${modalDeck.name}`}
+        >
           <Card className="max-h-[88vh] w-full max-w-xl overflow-y-auto">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
@@ -566,7 +583,8 @@ export function CallsPage({ config }: { config: CallsConfig }) {
                   <button
                     key={p.value}
                     type="button"
-                    className="rounded-full border border-line px-2.5 py-1 text-xs text-fg-muted hover:text-fg"
+                    aria-label={`Set location to ${p.label}`}
+                    className="rounded-full border border-line px-2.5 py-1 text-xs text-fg-muted hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber"
                     onClick={() => setLocation(p.value)}
                   >
                     {p.label}
@@ -635,10 +653,11 @@ export function CallsPage({ config }: { config: CallsConfig }) {
                       <button
                         key={email}
                         type="button"
-                        className="inline-flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-xs text-fg-muted"
+                        aria-label={`Remove guest ${email}`}
+                        className="inline-flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-xs text-fg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber"
                         onClick={() => setExtras((prev) => prev.filter((e) => e !== email))}
                       >
-                        {email} <X className="h-3 w-3" />
+                        {email} <X className="h-3 w-3" aria-hidden="true" />
                       </button>
                     ))}
                   </div>

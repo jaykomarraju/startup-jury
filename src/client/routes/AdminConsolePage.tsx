@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Card, Button, Badge, EmptyState } from "../components";
 import { useAuth } from "../auth/useAuth";
-import { listUsers, createUser, updateUser, type UserView } from "../api";
+import { listUsers, createUser, updateUser, type InviteResult, type UserView } from "../api";
 import { creatableStaffRoles, roleLabel, type Role } from "../../shared/roles";
 
 /**
  * Admin console → Team & roles (Session 4). Super User / Admin manage the org's
  * users: jurors, staff and MENTORS. Mentor is a user-type (a directory/advisor
  * record with no pipeline authority), not a role. Creating a user issues a
- * one-time temporary password the admin relays (real email invites arrive in a
- * later session). Weights / branding / credits live on their own admin screens.
+ * one-time temporary password, which Session 8 EMAILS to them — the screen only
+ * shows the password when that mail could not be delivered (no verified sending
+ * domain configured yet), so the admin can still relay it.
+ * Weights / branding / credits live on their own admin screens.
  */
 export function AdminConsolePage() {
   const { user } = useAuth();
@@ -27,7 +29,12 @@ export function AdminConsolePage() {
   const [role, setRole] = useState<Role>(roleOptions[roleOptions.length - 1]);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
-  const [created, setCreated] = useState<{ name: string; email: string; tempPassword: string } | null>(null);
+  const [created, setCreated] = useState<{
+    name: string;
+    email: string;
+    tempPassword?: string;
+    invite: InviteResult;
+  } | null>(null);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
 
   const load = useCallback(() => {
@@ -52,7 +59,12 @@ export function AdminConsolePage() {
         userType,
         role: userType === "staff" ? role : undefined,
       });
-      setCreated({ name: res.user.name, email: res.user.email, tempPassword: res.tempPassword });
+      setCreated({
+        name: res.user.name,
+        email: res.user.email,
+        tempPassword: res.tempPassword,
+        invite: res.invite,
+      });
       setName("");
       setEmail("");
       await load();
@@ -173,13 +185,24 @@ export function AdminConsolePage() {
         {created && (
           <div className="mb-4 rounded-lg border border-positive/40 bg-positive/10 px-4 py-3 text-sm">
             <div className="font-medium text-fg">{created.name} added.</div>
-            <p className="mt-1 text-fg-muted">
-              Share this one-time temporary password with {created.email} — they'll set their own on first
-              sign-in:
-            </p>
-            <code className="mt-2 inline-block rounded bg-surface-2 px-2 py-1 font-mono text-sm text-fg">
-              {created.tempPassword}
-            </code>
+            {created.invite.delivered ? (
+              <p className="mt-1 text-fg-muted">
+                We've emailed {created.email} a sign-in link and a one-time temporary password. They'll
+                set their own password on first sign-in — nothing else for you to do.
+              </p>
+            ) : (
+              <>
+                <p className="mt-1 text-fg-muted">
+                  {created.invite.status === "skipped"
+                    ? "Email delivery isn't configured yet, so share this one-time temporary password with"
+                    : "The invite email couldn't be delivered, so share this one-time temporary password with"}{" "}
+                  {created.email} — they'll set their own on first sign-in:
+                </p>
+                <code className="mt-2 inline-block rounded bg-surface-2 px-2 py-1 font-mono text-sm text-fg">
+                  {created.tempPassword}
+                </code>
+              </>
+            )}
           </div>
         )}
 

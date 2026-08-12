@@ -28,7 +28,8 @@ export type EmailKind =
   | "signup_invite"
   | "evaluator_reminder"
   | "incomplete_resubmit"
-  | "call_invite";
+  | "call_invite"
+  | "account_invite";
 
 export type EmailStatus = "sent" | "failed" | "recorded";
 
@@ -59,6 +60,13 @@ export interface OutboundEmail {
   dedupeKey?: string | null;
   /** Files to attach. Audited by count only — the outbox stores no payloads. */
   attachments?: EmailAttachment[];
+  /**
+   * What to persist in `email_outbox.body` instead of `body`. Set this when the
+   * message carries a secret (the account invite's temporary password): the
+   * outbox is a durable audit log, and a credential does not belong in it. The
+   * recipient still receives the real `body`.
+   */
+  auditBody?: string;
 }
 
 export interface SentEmail extends OutboundEmail {
@@ -113,6 +121,21 @@ function hydrate(email: OutboundEmail, row: OutboxRow): SentEmail {
     error: row.error,
     deduped: true,
   };
+}
+
+/**
+ * Whether this Worker can actually dispatch mail — the `send_email` binding is
+ * present AND a verified From address is configured. When false every
+ * `sendEmail` call is audited with status='recorded' and nothing leaves the
+ * Worker.
+ *
+ * Callers use this to decide whether email is a *safe* sole channel for
+ * something. `POST /api/users` is the one place it matters: it must not hand a
+ * new account's only credential to a transport that isn't delivering. A caller
+ * that just wants best-effort notification should ignore this and send.
+ */
+export function emailDeliveryConfigured(env: Env): boolean {
+  return Boolean(env.EMAIL && env.EMAIL_FROM?.trim());
 }
 
 /**
@@ -175,7 +198,8 @@ export async function sendEmail(
         email.toEmail,
         email.toName ?? null,
         email.subject,
-        email.body,
+        // Never the raw body when the caller flagged it as secret-bearing.
+        email.auditBody ?? email.body,
         status,
         createdAt,
         error,
@@ -380,4 +404,58 @@ export function buildIncompleteEmail(args: {
     `</div>`;
 
   return { subject: `Action needed: ${args.deckName} is incomplete`, body, html };
+}
+
+/**
+ * Compose the new-account invite carrying the one-time temporary password
+ * (Session 4's leftover, delivered in Session 8). Pure (testable).
+ *
+ * The credential is in the body rather than behind a link on purpose: the app
+ * has no password-reset transport, so a link-only invite would need a second
+ * token type for a flow the temp password already covers. The password is
+ * short-lived by convention — the recipient replaces it on first sign-in.
+ */
+export function buildAccountInviteEmail(args: {
+  name: string;
+  roleLabel: string;
+  tempPassword: string;
+  loginUrl: string;
+  orgName?: string | null;
+  invitedByName?: string | null;
+}): { subject: string; body: string; html: string } {
+  const org = args.orgName?.trim() || "ai.STARTUPJURY";
+  const invitedBy = args.invitedByName?.trim();
+  const intro = invitedBy
+    ? `${invitedBy} has added you to ${org} on ai.STARTUPJURY as ${indefinite(args.roleLabel)}.`
+    : `You've been added to ${org} on ai.STARTUPJURY as ${indefinite(args.roleLabel)}.`;
+
+  const body =
+    `Hi ${args.name},\n\n${intro}\n\n` +
+    "Sign in with these details and choose your own password straight away:\n\n" +
+    `  • Sign in: ${args.loginUrl}\n` +
+    `  • Temporary password: ${args.tempPassword}\n\n` +
+    "This password is temporary and personal to your account — please don't share it.\n\n" +
+    "— The ai.STARTUPJURY team";
+
+  const html =
+    `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1c2321;">` +
+    `<p>Hi ${esc(args.name)},</p>` +
+    `<p>${esc(intro)}</p>` +
+    `<p>Sign in with these details and choose your own password straight away:</p>` +
+    `<p style="margin:14px 0;"><a href="${esc(args.loginUrl)}" style="display:inline-block;background:#e8a020;` +
+    `color:#12211c;text-decoration:none;font-weight:600;padding:10px 18px;border-radius:8px;">Sign in</a></p>` +
+    `<p>Temporary password: <code style="background:#f1f3f2;padding:3px 7px;border-radius:5px;font-size:14px;">` +
+    `${esc(args.tempPassword)}</code></p>` +
+    `<p style="font-size:13px;color:#6b7671;">This password is temporary and personal to your account — ` +
+    `please don't share it.<br>If the button doesn't work, paste this into your browser:<br>` +
+    `${esc(args.loginUrl)}</p>` +
+    `<p style="font-size:13px;color:#6b7671;">— The ai.STARTUPJURY team</p>` +
+    `</div>`;
+
+  return { subject: `You've been added to ${org} on ai.STARTUPJURY`, body, html };
+}
+
+/** "a Jury Member" / "an Admin" — English article for a role label. */
+function indefinite(label: string): string {
+  return `${/^[aeiou]/i.test(label) ? "an" : "a"} ${label}`;
 }

@@ -185,10 +185,12 @@ function Stepper({ step }: { step: number }) {
         <li key={label} className="flex items-center gap-2">
           <span
             className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+              // White on amber measures 2.4:1 — below AA. The house pairing for
+              // an amber fill is navy (Button's primary variant), at 6.9:1.
               i < step
-                ? "bg-positive text-white"
+                ? "bg-positive text-offwhite"
                 : i === step
-                  ? "bg-accent text-white"
+                  ? "bg-accent text-navy"
                   : "bg-surface-2 text-fg-muted"
             }`}
           >
@@ -826,8 +828,8 @@ function TeamStep({
       <div className="mt-4">
         <EmptyState
           icon="Users"
-          title="Team management is coming to the Admin console"
-          description="Creating users — jurors, mentors and staff — and assigning roles lands in the Admin console. For now, your seeded team is ready to evaluate."
+          title="Add the rest of your team in the Admin console"
+          description="Creating users — jurors, mentors and staff — and assigning their roles happens in Settings → Admin console. New members are emailed a sign-in link and a one-time password."
         />
       </div>
       <div className="mt-2 flex justify-between">

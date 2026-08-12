@@ -7,7 +7,10 @@ the full plan at `docs/PLAN.md` + `git log`.
 
 ## Status
 
-- **PROJECT COMPLETE — all 9 phases (0–8) shipped and on `main`.** Phase 0 — Scaffold & CI ·
+- **PROJECT COMPLETE — all 9 phases (0–8) shipped, PLUS the 8-session FINISH TRACK
+  (full prototype parity + every Jul-24 demo ask). Both are done and on `main`;
+  see `docs/FINISH-PLAN.md` and the **Finish track** section at the bottom.**
+- **All 9 phases (0–8) shipped and on `main`.** Phase 0 — Scaffold & CI ·
   Phase 1 — Data & auth · Phase 2 — Design system & app shell · Phase 3 — Upload & AI evaluation ·
   Phase 4 — Incubator pipeline · Phase 5 — VC pipeline · Phase 6 — Config, plans & credits ·
   Phase 7 — Analytics & polish · **Phase 8 — Production hardening & final deploy.** The app is in
@@ -604,11 +607,11 @@ All 9 phases (0–8) are shipped, green, and on `main`; the app is live at
 - The **carried-over follow-ups** above (sync upload / DLQ, founder-credit coupling, multi-juror panels) are
   the natural next feature work if the product goes beyond a single-tenant demo.
 
-## Finish track (post-completion) — see `docs/FINISH-PLAN.md`
+## Finish track (post-completion) — ✅ COMPLETE. See `docs/FINISH-PLAN.md`
 
-A multi-session **finishing build** (full prototype parity + all Jul-24 demo asks) runs on top of the
-complete Phase 0–8 app. The master plan + per-session progress log is `docs/FINISH-PLAN.md` (read it first
-each finish session). Landed so far:
+A multi-session **finishing build** (full prototype parity + all Jul-24 demo asks) ran on top of the
+complete Phase 0–8 app. **All 8 sessions shipped** (2026-08-11 → 2026-08-12); the master plan + the
+per-session progress log is `docs/FINISH-PLAN.md`. **There is no next session.** What landed:
 
 - **Session 1 — Evaluator Workbench** (commit `3f3bd30`). Both evaluate screens + the report drawer render a
   shared `EvalScorecard`: an in-app **pdf.js** deck viewer (`DeckPdfViewer`, worker self-hosted via a Vite
@@ -763,3 +766,69 @@ each finish session). Landed so far:
     (`"YYYY-MM-DD HH:MM:SS"`) while everything this codebase writes is ISO-8601 (`"…T…Z"`). A space
     (0x20) sorts **before** "T" (0x54), so comparing them as raw strings is wrong for same-date values —
     use `datetime(a) <= datetime(b)`. This was a real bug in the first cut of the sweep.
+
+- **Session 8 — Polish, full e2e, docs, final deploy** (this session). Migrations `0019` + `0020`.
+  The finish track's closing pass: coherence, coverage and the last leftovers.
+  - **`POST /api/users` now EMAILS the temporary password** (Session 4's leftover). New pure
+    **`buildAccountInviteEmail`** + **`emailDeliveryConfigured(env)`**; `users.ts` `deliverInvite()`
+    sends the invite and reports whether it actually left the building. The credential is returned in
+    the response **only when delivery did not happen** (`status: 'skipped'` — no verified sending
+    domain — or `'failed'`), so a new account can never be stranded by a transport problem; the Admin
+    console copy switches with it. `OutboundEmail` gained **`auditBody`**, used here to keep the
+    plaintext password out of the durable `email_outbox` log.
+  - **⚠️ THE SENDING DOMAIN IS STILL NOT ONBOARDED** (confirmed with the user, 2026-08-12). Delivery
+    stays audit-only and **no live inbox test has ever been run** — that is the one acceptance
+    criterion the finish track could not close. To go live: onboard the domain, set `vars.EMAIL_FROM`
+    in `wrangler.jsonc`, `npx wrangler deploy`. **No code change** — the invite, the Incomplete notice
+    and the `.ics` call invite all start delivering on that one line.
+  - **Migration `0019` — dropped the deprecated `decks.program` / `decks.cohort`.** Session 2 replaced
+    them with `program_id`/`cohort_id` FKs and backfilled; nothing in `src/**`, `test/**`, `e2e/**` or
+    `scripts/**` had read them since. A plain `ALTER TABLE … DROP COLUMN` was correct — neither column
+    was indexed or referenced by a view/generated column, so the twelve-step table rebuild (and
+    re-creating eleven inbound `ON DELETE CASCADE` FKs by hand) was avoidable risk. Regression tests
+    assert the columns are gone and all four `decks` indexes survived.
+  - **Migration `0020` — the demo-seed refresh.** No schema change; it makes the demo *coherent*:
+    - **Full 13-parameter AI breakdowns for all 28 remaining scored decks** (only TaxPilot + WealthOS
+      had one). The per-parameter values are **solved so the weighted total reproduces each deck's
+      existing `ai_score` exactly**, so an admin weight edit re-scores from the rows without the
+      headline jumping. This also retires the Session-5 gotcha that a weight edit collapsed
+      FinStack/InsureFlow 8.6 → 0.87. Scores are whole numbers, the shape the model really returns.
+    - **Fixed a latent Session-1 inconsistency:** 0010's hand-written TaxPilot/WealthOS breakdowns
+      weight out to **5.93 / 8.06**, not the advertised 6.2 / 8.1. The composite now derives from its
+      own evidence (the scores carry hand-written rationales that must keep matching their values).
+    - New fixtures so the newest surfaces have something to render: **PitchLoop** (incubator, seeded
+      `pending_ai` + `ai_failed_at` → the §9 AI-health banner; the `*/10` sweep skips it because
+      `ai_failed_at IS NOT NULL`, so it can't be re-driven behind your back) and **Northbeam Robotics**
+      (VC, Incomplete + a founder query — the VC half of the resubmit loop, which was incubator-only).
+    - Also: the **returning-company** flag on `vc_deck_agrichainvc`; `investment_dd` / `term_sheets` /
+      `legal_dd` rows for the decks parked in those stages; non-`open` ticket/issue states and one
+      **rescheduled call at `ics_sequence = 1`**; org **branding** (so `orgName()` stops saying "the
+      programme"); the missing `sectors` rows; and `program_id` for the real uploaded decks so the
+      toolbar filters stop hiding them.
+  - **CloudBridge (`deck_1a5467f7…`) is KEPT** as a second, fully real resubmit case — a genuine deck
+    that was stranded 19 days, re-driven by the Session-7 sweep, and landed Incomplete because two
+    required intake columns really are absent from its PDF. Its original token was only ever stored as
+    a hash, so `0020` mints a fresh readable demo link:
+    **`/resubmit/aisj-demo-cloudbridge-resubmit-2026`**.
+  - **Brand/theme/a11y pass** against the brand doc. Fixed the two real theme bugs — `text-white` on
+    amber in the Set up stepper (**2.4:1**, below AA → `text-navy`) and the Research button's fixed
+    `bg-navy`, which was **1.06:1 against the dark-theme surface** and effectively invisible. Unified
+    the three divergent table-header styles onto the house markup; gave the calls modal
+    `role="dialog"`/`aria-modal`/Escape and the brand scrim; turned `StagePage`'s `<td onClick>` into a
+    real button; labelled the icon-only pills; refreshed the wizard's stale "team management is coming"
+    copy. **CSP audit came back clean** — no CDN, no external font, no remote image, no `eval`; the
+    pdf.js worker is self-hosted and the only outbound URLs are the Research menu's, opened by explicit
+    user action with `noopener,noreferrer`.
+  - **The Export button does something.** It had been live-looking and inert since Phase 2. New pure
+    **`src/client/exportCsv.ts`** exports the on-screen deck table (post-filter, in order) as RFC 4180
+    CSV with a BOM, **defusing spreadsheet formula injection** on the attacker-influenced columns (a
+    founder picks their own company name). `GET /api/decks` now also returns `programName`/`cohortName`.
+  - **e2e coverage sweep — `e2e/coverage.spec.ts` (17 tests, 52 → 69 total).** Closes the families no
+    session had covered: **every `StagePage` slug in both editions**, the **founder portal**, the
+    **eight** analytics reports nothing opened, the support queue, the team channel, the AI-health
+    banner, the Upload intake table, the Set up wizard's last two steps, and the CSV export. The
+    headline addition is a **regression guard that walks every nav slug in both editions and asserts
+    none of them renders `StubPage`** — the property the finish track was actually aiming at.
+  - Fixed a React `key`-spread warning in `ScoreBars` that the fuller seed made visible everywhere: a
+    score carries the *parameter* key, and spreading it into JSX made React read it as the
+    reconciliation key.

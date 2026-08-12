@@ -507,9 +507,9 @@ function ExtractedDetails({
           <thead>
             <tr className="text-fg-muted">
               {DETAIL_COLUMNS.map((f) => (
-                <th key={f} className="px-4 py-2 text-xs font-medium">{INTAKE_FIELD_LABELS[f]}</th>
+                <th key={f} className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">{INTAKE_FIELD_LABELS[f]}</th>
               ))}
-              <th className="px-4 py-2 text-xs font-medium">Status</th>
+              <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Status</th>
             </tr>
           </thead>
           <tbody>

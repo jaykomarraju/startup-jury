@@ -74,7 +74,10 @@ export function ResearchMenu({ deck }: { deck: ResearchDeck }) {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="inline-flex items-center gap-1.5 rounded-lg bg-navy px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-navy/90"
+        // `bg-navy` is the FIXED brand ink, so in dark theme this button's fill
+        // matched the surface behind it (1.06:1) and the control disappeared.
+        // The semantic pair inverts correctly in both themes.
+        className="inline-flex items-center gap-1.5 rounded-lg bg-fg px-3 py-1.5 text-sm font-medium text-bg transition-colors hover:bg-fg/90"
       >
         <Globe className="h-4 w-4" aria-hidden="true" />
         Research

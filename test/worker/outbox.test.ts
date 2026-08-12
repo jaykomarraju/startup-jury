@@ -6,6 +6,8 @@ import {
   buildSignupEmail,
   buildIncompleteEmail,
   buildCallInviteEmail,
+  buildAccountInviteEmail,
+  emailDeliveryConfigured,
   type EmailSender,
 } from "../../src/server/email/outbox";
 import type { Env } from "../../src/server/types";
@@ -20,6 +22,84 @@ import type { Env } from "../../src/server/types";
 function withSender(sender: EmailSender, from = "no-reply@example.test"): Env {
   return { ...(env as unknown as Env), EMAIL: sender, EMAIL_FROM: from };
 }
+
+describe("buildAccountInviteEmail (pure) + emailDeliveryConfigured", () => {
+  const args = {
+    name: "Kavya Reddy",
+    roleLabel: "Jury Member",
+    tempPassword: "aisj-3f9a2c",
+    loginUrl: "https://app.example.test/login",
+    orgName: "Anthill Ventures",
+    invitedByName: "Nisha Kapoor",
+  };
+
+  it("names the org, the inviter and the role, and carries the credential + link", () => {
+    const { subject, body, html } = buildAccountInviteEmail(args);
+    expect(subject).toContain("Anthill Ventures");
+    expect(body).toContain("Hi Kavya Reddy,");
+    expect(body).toContain("Nisha Kapoor has added you");
+    expect(body).toContain("a Jury Member");
+    expect(body).toContain("aisj-3f9a2c");
+    expect(body).toContain("https://app.example.test/login");
+    expect(html).toContain("aisj-3f9a2c");
+    expect(html).toContain('href="https://app.example.test/login"');
+  });
+
+  it("uses the right article for a vowel-initial role and falls back without an inviter", () => {
+    const admin = buildAccountInviteEmail({ ...args, roleLabel: "Admin", invitedByName: undefined });
+    expect(admin.body).toContain("an Admin");
+    expect(admin.body).toContain("You've been added to");
+    expect(admin.body).not.toContain("undefined");
+  });
+
+  it("falls back to the product name when the org has no branding set", () => {
+    const { subject } = buildAccountInviteEmail({ ...args, orgName: null });
+    expect(subject).toContain("ai.STARTUPJURY");
+  });
+
+  it("escapes interpolated values in the HTML alternative", () => {
+    const { html } = buildAccountInviteEmail({ ...args, name: 'Ann <script>"x"' });
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("emailDeliveryConfigured needs BOTH a binding and a from-address", () => {
+    const sender: EmailSender = { send: async () => ({}) };
+    const base = env as unknown as Env;
+    expect(emailDeliveryConfigured(base)).toBe(false); // neither, in tests
+    expect(emailDeliveryConfigured({ ...base, EMAIL: sender, EMAIL_FROM: "" })).toBe(false);
+    expect(emailDeliveryConfigured({ ...base, EMAIL: sender, EMAIL_FROM: "   " })).toBe(false);
+    expect(emailDeliveryConfigured({ ...base, EMAIL: undefined, EMAIL_FROM: "a@b.io" })).toBe(false);
+    expect(emailDeliveryConfigured({ ...base, EMAIL: sender, EMAIL_FROM: "a@b.io" })).toBe(true);
+  });
+});
+
+describe("sendEmail — auditBody keeps secrets out of the durable log", () => {
+  it("delivers the real body but records the redacted one", async () => {
+    let delivered = "";
+    const sender: EmailSender = {
+      send: async (m) => {
+        delivered = m.text ?? "";
+        return { messageId: "m1" };
+      },
+    };
+    const sent = await sendEmail(withSender(sender), {
+      kind: "account_invite",
+      toEmail: "audit.case@example.test",
+      subject: "Invite",
+      body: "password: s3cret-value",
+      auditBody: "password: [redacted]",
+      dedupeKey: "audit-body-case",
+    });
+    expect(sent.status).toBe("sent");
+    expect(delivered).toContain("s3cret-value");
+
+    const row = await env.DB.prepare("SELECT body FROM email_outbox WHERE id = ?")
+      .bind(sent.id)
+      .first<{ body: string }>();
+    expect(row?.body).toBe("password: [redacted]");
+  });
+});
 
 describe("buildQueryEmail (pure)", () => {
   it("personalises the greeting and embeds the questions", () => {

@@ -103,7 +103,7 @@ export function BuyCreditsPage() {
             <div className="flex items-start justify-between">
               <div>
                 <div className="text-2xl font-semibold text-fg">{pack.credits}</div>
-                <div className="text-xs uppercase tracking-wide text-fg-muted">credits</div>
+                <div className="u-label">credits</div>
               </div>
               {pack.save && <Badge tone="positive">{pack.save}</Badge>}
             </div>

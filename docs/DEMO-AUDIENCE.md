@@ -85,6 +85,32 @@ as one-click shortcuts.
 6. **Sign out** and sign back in as a **Jury Member** or the **VC Managing
    Partner** to watch the whole app reshape itself around a different role.
 
+### Five more things worth two minutes each
+
+- **The evaluator's workbench** — sign in as the **Jury Member** and open
+  **Assigned**. The deck itself is rendered on the page (click a slide to
+  enlarge), each rubric parameter shows **what the AI scored and why**, and as you
+  move your own slider the **Average** column updates live. There's a **Research**
+  button that opens *your own* ChatGPT or Claude in a new tab — the platform never
+  spends its AI budget on a juror's side research.
+- **It won't re-score for no reason.** Press **Re-run AI score** on a deck nothing
+  has changed about and the app refuses: _"already scored."_ AI scores move a
+  little run to run, so re-rolling one without a reason would quietly undermine
+  confidence in all of them.
+- **An incomplete deck fixes itself.** Open
+  **https://startup-jury.jay-komarraju.workers.dev/resubmit/aisj-demo-nimbushr-resubmit-2026**
+  — **no sign-in**. That's what a founder gets when their deck is missing
+  something: exactly what to fix, nothing else (no scores, no evaluator names).
+  They update the deck and re-upload; it's saved as a new version and re-scored
+  automatically, straight back to the panel.
+- **Scheduling produces a real calendar invite.** As the **Program Manager**, open
+  **Intro calls** → **Schedule call**, pick people (including the founder, at any
+  email domain), and download the **`.ics`**. It opens in Outlook, Gmail and Apple
+  Calendar.
+- **Nothing gets silently stuck.** As an **Admin**, the dashboard flags any deck
+  whose AI evaluation failed, says **why**, refunds the credit, and offers a
+  one-click **Re-run**.
+
 > **A note on AI scoring.** The scoring engine calls Claude directly on the
 > uploaded PDF. It is **live and working**. Two things worth knowing: (1) scoring
 > takes ~10–20 seconds per deck because the model reads the whole PDF; (2) the
@@ -101,5 +127,12 @@ as one-click shortcuts.
   **Please don't put any confidential information into the demo.**
 - Everything runs on **Cloudflare's global edge** (Workers + D1 + R2 + Queues +
   Cron) — the same infrastructure the finished product uses.
+- **Email is composed but not yet delivered.** The app writes every message it
+  would send — an Incomplete notice, a call invite with its calendar file, a new
+  user's sign-in details — and records it. Delivery switches on as soon as a
+  verified sending domain is added; nothing else changes. Until then the app
+  reports messages as *recorded*, never as sent.
+- **Buy credits is a simulation.** No card is captured and no payment is taken —
+  it's there to show where billing will live.
 
 _Questions or feedback? Reply to whoever shared this link._

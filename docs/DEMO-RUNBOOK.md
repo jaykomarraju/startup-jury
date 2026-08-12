@@ -1,8 +1,9 @@
 # ai.STARTUPJURY — Presenter Runbook (internal)
 
 _For me, not the audience._ A step-by-step script for demoing the live product.
-Everything here was **verified against the live Worker on 2026-07-23** (real
-uploads scored, transitions driven, cleaned up). Audience-facing copy is in
+Verified against the live Worker (real uploads scored, transitions driven, cleaned
+up), and refreshed at the end of the **finish track (Session 8, 2026-08-12)** for
+the screens that landed in Sessions 1–7. Audience-facing copy is in
 `docs/DEMO-AUDIENCE.md`.
 
 - **Live URL:** https://startup-jury.jay-komarraju.workers.dev
@@ -17,7 +18,7 @@ uploads scored, transitions driven, cleaned up). Audience-facing copy is in
 
 1. **Confirm the app is up + AI scoring is on.** From the repo:
    ```bash
-   nvm use 22 && npm run smoke        # expect "26 passed, 0 failed"
+   nvm use 22 && npm run smoke        # expect "0 failed"
    ```
    `smoke` is read-only — safe against the live seed. It does **not** test upload;
    to confirm live scoring specifically, do one throwaway upload (Section 2) a few
@@ -27,6 +28,12 @@ uploads scored, transitions driven, cleaned up). Audience-facing copy is in
 3. **Two browser windows / profiles** help for the role-switch moments (staff in
    one, jury/IC in the other) so you're not logging in and out on stage.
 4. Pick **light or dark** and know where the **sun/moon toggle** is (top-right).
+5. **Know your two "no login" URLs** — the resubmit links in Act 3b. Open one in a
+   private window before you present so you're not fumbling for it on stage.
+6. **Decks you should not touch on stage:** **PitchLoop** (a seeded AI-failure
+   fixture — Re-run just fails again) and the seeded **calls** on GreenRoute /
+   WealthOS / LearnLoop (rescheduling them mutates the demo). Schedule on a deck
+   you uploaded instead.
 
 ---
 
@@ -85,6 +92,64 @@ Still on that GridBloom deck (now at **AI Evaluated**):
 > Incubator pass path in order: **AI Evaluated → Assigned → Jury Evaluation →
 > Shortlisted → Intro → Signup → Ready to Onboard.**
 
+### Act 3b — The finish-track screens (~4 min) ⭐ new
+
+Pick the two or three that fit the room; each stands alone.
+
+**The evaluator workbench** (Jury Member → **Assigned**, or staff → **Evaluate**).
+The single densest screen in the product:
+- The **actual PDF rendered in-app** — click a slide to enlarge, next/prev.
+- **AI · My · Average** per parameter. **Do:** drag one slider and let them watch
+  the Average recompute live. _"AI said 9, the juror says 5, the number of record
+  is 7."_
+- The AI's **reasoning per parameter**, not just a number.
+- **Deck 3 of 5** — walk the assigned queue with next/prev.
+- **Research** (top-right) — opens the juror's **own** ChatGPT / Claude /
+  Perplexity / Gemini. _"Their AI, their account. We never spend platform tokens
+  on a juror's side research."_
+- **Do:** click **Re-run AI score** on an already-scored, unchanged deck →
+  _"already scored — nothing has changed."_ _"The AI is non-deterministic, so we
+  simply refuse to re-roll a score for no reason."_
+
+**Guardrails** (Program Manager or Jury). On a deck below its program's floor the
+Shortlist button carries **"Shortlist minimum 5.5 · this deck 4.30"** and the
+action is refused. _"Per-program, uniform — a superuser is held to it too. The
+escape hatch is an admin lowering the floor, which is an auditable change."_
+
+**Incomplete → resubmit loop** — the best 60 seconds in the demo:
+1. As staff, open **NimbusHR** (incubator, Incomplete) — it's missing a phone
+   number, so it never reached the panel.
+2. Open a **private window** and go to
+   **`/resubmit/aisj-demo-nimbushr-resubmit-2026`** — **no login**. The founder
+   sees only what to fix; no scores, no evaluator names, no other deck.
+3. _"They update those sections in the deck and re-upload. It's saved as a new
+   version, re-scored automatically, and it's back in front of the panel. No
+   separate questionnaire — the deck stays the single artifact."_
+   (**Don't actually re-upload on stage unless you mean to** — it spends a credit
+   and mutates the demo deck. Section 7 resets it.)
+
+**Scheduling + `.ics`** (PM → **Intro calls**, or VC Partner → **Alignment call**).
+Open **Schedule call**, pick participants across roles, add the founder at
+**their own domain**, save, then **download the `.ics`**. _"One universal invite —
+Outlook, Gmail, Apple Calendar. Reschedule keeps the same UID and bumps the
+sequence, so calendars update the entry rather than creating a second one."_
+MedGrid's partner call is seeded already rescheduled (sequence 1) if you want to
+point at one.
+
+**AI health** (Admin → **All decks**). The banner names **PitchLoop** as failed
+with the real reason and offers **Re-run AI**. _"A deck used to be able to sit at
+'Pending' forever with no reason recorded anywhere. Now the cause is captured, a
+sweep re-drives it, the credit is refunded once, and a human can re-drive it by
+hand."_ **Don't click Re-run on PitchLoop** — it's a fixture with no stored PDF,
+so it will just fail again. Demo the recovery on a deck you uploaded.
+
+**Admin console** (Admin → **Admin console**). Create a juror. _"They're emailed a
+sign-in link and a one-time password."_ (Until the sending domain is verified the
+screen shows the password for you to relay instead — it says which.)
+
+**Issue log** (Support → **Issue log**). _"The team logs testing issues in the
+product itself rather than in five chat threads."_
+
 ### Act 4 — Analytics, incubator (~1.5 min)
 
 - **Show:** **Cohort summary** and **Pipeline funnel**. **[+]** **Evaluator
@@ -132,6 +197,16 @@ company, every step scored and audited, running entirely on Cloudflare's edge."
 | **Analytics** | "AI-vs-human drift, funnel conversion, cohort bands — decision intelligence." |
 | **IC voting (VC)** | "Confidential ballots, live tally, plurality recommendation." |
 | **Config (admin)** | "Change a weight and the whole cohort re-scores instantly." |
+| **Evaluator workbench** | "The deck, the AI's reasoning, and the juror's own judgement on one screen — the average is the number of record." |
+| **Research button** | "Their AI, their account — we never spend platform tokens on side research." |
+| **Rescore guard** | "The AI is non-deterministic, so we refuse to re-roll a score when nothing has changed." |
+| **Set up wizard** | "Sector → Program → Cohort. Everything — uploads, scoring, reports — happens inside a program." |
+| **My Parameters** | "13 weighted core areas are the score. Each role adds up to 3 of its own, AI-assisted, with an editable prompt — shown separately, never folded into the 100%." |
+| **Shortlist floor** | "A per-program minimum. Uniform — a superuser is held to it too." |
+| **Resubmit link** | "The founder fixes the deck itself and re-uploads. One artifact, re-scored automatically." |
+| **Intro calls / .ics** | "One universal invite for any email domain; a reschedule updates the entry instead of duplicating it." |
+| **AI health banner** | "A failed evaluation names its cause, refunds its credit, and can be re-driven." |
+| **Issue log** | "Testing issues live in the product, not in five chat threads." |
 
 ---
 
@@ -170,11 +245,38 @@ Claude call **synchronously in the request** while it reads the whole PDF. **Do
 not double-submit** (each submit spends a credit and creates a second deck). Give
 it up to ~30s.
 
-**Upload returns but the deck shows "Pending" (not scored).** The API returned
-`202 evaluated:false` — the Claude call failed and the deck is parked at
-**Pending AI** (graceful degradation, not a crash). Almost always the **Anthropic
-account is out of credits.** Check with the repo owner; balance is the usual
-cause. Nothing to fix in the app.
+**Upload returns but the deck shows "Pending" (not scored).** You no longer have
+to guess: the deck row and the dashboard banner now carry **the actual reason**
+(billing, rate limit, bad key, missing PDF). A `*/10` cron re-drives it up to 3
+times, then gives up and **refunds the credit**; an admin can also press **Re-run
+AI**. If the reason says billing, the **Anthropic account is out of credits** —
+check with the repo owner. Nothing to fix in the app.
+
+**Everything scores 0 / every upload fails at once.** Check the recorded reason
+first. One historical cause is worth knowing: `claude-sonnet-5` **rejects a
+`temperature` parameter with a 400**, and for a while every real upload failed
+because of it. `temperature` / `top_p` / `top_k` must stay **absent** from the
+Anthropic call — there is a test asserting exactly that. Don't "restore" them.
+
+**A deck's report drawer is empty.** Every seeded deck with a score now has its
+full 13-parameter breakdown (Session 8). The two decks that deliberately have
+none are the **Incomplete** ones — PayRoute and NimbusHR never completed an
+evaluation, so there is nothing to show. Extracted slide text only exists for
+decks with a real uploaded PDF.
+
+**The Export button downloads nothing.** It exports exactly the rows on screen —
+if the filtered table is empty the button is disabled.
+
+**An email "didn't arrive."** Expected until the sending domain is verified. The
+app **records** every message rather than sending it, and reports `recorded`
+rather than claiming a delivery. Everything else in the loop (tokens, links,
+`.ics` attachments, the resubmit page) works regardless.
+
+**The resubmit link 404s or says expired.** Two demo links are seeded and both
+run to 2030: `/resubmit/aisj-demo-nimbushr-resubmit-2026` (NimbusHR) and
+`/resubmit/aisj-demo-cloudbridge-resubmit-2026` (CloudBridge, a real uploaded
+deck). A token is **superseded when a new one is minted for the same deck**, so
+if you or a cron re-drove that deck, re-mint or use the other link.
 
 **Deck lands at Incomplete / Rejected unexpectedly.** The deck didn't cover the
 rubric well (see _Which PDF_ — usually the missing **Climate Impact** parameter),
@@ -190,8 +292,15 @@ actions shown for that stage/role are valid.
 permission model working, not a bug — switch to a role that has it (Super User /
 Managing Partner see everything).
 
-**Out of credits mid-demo.** Log in as an **Admin**, go to **Config → Core
-params**, and set the credit balance back up. 50 is the seeded value.
+**Out of credits mid-demo.** Log in as an **Admin** and use **Buy credits**
+(a simulated top-up — no payment is captured), or set the balance directly in
+**Config → Core params**.
+
+**A shortlist is refused ("below the program's shortlist minimum").** Working as
+designed — the deck's decision score is under its program's floor. Either pick a
+stronger deck or, as an admin, lower the floor in **Set up**. The seeded floors
+are **Climate Cohort 5.5 · Deep Tech Fund 5.5 · Fund II 6.5**; Fintech Accelerator
+and SaaS Accelerator have none.
 
 **"Someone changed the demo data."** It's a shared environment — uploads persist
 and are visible to everyone with the link. The seeded dashboard numbers are
@@ -227,6 +336,9 @@ authenticated):
    npx wrangler d1 execute startup-jury-db --remote \
      --command "UPDATE org_settings SET credits_balance = 50 WHERE edition = 'vc';"
    ```
+   (The live balances at the end of the finish track were **42 / 49**, not 50 —
+   earlier verification runs legitimately spent some. Set whatever you want the
+   demo to read.)
 5. **Verify:** the `SELECT` in step 1 returns nothing and both editions read
    `credits_balance = 50`.
 
