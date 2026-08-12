@@ -635,3 +635,26 @@ each finish session). Landed so far:
   Select → Team; a per-edition **active-context** store (`src/client/activeContext.ts`); dashboard
   **Program/Cohort toolbar filters** + first-run banner; an **"Applies to"** card on Core Parameters; and
   **Program/Cohort selectors** on Upload. New uploads write `program_id/cohort_id` (legacy text left NULL).
+
+- **Session 3 — Parameter model: core 13 + role-scoped additional** (commit `f19b50b`). The rubric is now
+  **13 core + 9 additional = 22 params/edition.** Owner roles (`shared/roles.ts ADDITIONAL_PARAM_OWNERS`):
+  incubator = program_associate/program_manager/jury, VC = associate/partner/ic_member. Additional params are
+  **AI-scored (assistive) but informational (weight 0)** → the weighted composite stays core-13 = 100%; each has
+  a **configurable AI prompt** (`parameters.prompt`, migration `0013`; scores seeded `0014`). **Plan gating**
+  (`shared/plans.ts`): Standard = no config · Pro = core 13 · Premium = additional 3. Config CRUD (`config.ts`)
+  gates 402; renaming/prompt edits bump `criteria_version` (rescore guard). **NB:** program_associate + ic_member
+  own params but had no eval screen (their human additional scoring is a later concern).
+
+- **Session 4 — Roles & permissions** (commit `4467bf7`). The incubator **Program Manager is the decision
+  maker**: `program_manager` added to `assign_jury`/`shortlist`/`reject`/`schedule_intro` (`pipeline/incubator.ts`
+  + the `/assign` gate + nav `jurypipeline`/`introcalls`); associate stays the executor. **User management** —
+  new **`src/server/routes/users.ts`** (`/api/users`: GET roster · POST create with a one-time temp password ·
+  PATCH activate/deactivate/re-role; superuser/admin, edition-scoped) + **`AdminConsolePage`** (nav `admin`).
+  **Mentor = a user-type** (`users.user_type`), not a role. **PM owner-scoped cohorts**: migration `0015` adds
+  **`programs.owner_id`** (seed: `inc_pm` owns the incubator programs); `programs.ts` cohort CRUD is
+  admin/superuser OR the owning PM (`canManageCohorts`); the **Set up wizard** is seat-aware (PM cohorts-only,
+  PA read-only "Standard seat"). New **My account** (`AccountPage`, nav `account`) + **Buy credits**
+  (`BuyCreditsPage`, nav `billing`) — Buy credits is a **simulated demo top-up** (`POST /api/config/credits/
+  purchase`, atomic increment; **no real payment / card capture** — out of scope). Nav superuser superset
+  21→24 (`admin`/`account`/`billing`). Investment Associate vs Analyst (VC) verified + test-locked (the VC
+  intro-call screen + ICS is Session 7).

@@ -55,12 +55,12 @@ Full parity + all asks. Check items off as sessions land them.
 - [x] Additional params are a **default list they can change**, each with a **configurable prompt** _(S3)_
 - [x] **Plan gating:** Standard = no config (default 13) · Pro = configure core 13 · Premium = configure the additional 3 _(S3)_
 
-### Roles & permissions (Session 4)
-- [ ] **Program Manager decision authority** — jury shortlist routes to the **PM**, who decides/schedules (or assigns who schedules) the intro call; PM can also evaluate. Associate is the frontline executor.
-- [ ] **Investment Associate** distinct from Analyst (associate = one shade senior; analyst can be an intern/uploader)
-- [ ] **User management** — Super User (and per matrix) can **create users** (jurors, mentors, etc.)
-- [ ] **Mentor** concept (role vs. user-type — confirm; see §8)
-- [ ] **Admin console / My account / Buy credits** flows to prototype parity
+### Roles & permissions (Session 4) ✅
+- [x] **Program Manager decision authority** — jury shortlist routes to the **PM**, who decides/schedules (or delegates to the associate) the intro call; PM can assign jury + evaluate + shortlist/override. Associate is the frontline executor. PM manages cohorts for programs they lead (owner-scoped). _(S4)_
+- [x] **Investment Associate** distinct from Analyst (associate = one shade senior; analyst can be an intern/uploader) — verified + locked with tests _(S4; VC intro-call scheduling screen + ICS is S7)_
+- [x] **User management** — Super User / Admin **create users** (jurors, mentors, staff): `POST/GET/PATCH /api/users` + Admin console screen, edition-scoped, temp-password issue _(S4)_
+- [x] **Mentor** = a **user-type**, not a role (role matrix + prototype dropdowns confirm) — `users.user_type` _(S4)_
+- [x] **Admin console / My account / Buy credits** flows built (Buy credits = a simulated demo top-up, no real payment capture) _(S4)_
 
 ### Automation & intake (Session 5)
 - [ ] **Per-program minimum shortlist threshold** in the admin dashboard; the system **blocks** a juror from shortlisting a deck scoring **below** the program's threshold
@@ -113,7 +113,7 @@ Full parity + all asks. Check items off as sessions land them.
 | 1 | Evaluator Workbench | ✅ Done | `3f3bd30` (+ docs) | 2026-08-11 |
 | 2 | Program & Cohort hierarchy + config wizard (+ VC fund fields) | ✅ Done | `c70cbcd` (+ docs) | 2026-08-11 |
 | 3 | Parameter model — core 13 + role-scoped additional (AI-scored) + prompts + plan gating | ✅ Done | `f19b50b` (+ docs) | 2026-08-12 |
-| 4 | Roles & permissions — PM authority, Associate/Analyst, user mgmt/mentor, admin console/account/credits | ⬜ Not started | — | — |
+| 4 | Roles & permissions — PM authority, Associate/Analyst, user mgmt/mentor, admin console/account/credits | ✅ Done | `4467bf7` (+ docs) | 2026-08-12 |
 | 5 | Automation — shortlist floor, AI determinism, duplicates/returning, upload validation, deck versioning | ⬜ Not started | — | — |
 | 6 | Incomplete-deck resubmit loop + real email | ⬜ Not started | — | — |
 | 7 | De-stub VC screens + ICS scheduling + issue log + pending-bug fix | ⬜ Not started | — | — |
@@ -399,6 +399,59 @@ _(Append newest at the bottom. One entry per completed session.)_
     the first apply — just **retry** the migrate/deploy if you hit `code 7403`; it's not a code fault.
     (4) The `myparams` nav already lists all owner roles per edition (no nav change this session).
 
+- **2026-08-12 — Session 4 (Roles & permissions) shipped.** Commit `4467bf7` (+ this doc commit). The
+  incubator **Program Manager is now the decision maker**, **user management** (Admin console) + **My account**
+  + **Buy credits** ship, and **mentor is resolved as a user-type**. Green gate: typecheck + lint +
+  **206 unit/worker (1 skipped)** + build + **37 e2e**. Deployed (remote D1 migrated first — `0015`) +
+  `npm run smoke` **27/27**; **live-verified** the mentor seed, PM login + owned programs on the deployed Worker.
+  - **PM decision authority.** `src/pipeline/incubator.ts`: `program_manager` added to **`assign_jury`,
+    `shortlist`, `reject`, `schedule_intro`** (jury shortlist routes to the PM who decides/schedules the intro
+    call, or delegates to the associate — who keeps `schedule_intro`; associate stays the executor, e.g.
+    `send_signup`). `pipeline.ts` `/assign` coarse gate now admits `program_manager` (lock-step with the
+    config). Nav (`shared/nav.ts`): PM gains **`jurypipeline`** (oversight) + **`introcalls`** (decision
+    surface). PM already could `/evaluate` + read `/jury`. Flipped the old "PM rejected by assign (403)"
+    worker test → 200, added PM shortlist→intro (worker) + PM-authority + analyst/associate (unit) tests.
+  - **Investment Associate vs Analyst (VC) — verified + locked (no structural change).** The VC intro-call
+    **screen + ICS is Session 7**, so S4 only hardened the permissions with unit tests: analyst uploads +
+    scores (`submit_for_ai`/`submit_core_scores`) but **cannot `shortlist_to_partner`** (associate-only), and
+    the associate **cannot `sponsor_to_ic`** (partner-only). Roles already distinct in code.
+  - **User management (Admin console).** New **`src/server/routes/users.ts`** (`/api/users`, superuser/admin
+    via `requireRole("admin")`, **edition-scoped**): `GET` roster · `POST` create (generates a one-time
+    **temp password** returned once; `hashPassword`; role validated by the shared **`creatableStaffRoles`** —
+    excludes `superuser` + `founder`; unique email → 409) · `PATCH` activate/deactivate/rename/re-role
+    (can't touch self or a superuser). Client **`AdminConsolePage`** (nav `admin`): roster + create form
+    (name/email/user-type/role) + activate/deactivate. Mounted in `index.ts`.
+  - **MENTOR DECISION = user-type, not a role.** Evidence: the role-assignment matrix has **no mentor
+    column**, and **none** of the four prototype user-creation dropdowns list "Mentor" — it appears only as
+    advisor terminology (a `mentor` field on cohort rows) + a scoring-parameter label. Implemented via
+    **`users.user_type`** (`'staff'` default | `'mentor'`); a mentor row is `user_type='mentor'` +
+    `role='mentor'` (a value in **no** authZ/nav list → zero pipeline power). Dedicated mentor tooling is
+    future work. Seeded one demo mentor (`inc_mentor`, "Anil Mehta").
+  - **PM owner-scoped cohorts.** Migration `0015` adds **`programs.owner_id`** (seed: `inc_pm` owns the
+    incubator programs). `programs.ts` cohort CRUD (`POST /:id/cohorts`, `PUT/DELETE /cohorts/:id`) now
+    admits `program_manager` + an inner **`canManageCohorts`** (admin/superuser OR the owning PM);
+    **sector/program CRUD stays admin-only**. `ProgramView` gains `ownerId`. Worker tests: PM-owns ✓ /
+    PM-doesn't-own → 403 / PA → 403 / sector+program CRUD by PM → 403.
+  - **Set up wizard seats.** `SetupWizard` is role-aware: admin/superuser = full; **program_manager** =
+    cohorts-only (owner-scoped, sectors/programs view-only); **program_associate** = read-only with the gold
+    **"Standard seat"** banner (matches the prototype). Nav `setup` opened to PM + PA (incubator).
+  - **My account + Buy credits.** `AccountPage` (nav `account`, all internal roles) — profile + plan/org +
+    sign out. `BuyCreditsPage` (nav `billing`, admin) — the prototype's pay-as-you-go packs (Pro/Premium,
+    20–50 credits) as a **SIMULATED demo top-up**: `POST /api/config/credits/purchase` atomically increments
+    the balance. **No real payment / no card capture** — a Razorpay/UPI/card flow is deliberately out of
+    scope (prohibited); the screen is clearly labelled "Demo mode."
+  - **Nav.** Incubator superuser superset **21 → 24** (`admin`/`account`/`billing`); `nav.test.ts` bumped.
+    VC superset 28 → 31 (unpinned, auto-derived). Icons `Building2`/`UserCog`/`CreditCard` registered.
+  - **Gotchas for later sessions:** (1) The demo **mentor** (`inc_mentor`, `role='mentor'`) has an **empty
+    nav** — if they log in they hit the "not available for your role" state (advisor tooling is future work);
+    `nav.spec` uses a **hardcoded 12-user list** so the 13th user doesn't affect it. (2) **Buy credits is a
+    simulated top-up** — real billing would replace it; do NOT add card/UPI/bank capture (prohibited).
+    (3) Programs created via **`POST /api/programs` have `owner_id=NULL`** → no PM can manage their cohorts
+    until an admin assigns an owner; there is **no owner-assignment UI** yet (only the column + the seed).
+    (4) The §8 "associate schedules the intro call" (VC) is **deferred to Session 7** (Intro-calls de-stub +
+    ICS) — S4 only verified the permissions. (5) `POST /api/users` returns the plaintext **`tempPassword`
+    once** (no email yet); Session 6's real email should send it instead of surfacing it in the UI.
+
 ---
 
 ## 7. CURRENT NEXT-SESSION PROMPT
@@ -410,38 +463,43 @@ You are continuing the ai.STARTUPJURY finishing build. This is a FRESH session w
 
 START by reading, in order:
 1. docs/FINISH-PLAN.md  (the master plan — read ALL of it, especially §8 meeting clarifications, §9 known
-   issues, and the §6 Progress Log entries for Sessions 1–3 — what shipped + gotchas left for you)
+   issues, and the §6 Progress Log entries for Sessions 1–4 — what shipped + gotchas left for you)
 2. HANDOFF.md           (architecture, bindings, workflow, gotchas)
 Recall the project memories (startup-jury-completion-gap, startup-jury-requirements-sources,
 startup-jury-open-scope-decisions, startup-jury-meeting-clarifications, phase5-vc-visual-gate). Open the
-ROLE / permission prototypes (the target UI) for this session:
-- Incubator: "Incubator Final files/AISJ_INC_ProgManager_V2.HTM" + "AISJ_INC_Prog assoc.HTM" (Set up authority
-  diff PM vs associate) and the Superuser "AISJ_IC_SuserV11.HTM" (openAdmin/openAccount/openBuyCredits, Team &
-  roles / user creation).
-- VC: "VC Final files/AISJ_VC_Superuser_V6.html" + per-role files (Analyst/Associate/Partner/IC member).
-Also open the role-matrix image at the STARTUPJURY-TEAM-FOLDER root
-("Startupjury role assignment role matrix.jpg").
+prototypes most relevant to intake/automation: the incubator Superuser "AISJ_IC_SuserV11.HTM" (upload panel
+~1091, shortlist-threshold / cohort thresholds, admin dashboard) and "AISJ_INC_Jury_V3.html" (shortlist
+action), plus the VC Superuser "AISJ_VC_Superuser_V6.html". Live copies: https://aisj-incubator-v2.netlify.app
+· https://aisj-venturecapitalv2.netlify.app
 
-YOUR JOB THIS SESSION: complete **Session 4 — Roles & permissions** exactly as specified in
-docs/FINISH-PLAN.md §4 (Session 4):
-- **PM decision authority** — a jury **shortlist** routes to the **program_manager**, who decides and
-  **schedules or assigns** the intro call; PM can assign jury + evaluate; PM manages cohorts for programs they
-  lead (owner-scoped). Associate stays the frontline executor (read-only in Set up "Standard seat"). Update
-  `src/pipeline/incubator.ts` + `src/server/routes/pipeline.ts` role gates and fix affected tests.
-- **Investment Associate vs Analyst (VC)** — both already exist as distinct roles; VERIFY the flow (analyst
-  uploads+scores → associate scores + schedules intro call → partner …) and the permissions are right.
-- **User management** — Super User (+ per the role matrix) can **create users** (jurors, mentors, staff): a new
-  admin screen + **`POST /api/users`** (superuser/admin-gated). **Mentor:** DECIDE role vs user-type (see §8 —
-  it's referenced but not yet a role) and implement the chosen shape; record the decision in §6.
-- **Admin console / My account / Buy credits** — build to prototype parity (extend `ConfigPage` or add screens
-  for `openAdmin`/`openAccount`/`openBuyCredits`).
+YOUR JOB THIS SESSION: complete **Session 5 — Automation** exactly as specified in docs/FINISH-PLAN.md §4
+(Session 5):
+- **Per-program shortlist floor** — admin sets a **minimum score per program**; the system **blocks** a juror
+  from shortlisting a deck scoring **below** the program's threshold, with a clear message. (Jury still does the
+  shortlisting — this is a guardrail, not auto-shortlist.) Store the floor on the program. NB: the incubator
+  shortlist is action `shortlist` (jury_evaluation→shortlisted, gated jury/PM/admin/superuser); enforce the
+  floor in `pipeline.ts` when that action runs, using the deck's `ai_score` (or the final composite) vs the
+  program's floor. Programs already carry `owner_id` (S4); add e.g. `programs.shortlist_min`.
+- **AI determinism** — minimize run-to-run score variance (target ≤10%): set a deterministic temperature/seed
+  in `evaluate.ts callAnthropic`; the rescore guard (S1) already prevents needless re-runs. Document the
+  residual-variance expectation.
+- **Duplicate / returning-startup flags** — at upload match on name/founder/email: a soft **duplicate alert**
+  (cost-driven, not a block) + a **returning-company history tag** when a known company re-applies (seed→Series
+  A). Soft alerts only.
+- **Upload validation** — enforce required founder/contact columns (founder, email, phone, city, sector);
+  **PDF-only** (already enforced — keep); missing detail → **Incomplete**. Bulk: AI extraction fills details;
+  surface per-row errors.
+- **Deck versioning** — a re-upload saves a **new version** with history (this feeds the S6 incomplete-resubmit
+  loop). Note S1 added `decks.content_version` (currently only bumped by config); wire real deck versioning here.
 
-Context you'll build on (from Sessions 1–3): the 22-param model + role-scoped additional params are done —
-**program_associate & ic_member OWN additional params but have no rubric eval screen yet**, so if this
-session gives them evaluation surfaces, wire their owned-additional section too (the eval endpoint already
-accepts `role_scope === user.role`; `ADDITIONAL_PARAM_OWNERS` lives in `shared/roles.ts`). Roles are seeded in
-`0002_seed.sql`; `ROLE_LABELS`/`ROLES_BY_EDITION` in `shared/roles.ts`; nav in `shared/nav.ts` (superuser
-superset is 21). New uploads set `decks.program_id/cohort_id`.
+**Touch:** `src/server/routes/decks.ts`, `src/server/ai/evaluate.ts`, `src/client/routes/UploadPage.tsx`,
+`src/server/routes/config.ts` (or `programs.ts` for the per-program floor), `src/shared/scoring.ts`, + a migration.
+
+Context from S1–S4 you'll build on: uploads set `decks.program_id`/`cohort_id` (legacy text cols still exist,
+dropped in S8); `evaluateDeck` scores 22 params (13 core = 100% composite + 9 informational); the AI gate is
+`>5` weighted; single-upload enqueues to `EVAL_QUEUE` on a synchronous error (partial pending-bug mitigation —
+full fix is S7). Programs have `owner_id` + a PM-owner model (S4). `POST /api/users` exists (S4). Keep the demo
+seed pristine (S8 refreshes it).
 
 Be thorough — spend the tokens: use parallel subagents for discovery, write unit/worker/e2e tests, and
 follow the Standing Rules in §2 (green gate; commit to main with the Co-Authored-By trailer; wrangler
@@ -450,7 +508,7 @@ migration — + npm run smoke at the end; keep the demo seed live). Node 22 via 
 busy, e2e takes `E2E_PORT=<free port>`. NB: if `wrangler … --remote` hits a transient `code 7403`, just retry.
 
 BEFORE FINISHING: do the §5 End-of-session checklist — check off §1 items, update the §3 tracker, append
-a §6 Progress Log entry, and replace this §7 prompt with the Session 5 prompt. Commit the updated plan to main.
+a §6 Progress Log entry, and replace this §7 prompt with the Session 6 prompt. Commit the updated plan to main.
 ```
 
 ### Next-session prompt template (for future sessions)
