@@ -8,10 +8,42 @@
 
 import type { Edition } from "../../shared/roles";
 import { weightedTotal, signalTag } from "../../shared/scoring";
+import {
+  mergeIntakeDetails,
+  missingIntakeFields,
+  type IntakeDetails,
+  type IntakeField,
+  type IntakeFlag,
+} from "../../shared/intake";
+import { detectIntakeFlags } from "../intake";
 import type { Env } from "../types";
 
 const DEFAULT_MODEL = "claude-sonnet-5";
 const GATE = 5; // strictly-greater-than gate from the flow diagram.
+
+/**
+ * **Determinism (Session 5).** The Jul-24 demo asked for run-to-run score variance
+ * within ~10%. Three settings do the work, all applied in `callAnthropic`:
+ *
+ *  - `temperature: 0` — greedy decoding. The Messages API has **no seed
+ *    parameter**, so this is the strongest determinism lever available.
+ *  - `thinking: { type: "disabled" }` — no sampled reasoning preamble to diverge.
+ *  - a forced `tool_choice` — the response shape is fixed, so only the numbers can
+ *    move, never the structure.
+ *
+ * The prompt is deterministic too: parameters are ordered by `sort_order` and the
+ * anchor bands are sorted, so the same deck + rubric always produces byte-identical
+ * request text.
+ *
+ * **Residual variance expectation.** Temperature 0 is not a guarantee — batching
+ * and floating-point non-determinism in the serving stack can still flip a
+ * near-tied token, and a per-parameter score is one token. Expect most re-runs to
+ * be identical, occasional single-parameter drift of ±1, and therefore a weighted
+ * composite within roughly ±0.3 of 10 (well inside the ~10% target). The real
+ * protection against needless drift is the **rescore guard** (Session 1): we do not
+ * re-run at all unless the deck content or the admin's criteria changed.
+ */
+const AI_TEMPERATURE = 0;
 
 /** Pass/fail landing stages per edition once the AI gate is applied. */
 const PASS_STAGE: Record<Edition, string> = {
@@ -68,6 +100,12 @@ export interface AnchorRow {
 export interface RawEvaluation {
   complete?: boolean;
   founder?: string | null;
+  /** Required intake detail read off the deck (Session 5 — upload validation).
+   *  A bulk upload types nothing, so the extraction is the only source. */
+  founder_email?: string | null;
+  founder_phone?: string | null;
+  city?: string | null;
+  sector?: string | null;
   extractions?: Array<{
     label?: string;
     heading?: string | null;
@@ -95,6 +133,8 @@ export interface ScoreRow {
 export interface ParsedEvaluation {
   complete: boolean;
   founder: string | null;
+  /** Contact/company detail the model read off the deck (may be all-null). */
+  details: IntakeDetails;
   extractions: ExtractionRow[];
   scores: ScoreRow[];
 }
@@ -106,6 +146,14 @@ export interface EvaluationResult {
   status: string;
   gatePassed: boolean;
   complete: boolean;
+  /** Required intake columns still absent after merging form + extraction. A
+   *  non-empty list forces the deck Incomplete regardless of the score (§8). */
+  missingFields: IntakeField[];
+  /** The merged founder/contact detail now stored on the deck. */
+  details: IntakeDetails;
+  /** Soft duplicate / returning-company alert, or null. Never blocks. */
+  intakeFlag: IntakeFlag | null;
+  intakeNote: string | null;
 }
 
 export interface AnthropicRequest {
@@ -148,6 +196,32 @@ export function buildTool(params: ParameterRow[]): AnthropicTool {
         founder: {
           type: ["string", "null"],
           description: "The founder or primary contact's full name, or null if absent.",
+        },
+        // Session 5 — the required intake columns. A bulk upload types nothing, so
+        // these extractions are the only source of the founder's contact detail;
+        // anything the deck doesn't state must come back null (never guessed), so
+        // the upload validation can mark the deck Incomplete and ask for it.
+        founder_email: {
+          type: ["string", "null"],
+          description:
+            "The founder/primary contact's email address exactly as printed in the deck, " +
+            "or null if the deck does not state one. Never invent or infer an address.",
+        },
+        founder_phone: {
+          type: ["string", "null"],
+          description:
+            "The founder/primary contact's phone number exactly as printed in the deck, " +
+            "or null if the deck does not state one. Never invent one.",
+        },
+        city: {
+          type: ["string", "null"],
+          description:
+            "The startup's primary city / headquarters as stated in the deck, or null if absent.",
+        },
+        sector: {
+          type: ["string", "null"],
+          description:
+            "The startup's industry sector in two or three words (e.g. 'B2B FinTech'), or null if unclear.",
         },
         extractions: {
           type: "array",
@@ -234,9 +308,11 @@ export function buildUserPrompt(
     `Core rubric (weighted — these form the composite):\n${rubric}\n` +
     additionalBlock +
     `\nAnchor bands (apply consistently):\n${bands}\n\n` +
-    "Extract the founder's name and the key slides, flag any missing essential " +
-    "slides, and set complete=false if the deck is not evaluable. Then call " +
-    "submit_evaluation with one score per parameter key above."
+    "Extract the founder's contact details (name, email, phone, city) and the " +
+    "startup's sector exactly as stated in the deck — return null for anything the " +
+    "deck does not state; do not guess. Extract the key slides, flag any missing " +
+    "essential slides, and set complete=false if the deck is not evaluable. Then " +
+    "call submit_evaluation with one score per parameter key above."
   );
 }
 
@@ -274,9 +350,20 @@ export function parseEvaluation(raw: RawEvaluation, params: ParameterRow[]): Par
       missing: e.missing === true,
     }));
 
+  const text = (v: unknown): string | null =>
+    typeof v === "string" && v.trim() ? v.trim() : null;
+  const founder = text(raw.founder);
+
   return {
     complete: raw.complete !== false,
-    founder: typeof raw.founder === "string" && raw.founder.trim() ? raw.founder.trim() : null,
+    founder,
+    details: {
+      founder,
+      founderEmail: text(raw.founder_email),
+      founderPhone: text(raw.founder_phone),
+      city: text(raw.city),
+      sector: text(raw.sector),
+    },
     extractions,
     scores,
   };
@@ -335,6 +422,9 @@ export const callAnthropic: ModelCaller = async (req) => {
     body: JSON.stringify({
       model: req.model,
       max_tokens: 4096,
+      // Determinism (see AI_TEMPERATURE above): greedy decoding, no sampled
+      // thinking, and a forced tool so only the numbers can vary run to run.
+      temperature: AI_TEMPERATURE,
       thinking: { type: "disabled" },
       system: req.system,
       tools: [req.tool],
@@ -375,6 +465,11 @@ interface DeckRow {
   name: string | null;
   sector: string | null;
   stage: string | null;
+  city: string | null;
+  founder: string | null;
+  founder_email: string | null;
+  founder_phone: string | null;
+  cohort_id: string | null;
 }
 
 export interface EvaluateOptions {
@@ -396,7 +491,8 @@ export async function evaluateDeck(
   const now = opts.now ?? (() => new Date().toISOString());
 
   const deck = await env.DB.prepare(
-    "SELECT id, edition, status, r2_key, content_version, name, sector, stage FROM decks WHERE id = ?",
+    "SELECT id, edition, status, r2_key, content_version, name, sector, stage, city, " +
+      "founder, founder_email, founder_phone, cohort_id FROM decks WHERE id = ?",
   )
     .bind(deckId)
     .first<DeckRow>();
@@ -446,11 +542,45 @@ export async function evaluateDeck(
   });
 
   const parsed = parseEvaluation(raw, params);
+
+  // ── Upload validation (Session 5) ──────────────────────────────────────────
+  // Whatever the uploader typed wins; the extraction fills the blanks (which is
+  // how a bulk upload — where nothing is typed — gets its founder details). Any
+  // required column still missing marks the deck INCOMPLETE regardless of the
+  // score, so the founder is asked for it (Session 6 emails the missing list).
+  const details = mergeIntakeDetails(
+    {
+      founder: deck.founder,
+      founderEmail: deck.founder_email,
+      founderPhone: deck.founder_phone,
+      city: deck.city,
+      sector: deck.sector,
+    },
+    parsed.details,
+  );
+  const missingFields = missingIntakeFields(details);
+  const effective: ParsedEvaluation = {
+    ...parsed,
+    complete: parsed.complete && missingFields.length === 0,
+  };
+
   const { weightedTotal: total, signal, gatePassed, status } = computeResult(
-    parsed,
+    effective,
     params,
     deck.edition,
   );
+
+  // Soft duplicate / returning-company alert, re-run now that the extraction has
+  // filled in the founder's identity (a bulk upload had only a filename before).
+  const intake = await detectIntakeFlags(env, deck.edition, {
+    ...details,
+    name: deck.name ?? "",
+    fundingStage: deck.stage,
+    cohortId: deck.cohort_id,
+    selfId: deckId,
+  });
+  const intakeNote = intake.matches[0]?.reason ?? null;
+
   const ts = now();
 
   const stmts: D1PreparedStatement[] = [
@@ -472,7 +602,7 @@ export async function evaluateDeck(
       ).bind(`${deckId}_ai_${i}`, deckId, s.parameterId, s.value, s.comment, ts),
     );
   });
-  const verdict = !parsed.complete ? "incomplete" : gatePassed ? "advanced" : "below_gate";
+  const verdict = !effective.complete ? "incomplete" : gatePassed ? "advanced" : "below_gate";
   // Stamp the criteria/content versions this AI run scored under so the rescore
   // guard (routes/decks.ts /rescore) can tell whether anything material changed.
   const criteriaVersion = org?.criteria_version ?? 1;
@@ -484,8 +614,26 @@ export async function evaluateDeck(
   );
   stmts.push(
     env.DB.prepare(
-      "UPDATE decks SET ai_score = ?, signal = ?, status = ?, founder = ?, complete = ?, updated_at = ? WHERE id = ?",
-    ).bind(total, signal, status, parsed.founder, parsed.complete ? 1 : 0, ts, deckId),
+      "UPDATE decks SET ai_score = ?, signal = ?, status = ?, founder = ?, founder_email = ?, " +
+        "founder_phone = ?, city = ?, sector = ?, missing_fields = ?, intake_flag = ?, " +
+        "intake_flag_note = ?, related_deck_id = ?, complete = ?, updated_at = ? WHERE id = ?",
+    ).bind(
+      total,
+      signal,
+      status,
+      details.founder ?? null,
+      details.founderEmail ?? null,
+      details.founderPhone ?? null,
+      details.city ?? null,
+      details.sector ?? null,
+      missingFields.length > 0 ? missingFields.join(",") : null,
+      intake.flag,
+      intakeNote,
+      intake.matches[0]?.deckId ?? null,
+      effective.complete ? 1 : 0,
+      ts,
+      deckId,
+    ),
   );
   stmts.push(
     env.DB.prepare(
@@ -502,5 +650,16 @@ export async function evaluateDeck(
 
   await env.DB.batch(stmts);
 
-  return { deckId, weightedTotal: total, signal, status, gatePassed, complete: parsed.complete };
+  return {
+    deckId,
+    weightedTotal: total,
+    signal,
+    status,
+    gatePassed,
+    complete: effective.complete,
+    missingFields,
+    details,
+    intakeFlag: intake.flag,
+    intakeNote,
+  };
 }

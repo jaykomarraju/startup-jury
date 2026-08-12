@@ -1,4 +1,5 @@
 import type { DeckSignal } from "./theme/signals";
+import type { IntakeField, IntakeFlag } from "../shared/intake";
 
 /**
  * Client-side view model for a deck row/card. This is a presentational shape used
@@ -12,8 +13,26 @@ export interface DeckView {
   city?: string;
   founder?: string;
   email?: string;
+  /** Required intake detail (Session 5 — upload validation). */
+  founderEmail?: string;
+  founderPhone?: string;
+  /** Required columns still missing — a non-empty list means Incomplete. */
+  missingFields?: IntakeField[];
+  /** Soft duplicate / returning-company alert raised at intake. */
+  intakeFlag?: IntakeFlag;
+  intakeNote?: string;
+  /** The earlier deck this one matched, if any. */
+  relatedDeckId?: string;
+  /** Deck version counter — bumps on every re-upload. */
+  contentVersion?: number;
   /** Weighted AI score 0–10 (undefined until evaluated). */
   aiScore?: number;
+  /** AI + jury composite average — the number the shortlist floor is judged on. */
+  decisionScore?: number;
+  /** The program's minimum shortlist score, when one is configured. */
+  shortlistMin?: number;
+  /** True when the deck sits below its program's shortlist floor. */
+  shortlistBlocked?: boolean;
   signal?: DeckSignal;
   /** Pipeline status label (e.g. "AI Evaluated", "Shortlisted"). */
   status?: string;

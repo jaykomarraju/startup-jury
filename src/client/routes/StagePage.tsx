@@ -15,6 +15,7 @@ import {
   listDecks,
   getDeck,
   transitionDeck,
+  ApiError,
   sendSignup,
 } from "../api";
 
@@ -96,8 +97,15 @@ export function StagePage({ config }: { config: StageConfig }) {
         await transitionDeck(deck.id, action.action, undefined, extra);
       }
       await load();
-    } catch {
-      setError(`Couldn't ${action.label.toLowerCase()}. Try again.`);
+    } catch (err) {
+      // The per-program shortlist floor (Session 5) refuses with an evaluator-
+      // facing message; anything else gets the generic retry copy.
+      if (err instanceof ApiError && err.code === "below_shortlist_minimum") {
+        setError(err.message);
+        await load();
+      } else {
+        setError(`Couldn't ${action.label.toLowerCase()}. Try again.`);
+      }
     } finally {
       setBusy(null);
     }

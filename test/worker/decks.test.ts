@@ -43,6 +43,10 @@ describe("evaluateDeck (mocked Anthropic)", () => {
       async (): Promise<RawEvaluation> => ({
         complete: true,
         founder: "Ada Lovelace",
+        founder_email: "ada@testco.example",
+        founder_phone: "+91 98450 11111",
+        city: "Bengaluru",
+        sector: "B2B SaaS",
         extractions: [
           { label: "Cover", heading: "TestCo", text: "One-liner" },
           { label: "Team", missing: true, text: null },
@@ -98,7 +102,15 @@ describe("evaluateDeck (mocked Anthropic)", () => {
     await seedDeck(id);
     const keys = await incParamKeys();
     const result = await evaluateDeck(env as Env, id, {
-      callModel: async () => ({ complete: true, scores: keys.map((key) => ({ key, value: 3 })) }),
+      callModel: async () => ({
+        complete: true,
+        founder: "Ada Lovelace",
+        founder_email: "ada@testco.example",
+        founder_phone: "9845011111",
+        city: "Bengaluru",
+        sector: "B2B SaaS",
+        scores: keys.map((key) => ({ key, value: 3 })),
+      }),
     });
     expect(result.gatePassed).toBe(false);
     expect(result.status).toBe("rejected");
@@ -129,6 +141,10 @@ describe("GET /api/decks + /api/decks/:id (report)", () => {
       callModel: async () => ({
         complete: true,
         founder: "Grace Hopper",
+        founder_email: "grace@testco.example",
+        founder_phone: "9845022222",
+        city: "Bengaluru",
+        sector: "B2B SaaS",
         extractions: [{ label: "Cover", text: "summary" }],
         scores: keys.map((key) => ({ key, value: 9 })),
       }),

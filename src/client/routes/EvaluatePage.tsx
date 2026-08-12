@@ -10,6 +10,7 @@ import {
   getMyScores,
   submitJuryScores,
   transitionDeck,
+  ApiError,
   type RubricParameter,
   type HumanScoreInput,
 } from "../api";
@@ -130,8 +131,15 @@ export function EvaluatePage() {
       await transitionDeck(selected.id, action);
       setSelected(null);
       await load();
-    } catch {
-      setError(`Couldn't ${action}. Make sure scores are submitted.`);
+    } catch (err) {
+      // The per-program shortlist floor refuses with a message written for the
+      // evaluator ("below the program's shortlist minimum…") — show it verbatim.
+      if (err instanceof ApiError && err.code === "below_shortlist_minimum") {
+        setError(err.message);
+        await load();
+      } else {
+        setError(`Couldn't ${action}. Make sure scores are submitted.`);
+      }
     } finally {
       setBusy(false);
     }
@@ -216,6 +224,16 @@ export function EvaluatePage() {
               onSave={submit}
               actions={
                 <>
+                  {selected.shortlistMin !== undefined && (
+                    <span
+                      className={`self-center text-xs ${selected.shortlistBlocked ? "text-signal-flagged" : "text-fg-muted"}`}
+                    >
+                      Shortlist minimum {selected.shortlistMin.toFixed(1)}
+                      {selected.decisionScore !== undefined
+                        ? ` · this deck ${selected.decisionScore.toFixed(2)}`
+                        : " · not scored yet"}
+                    </span>
+                  )}
                   <Button variant="secondary" disabled={busy} onClick={() => decide("reject")}>
                     Reject
                   </Button>

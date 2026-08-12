@@ -160,6 +160,10 @@ describe("criteria versioning", () => {
       async (): Promise<RawEvaluation> => ({
         complete: true,
         founder: "Ada Lovelace",
+        founder_email: "ada@testco.example",
+        founder_phone: "+91 98450 11111",
+        city: "Bengaluru",
+        sector: "B2B SaaS",
         extractions: [{ label: "Cover", text: "One-liner" }],
         scores: keys.map((key) => ({ key, value: 8 })),
       }),

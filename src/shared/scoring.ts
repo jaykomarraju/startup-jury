@@ -38,3 +38,27 @@ export function cohortRating(score: number, best: number, mediocre: number): Coh
   if (score >= mediocre) return "mediocre";
   return "poor";
 }
+
+/**
+ * The deck's **decision score** — the number a shortlist decision is judged on,
+ * and the composite form of the evaluator workbench's "Average" column.
+ *
+ * The workbench shows AI · My · Average per parameter, where Average = (AI + jury)
+ * / 2. The composite equivalent is the AI weighted total averaged with the mean of
+ * the human weighted totals, so the floor a juror is held to is exactly the number
+ * they are looking at. With no human evaluation yet it's just the AI composite;
+ * with no AI score it's the human mean; with neither it's `null` (unscored).
+ *
+ * Used by the per-program shortlist floor (Session 5, FINISH-PLAN §8).
+ */
+export function decisionScore(
+  aiScore: number | null | undefined,
+  humanTotals: number[] = [],
+): number | null {
+  const finite = humanTotals.filter((v) => typeof v === "number" && Number.isFinite(v));
+  const human = finite.length > 0 ? finite.reduce((a, b) => a + b, 0) / finite.length : null;
+  const ai = typeof aiScore === "number" && Number.isFinite(aiScore) ? aiScore : null;
+  if (ai === null && human === null) return null;
+  const combined = ai === null ? human! : human === null ? ai : (ai + human) / 2;
+  return Math.round(combined * 100) / 100;
+}

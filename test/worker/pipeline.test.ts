@@ -70,6 +70,10 @@ async function aiEvaluateToPass(id: string): Promise<void> {
     callModel: async (): Promise<RawEvaluation> => ({
       complete: true,
       founder: "Ada Founder",
+      founder_email: "ada@testco.example",
+      founder_phone: "+91 98450 11111",
+      city: "Bengaluru",
+      sector: "B2B SaaS",
       extractions: [{ label: "Cover", heading: "TestCo", text: "One-liner" }],
       scores: keys.map((key) => ({ key, value: 9 })),
     }),

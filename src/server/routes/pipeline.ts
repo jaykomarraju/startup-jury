@@ -10,7 +10,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
-import { weightedTotal, signalTag } from "../../shared/scoring";
+import { weightedTotal, signalTag, decisionScore } from "../../shared/scoring";
 import { getStage, performAction, transitionByAction } from "../../pipeline";
 import { requireAuth, requireRole } from "../auth/middleware";
 import { sendEmail, buildQueryEmail, buildSignupEmail } from "../email/outbox";
@@ -140,6 +140,68 @@ function transitionSideEffects(
   }
 }
 
+// ── Per-program shortlist floor (Session 5) ───────────────────────────────────
+
+/**
+ * The actions that put a deck on the shortlist. The incubator's `shortlist`
+ * (jury_evaluation → shortlisted) and the VC's `shortlist_to_partner`
+ * (associate_review → partner_review) are the two moments a human decides a deck
+ * moves forward on merit, which is what the per-program floor guards.
+ */
+const SHORTLIST_ACTIONS = new Set(["shortlist", "shortlist_to_partner"]);
+
+interface ShortlistGuard {
+  blocked: boolean;
+  score: number | null;
+  minimum: number;
+  programName: string;
+  message: string;
+}
+
+/**
+ * Check a deck against its program's minimum score before it can be shortlisted.
+ *
+ * Per the Jul-24 demo (§8): an admin sets a **minimum score per program** and the
+ * system **prevents** anyone shortlisting a deck below it. The jury still does the
+ * shortlisting — this is a uniform guardrail, not auto-shortlist, so it applies to
+ * every role (the escape hatch is an admin lowering the program's floor, which is
+ * an auditable config change rather than a silent per-deck override).
+ *
+ * The deck is judged on its **decision score** — the composite form of the
+ * workbench's AI · My · Average column — so the number the floor rejects is the
+ * number the evaluator was looking at. A deck with no score at all can't clear a
+ * floor, so it's blocked too.
+ *
+ * Returns null when the deck has no program, or the program has no floor set.
+ */
+async function checkShortlistFloor(
+  c: Context<AppEnv>,
+  deckId: string,
+): Promise<ShortlistGuard | null> {
+  const row = await c.env.DB.prepare(
+    "SELECT d.ai_score AS ai_score, p.name AS program_name, p.shortlist_min AS shortlist_min, " +
+      "(SELECT AVG(e.weighted_total) FROM evaluations e WHERE e.deck_id = d.id AND e.evaluator_id IS NOT NULL) AS human_avg " +
+      "FROM decks d JOIN programs p ON p.id = d.program_id WHERE d.id = ?",
+  )
+    .bind(deckId)
+    .first<{
+      ai_score: number | null;
+      program_name: string;
+      shortlist_min: number | null;
+      human_avg: number | null;
+    }>();
+  if (!row || row.shortlist_min === null) return null;
+
+  const score = decisionScore(row.ai_score, typeof row.human_avg === "number" ? [row.human_avg] : []);
+  const minimum = row.shortlist_min;
+  const blocked = score === null || score < minimum;
+  const message =
+    score === null
+      ? `This deck has no score yet. ${row.program_name} requires at least ${minimum.toFixed(1)} to shortlist.`
+      : `Below the program's shortlist minimum — ${row.program_name} requires at least ${minimum.toFixed(1)}, this deck scores ${score.toFixed(2)}.`;
+  return { blocked, score, minimum, programName: row.program_name, message };
+}
+
 // ── Stage transitions ─────────────────────────────────────────────────────────
 
 /** POST /decks/:id/transition — apply a role-gated pipeline action. */
@@ -154,6 +216,23 @@ pipeline.post("/decks/:id/transition", async (c) => {
   if (!result.ok) {
     const code = result.error === "forbidden" ? 403 : 409;
     return c.json({ error: result.error }, code);
+  }
+
+  // The action is permitted — now apply the program's shortlist floor.
+  if (SHORTLIST_ACTIONS.has(action)) {
+    const guard = await checkShortlistFloor(c, deck.id);
+    if (guard?.blocked) {
+      return c.json(
+        {
+          error: "below_shortlist_minimum",
+          message: guard.message,
+          score: guard.score,
+          minimum: guard.minimum,
+          programName: guard.programName,
+        },
+        409,
+      );
+    }
   }
   const to = result.to!;
   const ts = new Date().toISOString();

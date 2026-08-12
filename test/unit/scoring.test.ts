@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { weightedTotal, signalTag, cohortRating } from "../../src/shared/scoring";
+import { weightedTotal, signalTag, cohortRating, decisionScore } from "../../src/shared/scoring";
 
 describe("weightedTotal", () => {
   it("returns 0 for no scores", () => {
@@ -50,5 +50,29 @@ describe("cohortRating", () => {
     // A 7.5 deck is Best at ≥7.0 but only Mediocre once Best is raised to 8.0.
     expect(cohortRating(7.5, 7.0, 5.0)).toBe("best");
     expect(cohortRating(7.5, 8.0, 6.0)).toBe("mediocre");
+  });
+});
+
+describe("decisionScore", () => {
+  // The composite form of the workbench's AI · My · Average column — the number
+  // the per-program shortlist floor is applied to (Session 5).
+  it("averages the AI composite with the mean of the human composites", () => {
+    // InsureFlow on the demo seed: AI 8.6, four evaluators at 8.2/8.0/7.9/7.7.
+    expect(decisionScore(8.6, [8.2, 8.0, 7.9, 7.7])).toBe(8.28);
+    expect(decisionScore(9, [5])).toBe(7);
+  });
+
+  it("falls back to whichever side exists", () => {
+    expect(decisionScore(6.9, [])).toBe(6.9);
+    expect(decisionScore(null, [6, 7])).toBe(6.5);
+  });
+
+  it("is null for an unscored deck, so it can never clear a floor", () => {
+    expect(decisionScore(null, [])).toBeNull();
+    expect(decisionScore(undefined)).toBeNull();
+  });
+
+  it("ignores non-finite human totals", () => {
+    expect(decisionScore(8, [Number.NaN])).toBe(8);
   });
 });

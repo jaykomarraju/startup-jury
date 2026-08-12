@@ -35,6 +35,7 @@ import {
   createSector,
   deleteSector,
   createProgram,
+  updateProgram,
   deleteProgram,
   createCohort,
   deleteCohort,
@@ -377,6 +378,66 @@ function SectorsEditor({
   );
 }
 
+/**
+ * Per-program **shortlist floor** (Session 5, FINISH-PLAN §8). The admin sets a
+ * minimum score and the system then blocks anyone shortlisting a deck below it —
+ * the jury still shortlists, this is a guardrail. Blank clears the floor, which is
+ * also the only way to release a deck the floor is holding back.
+ */
+function ShortlistFloorField({
+  program,
+  reload,
+}: {
+  program: ProgramView;
+  reload: () => Promise<unknown>;
+}) {
+  const initial = program.shortlistMin !== undefined ? String(program.shortlistMin) : "";
+  const [value, setValue] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const dirty = value !== initial;
+
+  async function save() {
+    setBusy(true);
+    setSaved(false);
+    try {
+      await updateProgram(program.id, { shortlistMin: value === "" ? null : Number(value) });
+      setSaved(true);
+      await reload();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <label className="flex items-center gap-1.5 text-xs text-fg-muted">
+        Shortlist minimum
+        <input
+          type="number"
+          min={0}
+          max={10}
+          step={0.1}
+          aria-label={`Shortlist minimum for ${program.name}`}
+          className="sj-input h-7 w-20 text-xs"
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setSaved(false);
+          }}
+          placeholder="none"
+        />
+      </label>
+      {dirty && (
+        <Button size="sm" variant="secondary" onClick={save} disabled={busy}>
+          {busy ? "Saving…" : "Save"}
+        </Button>
+      )}
+      {saved && !dirty && <span className="text-xs text-positive">Saved</span>}
+    </div>
+  );
+}
+
 function ProgramsEditor({
   data,
   reload,
@@ -394,6 +455,7 @@ function ProgramsEditor({
   const [description, setDescription] = useState("");
   const [fundSize, setFundSize] = useState("");
   const [fundAllocated, setFundAllocated] = useState("");
+  const [shortlistMin, setShortlistMin] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -408,12 +470,14 @@ function ProgramsEditor({
         description: description.trim() || undefined,
         fundSize: isVc && fundSize !== "" ? Number(fundSize) : undefined,
         fundAllocated: isVc && fundAllocated !== "" ? Number(fundAllocated) : undefined,
+        shortlistMin: shortlistMin !== "" ? Number(shortlistMin) : undefined,
       });
       setName("");
       setSector("");
       setDescription("");
       setFundSize("");
       setFundAllocated("");
+      setShortlistMin("");
       await reload();
     } catch {
       setError("Couldn't add the program. Check the fund amounts are valid numbers.");
@@ -443,8 +507,12 @@ function ProgramsEditor({
                 <span className="text-sm font-medium text-fg">{p.name}</span>
                 {p.sector && <Badge tone="neutral">{p.sector}</Badge>}
                 {p.fundSize !== undefined && <Badge tone="info">₹{p.fundSize} Cr fund</Badge>}
+                {p.shortlistMin !== undefined && (
+                  <Badge tone="neutral">Shortlist min {p.shortlistMin.toFixed(1)}</Badge>
+                )}
               </div>
               {p.description && <p className="mt-0.5 truncate text-xs text-fg-muted">{p.description}</p>}
+              {!readOnly && <ShortlistFloorField program={p} reload={reload} />}
             </div>
             {!readOnly && (
               <button type="button" aria-label={`Remove ${p.name}`} onClick={() => remove(p.id)} className="shrink-0 text-fg-muted hover:text-signal-flagged">
@@ -473,6 +541,19 @@ function ProgramsEditor({
             <label className="flex flex-col gap-1 sm:col-span-2">
               <span className="text-xs font-medium text-fg-muted">Description</span>
               <input className="sj-input h-9" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What this program invests in / accelerates" />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-fg-muted">Shortlist minimum (0–10)</span>
+              <input
+                type="number"
+                min={0}
+                max={10}
+                step={0.1}
+                className="sj-input h-9"
+                value={shortlistMin}
+                onChange={(e) => setShortlistMin(e.target.value)}
+                placeholder="blank = no floor"
+              />
             </label>
             {isVc && (
               <>

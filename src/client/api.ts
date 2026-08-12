@@ -3,6 +3,7 @@
 import type { DeckView } from "./types";
 import type { ExtractionSlide, ParamScoreView } from "./components";
 import type { Plan } from "../shared/plans";
+import type { IntakeField, IntakeFlag } from "../shared/intake";
 import type {
   FunnelReport,
   CohortSummary,
@@ -14,8 +15,33 @@ import type {
   DecisionReport,
 } from "../shared/analytics";
 
+/**
+ * A failed API call. Carries the HTTP status and the server's JSON error body so
+ * a caller can react to a specific refusal — e.g. the shortlist floor's
+ * `below_shortlist_minimum`, whose `message` is written for the evaluator.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  readonly body: Record<string, unknown>;
+  constructor(status: number, body: Record<string, unknown>) {
+    super(
+      typeof body.message === "string"
+        ? body.message
+        : `request failed: ${status}${typeof body.error === "string" ? ` (${body.error})` : ""}`,
+    );
+    this.name = "ApiError";
+    this.status = status;
+    this.code = typeof body.error === "string" ? body.error : undefined;
+    this.body = body;
+  }
+}
+
 async function json<T>(res: Response): Promise<T> {
-  if (!res.ok) throw new Error(`request failed: ${res.status}`);
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    throw new ApiError(res.status, body);
+  }
   return res.json() as Promise<T>;
 }
 
@@ -27,10 +53,22 @@ export function listDecks(filter?: { programId?: string; cohortId?: string }): P
   return fetch(`/api/decks${q ? `?${q}` : ""}`).then((r) => json(r));
 }
 
+/** One entry in a deck's upload history (Session 5 — deck versioning). */
+export interface DeckVersionView {
+  id: string;
+  version: number;
+  fileName?: string;
+  sizeBytes?: number;
+  note?: string;
+  uploadedByName?: string;
+  createdAt: string;
+}
+
 export interface DeckReport {
   deck: DeckView;
   extraction: ExtractionSlide[];
   scores: ParamScoreView[];
+  versions?: DeckVersionView[];
   weightedTotal?: number;
   verdict?: string;
 }
@@ -39,18 +77,79 @@ export function getDeck(id: string): Promise<DeckReport> {
   return fetch(`/api/decks/${id}`).then((r) => json(r));
 }
 
+export function listDeckVersions(id: string): Promise<{ versions: DeckVersionView[] }> {
+  return fetch(`/api/decks/${id}/versions`).then((r) => json(r));
+}
+
+/** A soft duplicate / returning-company alert raised at intake. Never a block. */
+export interface IntakeMatchView {
+  deckId: string;
+  name: string;
+  flag: IntakeFlag;
+  matchedOn: string[];
+  fundingStage?: string;
+  statusLabel?: string;
+  reason: string;
+}
+
+export interface EvaluationOutcome {
+  weightedTotal: number;
+  signal: string;
+  status: string;
+  gatePassed: boolean;
+  complete?: boolean;
+  /** Required founder/contact columns still missing → the deck is Incomplete. */
+  missingFields?: IntakeField[];
+  /** The merged founder/contact detail the deck now carries. */
+  details?: {
+    founder?: string | null;
+    founderEmail?: string | null;
+    founderPhone?: string | null;
+    city?: string | null;
+    sector?: string | null;
+  };
+  intakeFlag?: IntakeFlag | null;
+  intakeNote?: string | null;
+}
+
 export interface SingleUploadResult {
   deckId: string;
   evaluated: boolean;
-  result?: { weightedTotal: number; signal: string; status: string; gatePassed: boolean };
+  result?: EvaluationOutcome;
+  /** Pre-AI intake alerts (used when the post-extraction check found nothing). */
+  matches?: IntakeMatchView[];
 }
 
 export function uploadSingle(form: FormData): Promise<SingleUploadResult> {
   return fetch("/api/decks/upload", { method: "POST", body: form }).then((r) => json(r));
 }
 
-export function uploadBulk(form: FormData): Promise<{ count: number; deckIds: string[] }> {
+/** Per-file outcome of a bulk upload — rejects are reported, not fatal. */
+export interface BulkUploadRow {
+  file: string;
+  ok: boolean;
+  deckId?: string;
+  error?: "pdf_required" | "pdf_too_large" | "store_failed";
+  flag?: IntakeFlag;
+  note?: string;
+}
+
+export interface BulkUploadResult {
+  count: number;
+  deckIds: string[];
+  results?: BulkUploadRow[];
+}
+
+export function uploadBulk(form: FormData): Promise<BulkUploadResult> {
   return fetch("/api/decks/bulk", { method: "POST", body: form }).then((r) => json(r));
+}
+
+/** Re-upload a deck as a new version (auto re-scores — Session 5 versioning). */
+export function uploadDeckVersion(
+  id: string,
+  form: FormData,
+): Promise<{ ok: true; deckId: string; version: number; evaluated: boolean; result?: EvaluationOutcome }> {
+  return fetch(`/api/decks/${id}/version`, { method: "POST", body: form }).then((r) => json(r));
 }
 
 export interface RescoreResult {
@@ -381,6 +480,9 @@ export interface ProgramView {
   fundSize?: number;
   fundAllocated?: number;
   capitalDeployed?: number;
+  /** Minimum decision score a deck must reach before it can be shortlisted
+   *  (Session 5). Undefined = no floor configured for this program. */
+  shortlistMin?: number;
   /** The Program Manager who leads this program (owner-scoped cohort management). */
   ownerId?: string;
   active: boolean;
@@ -407,6 +509,7 @@ export interface ProgramInput {
   fundSize?: number | null;
   fundAllocated?: number | null;
   capitalDeployed?: number | null;
+  shortlistMin?: number | null;
 }
 export function createProgram(input: ProgramInput) {
   return postJson<{ ok: true; program: ProgramView }>("/api/programs", input);

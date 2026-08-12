@@ -1,10 +1,32 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Upload as UploadIcon, FileCheck, Loader2, FileText } from "lucide-react";
+import {
+  Upload as UploadIcon,
+  FileCheck,
+  Loader2,
+  FileText,
+  AlertTriangle,
+  History,
+  Copy,
+} from "lucide-react";
 import { Card, Button, SignalTag } from "../components";
-import { uploadSingle, uploadBulk, listPrograms, type SingleUploadResult, type ProgramView } from "../api";
+import {
+  uploadSingle,
+  uploadBulk,
+  listPrograms,
+  type SingleUploadResult,
+  type BulkUploadResult,
+  type BulkUploadRow,
+  type IntakeMatchView,
+  type ProgramView,
+} from "../api";
 import { useAuth } from "../auth/useAuth";
 import { useActiveContext } from "../activeContext";
+import {
+  INTAKE_FIELD_LABELS,
+  missingIntakeFields,
+  type IntakeField,
+} from "../../shared/intake";
 import type { DeckSignal } from "../theme/signals";
 
 type Method = "single" | "bulk";
@@ -13,6 +35,16 @@ type Phase = "uploading" | "scoring";
 
 const STAGES = ["Pre-seed", "Seed", "Series A", "Series B+"];
 
+/** The columns the AI reads off the deck, in the order the results table shows
+ *  them (mirrors the prototype's "Uploaded decks — AI-extracted details"). */
+const DETAIL_COLUMNS: IntakeField[] = [
+  "founder",
+  "founderEmail",
+  "founderPhone",
+  "city",
+  "sector",
+];
+
 /** Human-readable file size, e.g. "2.4 MB". */
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -20,10 +52,21 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const BULK_ERRORS: Record<NonNullable<BulkUploadRow["error"]>, string> = {
+  pdf_required: "Not a PDF — decks must be PDF files",
+  pdf_too_large: "Too large — the 24 MB limit was exceeded",
+  store_failed: "Upload failed — try this file again",
+};
+
 /**
  * Upload screen (Evaluation → Upload). Single upload evaluates the PDF directly
  * against Claude and shows the AI verdict inline; bulk upload stores each PDF and
  * enqueues a per-deck evaluation job.
+ *
+ * Session 5 adds the intake guardrails: the required founder/contact columns
+ * (founder, email, phone, city, sector) are surfaced and validated — the AI reads
+ * them off the deck and anything still missing marks it **Incomplete** — plus soft
+ * duplicate / returning-company alerts and per-row errors on a bulk upload.
  */
 export function UploadPage() {
   const navigate = useNavigate();
@@ -35,7 +78,7 @@ export function UploadPage() {
   const [phase, setPhase] = useState<Phase | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [single, setSingle] = useState<SingleUploadResult | null>(null);
-  const [bulk, setBulk] = useState<{ count: number } | null>(null);
+  const [bulk, setBulk] = useState<BulkUploadResult | null>(null);
 
   const singleFile = useRef<HTMLInputElement>(null);
   const bulkFiles = useRef<HTMLInputElement>(null);
@@ -43,6 +86,9 @@ export function UploadPage() {
   const [stage, setStage] = useState(STAGES[1]);
   const [sector, setSector] = useState("");
   const [city, setCity] = useState("");
+  const [founder, setFounder] = useState("");
+  const [founderEmail, setFounderEmail] = useState("");
+  const [founderPhone, setFounderPhone] = useState("");
   // Program/cohort tagging — defaults to the active context, editable per upload.
   const [programs, setPrograms] = useState<ProgramView[]>([]);
   const [programId, setProgramId] = useState<string>(ctx.programId ?? "");
@@ -56,6 +102,10 @@ export function UploadPage() {
 
   const activeProgram = programs.find((p) => p.id === programId) ?? null;
   const cohortOptions = activeProgram?.cohorts ?? [];
+
+  // What the form itself is still missing. The AI fills the gaps from the deck,
+  // so this is a heads-up ("the AI will need to find these"), never a blocker.
+  const formGaps = missingIntakeFields({ founder, founderEmail, founderPhone, city, sector });
 
   function onProgramChange(next: string) {
     setProgramId(next);
@@ -88,6 +138,9 @@ export function UploadPage() {
       form.set("stage", stage);
       form.set("sector", sector);
       form.set("city", city);
+      form.set("founder", founder);
+      form.set("founderEmail", founderEmail);
+      form.set("founderPhone", founderPhone);
       if (programId) form.set("programId", programId);
       if (cohortId) form.set("cohortId", cohortId);
       setSingle(await uploadSingle(form));
@@ -110,8 +163,7 @@ export function UploadPage() {
     try {
       const form = new FormData();
       for (const f of Array.from(files)) form.append("files", f);
-      const res = await uploadBulk(form);
-      setBulk({ count: res.count });
+      setBulk(await uploadBulk(form));
     } catch {
       setError("Bulk upload failed. Try again.");
     } finally {
@@ -190,12 +242,6 @@ export function UploadPage() {
                   {STAGES.map((s) => <option key={s}>{s}</option>)}
                 </select>
               </Field>
-              <Field label="Sector">
-                <input className="sj-input" value={sector} onChange={(e) => setSector(e.target.value)} placeholder="e.g. FinTech" />
-              </Field>
-              <Field label="City">
-                <input className="sj-input" value={city} onChange={(e) => setCity(e.target.value)} placeholder="e.g. Bengaluru" />
-              </Field>
               <Field label="Program">
                 <select className="sj-input" value={programId} onChange={(e) => onProgramChange(e.target.value)}>
                   <option value="">No program</option>
@@ -218,6 +264,42 @@ export function UploadPage() {
                 </select>
               </Field>
             </div>
+
+            {/* Required founder/contact detail. The AI reads these off the deck —
+                anything you fill here wins, anything neither has marks the deck
+                Incomplete so the founder can be asked for it. */}
+            <div className="rounded-lg border border-line bg-surface-2/60 p-3">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="u-label">Required founder details</span>
+                <span className="text-xs text-fg-muted">
+                  Extracted from the deck — fill anything it may not state
+                </span>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-3">
+                <Field label={`${INTAKE_FIELD_LABELS.founder} *`}>
+                  <input className="sj-input" value={founder} onChange={(e) => setFounder(e.target.value)} placeholder="e.g. Meera Sharma" />
+                </Field>
+                <Field label={`${INTAKE_FIELD_LABELS.founderEmail} *`}>
+                  <input className="sj-input" type="email" value={founderEmail} onChange={(e) => setFounderEmail(e.target.value)} placeholder="founder@startup.com" />
+                </Field>
+                <Field label={`${INTAKE_FIELD_LABELS.founderPhone} *`}>
+                  <input className="sj-input" value={founderPhone} onChange={(e) => setFounderPhone(e.target.value)} placeholder="+91 98450 12345" />
+                </Field>
+                <Field label={`${INTAKE_FIELD_LABELS.city} *`}>
+                  <input className="sj-input" value={city} onChange={(e) => setCity(e.target.value)} placeholder="e.g. Bengaluru" />
+                </Field>
+                <Field label={`${INTAKE_FIELD_LABELS.sector} *`}>
+                  <input className="sj-input" value={sector} onChange={(e) => setSector(e.target.value)} placeholder="e.g. FinTech" />
+                </Field>
+              </div>
+              {formGaps.length > 0 && (
+                <p className="mt-2 text-xs text-fg-muted">
+                  The AI will look for {formGaps.map((f) => INTAKE_FIELD_LABELS[f].toLowerCase()).join(", ")} in
+                  the deck. Any detail it can&rsquo;t capture marks the deck Incomplete.
+                </p>
+              )}
+            </div>
+
             <div className="flex items-center justify-end gap-2">
               <Button type="submit" disabled={busy}>{busy ? "Evaluating…" : "Upload & evaluate"}</Button>
             </div>
@@ -244,22 +326,37 @@ export function UploadPage() {
           )}
 
           {single && !busy && (
-            <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-line bg-surface-2 px-4 py-3">
+            <div className="mt-4 flex flex-col gap-3">
+              <IntakeAlert
+                flag={single.result?.intakeFlag ?? single.matches?.[0]?.flag ?? null}
+                note={single.result?.intakeNote ?? single.matches?.[0]?.reason ?? null}
+              />
+
               {single.evaluated && single.result ? (
-                <div className="flex items-center gap-2 text-sm text-fg">
-                  <FileCheck className="h-4 w-4 text-positive" />
-                  Evaluated — weighted total{" "}
-                  <span className="font-mono font-semibold">{single.result.weightedTotal.toFixed(2)}</span>
-                  <SignalTag signal={single.result.signal as DeckSignal} />
-                </div>
-              ) : (
-                <div className="text-sm text-fg-muted">
-                  Uploaded — evaluation is pending (no AI key configured yet).
-                </div>
-              )}
-              <Button variant="secondary" size="sm" onClick={() => navigate("/app/alldecks")}>
-                View all decks
-              </Button>
+                <ExtractedDetails
+                  deckName={name || picked?.name || "Deck"}
+                  details={single.result.details}
+                  missing={single.result.missingFields ?? []}
+                />
+              ) : null}
+
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface-2 px-4 py-3">
+                {single.evaluated && single.result ? (
+                  <div className="flex items-center gap-2 text-sm text-fg">
+                    <FileCheck className="h-4 w-4 text-positive" />
+                    Evaluated — weighted total{" "}
+                    <span className="font-mono font-semibold">{single.result.weightedTotal.toFixed(2)}</span>
+                    <SignalTag signal={single.result.signal as DeckSignal} />
+                  </div>
+                ) : (
+                  <div className="text-sm text-fg-muted">
+                    Uploaded — evaluation is pending (no AI key configured yet).
+                  </div>
+                )}
+                <Button variant="secondary" size="sm" onClick={() => navigate("/app/alldecks")}>
+                  View all decks
+                </Button>
+              </div>
             </div>
           )}
         </Card>
@@ -292,6 +389,10 @@ export function UploadPage() {
                 }}
               />
             </label>
+            <p className="text-xs text-fg-muted">
+              No per-deck form on a bulk upload — the AI reads each founder&rsquo;s name, email, phone
+              and city off the deck. Any deck missing a detail is marked Incomplete.
+            </p>
             {bulkPicked.length > 0 && (
               <ul className="flex flex-col gap-1 text-xs text-fg-muted">
                 {bulkPicked.map((f) => (
@@ -315,17 +416,182 @@ export function UploadPage() {
           )}
 
           {bulk && !busy && (
-            <div className="mt-4 flex items-center justify-between rounded-lg border border-line bg-surface-2 px-4 py-3">
-              <span className="text-sm text-fg">
-                {bulk.count} deck{bulk.count === 1 ? "" : "s"} queued for AI evaluation.
-              </span>
-              <Button variant="secondary" size="sm" onClick={() => navigate("/app/alldecks")}>
-                View all decks
-              </Button>
+            <div className="mt-4 flex flex-col gap-3">
+              <BulkResults rows={bulk.results ?? []} count={bulk.count} />
+              <div className="flex items-center justify-end">
+                <Button variant="secondary" size="sm" onClick={() => navigate("/app/alldecks")}>
+                  View all decks
+                </Button>
+              </div>
             </div>
           )}
         </Card>
       )}
+    </div>
+  );
+}
+
+/** Soft duplicate / returning-company alert. Advisory only — the deck uploaded. */
+export function IntakeAlert({
+  flag,
+  note,
+}: {
+  flag: IntakeMatchView["flag"] | null;
+  note: string | null;
+}) {
+  if (!flag || !note) return null;
+  const duplicate = flag === "duplicate";
+  const Icon = duplicate ? Copy : History;
+  return (
+    <div
+      role="status"
+      className={`flex items-start gap-2 rounded-lg border px-4 py-2.5 text-sm ${
+        duplicate
+          ? "border-signal-flagged/40 bg-signal-flagged/10 text-signal-flagged"
+          : "border-accent/40 bg-accent/10 text-fg"
+      }`}
+    >
+      <Icon className="mt-0.5 h-4 w-4 shrink-0" />
+      <span>
+        <strong className="font-medium">
+          {duplicate ? "Possible duplicate" : "Returning company"}
+        </strong>{" "}
+        — {note} This is an alert, not a block: the deck was uploaded and scored.
+      </span>
+    </div>
+  );
+}
+
+/** The prototype's "Uploaded decks — AI-extracted details" table, for one deck. */
+function ExtractedDetails({
+  deckName,
+  details,
+  missing,
+}: {
+  deckName: string;
+  details?: {
+    founder?: string | null;
+    founderEmail?: string | null;
+    founderPhone?: string | null;
+    city?: string | null;
+    sector?: string | null;
+  };
+  missing: IntakeField[];
+}) {
+  const missingSet = new Set(missing);
+  const complete = missing.length === 0;
+  return (
+    <div className="rounded-lg border border-line">
+      <div className="border-b border-line px-4 py-2.5">
+        <div className="text-sm font-medium text-fg">Uploaded deck — AI-extracted details</div>
+        <div className="text-xs text-fg-muted">
+          The AI scanned the deck and recorded the founder&rsquo;s details. A deck missing a
+          detail is automatically marked Incomplete.
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead>
+            <tr className="text-fg-muted">
+              {DETAIL_COLUMNS.map((f) => (
+                <th key={f} className="px-4 py-2 text-xs font-medium">{INTAKE_FIELD_LABELS[f]}</th>
+              ))}
+              <th className="px-4 py-2 text-xs font-medium">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="border-t border-line">
+              {DETAIL_COLUMNS.map((f) => {
+                const value = details?.[f] ?? null;
+                return (
+                  <td key={f} className="px-4 py-2.5">
+                    {missingSet.has(f) || !value ? (
+                      <span className="inline-flex items-center gap-1 italic text-signal-flagged">
+                        <AlertTriangle className="h-3.5 w-3.5" /> not captured
+                      </span>
+                    ) : (
+                      <span className="text-fg">{value}</span>
+                    )}
+                  </td>
+                );
+              })}
+              <td className="px-4 py-2.5">
+                <span
+                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                    complete
+                      ? "bg-positive/15 text-positive"
+                      : "bg-signal-flagged/15 text-signal-flagged"
+                  }`}
+                >
+                  {complete ? "Complete" : "Incomplete"}
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div className="border-t border-line px-4 py-2 text-xs text-fg-muted">
+        {complete
+          ? `All details captured for ${deckName}.`
+          : `${deckName} is marked Incomplete — missing ${missing
+              .map((f) => INTAKE_FIELD_LABELS[f].toLowerCase())
+              .join(", ")}. The founder is asked for the missing sections.`}
+      </div>
+    </div>
+  );
+}
+
+/** Per-file bulk report: what uploaded, what was rejected and why. */
+function BulkResults({ rows, count }: { rows: BulkUploadRow[]; count: number }) {
+  const rejected = rows.filter((r) => !r.ok);
+  const flagged = rows.filter((r) => r.ok && r.flag);
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-lg border border-line bg-surface-2 px-4 py-3 text-sm text-fg">
+        {count} deck{count === 1 ? "" : "s"} queued for AI evaluation.
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-line">
+      <div className="border-b border-line px-4 py-2.5 text-sm text-fg">
+        {count} deck{count === 1 ? "" : "s"} queued for AI evaluation
+        {rejected.length > 0 && (
+          <span className="text-signal-flagged">
+            {" "}· {rejected.length} file{rejected.length === 1 ? "" : "s"} rejected
+          </span>
+        )}
+        {flagged.length > 0 && (
+          <span className="text-fg-muted">
+            {" "}· {flagged.length} flagged for review
+          </span>
+        )}
+      </div>
+      <ul className="flex flex-col">
+        {rows.map((r) => (
+          <li
+            key={`${r.file}-${r.deckId ?? r.error}`}
+            className="flex items-start justify-between gap-3 border-b border-line px-4 py-2 text-sm last:border-b-0"
+          >
+            <span className="truncate text-fg">{r.file}</span>
+            {r.ok ? (
+              <span className="shrink-0 text-right text-xs">
+                <span className="text-positive">Queued</span>
+                {r.flag && (
+                  <span className="block max-w-xs text-signal-flagged">
+                    {r.flag === "duplicate" ? "Possible duplicate" : "Returning company"}
+                    {r.note ? ` — ${r.note}` : ""}
+                  </span>
+                )}
+              </span>
+            ) : (
+              <span className="shrink-0 text-xs text-signal-flagged">
+                {BULK_ERRORS[r.error ?? "store_failed"]}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

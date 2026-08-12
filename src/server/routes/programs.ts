@@ -29,6 +29,7 @@ interface ProgramRow {
   fund_size: number | null;
   fund_allocated: number | null;
   capital_deployed: number | null;
+  shortlist_min: number | null;
   owner_id: string | null;
   active: number;
   sort_order: number;
@@ -56,6 +57,18 @@ function validFund(v: unknown): { ok: true; value: number | null } | { ok: false
   return { ok: true, value: n };
 }
 
+/**
+ * Validate the program's **shortlist floor** (Session 5) — the minimum decision
+ * score a deck must reach before a juror may shortlist it. Absent/blank → null
+ * (no floor); otherwise a rubric score in 0–10.
+ */
+function validShortlistMin(v: unknown): { ok: true; value: number | null } | { ok: false } {
+  if (v === undefined || v === null || v === "") return { ok: true, value: null };
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > 10) return { ok: false };
+  return { ok: true, value: Math.round(n * 100) / 100 };
+}
+
 function toSectorView(s: SectorRow) {
   return { id: s.id, name: s.name, active: s.active === 1 };
 }
@@ -78,6 +91,7 @@ function toProgramView(p: ProgramRow, cohorts: CohortRow[]) {
     fundSize: p.fund_size ?? undefined,
     fundAllocated: p.fund_allocated ?? undefined,
     capitalDeployed: p.capital_deployed ?? undefined,
+    shortlistMin: p.shortlist_min ?? undefined,
     ownerId: p.owner_id ?? undefined,
     active: p.active === 1,
     cohorts: cohorts.filter((ch) => ch.program_id === p.id).map(toCohortView),
@@ -116,7 +130,7 @@ programs.get("/", async (c) => {
 
   const progRows = (
     await c.env.DB.prepare(
-      `SELECT id, sector, name, description, fund_size, fund_allocated, capital_deployed, owner_id, active, sort_order ` +
+      `SELECT id, sector, name, description, fund_size, fund_allocated, capital_deployed, shortlist_min, owner_id, active, sort_order ` +
         `FROM programs WHERE edition = ?${activeClause} ORDER BY sort_order, name`,
     )
       .bind(edition)
@@ -185,6 +199,7 @@ programs.post("/", requireRole("admin"), async (c) => {
     fundSize: unknown;
     fundAllocated: unknown;
     capitalDeployed: unknown;
+    shortlistMin: unknown;
   }>(c);
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name) return c.json({ error: "name_required" }, 400);
@@ -196,6 +211,8 @@ programs.post("/", requireRole("admin"), async (c) => {
   const fa = validFund(body.fundAllocated);
   const cd = validFund(body.capitalDeployed);
   if (!fs.ok || !fa.ok || !cd.ok) return c.json({ error: "invalid_fund" }, 400);
+  const sm = validShortlistMin(body.shortlistMin);
+  if (!sm.ok) return c.json({ error: "invalid_shortlist_min" }, 400);
 
   const id = `prog_${crypto.randomUUID().slice(0, 8)}`;
   const next = await c.env.DB.prepare(
@@ -204,10 +221,10 @@ programs.post("/", requireRole("admin"), async (c) => {
     .bind(edition)
     .first<{ n: number }>();
   await c.env.DB.prepare(
-    "INSERT INTO programs (id, edition, sector, name, description, fund_size, fund_allocated, capital_deployed, active, sort_order) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+    "INSERT INTO programs (id, edition, sector, name, description, fund_size, fund_allocated, capital_deployed, shortlist_min, active, sort_order) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
   )
-    .bind(id, edition, sector, name, description, fs.value, fa.value, cd.value, next?.n ?? 1)
+    .bind(id, edition, sector, name, description, fs.value, fa.value, cd.value, sm.value, next?.n ?? 1)
     .run();
 
   return c.json({
@@ -220,6 +237,7 @@ programs.post("/", requireRole("admin"), async (c) => {
       fundSize: fs.value ?? undefined,
       fundAllocated: fa.value ?? undefined,
       capitalDeployed: cd.value ?? undefined,
+      shortlistMin: sm.value ?? undefined,
       active: true,
       cohorts: [],
     },
@@ -230,7 +248,7 @@ programs.put("/:id", requireRole("admin"), async (c) => {
   const edition = c.var.user.edition;
   const id = c.req.param("id");
   const existing = await c.env.DB.prepare(
-    "SELECT id, sector, name, description, fund_size, fund_allocated, capital_deployed, owner_id, active, sort_order FROM programs WHERE id = ? AND edition = ?",
+    "SELECT id, sector, name, description, fund_size, fund_allocated, capital_deployed, shortlist_min, owner_id, active, sort_order FROM programs WHERE id = ? AND edition = ?",
   )
     .bind(id, edition)
     .first<ProgramRow>();
@@ -265,12 +283,20 @@ programs.put("/:id", requireRole("admin"), async (c) => {
   if (fundSize === "err" || fundAllocated === "err" || capitalDeployed === "err") {
     return c.json({ error: "invalid_fund" }, 400);
   }
+  // The shortlist floor follows the same present-key-only semantics as the fund
+  // fields: omit it to keep the current floor, send null/"" to clear it.
+  let shortlistMin = existing.shortlist_min;
+  if ("shortlistMin" in body) {
+    const sm = validShortlistMin(body.shortlistMin);
+    if (!sm.ok) return c.json({ error: "invalid_shortlist_min" }, 400);
+    shortlistMin = sm.value;
+  }
   const active = typeof body.active === "boolean" ? (body.active ? 1 : 0) : existing.active;
 
   await c.env.DB.prepare(
-    "UPDATE programs SET sector = ?, name = ?, description = ?, fund_size = ?, fund_allocated = ?, capital_deployed = ?, active = ? WHERE id = ? AND edition = ?",
+    "UPDATE programs SET sector = ?, name = ?, description = ?, fund_size = ?, fund_allocated = ?, capital_deployed = ?, shortlist_min = ?, active = ? WHERE id = ? AND edition = ?",
   )
-    .bind(sector, name, description, fundSize, fundAllocated, capitalDeployed, active, id, edition)
+    .bind(sector, name, description, fundSize, fundAllocated, capitalDeployed, shortlistMin, active, id, edition)
     .run();
 
   return c.json({
@@ -283,6 +309,7 @@ programs.put("/:id", requireRole("admin"), async (c) => {
       fundSize: (fundSize as number | null) ?? undefined,
       fundAllocated: (fundAllocated as number | null) ?? undefined,
       capitalDeployed: (capitalDeployed as number | null) ?? undefined,
+      shortlistMin: shortlistMin ?? undefined,
       active: active === 1,
     },
   });
