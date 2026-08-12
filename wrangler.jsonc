@@ -40,7 +40,23 @@
         "queue": "startup-jury-evals",
         "max_batch_size": 5,
         "max_batch_timeout": 10,
-        "max_retries": 3
+        "max_retries": 3,
+        // Session 7 (FINISH-PLAN §9). Without this, a message that exhausted its
+        // retries was DROPPED: the deck stayed at `pending_ai` forever, the
+        // credit stayed spent, and no reason was recorded anywhere. Now it lands
+        // on the dead-letter queue below, where `handleQueue` marks the deck
+        // failed and refunds the credit.
+        // NB `wrangler queues create startup-jury-evals-dlq` must run before the
+        // first deploy that references it.
+        "dead_letter_queue": "startup-jury-evals-dlq"
+      },
+      {
+        "queue": "startup-jury-evals-dlq",
+        "max_batch_size": 5,
+        "max_batch_timeout": 10,
+        // The dead-letter handler only writes a status + a refund; if THAT
+        // fails, one retry is plenty (it acks unconditionally afterwards).
+        "max_retries": 1
       }
     ]
   },
@@ -66,8 +82,10 @@
     "EMAIL_REPLY_TO": ""
   },
   "triggers": {
-    // Daily evaluator-reminder sweep (src/server/scheduled.ts). 08:00 UTC.
-    "crons": ["0 8 * * *"]
+    // "0 8 * * *"    — daily evaluator-reminder sweep (runReminders).
+    // "*/10 * * * *" — re-drive decks stranded at `pending_ai` (runStuckSweep).
+    //                  `src/server/index.ts` branches on `controller.cron`.
+    "crons": ["0 8 * * *", "*/10 * * * *"]
   },
   "observability": {
     "enabled": true,

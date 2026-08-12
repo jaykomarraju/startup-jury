@@ -25,8 +25,13 @@ test("upload a pitch deck and see it in All decks", async ({ page }) => {
   });
   await page.getByRole("button", { name: /upload & evaluate/i }).click();
 
-  // Deferred-evaluation confirmation, then jump to the decks table.
-  await expect(page.getByText(/evaluation is pending/i)).toBeVisible({ timeout: 15_000 });
+  // Deferred-evaluation confirmation, then jump to the decks table. Session 7
+  // replaced the old blanket "no AI key configured yet" copy with the real
+  // cause plus whether anything will retry (§9).
+  await expect(page.getByText(/AI evaluation is queued and will retry/i)).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByText(/AI key missing or rejected/i)).toBeVisible();
   await page.getByRole("button", { name: /view all decks/i }).click();
   await page.waitForURL(/\/app\/alldecks/);
 

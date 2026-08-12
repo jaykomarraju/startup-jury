@@ -105,6 +105,9 @@ const INCUBATOR_NAV: NavItem[] = [
   { id: "contactteam", label: "Contact team", icon: "MessagesSquare", section: "Collaborate", roles: ["admin", "program_manager", "program_associate", "jury"] },
   // Support
   { id: "support", label: "Tickets", icon: "LifeBuoy", section: "Support", roles: ["admin"] },
+  // The team's internal testing/bug log (Session 7). Every internal role can
+  // file; triage is admin-only on the server.
+  { id: "issues", label: "Issue log", icon: "Bug", section: "Support", roles: ["admin", "program_manager", "program_associate", "jury"] },
   // Founder portal (isolated)
   { id: "founder-home", label: "My Startup", icon: "LayoutDashboard", section: "Workflows", roles: ["founder"], portal: "founder" },
   { id: "founder-upload", label: "Upload Deck", icon: "Upload", section: "Workflows", roles: ["founder"], portal: "founder" },
@@ -122,7 +125,17 @@ const VC_NAV: NavItem[] = [
   { id: "evaluate", label: "Evaluate", icon: "ClipboardCheck", section: "Evaluation", roles: ["admin", "partner", "ic_member", "associate", "analyst"] },
   { id: "assign", label: "Submit", icon: "Send", section: "Evaluation", roles: ["admin", "associate", "analyst"] },
   { id: "jurypipeline", label: "Assoc. Pipeline", icon: "GitBranch", section: "Evaluation", roles: ["admin", "associate"] },
-  { id: "introcalls", label: "Intro calls", icon: "Phone", section: "Evaluation", roles: ["admin", "partner"] },
+  {
+    // §8: the **investment associate** schedules the VC intro call; the partner
+    // may add one. Analysts and IC members are read-only — the screen shows them
+    // only the calls they are a participant on.
+    id: "introcalls",
+    label: "Intro calls",
+    icon: "Phone",
+    section: "Evaluation",
+    roles: ["admin", "partner", "associate", "analyst", "ic_member"],
+    labelOverrides: { analyst: "My Intro calls", ic_member: "My Intro calls" },
+  },
   { id: "partnerpipeline", label: "Partner Pipeline", icon: "Users", section: "Evaluation", roles: ["admin", "partner", "ic_member"] },
   { id: "partnercall", label: "Partner call", icon: "PhoneCall", section: "Evaluation", roles: ["admin", "partner"] },
   // Due Diligence
@@ -159,6 +172,7 @@ const VC_NAV: NavItem[] = [
   { id: "contactteam", label: "Contact team", icon: "MessagesSquare", section: "Collaborate", roles: ["admin", "partner", "ic_member", "associate", "analyst"] },
   // Support
   { id: "support", label: "Tickets", icon: "LifeBuoy", section: "Support", roles: ["admin"] },
+  { id: "issues", label: "Issue log", icon: "Bug", section: "Support", roles: ["admin", "partner", "ic_member", "associate", "analyst"] },
 ];
 
 const NAV_BY_EDITION: Record<Edition, NavItem[]> = {

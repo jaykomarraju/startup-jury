@@ -12,6 +12,7 @@
 import type { Env } from "../types";
 import type { Edition } from "../../shared/roles";
 import { evaluateDeck, type EvaluationResult } from "../ai/evaluate";
+import { recordEvalFailure } from "../ai/health";
 
 // Anthropic caps a Messages request at 32 MB; the PDF is base64-encoded (~1.33×)
 // into one request, so keep the raw deck comfortably under that.
@@ -147,6 +148,8 @@ export async function addDeckVersion(env: Env, args: AddVersionArgs): Promise<Ad
     return { ok: true, version, evaluated: true, result: await evaluateDeck(env, args.deckId) };
   } catch (err) {
     console.error(`re-upload evaluation failed for ${args.deckId}; enqueueing retry:`, err);
+    // Record the reason (§9) so the deck stops looking like it is merely slow.
+    await recordEvalFailure(env, args.deckId, err);
     try {
       await env.EVAL_QUEUE.send({ deckId: args.deckId });
     } catch (qerr) {

@@ -4,6 +4,7 @@ import type { DeckView } from "./types";
 import type { ExtractionSlide, ParamScoreView } from "./components";
 import type { Plan } from "../shared/plans";
 import type { IntakeField, IntakeFlag } from "../shared/intake";
+import type { CallKind } from "../shared/roles";
 import type {
   FunnelReport,
   CohortSummary,
@@ -118,6 +119,10 @@ export interface SingleUploadResult {
   result?: EvaluationOutcome;
   /** Pre-AI intake alerts (used when the post-extraction check found nothing). */
   matches?: IntakeMatchView[];
+  /** `evaluation_pending` (queued for retry) or `evaluation_failed` (given up). */
+  error?: "evaluation_pending" | "evaluation_failed";
+  /** Why the inline evaluation didn't complete — shown verbatim on the screen. */
+  reason?: string | null;
 }
 
 export function uploadSingle(form: FormData): Promise<SingleUploadResult> {
@@ -247,6 +252,9 @@ export interface QueryView {
 export function listQueries(id: string): Promise<{ queries: QueryView[] }> {
   return fetch(`/api/decks/${id}/queries`).then((r) => json(r));
 }
+
+/** Every query in the edition — the Query table's status column (staff-only). */
+export const listAllQueries = () => fetch("/api/queries").then((r) => json<{ queries: QueryView[] }>(r));
 
 export function createQuery(id: string, questions: string) {
   return postJson<{ ok: true; queryId: string; emailStatus: string }>(
@@ -661,6 +669,126 @@ export const listMessages = (scope: "admin" | "team") =>
   fetch(`/api/messages?scope=${scope}`).then((r) => json<{ messages: ContactMessage[]; inbox: boolean }>(r));
 export const sendMessage = (toScope: "admin" | "team", body: string) =>
   postJson<{ ok: true; id: string }>("/api/messages", { toScope, body });
+
+// ── Session 7 — call scheduling + ICS ────────────────────────────────────────
+
+export interface CallParticipantView {
+  id: string;
+  userId: string | null;
+  email: string;
+  name: string | null;
+  kind: string;
+}
+
+export interface CallView {
+  id: string;
+  deckId: string;
+  deckName: string;
+  deckStatus: string;
+  kind: CallKind;
+  kindLabel: string;
+  title: string;
+  scheduledAt: string | null;
+  durationMinutes: number;
+  location: string | null;
+  notes: string | null;
+  status: string;
+  organizerId: string | null;
+  organizerName: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+  participants: CallParticipantView[];
+  canManage: boolean;
+}
+
+export interface CallInput {
+  deckId: string;
+  kind: CallKind;
+  scheduledAt: string | null;
+  durationMinutes?: number;
+  title?: string;
+  location?: string;
+  notes?: string;
+  participants: { email: string; name?: string | null; userId?: string | null; kind?: string }[];
+  sendInvite?: boolean;
+}
+
+export const listCalls = (filter?: { deckId?: string; kind?: CallKind; mine?: boolean }) => {
+  const qs = new URLSearchParams();
+  if (filter?.deckId) qs.set("deckId", filter.deckId);
+  if (filter?.kind) qs.set("kind", filter.kind);
+  if (filter?.mine) qs.set("mine", "1");
+  const q = qs.toString();
+  return fetch(`/api/calls${q ? `?${q}` : ""}`).then((r) =>
+    json<{ calls: CallView[]; canSchedule: boolean; kinds: CallKind[] }>(r),
+  );
+};
+
+export interface DirectoryPerson {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+}
+
+/** Internal roster used by the participant picker (scheduler roles only). */
+export const listCallDirectory = () =>
+  fetch("/api/calls/directory").then((r) => json<{ people: DirectoryPerson[] }>(r));
+
+export const scheduleCall = (input: CallInput) =>
+  postJson<{ ok: true; advanced: boolean; invited: number; call: CallView | null }>("/api/calls", input);
+
+export const updateCall = (id: string, patch: Partial<CallInput> & { status?: "cancelled" }) =>
+  fetch(`/api/calls/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  }).then((r) => json<{ ok: true; invited: number; call: CallView | null }>(r));
+
+export const sendCallInvite = (id: string) =>
+  postJson<{ ok: true; invited: number }>(`/api/calls/${id}/invite`);
+
+/** The .ics endpoint is a plain download — the browser handles it, not fetch. */
+export const callIcsUrl = (id: string) => `/api/calls/${id}/ics`;
+
+// ── Session 7 — internal issue log ───────────────────────────────────────────
+
+export interface IssueView {
+  id: string;
+  subject: string;
+  body: string | null;
+  status: string;
+  severity: string | null;
+  area: string | null;
+  resolution: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+  assigneeId: string | null;
+  assignee: string | null;
+  creator: string;
+}
+
+export const listIssues = (status?: string) =>
+  fetch(`/api/issues${status ? `?status=${encodeURIComponent(status)}` : ""}`).then((r) =>
+    json<{ issues: IssueView[] }>(r),
+  );
+
+export const createIssue = (input: { subject: string; body?: string; severity?: string; area?: string }) =>
+  postJson<{ ok: true; issue: IssueView | null }>("/api/issues", input);
+
+export const updateIssue = (
+  id: string,
+  patch: { status?: string; severity?: string; area?: string; assigneeId?: string | null; resolution?: string | null },
+) =>
+  fetch(`/api/issues/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  }).then((r) => json<{ ok: true; issue: IssueView | null }>(r));
+
+/** Re-drive a deck stranded at Pending AI (§9). */
+export const retryDeckAi = (id: string) =>
+  postJson<{ ok: true; deckId: string; queued: boolean }>(`/api/decks/${id}/retry-ai`);
 
 // ── Public founder resubmit loop (Session 6) ─────────────────────────────────
 // These two are the ONLY unauthenticated fetchers in this module: the tokenized

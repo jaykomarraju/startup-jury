@@ -6,6 +6,7 @@
 
 import type { Env } from "./types";
 import { sendEmail, buildReminderEmail } from "./email/outbox";
+import { sweepStuckEvaluations, type SweepResult } from "./ai/health";
 
 /** One assigned-but-unscored deck row (assignee + deck). */
 export interface PendingAssignment {
@@ -77,4 +78,20 @@ export async function runReminders(env: Env): Promise<EvaluatorReminder[]> {
     });
   }
   return reminders;
+}
+
+/**
+ * Session 7 — the `pending_ai` re-drive sweep (FINISH-PLAN §9), on its own,
+ * more frequent cron. Thin wrapper so `index.ts` stays declarative and the
+ * sweep's own logic lives with the rest of the AI-health code.
+ */
+export async function runStuckSweep(env: Env): Promise<SweepResult> {
+  const result = await sweepStuckEvaluations(env);
+  if (result.requeued.length || result.failed.length) {
+    console.log(
+      `pending_ai sweep: re-queued ${result.requeued.length}, failed ${result.failed.length}, ` +
+        `refunded ${result.refunded} credit(s)`,
+    );
+  }
+  return result;
 }

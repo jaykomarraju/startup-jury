@@ -25,6 +25,7 @@ const DEMO_PASSWORD = "demo1234";
 const INC_ADMIN = "nisha.kapoor@demo.startupjury.ai"; // incubator admin (not superuser)
 const VC_PARTNER = "ishaan.sethi@demo.startupjury.ai"; // VC partner — sees all VC reports
 const VC_ANALYST = "rhea.nair@demo.startupjury.ai"; // VC analyst — sees only Scoring
+const VC_ASSOCIATE = "sunita.rao.vc@demo.startupjury.ai"; // VC associate — schedules intro calls
 
 let passed = 0;
 let failed = 0;
@@ -75,7 +76,7 @@ async function req(method, path, { token, body } = {}) {
     const m = c.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`));
     if (m && m[1] && m[1] !== "") sessionToken = m[1];
   }
-  return { status: res.status, json, text, token: sessionToken };
+  return { status: res.status, json, text, token: sessionToken, contentType: res.headers.get("content-type") };
 }
 
 async function login(email) {
@@ -214,6 +215,72 @@ async function main() {
     check("analyst → /api/analytics/scoring → 200", scoring.status === 200, `HTTP ${scoring.status}`);
     const capital = await req("GET", "/api/analytics/capital", { token: analyst.token });
     check("analyst → /api/analytics/capital → 403", capital.status === 403, `HTTP ${capital.status}`);
+  }
+
+  // 4c. Session 7 — call scheduling / ICS, the issue log, and the AI-health
+  //     surfacing. All read-only: nothing here schedules, invites or re-drives.
+  console.log("session 7 surfaces");
+  {
+    // A scheduler role sees the edition's calls and can reach the directory.
+    const assoc = await login(VC_ASSOCIATE);
+    const calls = await req("GET", "/api/calls?kind=intro", { token: assoc.token });
+    check(
+      "associate GET /api/calls → 200, canSchedule",
+      calls.status === 200 && calls.json?.canSchedule === true && Array.isArray(calls.json?.calls),
+      `HTTP ${calls.status}`,
+    );
+    const dir = await req("GET", "/api/calls/directory", { token: assoc.token });
+    check(
+      "associate GET /api/calls/directory → 200",
+      dir.status === 200 && Array.isArray(dir.json?.people) && dir.json.people.length > 0,
+      `HTTP ${dir.status}`,
+    );
+
+    // A read-only role must not reach the directory, and sees only its own calls.
+    const analystCalls = await req("GET", "/api/calls", { token: analyst.token });
+    check(
+      "analyst GET /api/calls → 200 but canSchedule false",
+      analystCalls.status === 200 && analystCalls.json?.canSchedule === false,
+      `HTTP ${analystCalls.status}`,
+    );
+    const analystDir = await req("GET", "/api/calls/directory", { token: analyst.token });
+    check(
+      "analyst → /api/calls/directory → 403",
+      analystDir.status === 403,
+      `HTTP ${analystDir.status}`,
+    );
+
+    // The .ics endpoint returns a real calendar document, not JSON or the SPA.
+    const ics = await req("GET", "/api/calls/call_seed_wealthos_intro/ics", { token: assoc.token });
+    check(
+      "GET /api/calls/:id/ics → 200 text/calendar VEVENT",
+      ics.status === 200 &&
+        (ics.contentType || "").includes("text/calendar") &&
+        typeof ics.text === "string" &&
+        ics.text.startsWith("BEGIN:VCALENDAR") &&
+        ics.text.includes("BEGIN:VEVENT"),
+      `HTTP ${ics.status} ${ics.contentType}`,
+    );
+
+    // The internal issue log is edition-scoped and separate from the ticket queue.
+    const issues = await req("GET", "/api/issues", { token: assoc.token });
+    check(
+      "GET /api/issues → 200 internal log",
+      issues.status === 200 && Array.isArray(issues.json?.issues),
+      `HTTP ${issues.status}`,
+    );
+
+    // §9: every deck view carries an explicit AI state, so "Pending AI" is no
+    // longer ambiguous between running and permanently stuck.
+    const decks = await req("GET", "/api/decks", { token: inc.token });
+    const rows = Array.isArray(decks.json?.decks) ? decks.json.decks : [];
+    check(
+      "decks carry aiState (§9 stuck-deck surfacing)",
+      rows.length > 0 && rows.every((d) => typeof d.aiState === "string"),
+      `${rows.length} decks`,
+    );
+
+    await req("POST", "/api/auth/logout", { token: assoc.token });
   }
 
   // 5. Logout.

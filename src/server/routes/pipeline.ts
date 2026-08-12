@@ -20,6 +20,8 @@ const pipeline = new Hono<AppEnv>();
 // middleware would 401 every unmatched /api path and mask the app's JSON 404.
 pipeline.use("/decks/*", requireAuth);
 pipeline.use("/queries/*", requireAuth);
+// The bare "/queries" listing is NOT matched by "/queries/*" — it needs its own.
+pipeline.use("/queries", requireAuth);
 pipeline.use("/jury", requireAuth);
 pipeline.use("/parameters", requireAuth);
 
@@ -29,6 +31,7 @@ interface DeckRow {
   name: string;
   status: string;
   founder: string | null;
+  founder_email: string | null;
   assigned_to: string | null;
   uploaded_by: string | null;
 }
@@ -49,7 +52,7 @@ async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
 async function loadDeck(c: Context<AppEnv>, id: string): Promise<DeckRow | null> {
   const user = c.var.user;
   const row = await c.env.DB.prepare(
-    "SELECT id, edition, name, status, founder, assigned_to, uploaded_by FROM decks WHERE id = ? AND edition = ?",
+    "SELECT id, edition, name, status, founder, founder_email, assigned_to, uploaded_by FROM decks WHERE id = ? AND edition = ?",
   )
     .bind(id, user.edition)
     .first<DeckRow>();
@@ -420,10 +423,46 @@ pipeline.get("/decks/:id/queries", async (c) => {
   return c.json({ queries: rows });
 });
 
-/** POST /decks/:id/queries — raise a founder query + send the (stubbed) email. */
+/**
+ * GET /queries — every founder query in the edition (the Query screen's table
+ * needs per-deck status without N+1 fetches). Staff-only: the rows carry the
+ * clarification questions asked about other startups.
+ */
+pipeline.get(
+  "/queries",
+  requireRole(
+    "program_associate",
+    "program_manager",
+    "admin",
+    "analyst",
+    "associate",
+    "partner",
+    "jury",
+    "ic_member",
+  ),
+  async (c) => {
+    const rows = (
+      await c.env.DB.prepare(
+        "SELECT q.id, q.deck_id, q.questions, q.email_status, q.founder_response, q.created_at, q.resolved_at " +
+          "FROM queries q JOIN decks d ON d.id = q.deck_id WHERE d.edition = ? ORDER BY q.created_at DESC",
+      )
+        .bind(c.var.user.edition)
+        .all()
+    ).results;
+    return c.json({ queries: rows });
+  },
+);
+
+/**
+ * POST /decks/:id/queries — raise a founder query and email it.
+ *
+ * Session 7 opened this to the VC roles that own the Query screen (`analyst`,
+ * `associate` — see `VC_NAV`). The VC edition raises exactly the same
+ * clarification loop against the same table; only the roles differ.
+ */
 pipeline.post(
   "/decks/:id/queries",
-  requireRole("program_associate", "program_manager", "admin"),
+  requireRole("program_associate", "program_manager", "admin", "analyst", "associate"),
   async (c) => {
     const user = c.var.user;
     const deck = await loadDeck(c, c.req.param("id"));
@@ -469,7 +508,9 @@ pipeline.post(
     });
     await sendEmail(c.env, {
       kind: "founder_query",
-      toEmail: uploader?.email ?? "founder@portal.local",
+      // Prefer the founder's own address (captured at intake in Session 5) over
+      // the uploader's — a staff bulk upload would otherwise mail the analyst.
+      toEmail: deck.founder_email ?? uploader?.email ?? "founder@portal.local",
       toName: deck.founder ?? uploader?.name ?? null,
       subject,
       body: emailBody,

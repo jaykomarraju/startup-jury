@@ -12,7 +12,7 @@ import {
   type ExtractionSlide,
 } from "../components";
 import type { DeckView } from "../types";
-import { listDecks, getDeck, getConfigSummary, listPrograms, type ProgramView,
+import { listDecks, getDeck, getConfigSummary, listPrograms, retryDeckAi, type ProgramView,
   type DeckVersionView,
 } from "../api";
 import { cohortRating } from "../../shared/scoring";
@@ -94,6 +94,27 @@ export function DashboardPage() {
   // Cohort thresholds are org config (admin-editable); default to the spec bands
   // until the summary loads.
   const [thresholds, setThresholds] = useState({ best: 7.0, mediocre: 5.0 });
+  const [retrying, setRetrying] = useState<string | null>(null);
+
+  // Decks the AI pipeline gave up on (§9) — the credit was refunded and nothing
+  // will pick them up again without an operator.
+  const stuckDecks = useMemo(() => (decks ?? []).filter((d) => d.aiState === "failed"), [decks]);
+
+  async function retry(deckId: string) {
+    setRetrying(deckId);
+    try {
+      await retryDeckAi(deckId);
+      const r = await listDecks({
+        programId: ctx.programId ?? undefined,
+        cohortId: ctx.cohortId ?? undefined,
+      });
+      setDecks(r.decks);
+    } catch {
+      // The row keeps its failed state; the reason is already on screen.
+    } finally {
+      setRetrying(null);
+    }
+  }
 
   // Program/cohort hierarchy for the toolbar filter dropdowns.
   useEffect(() => {
@@ -234,6 +255,38 @@ export function DashboardPage() {
             <Link to="/app/setup">
               <Button size="sm">Open Set up</Button>
             </Link>
+          </div>
+        )}
+
+        {/* §9: stranded evaluations are otherwise invisible — every deck at
+            Pending AI looks the same. Surface them with the real reason and the
+            one-click re-drive. */}
+        {stuckDecks.length > 0 && (
+          <div className="mt-4 rounded-lg border border-signal-flagged/40 bg-signal-flagged/5 px-4 py-3">
+            <div className="text-sm font-medium text-fg">
+              {stuckDecks.length} deck{stuckDecks.length === 1 ? "" : "s"} could not be evaluated
+            </div>
+            <p className="mt-0.5 text-xs text-fg-muted">
+              The credit for each has been returned. Fix the cause, then re-run the AI evaluation.
+            </p>
+            <ul className="mt-2 flex flex-col gap-1.5">
+              {stuckDecks.map((deck) => (
+                <li key={deck.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <span className="text-fg">
+                    {deck.name}
+                    <span className="text-fg-muted"> · {deck.aiError ?? "AI evaluation failed"}</span>
+                  </span>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={retrying === deck.id}
+                    onClick={() => retry(deck.id)}
+                  >
+                    {retrying === deck.id ? "Queueing…" : "Re-run AI"}
+                  </Button>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 

@@ -1,3 +1,4 @@
+import { AlertTriangle } from "lucide-react";
 import type { DeckView } from "../types";
 import { SignalTag } from "./SignalTag";
 
@@ -69,7 +70,22 @@ export function DeckRow({
       <td className="px-4 py-3">
         {deck.signal ? <SignalTag signal={deck.signal} /> : null}
       </td>
-      <td className="px-4 py-3 text-sm text-fg-muted">{deck.status ?? "—"}</td>
+      <td className="px-4 py-3 text-sm text-fg-muted">
+        {deck.status ?? "—"}
+        {/* §9: a deck parked at Pending AI used to look identical whether it was
+            evaluating right now or permanently stranded. Say which. */}
+        {deck.aiState === "failed" ? (
+          <div className="mt-0.5 flex items-center gap-1 text-xs text-signal-flagged">
+            <AlertTriangle className="h-3 w-3" /> Failed{deck.aiError ? ` · ${deck.aiError}` : ""}
+          </div>
+        ) : deck.aiState === "retrying" ? (
+          <div className="mt-0.5 text-xs text-amber">
+            Retrying{deck.aiError ? ` · ${deck.aiError}` : ""}
+          </div>
+        ) : deck.aiState === "in_progress" ? (
+          <div className="mt-0.5 text-xs text-fg-muted">In progress</div>
+        ) : null}
+      </td>
     </tr>
   );
 }

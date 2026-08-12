@@ -27,9 +27,23 @@ export type EmailKind =
   | "founder_query"
   | "signup_invite"
   | "evaluator_reminder"
-  | "incomplete_resubmit";
+  | "incomplete_resubmit"
+  | "call_invite";
 
 export type EmailStatus = "sent" | "failed" | "recorded";
+
+/**
+ * A file sent with the message. Session 7 needs exactly one shape — the
+ * `text/calendar` invite — and the Workers binding takes a raw string for text
+ * attachments (NOT base64; that's the REST API's convention), so `content` is
+ * the .ics document verbatim.
+ */
+export interface EmailAttachment {
+  content: string;
+  filename: string;
+  type: string;
+  disposition?: "attachment" | "inline";
+}
 
 export interface OutboundEmail {
   kind: EmailKind;
@@ -43,6 +57,8 @@ export interface OutboundEmail {
   queryId?: string | null;
   /** Send at most one message per key, ever. See the module header. */
   dedupeKey?: string | null;
+  /** Files to attach. Audited by count only — the outbox stores no payloads. */
+  attachments?: EmailAttachment[];
 }
 
 export interface SentEmail extends OutboundEmail {
@@ -66,6 +82,7 @@ export interface EmailSender {
     subject: string;
     text?: string;
     html?: string;
+    attachments?: EmailAttachment[];
   }): Promise<{ messageId?: string } | void>;
 }
 
@@ -132,6 +149,7 @@ export async function sendEmail(
         subject: email.subject,
         text: email.body,
         ...(email.html ? { html: email.html } : {}),
+        ...(email.attachments?.length ? { attachments: email.attachments } : {}),
       });
       status = "sent";
       providerId = (res && typeof res === "object" && res.messageId) || null;
@@ -227,6 +245,67 @@ export function buildSignupEmail(args: {
       "Complete your sign-up in the founder portal to move into onboarding.\n\n" +
       "— The ai.STARTUPJURY team",
   };
+}
+
+/**
+ * Compose a call invitation. The `.ics` attachment is the actual scheduling
+ * artifact (FINISH-PLAN §8: a universal invite every calendar client accepts);
+ * the body is the human-readable version for clients that don't auto-import it.
+ * Pure (testable).
+ */
+export function buildCallInviteEmail(args: {
+  deckName: string;
+  callTitle: string;
+  kindLabel: string;
+  /** Pre-formatted, timezone-labelled start (the caller owns the locale). */
+  whenLabel: string;
+  durationMinutes: number;
+  location?: string | null;
+  organizerName?: string | null;
+  participantNames: string[];
+  notes?: string | null;
+  cancelled?: boolean;
+}): { subject: string; body: string; html: string } {
+  const verb = args.cancelled ? "Cancelled" : "Invitation";
+  const subject = `${verb}: ${args.callTitle}`;
+  const attendees = args.participantNames.filter(Boolean).join(", ");
+  const lines = [
+    `When: ${args.whenLabel} (${args.durationMinutes} min)`,
+    args.location ? `Where: ${args.location}` : "",
+    args.organizerName ? `Organiser: ${args.organizerName}` : "",
+    attendees ? `Participants: ${attendees}` : "",
+  ].filter(Boolean);
+
+  const lead = args.cancelled
+    ? `The ${args.kindLabel.toLowerCase()} for ${args.deckName} has been cancelled.`
+    : `You're invited to the ${args.kindLabel.toLowerCase()} for ${args.deckName}.`;
+
+  const body =
+    `Hi,\n\n${lead}\n\n` +
+    `${lines.map((l) => `  • ${l}`).join("\n")}\n\n` +
+    (args.notes ? `Notes: ${args.notes}\n\n` : "") +
+    (args.cancelled
+      ? "The attached calendar file removes it from your calendar.\n\n"
+      : "The attached calendar file (.ics) adds it to your calendar — it works with " +
+        "Outlook, Google Calendar, Apple Calendar and anything else that reads " +
+        "standard invitations.\n\n") +
+    "— The ai.STARTUPJURY team";
+
+  const html =
+    `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1c2321;">` +
+    `<p>Hi,</p>` +
+    `<p>${esc(lead)}</p>` +
+    `<ul style="padding-left:20px;">${lines.map((l) => `<li style="margin:4px 0;">${esc(l)}</li>`).join("")}</ul>` +
+    (args.notes ? `<p><strong>Notes:</strong> ${esc(args.notes)}</p>` : "") +
+    `<p style="font-size:13px;color:#6b7671;">${
+      args.cancelled
+        ? "The attached calendar file removes it from your calendar."
+        : "The attached calendar file (.ics) adds it to your calendar."
+    }</p>` +
+    `<p style="font-size:13px;color:#6b7671;">— The ai.STARTUPJURY team</p>` +
+    `</div>`;
+
+  return { subject, body, html };
 }
 
 /** Minimal HTML escaping for the values interpolated into the HTML alternative. */

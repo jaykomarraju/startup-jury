@@ -8,9 +8,10 @@ import programs from "./routes/programs";
 import users from "./routes/users";
 import analytics from "./routes/analytics";
 import resubmit from "./routes/resubmit";
-import { tickets, messages } from "./routes/support";
+import { tickets, messages, issues } from "./routes/support";
+import { calls } from "./routes/calls";
 import { handleQueue } from "./queue";
-import { runReminders } from "./scheduled";
+import { runReminders, runStuckSweep } from "./scheduled";
 
 export type { Env } from "./types";
 
@@ -30,7 +31,9 @@ app.route("/api/programs", programs);
 app.route("/api/users", users);
 app.route("/api/analytics", analytics);
 app.route("/api/tickets", tickets);
+app.route("/api/issues", issues);
 app.route("/api/messages", messages);
+app.route("/api/calls", calls);
 app.route("/api/decks", decks);
 // PUBLIC (no requireAuth): the tokenized founder resubmit loop. The link in the
 // Incomplete-deck email is the credential — see src/server/routes/resubmit.ts.
@@ -56,9 +59,14 @@ export default {
   async queue(batch: MessageBatch<EvalMessage>, env: Env) {
     await handleQueue(batch, env);
   },
-  // Cron Trigger (wrangler.jsonc `triggers.crons`): sweep for evaluators with
-  // decks still awaiting their score and send stubbed reminder emails.
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(runReminders(env));
+  // Cron Triggers (wrangler.jsonc `triggers.crons`). Two schedules with
+  // different jobs, so the handler branches on `controller.cron`:
+  //   "0 8 * * *"    — daily evaluator reminders.
+  //   "*/10 * * * *" — re-drive decks stranded at `pending_ai` (§9). It runs
+  //                    often because a stranded deck is invisible to its
+  //                    uploader until something picks it back up.
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    if (controller.cron === "0 8 * * *") ctx.waitUntil(runReminders(env));
+    else ctx.waitUntil(runStuckSweep(env));
   },
 } satisfies ExportedHandler<Env, EvalMessage>;

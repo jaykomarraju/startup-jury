@@ -236,6 +236,9 @@ const VC_SECTOR = { label: "Sector", field: "sector" as const };
 
 /** Config for each VC stage nav slug rendered by StagePage. IC voting (`icpipeline`)
  *  and scoring (`evaluate`) are dedicated screens, not config-driven. */
+// NB `partnercall` / `alignmentcall` (VC) and `introcalls` (incubator) moved to
+// `CallsPage` in Session 7 — those screens now schedule calls and emit ICS
+// invites on top of the stage list, so they are no longer plain stage screens.
 export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
   jurypipeline: {
     title: "Assoc. Pipeline",
@@ -253,14 +256,6 @@ export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
     emptyTitle: "No decks in partner review",
     emptyDescription: "Associate-shortlisted deals appear here for the partner.",
   },
-  partnercall: {
-    title: "Partner call",
-    subtitle: "Partner conviction call with the founder · sponsor the deal to IC, pass, or hold another meeting.",
-    statuses: ["partner_call"],
-    secondary: VC_SECTOR,
-    emptyTitle: "No partner calls scheduled",
-    emptyDescription: "Deals advanced by the partner appear here for the conviction call.",
-  },
   investmentdd: {
     title: "Investment DD",
     subtitle: "Pre-IC investment diligence · Managing Partner approval before the deal reaches IC.",
@@ -268,21 +263,6 @@ export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
     secondary: VC_SECTOR,
     emptyTitle: "Nothing in diligence",
     emptyDescription: "Sponsored deals appear here for pre-IC diligence and MP approval.",
-  },
-  alignmentcall: {
-    title: "Alignment call",
-    subtitle: "Post-IC term alignment with the founder · confirm valuation and key terms, then issue the term sheet.",
-    statuses: ["alignment_call"],
-    secondary: VC_SECTOR,
-    capture: {
-      action: "issue_term_sheet",
-      fields: [
-        { name: "valuation", label: "Valuation" },
-        { name: "ownership", label: "Ownership" },
-      ],
-    },
-    emptyTitle: "No alignment calls",
-    emptyDescription: "Deals the Managing Partner approves for investment appear here.",
   },
   incuration: {
     title: "Term sheet Pipeline",
@@ -329,14 +309,6 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
     statuses: ["assigned", "jury_evaluation", "shortlisted", "rejected"],
     emptyTitle: "No decks in jury evaluation",
     emptyDescription: "Assigned decks appear here for Score / Shortlist / Reject.",
-  },
-  introcalls: {
-    title: "Intro calls",
-    subtitle:
-      "All shortlisted startups · click a name to view the deck, click the AI score for the full parameter breakdown.",
-    statuses: ["shortlisted", "intro"],
-    emptyTitle: "No intro calls yet",
-    emptyDescription: "Shortlisted startups move here to schedule an intro call.",
   },
   forsignup: {
     title: "For Sign up",

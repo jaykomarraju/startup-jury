@@ -336,7 +336,7 @@ describe("program shortlist_min API", () => {
 // ── 2. AI determinism ────────────────────────────────────────────────────────
 
 describe("AI determinism", () => {
-  it("sends temperature 0 with thinking disabled and a forced tool", async () => {
+  it("sends thinking disabled and a forced tool, and NO sampling params", async () => {
     const seen: { body: Record<string, unknown> } = { body: {} };
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
       seen.body = JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>;
@@ -359,9 +359,15 @@ describe("AI determinism", () => {
     } finally {
       fetchSpy.mockRestore();
     }
-    expect(seen.body.temperature).toBe(0);
     expect(seen.body.thinking).toEqual({ type: "disabled" });
     expect(seen.body.tool_choice).toEqual({ type: "tool", name: "submit_evaluation" });
+    // Session 5 sent `temperature: 0` for determinism; claude-sonnet-5 rejects
+    // non-default sampling parameters with a 400 ("temperature is deprecated for
+    // this model"), which failed every live evaluation and stranded the deck at
+    // pending_ai — the §9 symptom. Locked so it can't come back.
+    expect(seen.body).not.toHaveProperty("temperature");
+    expect(seen.body).not.toHaveProperty("top_p");
+    expect(seen.body).not.toHaveProperty("top_k");
   });
 
   it("produces an identical composite across repeated runs of the same input", async () => {

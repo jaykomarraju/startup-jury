@@ -5,6 +5,7 @@ import {
   buildQueryEmail,
   buildSignupEmail,
   buildIncompleteEmail,
+  buildCallInviteEmail,
   type EmailSender,
 } from "../../src/server/email/outbox";
 import type { Env } from "../../src/server/types";
@@ -255,5 +256,98 @@ describe("sendEmail — dedupe key", () => {
       dedupeKey: "incomplete:dedupe_deck2:v2",
     });
     expect(send).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── Session 7 — call invitations ─────────────────────────────────────────────
+
+describe("buildCallInviteEmail", () => {
+  const base = {
+    deckName: "GreenRoute",
+    callTitle: "GreenRoute — intro call",
+    kindLabel: "Intro call",
+    whenLabel: "Tue, 18 Aug 2026, 10:30 UTC",
+    durationMinutes: 45,
+    location: "Google Meet",
+    organizerName: "Raj Kumar",
+    participantNames: ["Raj Kumar", "Rajesh Kumar", "founder@greenroute.example"],
+    notes: "Walk the founder through the cohort plan.",
+  };
+
+  it("states when, where, who — in both text and HTML", () => {
+    const mail = buildCallInviteEmail(base);
+    expect(mail.subject).toBe("Invitation: GreenRoute — intro call");
+    expect(mail.body).toContain("Tue, 18 Aug 2026, 10:30 UTC");
+    expect(mail.body).toContain("45 min");
+    expect(mail.body).toContain("Google Meet");
+    expect(mail.body).toContain("Raj Kumar");
+    expect(mail.body).toContain("founder@greenroute.example");
+    expect(mail.body).toContain(".ics");
+    expect(mail.html).toContain("<li");
+    expect(mail.html).toContain("Google Meet");
+  });
+
+  it("switches to cancellation language", () => {
+    const mail = buildCallInviteEmail({ ...base, cancelled: true });
+    expect(mail.subject).toBe("Cancelled: GreenRoute — intro call");
+    expect(mail.body).toContain("has been cancelled");
+    expect(mail.body).toContain("removes it from your calendar");
+    expect(mail.html).toContain("removes it from your calendar");
+  });
+
+  it("omits lines it has no value for", () => {
+    const mail = buildCallInviteEmail({
+      ...base,
+      location: null,
+      organizerName: null,
+      participantNames: [],
+      notes: null,
+    });
+    expect(mail.body).not.toContain("Where:");
+    expect(mail.body).not.toContain("Organiser:");
+    expect(mail.body).not.toContain("Participants:");
+    expect(mail.body).not.toContain("Notes:");
+  });
+
+  it("escapes HTML in interpolated values", () => {
+    const mail = buildCallInviteEmail({ ...base, location: '<script>alert("x")</script>' });
+    expect(mail.html).not.toContain("<script>");
+    expect(mail.html).toContain("&lt;script&gt;");
+  });
+
+  it("says 'To be confirmed' via the caller's label when there's no date", () => {
+    const mail = buildCallInviteEmail({ ...base, whenLabel: "To be confirmed" });
+    expect(mail.body).toContain("When: To be confirmed");
+  });
+});
+
+describe("sendEmail with attachments", () => {
+  it("passes the .ics through to the binding and audits the message", async () => {
+    const seen: { attachments?: { filename: string; type: string; content: string }[] }[] = [];
+    const stub = {
+      send: async (message: {
+        attachments?: { filename: string; type: string; content: string }[];
+      }) => {
+        seen.push(message);
+        return { messageId: "prov_1" };
+      },
+    };
+    const sent = await sendEmail(
+      { ...env, EMAIL: stub, EMAIL_FROM: "no-reply@example.com" } as unknown as typeof env,
+      {
+        kind: "call_invite",
+        toEmail: "founder@anywhere.example",
+        subject: "Invitation: X",
+        body: "text",
+        html: "<p>html</p>",
+        attachments: [
+          { content: "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", filename: "x.ics", type: "text/calendar" },
+        ],
+        dedupeKey: "call:test:s0:founder@anywhere.example",
+      },
+    );
+    expect(sent.status).toBe("sent");
+    expect(seen[0].attachments?.[0].filename).toBe("x.ics");
+    expect(seen[0].attachments?.[0].content).toContain("BEGIN:VCALENDAR");
   });
 });

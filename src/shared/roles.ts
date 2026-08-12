@@ -72,6 +72,50 @@ export function isAdditionalParamOwner(edition: Edition, role: Role): boolean {
   return (ADDITIONAL_PARAM_OWNERS[edition] as readonly string[]).includes(role);
 }
 
+/**
+ * Scheduled calls (Session 7). The three kinds are exactly the ones §8 named as
+ * in scope for the ICS invite: intro, partner and alignment.
+ */
+export const CALL_KINDS = ["intro", "partner", "alignment"] as const;
+export type CallKind = (typeof CALL_KINDS)[number];
+
+export const CALL_KIND_LABELS: Record<CallKind, string> = {
+  intro: "Intro call",
+  partner: "Partner call",
+  alignment: "Alignment call",
+};
+
+/** Which call kinds each edition actually runs. */
+export const CALL_KINDS_BY_EDITION: Record<Edition, readonly CallKind[]> = {
+  // The incubator flow has one founder-facing call: the post-shortlist intro.
+  incubator: ["intro"],
+  vc: ["intro", "partner", "alignment"],
+};
+
+/**
+ * Roles that may schedule / reschedule / cancel a call and invite participants.
+ *
+ * Incubator (§8): the **program manager** is the decision maker who schedules
+ * the intro call, or delegates it to the **program associate** (the frontline
+ * executor). VC (§8): the **investment associate** schedules the intro call and
+ * the **partner** owns the partner and alignment calls.
+ *
+ * Everyone else — jury, IC members, analysts — is read-only and sees only the
+ * calls they are a participant on.
+ */
+export const CALL_SCHEDULER_ROLES: Record<Edition, readonly Role[]> = {
+  incubator: ["superuser", "admin", "program_manager", "program_associate"],
+  vc: ["superuser", "admin", "partner", "associate"],
+};
+
+export function canScheduleCalls(edition: Edition, role: Role): boolean {
+  return (CALL_SCHEDULER_ROLES[edition] as readonly string[]).includes(role);
+}
+
+export function isCallKind(value: unknown): value is CallKind {
+  return typeof value === "string" && (CALL_KINDS as readonly string[]).includes(value);
+}
+
 export const EDITION_LABELS: Record<Edition, string> = {
   incubator: "Incubator",
   vc: "Venture Capital",

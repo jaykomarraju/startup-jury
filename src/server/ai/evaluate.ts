@@ -22,29 +22,33 @@ import type { Env } from "../types";
 const DEFAULT_MODEL = "claude-sonnet-5";
 const GATE = 5; // strictly-greater-than gate from the flow diagram.
 
-/**
- * **Determinism (Session 5).** The Jul-24 demo asked for run-to-run score variance
- * within ~10%. Three settings do the work, all applied in `callAnthropic`:
+/*
+ * Determinism (Session 5, corrected in Session 7). The Jul-24 demo asked for
+ * run-to-run score variance within ~10%. Two settings do the work, both applied
+ * in `callAnthropic`:
  *
- *  - `temperature: 0` — greedy decoding. The Messages API has **no seed
- *    parameter**, so this is the strongest determinism lever available.
- *  - `thinking: { type: "disabled" }` — no sampled reasoning preamble to diverge.
- *  - a forced `tool_choice` — the response shape is fixed, so only the numbers can
- *    move, never the structure.
+ *   - `thinking: { type: "disabled" }` — no sampled reasoning preamble to diverge.
+ *   - a forced `tool_choice` — the response shape is fixed, so only the numbers
+ *     can move, never the structure.
  *
  * The prompt is deterministic too: parameters are ordered by `sort_order` and the
- * anchor bands are sorted, so the same deck + rubric always produces byte-identical
- * request text.
+ * anchor bands are sorted, so the same deck + rubric always produces
+ * byte-identical request text.
  *
- * **Residual variance expectation.** Temperature 0 is not a guarantee — batching
- * and floating-point non-determinism in the serving stack can still flip a
- * near-tied token, and a per-parameter score is one token. Expect most re-runs to
- * be identical, occasional single-parameter drift of ±1, and therefore a weighted
- * composite within roughly ±0.3 of 10 (well inside the ~10% target). The real
- * protection against needless drift is the **rescore guard** (Session 1): we do not
- * re-run at all unless the deck content or the admin's criteria changed.
+ * THERE IS NO `temperature`, AND ITS ABSENCE IS NOT AN OVERSIGHT. Session 5 sent
+ * `temperature: 0` as the strongest determinism lever available (the Messages API
+ * has no seed parameter). `claude-sonnet-5` REJECTS non-default sampling
+ * parameters with a 400 — "temperature is deprecated for this model" — so every
+ * live evaluation failed and stranded its deck at `pending_ai`. That is exactly
+ * the §9 symptom, and it is what the Session-7 cron sweep surfaced on the
+ * production demo. Do NOT re-add it; steer through the prompt instead.
+ *
+ * Residual-variance expectation: most re-runs identical, occasional
+ * single-parameter drift of ±1 from serving-stack non-determinism, so a weighted
+ * composite within roughly ±0.3/10 — inside the ~10% target. The real protection
+ * against needless drift is the Session-1 rescore guard: we do not re-run at all
+ * unless the deck content or the admin's criteria changed.
  */
-const AI_TEMPERATURE = 0;
 
 /** Pass/fail landing stages per edition once the AI gate is applied. */
 const PASS_STAGE: Record<Edition, string> = {
@@ -423,9 +427,9 @@ export const callAnthropic: ModelCaller = async (req) => {
     body: JSON.stringify({
       model: req.model,
       max_tokens: 4096,
-      // Determinism (see AI_TEMPERATURE above): greedy decoding, no sampled
-      // thinking, and a forced tool so only the numbers can vary run to run.
-      temperature: AI_TEMPERATURE,
+      // Determinism (see the module header): no sampled thinking, and a forced
+      // tool so only the numbers can vary run to run. NB no `temperature` —
+      // claude-sonnet-5 rejects it with a 400.
       thinking: { type: "disabled" },
       system: req.system,
       tools: [req.tool],
@@ -627,9 +631,14 @@ export async function evaluateDeck(
   );
   stmts.push(
     env.DB.prepare(
+      // A successful evaluation also clears the §9 AI-health state in the SAME
+      // statement — a deck can't be both scored and "failed", and doing it here
+      // means every caller (upload, queue, re-score, re-upload, the cron sweep)
+      // gets the reset for free.
       "UPDATE decks SET ai_score = ?, signal = ?, status = ?, founder = ?, founder_email = ?, " +
         "founder_phone = ?, city = ?, sector = ?, missing_fields = ?, intake_flag = ?, " +
-        "intake_flag_note = ?, related_deck_id = ?, complete = ?, updated_at = ? WHERE id = ?",
+        "intake_flag_note = ?, related_deck_id = ?, complete = ?, updated_at = ?, " +
+        "ai_error = NULL, ai_failed_at = NULL, ai_attempts = 0 WHERE id = ?",
     ).bind(
       total,
       signal,

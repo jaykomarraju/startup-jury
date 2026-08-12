@@ -21,6 +21,8 @@ import { AccountPage } from "./routes/AccountPage";
 import { BuyCreditsPage } from "./routes/BuyCreditsPage";
 import { FounderHomePage, FounderQueriesPage, FounderSignupPage } from "./routes/FounderPortal";
 import { TicketsPage, ContactPage } from "./routes/SupportPages";
+import { IssueLogPage } from "./routes/IssueLogPage";
+import { CallsPage, INCUBATOR_CALLS_CONFIG, VC_CALLS_CONFIG } from "./routes/CallsPage";
 import {
   CohortSummaryPage,
   EvaluatorScoresPage,
@@ -90,6 +92,7 @@ function NavRoute() {
 
   // Tickets + Contact (Phase 7).
   if (navId === "support") return <TicketsPage />;
+  if (navId === "issues") return <IssueLogPage />;
   if (navId === "contactadmin" || navId === "contactteam") return <ContactPage />;
 
   // Founder portal.
@@ -103,6 +106,8 @@ function NavRoute() {
     // Staff "Evaluate" and a jury member's "Assigned" both open the scoring form.
     if (navId === "evaluate" || navId === "jassigned") return <EvaluatePage />;
     if (navId === "query") return <QueryPage />;
+    const calls = INCUBATOR_CALLS_CONFIG[navId];
+    if (calls) return <CallsPage config={calls} />;
     const stage = INCUBATOR_STAGE_CONFIG[navId];
     if (stage) return <StagePage config={stage} />;
   }
@@ -112,6 +117,9 @@ function NavRoute() {
     // "Evaluate" and "Submit" both open the rubric scoring + advance flow.
     if (navId === "evaluate" || navId === "assign") return <VcEvaluatePage />;
     if (navId === "icpipeline") return <IcVotePage />;
+    if (navId === "query") return <QueryPage />;
+    const calls = VC_CALLS_CONFIG[navId];
+    if (calls) return <CallsPage config={calls} />;
     const stage = VC_STAGE_CONFIG[navId];
     if (stage) return <StagePage config={stage} />;
   }

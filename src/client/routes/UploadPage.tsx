@@ -349,8 +349,21 @@ export function UploadPage() {
                     <SignalTag signal={single.result.signal as DeckSignal} />
                   </div>
                 ) : (
-                  <div className="text-sm text-fg-muted">
-                    Uploaded — evaluation is pending (no AI key configured yet).
+                  // §9: this line used to claim "no AI key configured yet" for
+                  // every failure — billing, rate limits, a missing PDF. The
+                  // server now returns the real cause and whether anything is
+                  // still going to retry it.
+                  <div className="flex items-start gap-2 text-sm text-fg-muted">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-signal-weak" />
+                    <span>
+                      {single.error === "evaluation_failed"
+                        ? "Uploaded, but the AI evaluation could not be started"
+                        : "Uploaded — the AI evaluation is queued and will retry automatically"}
+                      {single.reason ? <> · {single.reason}</> : null}.{" "}
+                      <span className="opacity-70">
+                        You can re-run it from All decks once the cause is cleared.
+                      </span>
+                    </span>
                   </div>
                 )}
                 <Button variant="secondary" size="sm" onClick={() => navigate("/app/alldecks")}>

@@ -318,3 +318,61 @@ describe("VC per-stage authorization", () => {
     expect((await post(`/api/decks/${id}/transition`, mp, { action: "nope" })).status).toBe(409);
   });
 });
+
+// ── Session 7 — VC founder queries ───────────────────────────────────────────
+// The Query screen was a stub on the VC side; the loop itself has existed since
+// Phase 4. Session 7 opened `POST /decks/:id/queries` to the VC roles that own
+// that screen (analyst, associate) and added the edition-wide `GET /queries`
+// listing the table's status column reads.
+
+describe("VC founder query loop", () => {
+  it("an analyst raises a query and it lands in the edition-wide listing", async () => {
+    const analyst = await login(ANALYST);
+    const created = await post("/api/decks/vc_deck_wealthos/queries", analyst, {
+      questions: "Please share current ARR, net revenue retention and the full-time headcount.",
+    });
+    expect(created.status).toBe(200);
+    const { queryId } = (await created.json()) as { queryId: string };
+
+    const all = (await (await get("/api/queries", analyst)).json()) as {
+      queries: { id: string; deck_id: string; founder_response: string | null }[];
+    };
+    const mine = all.queries.find((q) => q.id === queryId)!;
+    expect(mine.deck_id).toBe("vc_deck_wealthos");
+    expect(mine.founder_response).toBeNull();
+  });
+
+  it("mails the deck's own founder address rather than the uploader", async () => {
+    await env.DB.prepare(
+      "UPDATE decks SET founder_email = 'founder@solarnest.example' WHERE id = 'vc_deck_solarnest'",
+    ).run();
+    const associate = await login(ASSOCIATE);
+    const res = await post("/api/decks/vc_deck_solarnest/queries", associate, {
+      questions: "Share the latest cap table.",
+    });
+    expect(res.status).toBe(200);
+    const row = await env.DB.prepare(
+      "SELECT to_email FROM email_outbox WHERE deck_id = 'vc_deck_solarnest' AND kind = 'founder_query' ORDER BY created_at DESC LIMIT 1",
+    ).first<{ to_email: string }>();
+    expect(row?.to_email).toBe("founder@solarnest.example");
+  });
+
+  it("rejects an empty question and stays edition-scoped", async () => {
+    const analyst = await login(ANALYST);
+    expect(
+      (await post("/api/decks/vc_deck_wealthos/queries", analyst, { questions: "  " })).status,
+    ).toBe(400);
+    // An incubator deck is invisible from the VC edition.
+    expect(
+      (await post("/api/decks/inc_deck_payroute/queries", analyst, { questions: "hi" })).status,
+    ).toBe(404);
+  });
+
+  it("the edition-wide listing never leaks the other edition's queries", async () => {
+    const analyst = await login(ANALYST);
+    const all = (await (await get("/api/queries", analyst)).json()) as {
+      queries: { deck_id: string }[];
+    };
+    expect(all.queries.every((q) => q.deck_id.startsWith("vc_"))).toBe(true);
+  });
+});

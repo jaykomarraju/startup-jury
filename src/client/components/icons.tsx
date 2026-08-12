@@ -1,6 +1,7 @@
 import {
   Activity,
   Archive,
+  Bug,
   Building2,
   ChartBar,
   ClipboardCheck,
@@ -43,6 +44,7 @@ import {
 const ICONS: Record<string, LucideIcon> = {
   Activity,
   Archive,
+  Bug,
   Building2,
   ChartBar,
   ClipboardCheck,

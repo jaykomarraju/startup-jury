@@ -38,6 +38,18 @@ export interface DeckView {
   status?: string;
   /** Raw pipeline stage id (e.g. "shortlisted") for filtering/gating. */
   statusId?: string;
+  /**
+   * Session 7 (§9). `status` alone can't tell a deck that is being evaluated
+   * right now from one permanently stranded at Pending AI:
+   *   in_progress — queued/running · retrying — a failed attempt, more to come
+   *   failed      — given up on (the credit was refunded) · ok — not pending
+   */
+  aiState?: "ok" | "in_progress" | "retrying" | "failed";
+  /** Operator-facing cause, e.g. "AI provider billing — out of credits". */
+  aiError?: string;
+  /** The raw provider message behind `aiError`. */
+  aiErrorDetail?: string;
+  aiAttempts?: number;
   assignedTo?: string;
   assignedToName?: string;
   /** Transitions the current user may perform from this deck's stage. */

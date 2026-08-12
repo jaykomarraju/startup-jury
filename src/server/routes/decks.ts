@@ -13,6 +13,13 @@ import { requireAuth, requireRole } from "../auth/middleware";
 import { detectIntakeFlags, intakeFlagStatement } from "../intake";
 import { evaluateDeck } from "../ai/evaluate";
 import {
+  classifyEvalError,
+  clearEvalFailure,
+  markEvalTerminal,
+  recordEvalFailure,
+  summariseError,
+} from "../ai/health";
+import {
   addDeckVersion,
   isPdf,
   versionKey,
@@ -30,7 +37,7 @@ decks.use("*", requireAuth);
 const DECK_COLUMNS =
   "d.id, d.name, d.sector, d.stage, d.city, d.founder, d.founder_email, d.founder_phone, " +
   "d.missing_fields, d.intake_flag, d.intake_flag_note, d.related_deck_id, d.content_version, " +
-  "d.ai_score, d.signal, d.status, d.assigned_to";
+  "d.ai_score, d.signal, d.status, d.assigned_to, d.ai_error, d.ai_attempts, d.ai_failed_at";
 
 // Joined columns: the assignee's name, the program's shortlist floor, and the mean
 // of this deck's human evaluations (the other half of the decision score).
@@ -58,10 +65,22 @@ interface DeckRow {
   ai_score: number | null;
   signal: string | null;
   status: string;
+  ai_error: string | null;
+  ai_attempts: number | null;
+  ai_failed_at: string | null;
   assigned_to?: string | null;
   assigned_to_name?: string | null;
   shortlist_min?: number | null;
   human_avg?: number | null;
+}
+
+export type AiState = "ok" | "in_progress" | "retrying" | "failed";
+
+/** Where a deck actually is in the AI pipeline, as opposed to what it says. */
+function aiStateOf(row: DeckRow): AiState {
+  if (row.status !== "pending_ai") return "ok";
+  if (row.ai_failed_at) return "failed";
+  return row.ai_error ? "retrying" : "in_progress";
 }
 
 function statusLabel(edition: Edition, status: string): string {
@@ -109,6 +128,13 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role) {
     signal: (row.signal as string | null) ?? undefined,
     status: statusLabel(edition, row.status),
     statusId: row.status,
+    // §9: "Pending AI" used to mean both "running" and "permanently stuck".
+    // `aiState` is the difference, and `aiError` is the reason the old UI
+    // hardcoded as "no AI key configured yet" regardless of what went wrong.
+    aiState: aiStateOf(row),
+    aiError: classifyEvalError(row.ai_error) ?? undefined,
+    aiErrorDetail: row.ai_error ?? undefined,
+    aiAttempts: row.ai_attempts ?? 0,
     assignedTo: row.assigned_to ?? undefined,
     assignedToName: row.assigned_to_name ?? undefined,
     actions: actionsFor(edition, row.status, role),
@@ -284,6 +310,21 @@ decks.get("/:id/file", async (c) => {
 // blocks a needless re-run regardless of who asks.
 const RESCORE_ROLES = [
   "jury",
+  "program_associate",
+  "program_manager",
+  "admin",
+  "analyst",
+  "associate",
+  "partner",
+] as const;
+
+/**
+ * Roles that may re-drive a stranded evaluation. Narrower than `RESCORE_ROLES`:
+ * a re-drive can RESERVE a credit (the terminal failure gave one back), so it
+ * belongs to the roles that own intake and the credit budget — not to a juror
+ * who just happens to notice a stuck deck.
+ */
+const RETRY_AI_ROLES = [
   "program_associate",
   "program_manager",
   "admin",
@@ -488,16 +529,77 @@ decks.post("/upload", async (c) => {
     });
   } catch (err) {
     // A synchronous model/billing error must not strand the deck at pending_ai
-    // with nothing re-driving it (§9). Hand it to the retrying queue consumer so
-    // it still gets scored once the condition clears, then report pending.
+    // with nothing re-driving it (§9). Record WHY, then hand it to the retrying
+    // queue consumer so it still gets scored once the condition clears.
     console.error(`single-upload evaluation failed for ${id}; enqueueing retry:`, err);
+    await recordEvalFailure(c.env, id, err);
     try {
       await c.env.EVAL_QUEUE.send({ deckId: id });
     } catch (qerr) {
+      // Nothing can re-drive it now except the cron sweep, and the queue itself
+      // is broken — so give up here, refund, and say so, rather than reporting a
+      // "pending" that will never resolve.
       console.error(`failed to enqueue retry for ${id}:`, qerr);
+      await markEvalTerminal(c.env, id, summariseError(err));
+      return c.json(
+        {
+          deckId: id,
+          evaluated: false,
+          error: "evaluation_failed",
+          reason: classifyEvalError(summariseError(err)),
+          matches,
+        },
+        202,
+      );
     }
-    return c.json({ deckId: id, evaluated: false, error: "evaluation_pending", matches }, 202);
+    return c.json(
+      {
+        deckId: id,
+        evaluated: false,
+        error: "evaluation_pending",
+        // The real cause, so the upload screen can stop guessing "no AI key".
+        reason: classifyEvalError(summariseError(err)),
+        matches,
+      },
+      202,
+    );
   }
+});
+
+/**
+ * POST /api/decks/:id/retry-ai — manual re-drive for a deck stuck (or failed) at
+ * `pending_ai`. The §9 lever an operator reaches for once the underlying cause
+ * (billing, a key, a rate limit) is fixed: it clears the failure state, resets
+ * the attempt counter and re-enqueues.
+ *
+ * No credit is charged — the original upload already paid for this evaluation,
+ * and if it was refunded on a terminal failure the re-drive re-reserves it.
+ */
+decks.post("/:id/retry-ai", requireRole(...RETRY_AI_ROLES), async (c) => {
+  const user = c.var.user;
+  const deck = await c.env.DB.prepare(
+    "SELECT id, status, ai_credit_refunded FROM decks WHERE id = ? AND edition = ?",
+  )
+    .bind(c.req.param("id"), user.edition)
+    .first<{ id: string; status: string; ai_credit_refunded: number }>();
+  if (!deck) return c.json({ error: "not_found" }, 404);
+  if (deck.status !== "pending_ai") return c.json({ error: "not_pending" }, 409);
+
+  // A terminal failure gave the credit back; re-driving spends it again. If the
+  // balance is empty the deck stays exactly as it was.
+  if (deck.ai_credit_refunded === 1) {
+    if (!(await reserveCredits(c, 1))) return c.json({ error: "no_credits" }, 402);
+    await c.env.DB.prepare("UPDATE decks SET ai_credit_refunded = 0 WHERE id = ?").bind(deck.id).run();
+  }
+
+  await clearEvalFailure(c.env, deck.id);
+  try {
+    await c.env.EVAL_QUEUE.send({ deckId: deck.id });
+  } catch (err) {
+    await recordEvalFailure(c.env, deck.id, err);
+    return c.json({ error: "enqueue_failed" }, 502);
+  }
+  return c.json({ ok: true, deckId: deck.id, queued: true });
 });
 
 /** One row of the bulk-upload report — accepted or rejected, per file. */

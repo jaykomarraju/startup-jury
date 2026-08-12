@@ -31,7 +31,9 @@ describe("nav manifest", () => {
     expect(su).toContain("admin");
     expect(su).toContain("account");
     expect(su).toContain("billing");
-    expect(su).toHaveLength(24);
+    // Session 7 added the internal issue log.
+    expect(su).toContain("issues");
+    expect(su).toHaveLength(25);
   });
 
   it("founder sees only the founder portal; internal roles never see portal items", () => {

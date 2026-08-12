@@ -74,11 +74,11 @@ Full parity + all asks. Check items off as sessions land them.
 - [x] On **Incomplete**, auto-send the founder an email with a **tokenized link** listing the **missing/feedback sections** (traction/team/ask/etc.) _(S6, `resubmit_tokens`, migration 0017)_
 - [x] Link → founder **updates those sections in the deck and re-uploads** (new version) → **auto re-score** → back to the evaluator with a fresh perspective (consolidated in the deck, not scattered Q&A) _(S6, public `/resubmit/:token`)_
 
-### De-stub, scheduling, issue log (Session 7)
-- [ ] VC **Query** + **Intro calls** screens (currently stubs) → real
-- [ ] **ICS (.ics) invites** for **intro / partner / alignment** calls — organizer picks participants (team + founder, any email domain), app generates the universal `.ics`; populate `calls.scheduled_at`
-- [ ] Internal **issue log** (in-app admin tracker) so the team logs testing issues in one place
-- [ ] Investigate/fix the **stuck-at-"pending"** upload bug (§9)
+### De-stub, scheduling, issue log (Session 7) ✅
+- [x] VC **Query** + **Intro calls** screens (currently stubs) → real _(S7; Query is now one prototype-accurate screen for both editions, Intro/Partner/Alignment calls share the new `CallsPage`)_
+- [x] **ICS (.ics) invites** for **intro / partner / alignment** calls — organizer picks participants (team + founder, any email domain), app generates the universal `.ics`; populate `calls.scheduled_at` _(S7, `shared/ics.ts` + `routes/calls.ts`, migration 0018)_
+- [x] Internal **issue log** (in-app admin tracker) so the team logs testing issues in one place _(S7, `tickets.category='issue'`)_
+- [x] Investigate/fix the **stuck-at-"pending"** upload bug (§9) _(S7 — DLQ + cron sweep + credit refund + real failure reason)_
 
 ### Polish & ship (Session 8)
 - [ ] **Set the email sending domain** — onboard it, set `vars.EMAIL_FROM` in `wrangler.jsonc`, redeploy,
@@ -119,7 +119,7 @@ Full parity + all asks. Check items off as sessions land them.
 | 4 | Roles & permissions — PM authority, Associate/Analyst, user mgmt/mentor, admin console/account/credits | ✅ Done | `4467bf7` (+ docs) | 2026-08-12 |
 | 5 | Automation — shortlist floor, AI determinism, duplicates/returning, upload validation, deck versioning | ✅ Done | `aebe362`, `28c331e` (+ docs) | 2026-08-12 |
 | 6 | Incomplete-deck resubmit loop + real email | ✅ Done | `2b385ff` (+ docs) | 2026-08-12 |
-| 7 | De-stub VC screens + ICS scheduling + issue log + pending-bug fix | ⬜ Not started | — | — |
+| 7 | De-stub VC screens + ICS scheduling + issue log + pending-bug fix | ✅ Done | `SESSION7SHA` (+ docs) | 2026-08-12 |
 | 8 | Polish, full e2e, docs, final deploy | ⬜ Not started | — | — |
 
 Legend: ⬜ Not started · 🔶 In progress · ✅ Done.
@@ -643,6 +643,153 @@ _(Append newest at the bottom. One entry per completed session.)_
     on three consecutive full runs afterwards) — same parallel-config-edit interference already noted for
     S5; unrelated to this session's code.
 
+- **2026-08-12 — Session 7 (De-stub VC screens + ICS scheduling + issue log + the §9 pending bug) shipped.**
+  Commit `SESSION7SHA` (+ this doc commit). **There are no `StubPage` slugs left in either edition.**
+  Scheduling is real (universal `.ics`), the team has an in-app issue log, and the "stuck at Pending AI"
+  bug is fully fixed end to end. Green gate: typecheck + lint + **379 unit/worker/client (1 skipped)** +
+  build + **52 e2e**. Deployed (DLQ created + remote D1 migrated first — `0018`) + `npm run smoke`
+  **34/34** (7 new checks). **Live-verified** every new endpoint on the deployed Worker with the demo
+  seed left untouched (`credits_balance` 42 / 49, unchanged).
+  - **Schema (migration `0018`).** `calls` finally becomes a real table rather than a write-only audit:
+    **`title`, `duration_minutes`, `location`, `ics_uid`, `ics_sequence`, `status`, `organizer_id`,
+    `updated_at`** + an index on `deck_id`, plus a new **`call_participants`** child table
+    (`user_id` NULLABLE — the founder and any external guest have no login). `tickets` gains
+    **`category`** (`'support'` | `'issue'`), `severity`, `area`, `assignee_id`, `resolution`,
+    `updated_at`. `decks` gains the §9 AI-health columns: **`ai_error`, `ai_attempts`,
+    `ai_last_attempt_at`, `ai_failed_at`, `ai_credit_refunded`**. Demo seed: 4 scheduled calls
+    (GreenRoute intro · WealthOS intro · MedGrid partner · LearnLoop alignment) with participants
+    including founders on **their own domains**, and 3 internal issues.
+  - **ICS builder (`src/shared/ics.ts`) — pure, dependency-free, 23 unit tests.** RFC 5545: CRLF
+    endings, **75-octet folding that never splits a multi-byte character**, TEXT escaping
+    (`\ ; ,` + newlines), UTC-only timestamps (no VTIMEZONE), ORGANIZER as `ROLE=CHAIR`, ATTENDEEs
+    with `RSVP=TRUE`, `SEQUENCE`, `STATUS`, optional `VALARM`. A reschedule keeps the **same UID** and
+    bumps `SEQUENCE`, so a calendar client *updates* the existing entry instead of creating a second
+    one; a cancel emits `METHOD:CANCEL` + `STATUS:CANCELLED`.
+  - **Calls API (`src/server/routes/calls.ts`, `/api/calls`).** `GET /` (deckId/kind/mine filters) ·
+    `GET /directory` (edition roster for the participant picker — **not** `/api/users`, which is
+    admin-only and exposes account management) · `POST /` (schedule) · `PATCH /:id`
+    (reschedule/cancel/re-invite) · `GET /:id/ics` (a real `text/calendar` download) ·
+    `POST /:id/invite`. **Two authZ tiers** (`CALL_SCHEDULER_ROLES` in `shared/roles.ts`): schedulers
+    are incubator **PM + associate** and VC **partner + associate** (§8's "the associate schedules the
+    intro call" — the Session-4 deferral is now closed) plus admin/superuser; **everyone else is
+    read-only and sees ONLY the calls they are a participant on**, matched on user id *or* account
+    email. That is §8's "jury/IC members can view their calls" without turning an IC member's calendar
+    into a listing of every deal in the firm.
+  - **Scheduling an incubator intro call performs `schedule_intro` in the same request.** §8 has the PM
+    *deciding and scheduling* as one act, so the screen doesn't make them click twice. Best-effort: if
+    `performAction` refuses, the call is still created and the response reports `advanced: false`.
+  - **Email invites carry the `.ics` as an attachment.** `OutboundEmail` gains `attachments` (the
+    Workers `send_email` binding takes **raw string** content for text parts — base64 is the REST API's
+    convention, not the binding's), new `EmailKind` `call_invite`, new pure `buildCallInviteEmail`
+    (text + HTML, escaped). Idempotency key is `call:<id>:s<sequence>:<email>`, so a double-click sends
+    nothing twice but a **genuine reschedule does re-send** (the sequence moved). Still **audit-only**
+    until `EMAIL_FROM` is set — unchanged from S6.
+  - **`CallsPage`** replaces `StagePage` for incubator `introcalls` and VC `introcalls` /
+    `partnercall` / `alignmentcall`: the prototype's table (Startup · AI score · Avg. score · Call
+    scheduled · Call date · Participants) plus the stage's own decision buttons and the alignment
+    call's term-sheet valuation/ownership capture (ported over so nothing was lost). The scheduling
+    modal keeps the prototype's shape (Meeting title · participants across roles · Selected count) but
+    **deviates deliberately**: the prototype ends in a Google/Zoom/Teams **deep link** into the
+    organizer's own calendar composer, which §8 replaced with the universal `.ics`. The three providers
+    survive as location presets.
+  - **Query screen — one screen, both editions.** The incubator and VC prototype `#panel-query` markup
+    is byte-identical (three CSS deltas), so `QueryPage` was rebuilt to the prototype's table
+    (Startup · Founder · Phone · Email · Status · Parameters needing response) and now serves both.
+    Status is derived from real query history (`Not asked` / `Pending` / `Overdue` after 5 days /
+    `Responded`) via the new **`GET /api/queries`** edition-wide listing; "parameters needing response"
+    reads the Session-5 `missing_fields`. `POST /decks/:id/queries` opened to VC `analyst` + `associate`,
+    and now mails **`decks.founder_email`** in preference to the uploader (a staff bulk upload was
+    mailing the analyst). **Deviation:** the prototype's "Email query" tab composes a mail with a
+    hardcoded fake tokenized link and a fake send; ours posts a real query that sends a real email, and
+    the tokenized founder link belongs to S6's automatic resubmit loop, not here.
+  - **Issue log — same table, split by category.** `routes/support.ts` gains an `issues` router
+    (`GET /api/issues[?status=]` · `POST` · `PATCH /:id`); **both existing ticket queries were scoped to
+    `category='support'`**, so neither queue can ever see the other's rows (test-locked in both
+    directions). Any internal role files (a tester who can't file files it in chat instead — the exact
+    fragmentation this replaces); **triage is admin-only**, and an assignee from another edition is
+    rejected 400 rather than silently orphaning the issue. Founders 403.
+  - **§9 pending bug — the full fix.** New `src/server/ai/health.ts`:
+    1. **Record.** `recordEvalFailure` stamps reason + attempt count + time; the queue consumer records
+       **before** retrying, so the cause survives the retries that would otherwise erase it.
+    2. **Dead-letter queue.** `startup-jury-evals-dlq` (created via `wrangler queues create`, wired as
+       `dead_letter_queue` + a second consumer). `handleQueue` branches on **`batch.queue`**; the
+       terminal handler marks the deck failed with its real reason, refunds, and **acks** (re-queueing
+       a dead letter would loop forever). This also **replaced the worker suite's "Dropped message …"
+       noise** with "Moving message … to dead letter queue".
+    3. **Cron sweep.** New cron **`*/10 * * * *`** → `runStuckSweep` → `sweepStuckEvaluations`:
+       re-enqueues decks parked at `pending_ai` past a 10-minute grace period, up to
+       `MAX_AI_ATTEMPTS = 3`, then gives up. `index.ts` now branches on **`controller.cron`** so the
+       daily `0 8 * * *` reminder job is unaffected.
+    4. **Refund, exactly once.** `markEvalTerminal` claims the refund with a conditional UPDATE on
+       `ai_credit_refunded`, so the sweep and a dead-letter delivery racing over the same deck cannot
+       double-refund (which would mint credits out of a failure).
+    5. **Surface the real reason.** Deck views carry **`aiState`** (`ok` / `in_progress` / `retrying` /
+       `failed`), `aiError` (via `classifyEvalError` — billing vs rate limit vs bad key vs missing PDF)
+       and `aiAttempts`. The decks table shows it under the status; the dashboard gets a banner listing
+       failed decks with a **"Re-run AI"** button (`POST /api/decks/:id/retry-ai`, narrower than
+       `RESCORE_ROLES` because a re-drive can *re-reserve* the refunded credit). The upload screen's
+       hardcoded **"no AI key configured yet"** is gone — it now names the real cause and says whether
+       anything is still going to retry. A successful `evaluateDeck` clears all of it in its own batch
+       statement, so a recovered deck can never read as failed.
+  - **🔴 THE SWEEP IMMEDIATELY FOUND A LIVE PRODUCTION BUG — `temperature` is rejected by
+    `claude-sonnet-5`, and ALL live AI scoring had been broken since Session 5.** The new `*/10` cron
+    re-drove `CloudBridge` (the real §9 victim, stranded since 2026-07-24), and the failure it recorded was
+    `400 {"type":"invalid_request_error","message":"\`temperature\` is deprecated for this model."}`.
+    Session 5 added **`temperature: 0`** to `callAnthropic` for AI determinism; `claude-sonnet-5` **rejects
+    non-default sampling parameters with a 400**, so from that moment **every real upload failed and
+    stranded its deck at `pending_ai`** — invisibly, because the old code neither recorded the reason nor
+    re-drove anything. This is the §9 bug's true present-day cause, and the fix surfaced it within ten
+    minutes of going live. **`temperature` (and `top_p`/`top_k`) removed** from the request; determinism now
+    rests on `thinking: { type: "disabled" }` + the forced `tool_choice` + the deterministic prompt, with the
+    Session-1 rescore guard as the real protection against needless re-runs. A test asserts the parameters
+    are **absent** so they can't come back, and the module header says loudly why. **Verified end to end on
+    production:** the sweep marked CloudBridge failed and refunded its credit (42 → 43); after the fix,
+    `POST /api/decks/:id/retry-ai` re-reserved the credit (43 → 42), re-queued it, and **the deck scored** —
+    Claude read the PDF, extracted the founder ("Ravi Komarraju"), and the deck landed at **`incomplete`**
+    because two required intake columns (`founderEmail`, `founderPhone`) are genuinely absent from it, which
+    is the Session-5 rule working correctly. Record → re-drive → give up → refund → re-drive → score, every
+    step exercised against a real broken deck. **`SELECT COUNT(*) FROM decks WHERE status='pending_ai'` on
+    production is now 0**, credits are back at 42 / 49, and all 20 outbox rows still read `recorded` (nothing
+    falsely claims a delivery).
+  - **Bug found and fixed during live verification (worth knowing).** `decks.created_at` defaults to
+    SQLite's `datetime('now')` → `"2026-08-12 19:10:00"`, while every timestamp this code writes is
+    ISO-8601 → `"2026-08-12T19:10:00.000Z"`. A **space (0x20) sorts before "T" (0x54)**, so a plain
+    `created_at <= ?` string compare marked *every deck uploaded later on the cutoff's own date* as
+    already stale — the sweep would have re-driven a deck while its first evaluation was still running.
+    The query now uses **`datetime(created_at) <= datetime(?)`** on both sides (SQLite normalises both
+    formats, verified against remote D1), with two regression tests that insert a deck the way
+    `storeDeck` actually does. **Anything else comparing these columns as strings has the same
+    latent bug.**
+  - **Nav.** New `issues` item in Support for every internal role (incubator superuser superset
+    **24 → 25**, `nav.test.ts` bumped). VC `introcalls` opened from admin+partner to **admin, partner,
+    associate, analyst, ic_member**, with `labelOverrides` "My Intro calls" for the two read-only roles;
+    `CallsPage` renders the per-role nav label as its heading. New `Bug` icon registered.
+  - **Live verification (deployed Worker, seed untouched).** VC associate lists the WealthOS intro call
+    with all three participants · `GET /:id/ics` returns `content-type: text/calendar` +
+    `content-disposition: attachment; filename="wealthos-founder-intro-call.ics"` and a well-formed
+    VCALENDAR/VEVENT · IC member sees only MedGrid + LearnLoop, is **403** on the directory and **404**
+    on a call they're not on · issue log is edition-scoped, IC member **403** on triage ·
+    `retry-ai` → **409 `not_pending`** on a scored deck and **404** cross-edition · every deck row
+    carries `aiState`. Deploy output confirms both crons and **both queue consumers** (incl. the DLQ).
+  - **Gotchas for later sessions:** (1) **`CloudBridge` (`deck_1a5467f7…`, incubator, uploaded
+    2026-07-24) was the live demo's real §9 victim** and is now **resolved**: after the `temperature`
+    fix it re-scored and sits at **`incomplete`** (missing `founderEmail`/`founderPhone` — a correct
+    Session-5 outcome, and a second live demo case for the resubmit loop). Its credit was refunded and
+    re-reserved once each, so the incubator balance is back at **42**. Nothing is stranded at `pending_ai`
+    any more. (2) **`e2e/analytics.spec` had a latent
+    ambiguous locator**, not a flake: `getByText("Decision log")` also matched the report shell's
+    caption ("…decision **log**, drawn from…"), so it resolved to 2 elements as soon as any VC spec had
+    recorded a decision. Fixed with `{ exact: true }`. (3) `pipeline_events` columns are
+    **`from_stage`/`to_stage`**, not `from_status`/`to_status`. (4) A valueless `download` attribute
+    makes the browser name the file from the URL path (`…/ics` → "ics.html"), ignoring
+    `Content-Disposition`; `CallsPage` passes an explicit `download={icsFilename(...)}`. (5) The bare
+    `/queries` listing needed its **own** `pipeline.use("/queries", requireAuth)` — the existing
+    `"/queries/*"` does not match it. (6) **ICS was NOT imported into a real calendar app** — doing so
+    would add events to the user's personal calendar without asking. The file is structurally validated
+    by 23 unit tests + a live fetch; a one-click human check remains (same shape as S6's live inbox
+    test). (7) `StagePage` no longer owns `introcalls`/`partnercall`/`alignmentcall`; a future session
+    adding a stage config for those slugs will be **shadowed** by `CallsPage`, which is checked first.
+
 ---
 
 ## 7. CURRENT NEXT-SESSION PROMPT
@@ -651,59 +798,61 @@ _(Append newest at the bottom. One entry per completed session.)_
 
 ```
 You are continuing the ai.STARTUPJURY finishing build. This is a FRESH session with no prior context.
+This is the LAST session — everything ships at the end of it.
 
 START by reading, in order:
 1. docs/FINISH-PLAN.md  (the master plan — read ALL of it, especially §8 meeting clarifications, §9 known
-   issues, and the §6 Progress Log entries for Sessions 1–6 — what shipped + gotchas left for you)
+   issues, and the §6 Progress Log entries for Sessions 1–7 — what shipped + the gotchas left for you)
 2. HANDOFF.md           (architecture, bindings, workflow, gotchas)
 Recall the project memories (startup-jury-completion-gap, startup-jury-requirements-sources,
-startup-jury-open-scope-decisions, startup-jury-meeting-clarifications, phase5-vc-visual-gate). Open the
-prototype you need this session: **`VC Final files/AISJ_VC_Superuser_V6.html`** — the Query panel
-(~1659) and the Intro-calls / scheduling screens are the two you must match. Live copies:
-https://aisj-incubator-v2.netlify.app · https://aisj-venturecapitalv2.netlify.app
+startup-jury-open-scope-decisions, startup-jury-meeting-clarifications, phase5-vc-visual-gate,
+startup-jury-email-domain). Prototypes live in `/Users/jayanthkomarraju/Downloads/STARTUPJURY-TEAM-FOLDER/`
+(Incubator + VC "Final files"); live copies: https://aisj-incubator-v2.netlify.app ·
+https://aisj-venturecapitalv2.netlify.app
 
-YOUR JOB THIS SESSION: complete **Session 7 — De-stub VC screens + ICS scheduling + issue log + pending
-bug** exactly as specified in docs/FINISH-PLAN.md §4 (Session 7):
-1. **VC Query + Intro calls screens** — both currently render `StubPage`. Build the real screens and wire
-   the VC branch in `src/client/App.tsx` (`NavRoute`) + `StagePage`/components. The incubator already has a
-   working query loop server-side (`GET/POST /api/decks/:id/queries`, `POST /api/queries/:id/respond` in
-   `routes/pipeline.ts`) — reuse it rather than inventing a second one.
-2. **ICS (.ics) invites** for **intro / partner / alignment** calls — a pure VCALENDAR/VEVENT builder
-   (unit-tested, no deps), organizer picks participants (team + founder, **any** email domain), populate
-   `calls.scheduled_at`, offer both an `.ics` download and an email invite. Jury/IC members on a call can
-   **view** their calls read-only. §8 is explicit that ICS is the final scheduling verdict — no
-   availability/rescheduling back-and-forth.
-3. **Internal issue log** — an in-app admin issue tracker so the team logs testing issues in one place.
-   Reuse the existing tickets infrastructure (`routes/support.ts`) with an internal category/route.
-4. **The §9 pending bug** — decks stuck at `pending_ai`. Root cause is confirmed and written up in §9;
-   Session 1 shipped only a partial mitigation. **You own the full fix:** a dead-letter queue for
-   `startup-jury-evals`, a cron sweep (or a manual re-drive endpoint / "re-run AI" action) for `pending_ai`
-   decks older than N minutes, **refund the credit** on a terminal eval failure, and surface the real
-   reason (replace the hardcoded "no AI key configured yet" upload copy; distinguish "failed" from
-   "in progress" in the decks table). Adding a DLQ will also silence the "Dropped message … on queue"
-   noise the worker suite currently logs.
+YOUR JOB THIS SESSION: complete **Session 8 — Polish, full e2e, docs, final deploy, demo readiness**
+exactly as specified in docs/FINISH-PLAN.md §4 (Session 8):
+1. **Email sending domain — the one blocking external step.** ASK THE USER FIRST whether the domain is
+   onboarded. If yes: set `vars.EMAIL_FROM` in `wrangler.jsonc` to a verified address, `npx wrangler
+   deploy`, and do the **live inbox test** Sessions 6 and 7 could not (an Incomplete-deck resubmit mail
+   AND a call invite with its `.ics` attachment — confirm the attachment actually lands and imports).
+   Then make `POST /api/users` **email** the temp password instead of returning it in the response body
+   (Session 4's leftover; compose it like `buildIncompleteEmail`). If the domain is still NOT ready, do
+   NOT block — say so plainly in the §6 log and ship everything else.
+2. **Drop the deprecated free-text columns** `decks.program`/`decks.cohort` (Session 2 deprecated them;
+   new uploads have written `program_id`/`cohort_id` only since S2). Grep for readers FIRST — check the
+   seed migrations and analytics. Migration `0019`; SQLite needs a table rebuild for a DROP COLUMN on an
+   older schema, so verify locally before `--remote`.
+3. **Comprehensive e2e + brand polish** across every screen and role added in Sessions 1–7 (workbench,
+   setup wizard, 22 params, admin console/account/credits, automation, resubmit, calls/ICS, issue log,
+   AI-health banner). Check the brand doc for colour/type, theme-aware light+dark, CSP-safe.
+4. **Refresh the demo seed** so every screen is live and coherent, and **resolve `CloudBridge`**
+   (`deck_1a5467f7…`) — the real §9 victim on the live demo. By now the `*/10` cron has either scored it
+   or marked it failed; whichever it is, leave the demo in a deliberate, explainable state.
+5. **Docs:** update `HANDOFF.md` (mark the finish track complete), `docs/DEMO.md`, `docs/DEMO-AUDIENCE.md`,
+   `docs/DEMO-RUNBOOK.md` (add the new screens to the click-path) and the runbook's troubleshooting.
 
-**Context from Session 6 you build on:** email is REAL now — `sendEmail` in `src/server/email/outbox.ts`
-dispatches via the Cloudflare `send_email` binding (`env.EMAIL`) and records `sent`/`failed`/`recorded` in
-`email_outbox`; it takes optional `html` and a `dedupeKey`, and it never throws on a delivery failure. Use
-it for the ICS invite (attachments are supported by the binding — see the `cloudflare-email-service` skill).
-**⚠️ Delivery is still audit-only (`recorded`) until someone sets `vars.EMAIL_FROM` in `wrangler.jsonc` to
-an address on an onboarded domain** — do NOT block on that; build against `sendEmail` exactly as Session 6
-did. There is also a public unauthenticated route pattern to copy if you need one:
-`src/server/routes/resubmit.ts` (mounted in `index.ts` without `requireAuth`) plus its client page
-`src/client/routes/ResubmitPage.tsx` at `/resubmit/:token`, declared as a sibling of `/login` in `App.tsx`.
-Deck re-uploads go through `src/server/decks/versions.ts` (`addDeckVersion`) — shared by the authed and
-public paths. Latest migration is `0017`; next is `0018`.
+**Context from Session 7 you build on:** no nav slug renders `StubPage` any more. Scheduling is real —
+pure builder `src/shared/ics.ts`, API `src/server/routes/calls.ts` (`/api/calls`), screen
+`src/client/routes/CallsPage.tsx` (serves incubator `introcalls` and VC `introcalls`/`partnercall`/
+`alignmentcall`; it SHADOWS `StagePage` for those slugs). `sendEmail` now takes `attachments` (raw string
+content for the Workers binding, NOT base64). The internal issue log lives on `tickets.category='issue'`.
+The §9 bug is fully fixed: dead-letter queue `startup-jury-evals-dlq`, a `*/10 * * * *` cron sweep
+(`src/server/ai/health.ts`), a once-only credit refund, `POST /api/decks/:id/retry-ai`, and `aiState`/
+`aiError` on every deck view. **Watch out:** `decks.created_at` is SQLite's `"YYYY-MM-DD HH:MM:SS"` while
+this codebase writes ISO-8601 — comparing them as raw strings is wrong (a space sorts before "T"); use
+`datetime(x) <= datetime(y)`. Latest migration is `0018`; next is `0019`.
 
 Be thorough — spend the tokens: use parallel subagents for discovery, write unit/worker/e2e tests, and
 follow the Standing Rules in §2 (green gate; commit to main with the Co-Authored-By trailer; wrangler
 pinned 4.110.0; deploy — **`wrangler d1 migrations apply startup-jury-db --remote` FIRST** if you add a
 migration — + npm run smoke at the end; keep the demo seed live and pristine). Node 22 via `nvm use`. If
 port 5173 is busy, e2e takes `E2E_PORT=<free port>`. NB: if `wrangler … --remote` hits a transient
-`code 7403`, just retry. Adding a DLQ needs `wrangler queues create <name>` before `wrangler deploy`.
+`code 7403`, just retry.
 
-BEFORE FINISHING: do the §5 End-of-session checklist — check off §1 items, update the §3 tracker, append
-a §6 Progress Log entry, and replace this §7 prompt with the Session 8 prompt. Commit the updated plan to main.
+BEFORE FINISHING: do the §5 End-of-session checklist — tick EVERY remaining §1 box, mark the §3 tracker
+row ✅, append the final §6 Progress Log entry, and replace this §7 prompt with a short "finish track
+complete" note. Commit the updated plan to main.
 ```
 
 ### Next-session prompt template (for future sessions)
@@ -795,11 +944,18 @@ Concrete decisions from the recorded demo with Chandrasekhar (product), Ravi, Ka
   throw and returned `202` (deck stranded, credit not refunded); bulk retried 3× then the message was
   **dropped (no DLQ)**; the cron only touches `assigned` decks; config re-score ignores unscored decks.
   So a persistent billing error strands the deck permanently.
-  **Session 1 shipped a partial mitigation:** single upload now **falls back to `EVAL_QUEUE.send` on a
-  synchronous eval error** (so it rides the retrying consumer instead of dead-ending). **Still owned by
-  Session 7 (full fix):** configure a **dead-letter queue** for `startup-jury-evals`; add a **cron sweep**
-  (or a manual **re-drive endpoint** / "re-run AI" action) for `pending_ai` decks older than N minutes;
-  **refund the credit** on a terminal eval failure; and **surface the real reason** (replace the hardcoded
-  "no AI key configured yet" upload copy, and distinguish "failed" from "in progress" in the decks table).
+  **✅ FIXED IN SESSION 7 — all five parts shipped.** Dead-letter queue `startup-jury-evals-dlq`
+  (`wrangler.jsonc` `dead_letter_queue` + a second consumer; `handleQueue` branches on `batch.queue`);
+  a **`*/10 * * * *` cron sweep** (`sweepStuckEvaluations` in `src/server/ai/health.ts`, 10-minute grace
+  period, `MAX_AI_ATTEMPTS = 3`); a manual re-drive **`POST /api/decks/:id/retry-ai`** plus a dashboard
+  "Re-run AI" banner; a **once-only credit refund** guarded by `decks.ai_credit_refunded`; and the real
+  reason surfaced via `decks.ai_error`/`ai_attempts`/`ai_failed_at` → `aiState` (`in_progress` /
+  `retrying` / `failed`) on every deck view, replacing the hardcoded "no AI key configured yet" copy.
+  See the Session-7 §6 entry for the timestamp-comparison bug found while verifying this.
+  _(Session 1's partial mitigation — single upload falling back to `EVAL_QUEUE.send` — is still in place
+  and is now the first line of defence rather than the only one.)_
+  **One live victim remains as a real-world test case:** `CloudBridge` (`deck_1a5467f7…`, incubator,
+  uploaded 2026-07-24) sat at `pending_ai` for 19 days. The new cron will re-drive it; Session 8 should
+  confirm where it landed and leave the demo in a deliberate state.
 - **E42 sample** scored ~3.4 (missing team/traction/ask → Incomplete). That's correct behavior, not a bug —
   it's the canonical "incomplete deck" demo case for the resubmit loop.

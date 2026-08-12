@@ -719,3 +719,47 @@ each finish session). Landed so far:
     `/resubmit/aisj-demo-nimbushr-resubmit-2026`.
   - **NB `sendEmail` returns `status: 'recorded'` under Miniflare** (no email emulator), and `evaluateDeck`
     now writes an outbox + token row for every Incomplete deck — including in tests.
+
+- **Session 7 — De-stub VC screens + ICS scheduling + issue log + the §9 pending bug** (commit
+  `SESSION7SHA`). Migration `0018`. **No nav slug renders `StubPage` in either edition any more.**
+  - **Scheduling / ICS.** New pure **`src/shared/ics.ts`** (RFC 5545 VCALENDAR/VEVENT — CRLF, 75-octet
+    folding that never splits a multi-byte char, TEXT escaping, UTC-only, ORGANIZER/ATTENDEE, SEQUENCE,
+    optional VALARM; 23 unit tests). New **`src/server/routes/calls.ts`** (`/api/calls`): list (deckId /
+    kind / mine filters), `GET /directory` (participant picker roster), `POST` schedule, `PATCH`
+    reschedule/cancel, **`GET /:id/ics`** (a real `text/calendar` download) and `POST /:id/invite`.
+    `calls` gained `title`/`duration_minutes`/`location`/`ics_uid`/`ics_sequence`/`status`/
+    `organizer_id`, plus a **`call_participants`** table whose `user_id` is nullable so the founder and
+    any external guest can be invited **at any email domain**. Two authZ tiers
+    (`CALL_SCHEDULER_ROLES` in `shared/roles.ts`): incubator PM+associate / VC partner+associate (plus
+    admin/superuser) schedule; everyone else is **read-only and sees only the calls they are on**.
+    Scheduling an incubator intro call also performs `schedule_intro` in the same request.
+    `sendEmail` now accepts **`attachments`** (raw string content for the Workers binding — base64 is
+    the REST API's convention) and the invite carries the `.ics`, deduped on `call:<id>:s<seq>:<email>`.
+  - **Client.** New **`CallsPage`** serves incubator `introcalls` and VC `introcalls`/`partnercall`/
+    `alignmentcall` — it **shadows `StagePage`** for those slugs (checked first in `App.tsx`), and the
+    alignment call's term-sheet capture moved with it. **`QueryPage`** rebuilt to the prototype's table
+    and now serves **both** editions (VC `query` was a stub); status comes from the new edition-wide
+    **`GET /api/queries`**. New **`IssueLogPage`** on nav `issues`.
+  - **Internal issue log.** Same `tickets` table, split by a new **`category`** column
+    (`'support'` | `'issue'`) — both pre-existing ticket queries were scoped to `'support'`, so the two
+    queues can never see each other. `issues` router in `routes/support.ts`; any internal role files,
+    **triage is admin-only**.
+  - **§9 "stuck at Pending AI" — fully fixed.** Dead-letter queue **`startup-jury-evals-dlq`**
+    (`dead_letter_queue` + a second consumer; `handleQueue` branches on `batch.queue`), a
+    **`*/10 * * * *` cron sweep** (`src/server/ai/health.ts`; `index.ts` branches on `controller.cron`
+    so the daily reminder job is untouched), a **once-only credit refund** guarded by
+    `decks.ai_credit_refunded`, `POST /api/decks/:id/retry-ai` + a dashboard "Re-run AI" banner, and
+    `aiState`/`aiError` on every deck view replacing the hardcoded "no AI key configured yet" copy.
+    Adding the DLQ also silenced the worker suite's "Dropped message …" noise.
+  - **🔴 `temperature` is rejected by `claude-sonnet-5` — live AI scoring had been broken since S5.**
+    The new cron sweep re-drove the demo's stranded `CloudBridge` deck and recorded the real error:
+    `400 … "\`temperature\` is deprecated for this model."` Session 5's `temperature: 0` (added for AI
+    determinism) meant **every real upload had been failing and stranding at `pending_ai`** ever since,
+    invisibly. `temperature`/`top_p`/`top_k` are now **absent** from `callAnthropic` and a test asserts
+    they stay absent; determinism rests on `thinking: { type: "disabled" }` + the forced `tool_choice` +
+    the deterministic prompt, with the S1 rescore guard preventing needless re-runs. **Do not re-add a
+    sampling parameter to the Anthropic call on this model family.**
+  - **⚠️ Timestamp gotcha.** `decks.created_at` defaults to SQLite's `datetime('now')`
+    (`"YYYY-MM-DD HH:MM:SS"`) while everything this codebase writes is ISO-8601 (`"…T…Z"`). A space
+    (0x20) sorts **before** "T" (0x54), so comparing them as raw strings is wrong for same-date values —
+    use `datetime(a) <= datetime(b)`. This was a real bug in the first cut of the sweep.

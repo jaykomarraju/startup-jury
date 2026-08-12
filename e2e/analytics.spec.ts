@@ -33,7 +33,11 @@ test("VC admin sees capital deployment and decision history", async ({ page }) =
 
   await page.goto("/app/decisions");
   await expect(page.getByRole("heading", { name: "Decision History" })).toBeVisible();
-  await expect(page.getByText("Decision log")).toBeVisible();
+  // `exact` matters: the shell's caption also contains the words "decision log",
+  // so a substring match resolves to two elements as soon as the report has rows
+  // (which it does once any VC spec has recorded a decision). That ambiguity is
+  // what made this assertion flake in earlier sessions.
+  await expect(page.getByText("Decision log", { exact: true })).toBeVisible();
 });
 
 test("a jury member raises a support ticket and contacts admin", async ({ page }) => {
