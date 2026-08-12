@@ -51,9 +51,9 @@ Full parity + all asks. Check items off as sessions land them.
 - [x] Program-level **project details**, incl. **VC fund fields** (fund size / allocated / deployed) that feed the Capital Deployment report _(S2)_
 - [x] **First-run / org config** (incubator or VC name, branding) + **Set up wizard** (Org type → Configure → Select → Team) _(S2)_
 - [x] Program/Cohort **filter dropdowns** in toolbar; "Applies to" program+cohort on parameters _(S2)_
-- [ ] **Parameter model:** core **13** (=100% composite) + **up to 3 role-scoped additional** params per role → **13 + 9 = 22** per edition; additional are **AI-scored (assistive)** + owned/remarked by their role, shown separately (own average), NOT folded into the 100%
-- [ ] Additional params are a **default list they can change**, each with a **configurable prompt**
-- [ ] **Plan gating:** Standard = no config (default 13) · Pro = configure core 13 · Premium = configure the additional 3
+- [x] **Parameter model:** core **13** (=100% composite) + **up to 3 role-scoped additional** params per role → **13 + 9 = 22** per edition; additional are **AI-scored (assistive)** + owned/remarked by their role, shown separately (own average), NOT folded into the 100% _(S3)_
+- [x] Additional params are a **default list they can change**, each with a **configurable prompt** _(S3)_
+- [x] **Plan gating:** Standard = no config (default 13) · Pro = configure core 13 · Premium = configure the additional 3 _(S3)_
 
 ### Roles & permissions (Session 4)
 - [ ] **Program Manager decision authority** — jury shortlist routes to the **PM**, who decides/schedules (or assigns who schedules) the intro call; PM can also evaluate. Associate is the frontline executor.
@@ -112,7 +112,7 @@ Full parity + all asks. Check items off as sessions land them.
 |---|---------|--------|------------------|------|
 | 1 | Evaluator Workbench | ✅ Done | `3f3bd30` (+ docs) | 2026-08-11 |
 | 2 | Program & Cohort hierarchy + config wizard (+ VC fund fields) | ✅ Done | `c70cbcd` (+ docs) | 2026-08-11 |
-| 3 | Parameter model — core 13 + role-scoped additional (AI-scored) + prompts + plan gating | ⬜ Not started | — | — |
+| 3 | Parameter model — core 13 + role-scoped additional (AI-scored) + prompts + plan gating | ✅ Done | `f19b50b` (+ docs) | 2026-08-12 |
 | 4 | Roles & permissions — PM authority, Associate/Analyst, user mgmt/mentor, admin console/account/credits | ⬜ Not started | — | — |
 | 5 | Automation — shortlist floor, AI determinism, duplicates/returning, upload validation, deck versioning | ⬜ Not started | — | — |
 | 6 | Incomplete-deck resubmit loop + real email | ⬜ Not started | — | — |
@@ -338,6 +338,67 @@ _(Append newest at the bottom. One entry per completed session.)_
     `nav.test.ts` length assertion tracks it. (4) `program.sector` is **free text matched against
     `sectors.name`**, not an FK — deleting a sector doesn't rewrite programs that reference it.
 
+- **2026-08-12 — Session 3 (Parameter model: core 13 + role-scoped additional) shipped.** Commit `f19b50b`
+  (+ this doc commit). The rubric is now **13 core + 9 additional = 22 params per edition.** Green gate:
+  typecheck + lint + **185 unit/worker (1 skipped)** + build + **31 e2e**. Deployed (remote D1 migrated
+  first) + `npm run smoke` 26/26; **live-verified** 13+9 on both editions (incubator PA/PM/Jury ×3, VC
+  associate/partner/ic_member ×3) with prompts, and the 9 assistive AI scores on the workbench decks.
+  - **Owner roles — reconciled + CONFIRMED from the prototypes.** Incubator: **program_associate,
+    program_manager, jury**; VC: **associate (Investment Associate), partner, ic_member**. The VC prototype
+    tabs (`AISJ_VC_Superuser_V6.html` ~3717) are exactly these three (analyst is a distinct role — the
+    Investment Associate is "an analyst with 3 configurable params", so the **associate** owns them, not the
+    analyst). The incubator prototype (`AISJ_IC_SuserV11.HTM` ~3308) only drew **PM + Jury** tabs (a blank 3rd
+    slot), but §8 names program_associate too and 3 roles × 3 = the required 22 total, so we seed all three
+    (**§8 wins**, per the plan's own rule). Constants live in `shared/roles.ts`
+    (`ADDITIONAL_PARAM_OWNERS`, `MAX_ADDITIONAL_PER_ROLE = 3`, `isAdditionalParamOwner`).
+  - **Schema (migrations 0013 + 0014).** `0013` adds **`parameters.prompt`** (the configurable AI extraction
+    prompt), **retires the interim 2-per-edition additional params from 0007** (`UPDATE … active=0 WHERE
+    informational=1`), and inserts the **full 9-per-edition role-scoped set** (18 rows, all
+    `informational=1, weight 0, role_scope set, prompt set`, sort_order 101–109). `0014` seeds **assistive AI
+    scores for all 9 additional params** on the two workbench decks (TaxPilot inc, WealthOS vc) so the
+    workbench's separate additional section + its own average are live on the seed (core-13 roll-ups 6.2 / 8.1
+    are unchanged — additional weight 0).
+  - **AI scores them (assistive).** `evaluate.ts` `ParameterRow` gains `informational?`/`prompt?`;
+    `buildUserPrompt(params, anchors, ctx?)` lists the **core** areas as the weighted rubric and the
+    **additional** params in a separate "assistive — NOT in the composite" section, each with its configurable
+    prompt run through **`substituteVars`** ({{startup_name}}/{{sector}}/{{stage}}/{{program_type}} filled
+    from the deck row + edition; unknown placeholders left intact). The forced-tool key enum already includes
+    every active param, so the AI scores all 22; the composite = `weightedTotal` over the full weight, and
+    additional params carry weight 0 → **composite stays core-13 = 100%** (unit-tested).
+  - **Human ownership.** `POST /decks/:id/evaluate` now loads `informational/role_scope` and **stores an
+    additional-param human score ONLY if `role_scope === user.role`** (silently skips other roles' — the form
+    only presents the caller's own). `GET /parameters` returns `informational` + `roleScope` so the client
+    splits core vs owned-additional. Client: **`EvalScorecard`** renders a separate **"Additional parameters ·
+    your lens"** section (own AI·My·Avg, not in the composite); `EvaluatePage`/`VcEvaluatePage` derive
+    `coreParams` + `ownedAdditional` (by `roleScope === user.role`) and submit both. **NB:** the eval-form
+    roles that reach the workbench are jury/PM (inc) and associate/partner (vc); **program_associate &
+    ic_member** own params (AI-scored + configurable + visible) but don't have a rubric eval screen yet, so
+    their *human* additional scoring lands with the role-screen work in **Session 4**.
+  - **Plan gating (authoritative `PLAN_META`).** `shared/plans.ts`: **`planAllowsCore` = Pro+**,
+    **`planAllowsAdditional` = Premium** (moved up from Pro), plus `PLAN_PRIVILEGES` copy. `config.ts` gates
+    **`PUT /parameters` (core 13) → 402 on Standard**, and **all additional-param CRUD → 402 unless Premium.**
+    `POST /additional-params` now requires a valid **owner `roleScope`** (400 otherwise) and enforces **≤3 per
+    role** (409 `role_full`). New **`PUT /additional-params/:id`** renames + edits the prompt. Summary/full
+    config expose **`coreConfigEnabled`** + `additionalEnabled` and each param's `prompt`. Client:
+    `ConfigPage` weights section locks read-only on Standard; `MyParamsPage` rewritten — grouped by owner role,
+    editable label + AI-prompt per param, add (≤3) / rename / remove, **Premium** gate copy.
+  - **Rescore-guard trigger set.** `criteria_version` already bumped on core-weight / AI-prompt /
+    add / delete; **added the bump on `PUT /additional-params/:id`** so an admin **renaming or editing an
+    additional param's prompt** is a valid AI re-score reason (worker-tested).
+  - **Deviations from the prototype (intentional).** The prototype offers a per-additional-param weight select
+    ("Informational / 5% / 10%"); we do **NOT** implement the weighted option — additional params are always
+    informational (weight 0), because a 5%/10% additional weight would violate the plan's invariant
+    "**composite = core 13 = 100%, additional shown separately**". Noted here so a later session doesn't
+    "restore" it and silently break the composite.
+  - **Gotchas for later sessions:** (1) **New uploads / AI runs now score 22 params**, but a human evaluator
+    stores only core + their own role's additional — so per-evaluator `scores` counts are **role-dependent**
+    (analyst/PA = 13; jury/PM/associate/partner/ic = 13 + up-to-3). Tests that counted `keys.length` were
+    updated to count `informational=0 OR role_scope=<caller>`. (2) `0013` **retired** the 0007 additional
+    params (`inc_add_program_fit` etc. are now `active=0`) — don't reference them. (3) Wrangler's OAuth token
+    is **missing the `d1` scope in `whoami`** yet `d1 … --remote` still worked after a **transient 7403** on
+    the first apply — just **retry** the migrate/deploy if you hit `code 7403`; it's not a code fault.
+    (4) The `myparams` nav already lists all owner roles per edition (no nav change this session).
+
 ---
 
 ## 7. CURRENT NEXT-SESSION PROMPT
@@ -349,43 +410,47 @@ You are continuing the ai.STARTUPJURY finishing build. This is a FRESH session w
 
 START by reading, in order:
 1. docs/FINISH-PLAN.md  (the master plan — read ALL of it, especially §8 meeting clarifications, §9 known
-   issues, and the §6 Progress Log entries for Sessions 1 & 2 — what shipped + gotchas left for you)
+   issues, and the §6 Progress Log entries for Sessions 1–3 — what shipped + gotchas left for you)
 2. HANDOFF.md           (architecture, bindings, workflow, gotchas)
 Recall the project memories (startup-jury-completion-gap, startup-jury-requirements-sources,
-startup-jury-open-scope-decisions, startup-jury-meeting-clarifications, phase5-vc-visual-gate). Open BOTH
-prototypes' parameter screens (the target UI) and CONFIRM the exact additional-param owners per edition:
-/Users/jayanthkomarraju/Downloads/STARTUPJURY-TEAM-FOLDER/Incubator Final files/AISJ_IC_SuserV11.HTM
-(Core Parameters 13-param array ~3910; My Parameters / role-configurable ~3252–3312) and the VC Superuser
-prototype (VC My Parameters ~4411) under "VC Final files/".
+startup-jury-open-scope-decisions, startup-jury-meeting-clarifications, phase5-vc-visual-gate). Open the
+ROLE / permission prototypes (the target UI) for this session:
+- Incubator: "Incubator Final files/AISJ_INC_ProgManager_V2.HTM" + "AISJ_INC_Prog assoc.HTM" (Set up authority
+  diff PM vs associate) and the Superuser "AISJ_IC_SuserV11.HTM" (openAdmin/openAccount/openBuyCredits, Team &
+  roles / user creation).
+- VC: "VC Final files/AISJ_VC_Superuser_V6.html" + per-role files (Analyst/Associate/Partner/IC member).
+Also open the role-matrix image at the STARTUPJURY-TEAM-FOLDER root
+("Startupjury role assignment role matrix.jpg").
 
-YOUR JOB THIS SESSION: complete **Session 3 — Parameter model: core 13 + role-scoped additional (AI-scored)
-+ prompts + plan gating** exactly as specified in docs/FINISH-PLAN.md §4 (Session 3):
-- **Additional params first-class** — role-scoped (Incubator: **program_associate, program_manager, jury**;
-  VC: **analyst/associate, partner, ic_member** — CONFIRM from the prototype), **up to 3 per role**, default
-  examples that can be **renamed** with a **configurable AI prompt** each. Total 13 + 9 = **22** per edition.
-- **AI scores them (assistive)** — pass the additional-param prompts to `evaluate.ts` and store their AI
-  scores, but keep the weighted composite = **core 13 (=100%)**; surface additional AI+human scores
-  separately (own average), NOT folded into the 100%.
-- **Human ownership** — the owning role scores/remarks its ≤3 additional params (extend the eval form /
-  My Parameters).
-- **Plan gating** — Standard: no config · Pro: configure core 13 · Premium: configure additional 3 (402/hide).
-- Update the **rescore-guard** trigger set so an admin criteria/prompt change is a valid re-score reason
-  (criteria_version already bumps on add/delete/prompt — confirm it covers the additional-param prompt edits).
+YOUR JOB THIS SESSION: complete **Session 4 — Roles & permissions** exactly as specified in
+docs/FINISH-PLAN.md §4 (Session 4):
+- **PM decision authority** — a jury **shortlist** routes to the **program_manager**, who decides and
+  **schedules or assigns** the intro call; PM can assign jury + evaluate; PM manages cohorts for programs they
+  lead (owner-scoped). Associate stays the frontline executor (read-only in Set up "Standard seat"). Update
+  `src/pipeline/incubator.ts` + `src/server/routes/pipeline.ts` role gates and fix affected tests.
+- **Investment Associate vs Analyst (VC)** — both already exist as distinct roles; VERIFY the flow (analyst
+  uploads+scores → associate scores + schedules intro call → partner …) and the permissions are right.
+- **User management** — Super User (+ per the role matrix) can **create users** (jurors, mentors, staff): a new
+  admin screen + **`POST /api/users`** (superuser/admin-gated). **Mentor:** DECIDE role vs user-type (see §8 —
+  it's referenced but not yet a role) and implement the chosen shape; record the decision in §6.
+- **Admin console / My account / Buy credits** — build to prototype parity (extend `ConfigPage` or add screens
+  for `openAdmin`/`openAccount`/`openBuyCredits`).
 
-Context from Session 2 you'll build on: `parameters` already has `informational` + `role_scope` columns and
-the config API has `POST/DELETE /api/config/additional-params` (informational, plan-gated) that bump
-`criteria_version`; `evaluate.ts` already includes active params in the tool enum. The `programs`/`cohorts`
-hierarchy + Applies-to selector now exist (Session 2) if you want per-program scoping — but the composite
-stays edition-level. NB: new uploads set `decks.program_id/cohort_id`, not the legacy text columns.
+Context you'll build on (from Sessions 1–3): the 22-param model + role-scoped additional params are done —
+**program_associate & ic_member OWN additional params but have no rubric eval screen yet**, so if this
+session gives them evaluation surfaces, wire their owned-additional section too (the eval endpoint already
+accepts `role_scope === user.role`; `ADDITIONAL_PARAM_OWNERS` lives in `shared/roles.ts`). Roles are seeded in
+`0002_seed.sql`; `ROLE_LABELS`/`ROLES_BY_EDITION` in `shared/roles.ts`; nav in `shared/nav.ts` (superuser
+superset is 21). New uploads set `decks.program_id/cohort_id`.
 
 Be thorough — spend the tokens: use parallel subagents for discovery, write unit/worker/e2e tests, and
 follow the Standing Rules in §2 (green gate; commit to main with the Co-Authored-By trailer; wrangler
 pinned 4.110.0; deploy — **`wrangler d1 migrations apply startup-jury-db --remote` FIRST** if you add a
 migration — + npm run smoke at the end; keep the demo seed live). Node 22 via `nvm use`. If port 5173 is
-busy, e2e takes `E2E_PORT=<free port>`.
+busy, e2e takes `E2E_PORT=<free port>`. NB: if `wrangler … --remote` hits a transient `code 7403`, just retry.
 
 BEFORE FINISHING: do the §5 End-of-session checklist — check off §1 items, update the §3 tracker, append
-a §6 Progress Log entry, and replace this §7 prompt with the Session 4 prompt. Commit the updated plan to main.
+a §6 Progress Log entry, and replace this §7 prompt with the Session 5 prompt. Commit the updated plan to main.
 ```
 
 ### Next-session prompt template (for future sessions)
