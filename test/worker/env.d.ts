@@ -13,6 +13,14 @@ declare namespace Cloudflare {
     EVAL_QUEUE: Queue<import("../../src/server/types").EvalMessage>;
     ANTHROPIC_API_KEY?: string;
     ANTHROPIC_MODEL?: string;
+    // Cloudflare Email Sending. Miniflare has no emulator for the send_email
+    // binding, so EMAIL is effectively absent in tests and `sendEmail` takes its
+    // audit-only path — which is exactly what the outbox assertions exercise.
+    EMAIL?: import("../../src/server/email/outbox").EmailSender;
+    EMAIL_FROM?: string;
+    EMAIL_FROM_NAME?: string;
+    EMAIL_REPLY_TO?: string;
+    APP_BASE_URL?: string;
     TEST_MIGRATIONS: import("cloudflare:test").D1Migration[];
     // Flag-gated live Anthropic smoke test (evaluate.live.test.ts) only.
     LIVE_ANTHROPIC?: string;

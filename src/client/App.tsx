@@ -3,6 +3,7 @@ import { useAuth } from "./auth/useAuth";
 import { AppShell } from "./components";
 import { RequireAuth, RequireNav } from "./routes/guards";
 import { LoginPage } from "./routes/LoginPage";
+import ResubmitPage from "./routes/ResubmitPage";
 import { DashboardPage } from "./routes/DashboardPage";
 import { UploadPage } from "./routes/UploadPage";
 import { StubPage } from "./routes/StubPage";
@@ -122,6 +123,11 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginRoute />} />
+      {/* PUBLIC (Session 6): the tokenized founder resubmit link from the
+          Incomplete-deck email. A sibling of /login, deliberately outside the
+          /app subtree — founders have no account to sign in with, and the
+          catch-all below would otherwise bounce them to the login screen. */}
+      <Route path="/resubmit/:token" element={<ResubmitPage />} />
       <Route
         path="/app"
         element={

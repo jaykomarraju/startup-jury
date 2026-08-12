@@ -12,6 +12,15 @@ import { parseMissingFields, type IntakeMatch } from "../../shared/intake";
 import { requireAuth, requireRole } from "../auth/middleware";
 import { detectIntakeFlags, intakeFlagStatement } from "../intake";
 import { evaluateDeck } from "../ai/evaluate";
+import {
+  addDeckVersion,
+  isPdf,
+  versionKey,
+  versionStatement,
+  MAX_PDF_BYTES,
+  reserveCredits as reserveEditionCredits,
+  refundCredits as refundEditionCredits,
+} from "../decks/versions";
 
 const decks = new Hono<AppEnv>();
 decks.use("*", requireAuth);
@@ -396,39 +405,16 @@ async function storeDeck(
       c.var.user.id,
     ),
     // Version 1 of the deck's upload history — a re-upload appends to this.
-    versionStatement(c, id, 1, key, file, "Initial upload"),
+    versionStatement(c.env, {
+      deckId: id,
+      version: 1,
+      key,
+      file,
+      note: "Initial upload",
+      uploadedBy: c.var.user.id,
+    }),
   ]);
   return id;
-}
-
-/** R2 key for a deck version. v1 keeps the historical `decks/<id>.pdf` path so
- *  every pre-Session-5 deck's stored object still resolves. */
-function versionKey(deckId: string, version: number): string {
-  return version <= 1 ? `decks/${deckId}.pdf` : `decks/${deckId}_v${version}.pdf`;
-}
-
-function versionStatement(
-  c: Context<AppEnv>,
-  deckId: string,
-  version: number,
-  key: string,
-  file: File,
-  note: string,
-): D1PreparedStatement {
-  return c.env.DB.prepare(
-    "INSERT INTO deck_versions (id, deck_id, version, r2_key, file_name, size_bytes, uploaded_by, note, created_at) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  ).bind(
-    `${deckId}_v${version}`,
-    deckId,
-    version,
-    key,
-    file.name,
-    file.size,
-    c.var.user.id,
-    note,
-    new Date().toISOString(),
-  );
 }
 
 /**
@@ -461,40 +447,12 @@ async function flagIntake(
   return classification.matches;
 }
 
-// Anthropic caps a Messages request at 32 MB; the PDF is base64-encoded (~1.33×)
-// into one request, so keep the raw deck comfortably under that.
-const MAX_PDF_BYTES = 24 * 1024 * 1024;
-
-function isPdf(file: unknown): file is File {
-  return (
-    file instanceof File &&
-    (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"))
-  );
-}
-
-/**
- * Atomically reserve `n` upload credits from the caller's edition. The
- * conditional UPDATE only succeeds when the balance covers `n`, so concurrent
- * uploads can't drive it negative. Returns false when there aren't enough
- * credits (→ 402, before any R2 write). Admins top the balance up in Config.
- */
-async function reserveCredits(c: Context<AppEnv>, n: number): Promise<boolean> {
-  const res = await c.env.DB.prepare(
-    "UPDATE org_settings SET credits_balance = credits_balance - ? WHERE edition = ? AND credits_balance >= ?",
-  )
-    .bind(n, c.var.user.edition, n)
-    .run();
-  return res.meta.changes === 1;
-}
-
-/** Return `n` reserved credits — used to compensate when a store fails after the
- *  reservation, so a transient R2/DB error never silently burns credits. */
-async function refundCredits(c: Context<AppEnv>, n: number): Promise<void> {
-  if (n <= 0) return;
-  await c.env.DB.prepare("UPDATE org_settings SET credits_balance = credits_balance + ? WHERE edition = ?")
-    .bind(n, c.var.user.edition)
-    .run();
-}
+// Credit accounting lives in `decks/versions.ts` (shared with the public founder
+// resubmit route); these wrappers just bind it to the caller's edition.
+const reserveCredits = (c: Context<AppEnv>, n: number) =>
+  reserveEditionCredits(c.env, c.var.user.edition, n);
+const refundCredits = (c: Context<AppEnv>, n: number) =>
+  refundEditionCredits(c.env, c.var.user.edition, n);
 
 /** POST /api/decks/upload — single deck → R2 → evaluate directly (synchronous). */
 decks.post("/upload", async (c) => {
@@ -654,41 +612,24 @@ decks.post("/:id/version", requireRole(...REUPLOAD_ROLES), async (c) => {
   if (file.size > MAX_PDF_BYTES) return c.json({ error: "pdf_too_large" }, 413);
   const note = ((form?.get("note") as string) || "").trim() || "Re-uploaded deck";
 
-  // Re-scoring the new version costs a credit, same as any other AI run.
-  if (!(await reserveCredits(c, 1))) return c.json({ error: "no_credits" }, 402);
-
-  const version = (deck.content_version ?? 1) + 1;
-  const key = versionKey(id, version);
-  try {
-    await c.env.DECKS.put(key, await file.arrayBuffer(), {
-      httpMetadata: { contentType: "application/pdf" },
-    });
-    await c.env.DB.batch([
-      versionStatement(c, id, version, key, file, note),
-      // r2_key follows the latest version; content_version unblocks the rescore guard.
-      c.env.DB.prepare(
-        "UPDATE decks SET r2_key = ?, content_version = ?, updated_at = ? WHERE id = ?",
-      ).bind(key, version, new Date().toISOString(), id),
-    ]);
-  } catch (err) {
-    await refundCredits(c, 1);
-    throw err;
+  // Shared with the public tokenized founder resubmit (`routes/resubmit.ts`), so
+  // both paths spend credits, lay out R2 and bump content_version identically.
+  const added = await addDeckVersion(c.env, {
+    deckId: id,
+    edition,
+    contentVersion: deck.content_version,
+    file,
+    note,
+    uploadedBy: userId,
+  });
+  if (!added.ok) return c.json({ error: "no_credits" }, 402);
+  if (!added.evaluated) {
+    return c.json(
+      { ok: true, deckId: id, version: added.version, evaluated: false, error: "evaluation_pending" },
+      202,
+    );
   }
-
-  // Auto re-score the new content. A model/billing error rides the retry queue
-  // rather than stranding the new version unscored (§9).
-  try {
-    const result = await evaluateDeck(c.env, id);
-    return c.json({ ok: true, deckId: id, version, evaluated: true, result });
-  } catch (err) {
-    console.error(`re-upload evaluation failed for ${id}; enqueueing retry:`, err);
-    try {
-      await c.env.EVAL_QUEUE.send({ deckId: id });
-    } catch (qerr) {
-      console.error(`failed to enqueue retry for ${id}:`, qerr);
-    }
-    return c.json({ ok: true, deckId: id, version, evaluated: false, error: "evaluation_pending" }, 202);
-  }
+  return c.json({ ok: true, deckId: id, version: added.version, evaluated: true, result: added.result });
 });
 
 export default decks;

@@ -198,7 +198,9 @@ describe("founder query loop: incomplete → query → founder response → uplo
     )
       .bind(id, queryId)
       .first<{ to_email: string; kind: string; status: string }>();
-    expect(mail).toMatchObject({ kind: "founder_query", status: "sent" });
+    // 'recorded' = audited but not dispatched: Miniflare has no send_email
+    // binding, so `sendEmail` takes its audit-only path (Session 6).
+    expect(mail).toMatchObject({ kind: "founder_query", status: "recorded" });
 
     // Founder responds → deck returns to Uploaded, complete flag reset.
     const respondRes = await post(`/api/queries/${queryId}/respond`, founder, {

@@ -16,6 +16,7 @@ import {
   type IntakeFlag,
 } from "../../shared/intake";
 import { detectIntakeFlags } from "../intake";
+import { notifyIncompleteDeck } from "../resubmit";
 import type { Env } from "../types";
 
 const DEFAULT_MODEL = "claude-sonnet-5";
@@ -470,11 +471,22 @@ interface DeckRow {
   founder_email: string | null;
   founder_phone: string | null;
   cohort_id: string | null;
+  uploaded_by: string | null;
 }
+
+/** Fires when a deck lands Incomplete — see `server/resubmit.ts`. */
+export type IncompleteNotifier = typeof notifyIncompleteDeck;
 
 export interface EvaluateOptions {
   callModel?: ModelCaller;
   now?: () => string;
+  /**
+   * Injectable seam for the Incomplete → founder notification (Session 6),
+   * matching the `callModel` / `now` pattern. Defaults to the real notifier,
+   * so every call site (single upload, bulk queue, rescore, re-upload) gets the
+   * behaviour without repeating it. Pass a stub to assert on it in tests.
+   */
+  notify?: IncompleteNotifier;
 }
 
 /**
@@ -489,10 +501,11 @@ export async function evaluateDeck(
 ): Promise<EvaluationResult> {
   const callModel = opts.callModel ?? callAnthropic;
   const now = opts.now ?? (() => new Date().toISOString());
+  const notify = opts.notify ?? notifyIncompleteDeck;
 
   const deck = await env.DB.prepare(
     "SELECT id, edition, status, r2_key, content_version, name, sector, stage, city, " +
-      "founder, founder_email, founder_phone, cohort_id FROM decks WHERE id = ?",
+      "founder, founder_email, founder_phone, cohort_id, uploaded_by FROM decks WHERE id = ?",
   )
     .bind(deckId)
     .first<DeckRow>();
@@ -649,6 +662,33 @@ export async function evaluateDeck(
   );
 
   await env.DB.batch(stmts);
+
+  // ── Incomplete → notify the founder (Session 6) ────────────────────────────
+  // Runs only after the batch commits, so the email can never describe a state
+  // the database doesn't hold. Deliberately non-fatal: a mail failure must not
+  // fail the evaluation (the caller would re-enqueue and re-score a deck that
+  // was scored perfectly well). `notifyIncompleteDeck` is itself idempotent on
+  // the deck's content version, so a retry does not double-send.
+  if (status === "incomplete") {
+    try {
+      await notify(
+        env,
+        {
+          deckId,
+          deckName: deck.name ?? "your pitch deck",
+          edition: deck.edition,
+          contentVersion: deck.content_version ?? 1,
+          founderName: details.founder,
+          founderEmail: details.founderEmail,
+          uploadedBy: deck.uploaded_by,
+          missingFields,
+        },
+        now,
+      );
+    } catch (err) {
+      console.error(`incomplete-deck notification failed for ${deckId}:`, err);
+    }
+  }
 
   return {
     deckId,

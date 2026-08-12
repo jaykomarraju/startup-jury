@@ -661,3 +661,56 @@ export const listMessages = (scope: "admin" | "team") =>
   fetch(`/api/messages?scope=${scope}`).then((r) => json<{ messages: ContactMessage[]; inbox: boolean }>(r));
 export const sendMessage = (toScope: "admin" | "team", body: string) =>
   postJson<{ ok: true; id: string }>("/api/messages", { toScope, body });
+
+// ── Public founder resubmit loop (Session 6) ─────────────────────────────────
+// These two are the ONLY unauthenticated fetchers in this module: the tokenized
+// link from the Incomplete-deck email is the credential, so no session cookie is
+// involved. See src/server/routes/resubmit.ts.
+
+export interface ResubmitSection {
+  label: string;
+  heading?: string;
+  text?: string;
+}
+
+export interface ResubmitVersion {
+  version: number;
+  fileName?: string;
+  note?: string;
+  createdAt: string;
+}
+
+export interface ResubmitView {
+  deck: {
+    name: string;
+    founder: string | null;
+    sector: string | null;
+    stage: string | null;
+    city: string | null;
+    status: string;
+    statusLabel: string;
+    complete: boolean;
+    version: number;
+  };
+  missingFields: IntakeField[];
+  missingSections: ResubmitSection[];
+  versions: ResubmitVersion[];
+  expiresAt: string;
+  usesLeft: number;
+}
+
+export interface ResubmitResult extends ResubmitView {
+  ok: true;
+  version: number;
+  evaluated: boolean;
+}
+
+/** Read what a founder must fix, from their secure link. No auth. */
+export const getResubmit = (token: string) =>
+  fetch(`/api/resubmit/${encodeURIComponent(token)}`).then((r) => json<ResubmitView>(r));
+
+/** Upload the corrected deck through the secure link → new version → re-score. */
+export const postResubmit = (token: string, form: FormData) =>
+  fetch(`/api/resubmit/${encodeURIComponent(token)}`, { method: "POST", body: form }).then((r) =>
+    json<ResubmitResult>(r),
+  );

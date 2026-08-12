@@ -44,6 +44,27 @@
       }
     ]
   },
+  // Cloudflare Email Sending (src/server/email/outbox.ts). The binding is safe to
+  // deploy before a domain is onboarded — sending is additionally gated on the
+  // EMAIL_FROM var below, so until that is set every message is recorded in
+  // `email_outbox` with status='recorded' and nothing is dispatched.
+  //
+  // TO GO LIVE (one config change + a redeploy, no code change):
+  //   1. Onboard the sending domain — Dashboard → Compute & AI → Email Service →
+  //      Email Sending → Onboard Domain (adds the SPF/DKIM records), or
+  //      `npx wrangler email sending enable <domain>`.
+  //   2. Set "EMAIL_FROM" below to a verified address on that domain
+  //      (e.g. "no-reply@<domain>"), optionally EMAIL_REPLY_TO.
+  //   3. `npx wrangler deploy`.
+  "send_email": [{ "name": "EMAIL" }],
+  "vars": {
+    // Public origin used to build the tokenized founder resubmit links.
+    "APP_BASE_URL": "https://startup-jury.jay-komarraju.workers.dev",
+    // Verified From address. EMPTY = no delivery attempted (audit-only outbox).
+    "EMAIL_FROM": "",
+    "EMAIL_FROM_NAME": "ai.STARTUPJURY",
+    "EMAIL_REPLY_TO": ""
+  },
   "triggers": {
     // Daily evaluator-reminder sweep (src/server/scheduled.ts). 08:00 UTC.
     "crons": ["0 8 * * *"]

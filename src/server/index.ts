@@ -7,6 +7,7 @@ import config from "./routes/config";
 import programs from "./routes/programs";
 import users from "./routes/users";
 import analytics from "./routes/analytics";
+import resubmit from "./routes/resubmit";
 import { tickets, messages } from "./routes/support";
 import { handleQueue } from "./queue";
 import { runReminders } from "./scheduled";
@@ -31,6 +32,9 @@ app.route("/api/analytics", analytics);
 app.route("/api/tickets", tickets);
 app.route("/api/messages", messages);
 app.route("/api/decks", decks);
+// PUBLIC (no requireAuth): the tokenized founder resubmit loop. The link in the
+// Incomplete-deck email is the credential — see src/server/routes/resubmit.ts.
+app.route("/api/resubmit", resubmit);
 // Workflow endpoints (transitions, assign, jury scoring, queries, signup,
 // audit, lookups). Mounted at /api so it can own /queries, /jury, /parameters
 // alongside its /decks/:id/* actions.
