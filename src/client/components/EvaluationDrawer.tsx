@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { X } from "lucide-react";
 import type { DeckView } from "../types";
 import { ScoreBars, type ParamScoreView } from "./ScoreBars";
+import { DeckPdfViewer } from "./DeckPdfViewer";
 import { SignalTag } from "./SignalTag";
 import { Badge } from "./Badge";
 
@@ -71,6 +72,10 @@ export function EvaluationDrawer({
         </header>
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
+          <section className="mb-5">
+            <DeckPdfViewer deckId={deck.id} />
+          </section>
+
           {verdict && (
             <div className="mb-5 rounded-lg border border-line bg-surface-2 px-4 py-3">
               <div className="u-label">Verdict</div>

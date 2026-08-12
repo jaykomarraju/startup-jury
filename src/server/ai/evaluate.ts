@@ -319,6 +319,7 @@ interface DeckRow {
   edition: Edition;
   status: string;
   r2_key: string | null;
+  content_version: number | null;
 }
 
 export interface EvaluateOptions {
@@ -340,7 +341,7 @@ export async function evaluateDeck(
   const now = opts.now ?? (() => new Date().toISOString());
 
   const deck = await env.DB.prepare(
-    "SELECT id, edition, status, r2_key FROM decks WHERE id = ?",
+    "SELECT id, edition, status, r2_key, content_version FROM decks WHERE id = ?",
   )
     .bind(deckId)
     .first<DeckRow>();
@@ -358,10 +359,10 @@ export async function evaluateDeck(
     await env.DB.prepare("SELECT band, min_score, max_score, label FROM rubric_anchors").all<AnchorRow>()
   ).results;
   const org = await env.DB.prepare(
-    "SELECT ai_system_prompt FROM org_settings WHERE edition = ?",
+    "SELECT ai_system_prompt, criteria_version FROM org_settings WHERE edition = ?",
   )
     .bind(deck.edition)
-    .first<{ ai_system_prompt: string | null }>();
+    .first<{ ai_system_prompt: string | null; criteria_version: number | null }>();
 
   const object = await env.DECKS.get(deck.r2_key);
   if (!object) throw new Error(`R2 object missing: ${deck.r2_key}`);
@@ -405,10 +406,14 @@ export async function evaluateDeck(
     );
   });
   const verdict = !parsed.complete ? "incomplete" : gatePassed ? "advanced" : "below_gate";
+  // Stamp the criteria/content versions this AI run scored under so the rescore
+  // guard (routes/decks.ts /rescore) can tell whether anything material changed.
+  const criteriaVersion = org?.criteria_version ?? 1;
+  const contentVersion = deck.content_version ?? 1;
   stmts.push(
     env.DB.prepare(
-      "INSERT INTO evaluations (id, deck_id, evaluator_id, weighted_total, verdict, remarks, submitted_at) VALUES (?, ?, NULL, ?, ?, ?, ?)",
-    ).bind(`${deckId}_ai_eval`, deckId, total, verdict, "AI evaluation", ts),
+      "INSERT INTO evaluations (id, deck_id, evaluator_id, weighted_total, verdict, remarks, submitted_at, scored_criteria_version, scored_content_version) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)",
+    ).bind(`${deckId}_ai_eval`, deckId, total, verdict, "AI evaluation", ts, criteriaVersion, contentVersion),
   );
   stmts.push(
     env.DB.prepare(

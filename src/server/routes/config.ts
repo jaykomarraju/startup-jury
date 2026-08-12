@@ -39,6 +39,17 @@ async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
   return (await c.req.json().catch(() => ({}))) as Partial<T>;
 }
 
+/**
+ * Bump the edition's criteria version. Any change to what the AI scores against —
+ * core weights, the AI prompt, or the additional-parameter set — invalidates the
+ * previous AI run, so a re-score becomes allowed (see routes/decks.ts /rescore).
+ */
+function bumpCriteriaVersion(c: Context<AppEnv>, edition: Edition): D1PreparedStatement {
+  return c.env.DB.prepare(
+    "UPDATE org_settings SET criteria_version = criteria_version + 1 WHERE edition = ?",
+  ).bind(edition);
+}
+
 function loadSettings(c: Context<AppEnv>, edition: Edition): Promise<SettingsRow | null> {
   return c.env.DB.prepare(
     "SELECT plan, credits_balance, branding_json, ai_system_prompt, threshold_best, threshold_mediocre FROM org_settings WHERE edition = ?",
@@ -152,6 +163,7 @@ config.put("/parameters", requireRole("admin"), async (c) => {
       c.env.DB.prepare("UPDATE parameters SET weight = ?, name = ? WHERE id = ?").bind(weight, name, u.id),
     );
   }
+  stmts.push(bumpCriteriaVersion(c, edition));
   await c.env.DB.batch(stmts);
 
   const rescored = await rescoreEdition(c.env, edition);
@@ -187,11 +199,13 @@ config.post("/additional-params", requireRole("admin"), async (c) => {
   )
     .bind(edition)
     .first<{ n: number }>();
-  await c.env.DB.prepare(
-    "INSERT INTO parameters (id, edition, key, name, weight, informational, role_scope, sort_order, active) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 1)",
-  )
-    .bind(id, edition, key, name, weight, informational, nextOrder?.n ?? 101)
-    .run();
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "INSERT INTO parameters (id, edition, key, name, weight, informational, role_scope, sort_order, active) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 1)",
+    ).bind(id, edition, key, name, weight, informational, nextOrder?.n ?? 101),
+    // Adding a parameter changes the scoring criteria set → allow a re-score.
+    bumpCriteriaVersion(c, edition),
+  ]);
 
   // A weighted extra changes the denominator — re-score to keep totals honest.
   if (informational === 0) await rescoreEdition(c.env, edition);
@@ -210,7 +224,10 @@ config.delete("/additional-params/:id", requireRole("admin"), async (c) => {
     .first<{ informational: number }>();
   if (!p) return c.json({ error: "not_found" }, 404);
   if (p.informational !== 1) return c.json({ error: "core_param" }, 400); // never delete a core area
-  await c.env.DB.prepare("UPDATE parameters SET active = 0 WHERE id = ?").bind(id).run();
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE parameters SET active = 0 WHERE id = ?").bind(id),
+    bumpCriteriaVersion(c, edition),
+  ]);
   await rescoreEdition(c.env, edition);
   return c.json({ ok: true });
 });
@@ -240,9 +257,14 @@ config.put("/ai-prompt", requireRole("admin"), async (c) => {
   const edition = c.var.user.edition;
   const body = await readBody<{ prompt: string }>(c);
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
-  await c.env.DB.prepare("UPDATE org_settings SET ai_system_prompt = ? WHERE edition = ?")
-    .bind(prompt ? prompt : null, edition)
-    .run();
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE org_settings SET ai_system_prompt = ? WHERE edition = ?").bind(
+      prompt ? prompt : null,
+      edition,
+    ),
+    // The prompt is part of the scoring criteria → allow a re-score.
+    bumpCriteriaVersion(c, edition),
+  ]);
   return c.json({ ok: true, aiSystemPrompt: prompt });
 });
 

@@ -7,7 +7,7 @@ import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition, Role } from "../../shared/roles";
 import { getStage, allowedTransitions } from "../../pipeline";
-import { requireAuth } from "../auth/middleware";
+import { requireAuth, requireRole } from "../auth/middleware";
 import { evaluateDeck } from "../ai/evaluate";
 
 const decks = new Hono<AppEnv>();
@@ -110,12 +110,12 @@ decks.get("/:id", async (c) => {
 
   const scores = (
     await c.env.DB.prepare(
-      "SELECT p.name AS label, p.weight AS weight, s.value AS value, s.comment AS comment " +
+      "SELECT p.key AS key, p.name AS label, p.weight AS weight, s.value AS value, s.comment AS comment " +
         "FROM scores s JOIN parameters p ON p.id = s.parameter_id " +
         "WHERE s.deck_id = ? AND s.evaluator_kind = 'ai' ORDER BY p.sort_order",
     )
       .bind(id)
-      .all<{ label: string; weight: number; value: number; comment: string | null }>()
+      .all<{ key: string; label: string; weight: number; value: number; comment: string | null }>()
   ).results;
 
   const evaluation = await c.env.DB.prepare(
@@ -131,6 +131,98 @@ decks.get("/:id", async (c) => {
     weightedTotal: evaluation?.weighted_total ?? row.ai_score ?? undefined,
     verdict: evaluation?.verdict ? VERDICT_LABELS[evaluation.verdict] ?? evaluation.verdict : undefined,
   });
+});
+
+/** GET /api/decks/:id/file — stream the deck's PDF from R2 (in-app viewer).
+ *  Edition-scoped like the report; founders may only stream their own uploads. */
+decks.get("/:id/file", async (c) => {
+  const { id: userId, edition, role } = c.var.user;
+  const id = c.req.param("id");
+  const row = await c.env.DB.prepare(
+    "SELECT r2_key, uploaded_by FROM decks WHERE id = ? AND edition = ?",
+  )
+    .bind(id, edition)
+    .first<{ r2_key: string | null; uploaded_by: string | null }>();
+  if (!row) return c.json({ error: "not_found" }, 404);
+  if (role === "founder" && row.uploaded_by !== userId) return c.json({ error: "not_found" }, 404);
+  // No stored PDF yet (seed decks / still pending) — the viewer shows its
+  // graceful "not stored" state on a 404.
+  if (!row.r2_key) return c.json({ error: "no_pdf" }, 404);
+
+  const object = await c.env.DECKS.get(row.r2_key);
+  if (!object) return c.json({ error: "no_pdf" }, 404);
+
+  const headers = new Headers();
+  headers.set("content-type", "application/pdf");
+  headers.set("content-disposition", `inline; filename="deck-${id}.pdf"`);
+  headers.set("cache-control", "private, max-age=300");
+  headers.set("etag", object.httpEtag);
+  headers.set("content-length", String(object.size));
+  return new Response(object.body, { headers });
+});
+
+// Team roles that may trigger an AI re-score. Founders are excluded; the guard
+// blocks a needless re-run regardless of who asks.
+const RESCORE_ROLES = [
+  "jury",
+  "program_associate",
+  "program_manager",
+  "admin",
+  "analyst",
+  "associate",
+  "partner",
+] as const;
+
+/**
+ * POST /api/decks/:id/rescore — re-run the AI evaluation, but only when it would
+ * produce something new. The AI is nondeterministic, so we refuse to re-score a
+ * deck whose CONTENT and scoring CRITERIA are both unchanged since the last AI
+ * run (→ 409 already_scored). A criteria change (admin edits weights / prompt /
+ * additional params → org_settings.criteria_version bumps) or a content change
+ * (a new PDF version → decks.content_version bumps) unblocks it.
+ */
+decks.post("/:id/rescore", requireRole(...RESCORE_ROLES), async (c) => {
+  const { edition } = c.var.user;
+  const id = c.req.param("id");
+  const deck = await c.env.DB.prepare(
+    "SELECT id, r2_key, content_version FROM decks WHERE id = ? AND edition = ?",
+  )
+    .bind(id, edition)
+    .first<{ id: string; r2_key: string | null; content_version: number | null }>();
+  if (!deck) return c.json({ error: "not_found" }, 404);
+
+  const priorEval = await c.env.DB.prepare(
+    "SELECT scored_criteria_version, scored_content_version FROM evaluations WHERE deck_id = ? AND evaluator_id IS NULL",
+  )
+    .bind(id)
+    .first<{ scored_criteria_version: number | null; scored_content_version: number | null }>();
+  const org = await c.env.DB.prepare("SELECT criteria_version FROM org_settings WHERE edition = ?")
+    .bind(edition)
+    .first<{ criteria_version: number | null }>();
+  const currentCriteria = org?.criteria_version ?? 1;
+  const currentContent = deck.content_version ?? 1;
+
+  // Guard first, on metadata alone (no R2 read): an existing AI evaluation whose
+  // criteria + content versions still match is blocked — nothing changed.
+  if (
+    priorEval &&
+    priorEval.scored_criteria_version === currentCriteria &&
+    priorEval.scored_content_version === currentContent
+  ) {
+    return c.json({ error: "already_scored" }, 409);
+  }
+
+  // Something changed (or it was never scored) → we must actually re-run, which
+  // needs a stored PDF.
+  if (!deck.r2_key) return c.json({ error: "no_pdf" }, 409);
+
+  try {
+    const result = await evaluateDeck(c.env, id);
+    return c.json({ ok: true, rescored: true, result });
+  } catch (err) {
+    console.error(`rescore failed for ${id}:`, err);
+    return c.json({ error: "evaluation_failed" }, 502);
+  }
 });
 
 interface DeckMeta {
@@ -238,7 +330,15 @@ decks.post("/upload", async (c) => {
     const result = await evaluateDeck(c.env, id);
     return c.json({ deckId: id, evaluated: true, result });
   } catch (err) {
-    console.error(`single-upload evaluation failed for ${id}:`, err);
+    // A synchronous model/billing error must not strand the deck at pending_ai
+    // with nothing re-driving it (§9). Hand it to the retrying queue consumer so
+    // it still gets scored once the condition clears, then report pending.
+    console.error(`single-upload evaluation failed for ${id}; enqueueing retry:`, err);
+    try {
+      await c.env.EVAL_QUEUE.send({ deckId: id });
+    } catch (qerr) {
+      console.error(`failed to enqueue retry for ${id}:`, qerr);
+    }
     return c.json({ deckId: id, evaluated: false, error: "evaluation_pending" }, 202);
   }
 });

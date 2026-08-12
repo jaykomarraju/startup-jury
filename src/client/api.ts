@@ -49,6 +49,37 @@ export function uploadBulk(form: FormData): Promise<{ count: number; deckIds: st
   return fetch("/api/decks/bulk", { method: "POST", body: form }).then((r) => json(r));
 }
 
+export interface RescoreResult {
+  weightedTotal: number;
+  signal: string;
+  status: string;
+  gatePassed: boolean;
+}
+
+/** Outcome of a re-score request. The guard blocks a needless re-run (nothing
+ *  changed) with `already_scored`, which the workbench surfaces as an alert. */
+export type RescoreOutcome =
+  | { ok: true; result: RescoreResult }
+  | { ok: false; reason: "already_scored" | "no_pdf" | "evaluation_failed" | "forbidden" | "error" };
+
+export async function rescoreDeck(id: string): Promise<RescoreOutcome> {
+  const res = await fetch(`/api/decks/${id}/rescore`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  if (res.ok) {
+    const body = (await res.json()) as { result: RescoreResult };
+    return { ok: true, result: body.result };
+  }
+  if (res.status === 403) return { ok: false, reason: "forbidden" };
+  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  if (body.error === "already_scored" || body.error === "no_pdf" || body.error === "evaluation_failed") {
+    return { ok: false, reason: body.error };
+  }
+  return { ok: false, reason: "error" };
+}
+
 // ── Phase 4 — workflow actions ────────────────────────────────────────────────
 
 function postJson<T>(path: string, body?: unknown): Promise<T> {

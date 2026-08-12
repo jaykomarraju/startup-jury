@@ -3,14 +3,21 @@ import { SIGNAL_STYLES } from "../theme/signals";
 
 export interface ParamScoreView extends ParameterScore {
   label: string;
+  /** Rubric parameter key (present on live API scores; used for joins). */
+  key?: string;
+  /** AI (or evaluator) one-line rationale, shown on hover as the breakdown. */
+  comment?: string | null;
 }
 
 /** A single 0–10 parameter bar, colored by its rubric band. */
-export function ScoreBar({ label, value, weight }: ParamScoreView) {
+export function ScoreBar({ label, value, weight, comment }: ParamScoreView) {
   const band = signalTag(value);
   return (
     <div className="flex items-center gap-3">
-      <span className="w-40 shrink-0 truncate text-xs text-fg-muted" title={label}>
+      <span
+        className="w-40 shrink-0 truncate text-xs text-fg-muted"
+        title={comment ? `${label} — ${comment}` : label}
+      >
         {label}
       </span>
       <div className="h-2 flex-1 overflow-hidden rounded-full bg-surface-2">

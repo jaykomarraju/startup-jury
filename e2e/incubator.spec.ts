@@ -37,9 +37,10 @@ test("jury member scores an assigned deck and shortlists it", async ({ page }) =
   await expect(page.getByRole("heading", { name: "Evaluate" })).toBeVisible();
   await page.getByRole("button", { name: /InsureFlow/ }).click();
 
-  // Scoring form opens with the rubric parameters + a live weighted total.
+  // The evaluator workbench opens with the AI · My · Average tiles.
   await expect(page.getByRole("heading", { name: "InsureFlow" })).toBeVisible();
-  await expect(page.getByText("Your weighted total")).toBeVisible();
+  await expect(page.getByText("My Score", { exact: true })).toBeVisible();
+  await expect(page.getByText("Average", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Shortlist" }).click();
 

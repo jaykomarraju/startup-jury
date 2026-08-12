@@ -1,6 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
-const PORT = 5173;
+// Defaults to 5173; override with E2E_PORT when that port is already in use.
+const PORT = Number(process.env.E2E_PORT) || 5173;
 const baseURL = `http://localhost:${PORT}`;
 
 export default defineConfig({

@@ -1,22 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Card, Button, Badge, ScoreChip, SignalTag, EmptyState } from "../components";
+import { Card, Button, ScoreChip, EmptyState } from "../components";
+import { EvalScorecard, type AiParamScore } from "../components/EvalScorecard";
 import { useAuth } from "../auth/useAuth";
 import type { DeckView } from "../types";
 import {
   listDecks,
   listParameters,
+  getDeck,
+  getMyScores,
   submitJuryScores,
   transitionDeck,
   type RubricParameter,
   type HumanScoreInput,
 } from "../api";
-import { weightedTotal } from "../../shared/scoring";
 
 /**
- * Evaluate screen (Evaluation → Evaluate). A jury member picks an assigned deck,
- * scores each rubric parameter 0–10 (mirrors the AI path — same weighted total),
- * submits, then Shortlists or Rejects. Submitting on an Assigned deck advances it
- * into Jury Evaluation server-side.
+ * Evaluate screen (Evaluation → Evaluate). A jury member picks an assigned deck
+ * and works it in the evaluator workbench: in-app deck viewer, per-parameter AI
+ * breakdown, AI · My · Average columns (Average updates live), a Research button
+ * to their own AI, deck X-of-N progress, and the AI rescore guard. Submitting on
+ * an Assigned deck advances it into Jury Evaluation server-side; then Shortlist
+ * or Reject.
  */
 export function EvaluatePage() {
   const { user } = useAuth();
@@ -24,6 +28,8 @@ export function EvaluatePage() {
   const [params, setParams] = useState<RubricParameter[]>([]);
   const [selected, setSelected] = useState<DeckView | null>(null);
   const [values, setValues] = useState<Record<string, number>>({});
+  const [aiScores, setAiScores] = useState<Map<string, AiParamScore>>(new Map());
+  const [aiTotal, setAiTotal] = useState<number | undefined>(undefined);
   const [remarks, setRemarks] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,18 +57,40 @@ export function EvaluatePage() {
     [decks, user],
   );
 
+  /** Load the AI breakdown + this juror's saved scores for a deck. */
+  const loadDeckData = useCallback((deck: DeckView) => {
+    getDeck(deck.id)
+      .then((r) => {
+        setAiScores(
+          new Map(r.scores.filter((s) => s.key).map((s) => [s.key as string, { value: s.value, comment: s.comment }])),
+        );
+        setAiTotal(r.weightedTotal);
+      })
+      .catch(() => {
+        setAiScores(new Map());
+        setAiTotal(undefined);
+      });
+    getMyScores(deck.id)
+      .then((r) => {
+        if (r.scores.length > 0) {
+          setValues((v) => ({ ...v, ...Object.fromEntries(r.scores.map((s) => [s.key, s.value])) }));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   function selectDeck(deck: DeckView) {
     setSelected(deck);
     setValues(Object.fromEntries(params.map((p) => [p.key, 5])));
+    setAiScores(new Map());
+    setAiTotal(undefined);
     setRemarks("");
     setSaved(false);
     setError(null);
+    loadDeckData(deck);
   }
 
-  const total = useMemo(
-    () => weightedTotal(params.map((p) => ({ weight: p.weight, value: values[p.key] ?? 0 }))),
-    [params, values],
-  );
+  const selectedIndex = selected ? rows.findIndex((d) => d.id === selected.id) : -1;
 
   async function submit() {
     if (!selected) return;
@@ -116,7 +144,7 @@ export function EvaluatePage() {
       )}
 
       <div className="flex flex-col gap-5 lg:flex-row">
-        <Card flush className="w-full shrink-0 overflow-hidden lg:w-72">
+        <Card flush className="w-full shrink-0 overflow-hidden lg:w-64">
           <div className="u-label border-b border-line px-4 py-3">To evaluate · {rows.length}</div>
           {decks !== null && rows.length === 0 ? (
             <div className="p-4">
@@ -150,72 +178,43 @@ export function EvaluatePage() {
             <EmptyState
               icon="ClipboardCheck"
               title="Select a deck to score"
-              description="Pick a deck from the list to open the rubric scoring form."
+              description="Pick a deck from the list to open the evaluator workbench."
             />
           ) : (
-            <div className="flex flex-col gap-4">
-              <div className="flex items-start justify-between gap-3 border-b border-line pb-3">
-                <div>
-                  <h2 className="text-lg font-semibold text-fg">{selected.name}</h2>
-                  <div className="mt-1 flex items-center gap-2">
-                    {selected.signal && <SignalTag signal={selected.signal} />}
-                    <span className="text-xs text-fg-muted">AI score</span>
-                    <ScoreChip value={selected.aiScore} />
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="u-label">Your weighted total</div>
-                  <div className="font-mono text-2xl font-bold text-accent">{total.toFixed(2)}</div>
-                </div>
-              </div>
-
-              <div className="flex flex-col divide-y divide-line">
-                {params.map((p) => (
-                  <div key={p.key} className="flex items-center gap-3 py-2.5">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm text-fg">{p.name}</div>
-                      <div className="text-xs text-fg-muted">Weight {p.weight}</div>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={10}
-                      step={1}
-                      value={values[p.key] ?? 5}
-                      onChange={(e) => setValues((v) => ({ ...v, [p.key]: Number(e.target.value) }))}
-                      className="w-32 accent-[var(--color-accent)]"
-                      aria-label={p.name}
-                    />
-                    <span className="w-8 text-right font-mono text-sm font-medium text-fg">
-                      {values[p.key] ?? 5}
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              <label className="flex flex-col gap-1">
-                <span className="text-xs font-medium text-fg-muted">Remarks (optional)</span>
-                <textarea
-                  className="sj-input min-h-[4rem]"
-                  value={remarks}
-                  onChange={(e) => setRemarks(e.target.value)}
-                  placeholder="Notes for the panel…"
-                />
-              </label>
-
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Button variant="secondary" disabled={busy} onClick={submit}>
-                    {busy ? "Saving…" : "Save scores"}
+            <EvalScorecard
+              deck={selected}
+              params={params}
+              values={values}
+              onChangeValue={(key, value) => setValues((v) => ({ ...v, [key]: value }))}
+              remarks={remarks}
+              onChangeRemarks={setRemarks}
+              aiScores={aiScores}
+              aiTotal={aiTotal}
+              nav={
+                selectedIndex >= 0
+                  ? {
+                      index: selectedIndex,
+                      total: rows.length,
+                      onPrev: () => selectDeck(rows[(selectedIndex - 1 + rows.length) % rows.length]),
+                      onNext: () => selectDeck(rows[(selectedIndex + 1) % rows.length]),
+                    }
+                  : undefined
+              }
+              onRescored={() => loadDeckData(selected)}
+              busy={busy}
+              saved={saved}
+              onSave={submit}
+              actions={
+                <>
+                  <Button variant="secondary" disabled={busy} onClick={() => decide("reject")}>
+                    Reject
                   </Button>
-                  {saved && <Badge tone="positive">Saved</Badge>}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="secondary" disabled={busy} onClick={() => decide("reject")}>Reject</Button>
-                  <Button variant="primary" disabled={busy} onClick={() => decide("shortlist")}>Shortlist</Button>
-                </div>
-              </div>
-            </div>
+                  <Button variant="primary" disabled={busy} onClick={() => decide("shortlist")}>
+                    Shortlist
+                  </Button>
+                </>
+              }
+            />
           )}
         </Card>
       </div>

@@ -9,6 +9,14 @@ export { SignalTag } from "./SignalTag";
 export { DeckCard, DeckRow, ScoreChip } from "./DeckCard";
 export { ScoreBar, ScoreBars, type ParamScoreView } from "./ScoreBars";
 export { EvaluationDrawer, type ExtractionSlide } from "./EvaluationDrawer";
+export { DeckPdfViewer } from "./DeckPdfViewer";
+export {
+  ResearchMenu,
+  RESEARCH_PROVIDERS,
+  buildResearchQuery,
+  type ResearchDeck,
+  type ResearchProvider,
+} from "./ResearchMenu";
 export { Sidebar } from "./Sidebar";
 export { Topbar } from "./Topbar";
 export { AppShell } from "./AppShell";
