@@ -603,3 +603,21 @@ All 9 phases (0–8) are shipped, green, and on `main`; the app is live at
   shared password) and consider a custom domain — both deferred by choice, neither is a code change.
 - The **carried-over follow-ups** above (sync upload / DLQ, founder-credit coupling, multi-juror panels) are
   the natural next feature work if the product goes beyond a single-tenant demo.
+
+## Finish track (post-completion) — see `docs/FINISH-PLAN.md`
+
+A multi-session **finishing build** (full prototype parity + all Jul-24 demo asks) runs on top of the
+complete Phase 0–8 app. The master plan + per-session progress log is `docs/FINISH-PLAN.md` (read it first
+each finish session). Landed so far:
+
+- **Session 1 — Evaluator Workbench** (commit `3f3bd30`). Both evaluate screens + the report drawer render a
+  shared `EvalScorecard`: an in-app **pdf.js** deck viewer (`DeckPdfViewer`, worker self-hosted via a Vite
+  `?url` import, lib dynamically imported), per-parameter **AI breakdown**, **AI · My · Average** columns
+  (Average live), a **Research** menu to the juror's own external AI (no tokens), **Deck X of N**, and an AI
+  **rescore guard**. New endpoints on `decks.ts`: **`GET /api/decks/:id/file`** (auth'd R2 PDF stream,
+  edition/owner-scoped) and **`POST /api/decks/:id/rescore`** (team roles; 409 `already_scored` unless a
+  version changed). New schema (migration `0009`): `org_settings.criteria_version`, `decks.content_version`,
+  `evaluations.scored_criteria_version` / `scored_content_version` — admin criteria edits in `config.ts`
+  bump `criteria_version`; `evaluateDeck` stamps the AI roll-up. New dep: **`pdfjs-dist@4.10.38`** (pinned).
+  Single upload now **enqueues on a synchronous eval error** (partial fix for the `pending_ai` stranding
+  bug; full fix is Session 7). Playwright port is **`E2E_PORT`-overridable**.
