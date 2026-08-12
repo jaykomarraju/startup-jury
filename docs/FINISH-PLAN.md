@@ -114,7 +114,7 @@ Full parity + all asks. Check items off as sessions land them.
 | 2 | Program & Cohort hierarchy + config wizard (+ VC fund fields) | ✅ Done | `c70cbcd` (+ docs) | 2026-08-11 |
 | 3 | Parameter model — core 13 + role-scoped additional (AI-scored) + prompts + plan gating | ✅ Done | `f19b50b` (+ docs) | 2026-08-12 |
 | 4 | Roles & permissions — PM authority, Associate/Analyst, user mgmt/mentor, admin console/account/credits | ✅ Done | `4467bf7` (+ docs) | 2026-08-12 |
-| 5 | Automation — shortlist floor, AI determinism, duplicates/returning, upload validation, deck versioning | ✅ Done | `aebe362` (+ docs) | 2026-08-12 |
+| 5 | Automation — shortlist floor, AI determinism, duplicates/returning, upload validation, deck versioning | ✅ Done | `aebe362`, `28c331e` (+ docs) | 2026-08-12 |
 | 6 | Incomplete-deck resubmit loop + real email | ⬜ Not started | — | — |
 | 7 | De-stub VC screens + ICS scheduling + issue log + pending-bug fix | ⬜ Not started | — | — |
 | 8 | Polish, full e2e, docs, final deploy | ⬜ Not started | — | — |
@@ -452,7 +452,8 @@ _(Append newest at the bottom. One entry per completed session.)_
     ICS) — S4 only verified the permissions. (5) `POST /api/users` returns the plaintext **`tempPassword`
     once** (no email yet); Session 6's real email should send it instead of surfacing it in the UI.
 
-- **2026-08-12 — Session 5 (Automation) shipped.** Commit `aebe362` (+ this doc commit). Intake now has real
+- **2026-08-12 — Session 5 (Automation) shipped.** Commits `aebe362` + `28c331e` (report-drawer read
+  surface) (+ this doc commit). Intake now has real
   guardrails: a **per-program shortlist floor**, **deterministic AI scoring**, **soft duplicate / returning
   flags**, **required founder-detail validation → Incomplete**, and **deck versioning**. Green gate: typecheck
   + lint + **252 unit/worker (1 skipped)** + build + **40 e2e**. Deployed (remote D1 migrated first — `0016`)
@@ -516,7 +517,9 @@ _(Append newest at the bottom. One entry per completed session.)_
     **bumps `content_version`** — which is exactly the signal the S1 rescore guard waits on, so the deck is
     **re-scored automatically** (queue fallback on a model error). **`GET /api/decks/:id/versions`** serves
     the history. v1 keeps the historical `decks/<id>.pdf` key so every pre-S5 object still resolves.
-    This is the mechanism Session 6's incomplete-resubmit loop drives.
+    This is the mechanism Session 6's incomplete-resubmit loop drives. The **report drawer** renders the
+    history (v1…vN with note/uploader/date) alongside the missing-founder-detail list and the intake alert,
+    so all three new data surfaces are readable in-app.
   - **Prototype reality check (mined all 13 prototype HTMLs).** The **upload validation** copy is real and
     was matched ("Uploaded decks — AI-extracted details", the `Deck | Founder name | Email ID | Phone
     number | City | Sector | Status` table, "not captured", Complete/Incomplete pills). The **shortlist
