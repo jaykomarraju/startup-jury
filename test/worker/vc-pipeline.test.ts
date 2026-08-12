@@ -78,7 +78,12 @@ describe("VC happy path: analyst → associate → partner → IC → MP → ter
     });
     expect(scoreRes.status).toBe(200);
     expect((await scoreRes.json()) as { weightedTotal: number }).toMatchObject({ weightedTotal: 8 });
-    expect(await count("SELECT COUNT(*) AS n FROM scores WHERE deck_id = ? AND evaluator_kind = 'human'", id)).toBe(keys.length);
+    // The analyst owns no role-scoped additional params (those belong to
+    // associate/partner/ic_member), so only the 13 core scores are stored.
+    const coreCount = await count(
+      "SELECT COUNT(*) AS n FROM parameters WHERE edition='vc' AND active=1 AND informational=0",
+    );
+    expect(await count("SELECT COUNT(*) AS n FROM scores WHERE deck_id = ? AND evaluator_kind = 'human'", id)).toBe(coreCount);
 
     // Analyst submits core scores → associate review.
     expect((await post(`/api/decks/${id}/transition`, analyst, { action: "submit_core_scores" })).status).toBe(200);
@@ -200,7 +205,11 @@ describe("VC scoring prefill", () => {
     const body = (await (await get(`/api/decks/${id}/my-scores`, analyst)).json()) as {
       scores: Array<{ key: string; value: number }>;
     };
-    expect(body.scores.length).toBe(keys.length);
+    // The analyst owns no additional params → only the 13 core scores persist.
+    const coreCount = await count(
+      "SELECT COUNT(*) AS n FROM parameters WHERE edition='vc' AND active=1 AND informational=0",
+    );
+    expect(body.scores.length).toBe(coreCount);
     expect(body.scores.every((s) => s.value === 6)).toBe(true);
     // Another evaluator sees none of the analyst's scores (own-scores scoped).
     const partner = await login(PARTNER);

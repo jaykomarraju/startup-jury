@@ -190,6 +190,10 @@ export interface RubricParameter {
   key: string;
   name: string;
   weight: number;
+  /** Additional / role-scoped param (assistive, not in the composite). */
+  informational?: boolean;
+  /** The role that owns an additional param. */
+  roleScope?: string;
 }
 
 export function listParameters(): Promise<{ parameters: RubricParameter[] }> {
@@ -248,11 +252,16 @@ export interface ConfigParam {
   weight: number;
   informational: boolean;
   roleScope?: string;
+  /** Configurable AI extraction prompt (additional params). */
+  prompt?: string;
 }
 
 /** Safe read subset available to any authed user (dashboard rail + My Params). */
 export interface ConfigSummary {
   plan: Plan;
+  /** Configuring the core 13 weights is unlocked (Pro+). */
+  coreConfigEnabled: boolean;
+  /** Configuring the role-scoped additional params is unlocked (Premium). */
   additionalEnabled: boolean;
   thresholdBest: number;
   thresholdMediocre: number;
@@ -320,12 +329,24 @@ export function updateCredits(credits: number) {
   return postJson<{ ok: true; creditsBalance: number }>("/api/config/credits", { credits });
 }
 
-export function addAdditionalParam(name: string, weight = 0, informational = true) {
+/** Add a role-scoped additional param (Premium; ≤3 per role). */
+export function addAdditionalParam(name: string, roleScope: string, prompt?: string) {
   return postJson<{ ok: true; param: ConfigParam }>("/api/config/additional-params", {
     name,
-    weight,
-    informational,
+    roleScope,
+    prompt,
   });
+}
+
+/** Rename an additional param and/or edit its configurable AI prompt. */
+export function updateAdditionalParam(
+  id: string,
+  patch: { name?: string; prompt?: string | null },
+) {
+  return putJson<{ ok: true; param: { id: string; name: string; prompt?: string } }>(
+    `/api/config/additional-params/${id}`,
+    patch,
+  );
 }
 
 export function deleteAdditionalParam(id: string) {

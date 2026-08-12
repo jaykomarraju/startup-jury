@@ -53,6 +53,25 @@ export const ROLE_LABELS: Record<Edition, Partial<Record<Role, string>>> = {
   },
 };
 
+/**
+ * Roles that own role-scoped ADDITIONAL evaluation parameters (up to 3 each) on
+ * top of the 13 core areas → 13 + 3×3 = 22 params per edition. Reconciled from
+ * the Jul-24 transcript (incubator) and the VC Superuser prototype's editable
+ * role tabs (the Investment Associate — an analyst with configurable params — is
+ * the owner, not the plain analyst).
+ */
+export const ADDITIONAL_PARAM_OWNERS: Record<Edition, readonly Role[]> = {
+  incubator: ["program_associate", "program_manager", "jury"],
+  vc: ["associate", "partner", "ic_member"],
+};
+
+/** Maximum additional parameters a single owner role may define. */
+export const MAX_ADDITIONAL_PER_ROLE = 3;
+
+export function isAdditionalParamOwner(edition: Edition, role: Role): boolean {
+  return (ADDITIONAL_PARAM_OWNERS[edition] as readonly string[]).includes(role);
+}
+
 export const EDITION_LABELS: Record<Edition, string> = {
   incubator: "Incubator",
   vc: "Venture Capital",

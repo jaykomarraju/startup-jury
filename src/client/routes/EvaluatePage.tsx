@@ -46,6 +46,15 @@ export function EvaluatePage() {
     listParameters().then((r) => setParams(r.parameters)).catch(() => setParams([]));
   }, [load]);
 
+  // Core areas form the weighted composite; the caller's own role-scoped
+  // additional params are scored separately (assistive, own average).
+  const coreParams = useMemo(() => params.filter((p) => !p.informational), [params]);
+  const ownedAdditional = useMemo(
+    () => params.filter((p) => p.informational && p.roleScope === user?.role),
+    [params, user],
+  );
+  const allScored = useMemo(() => [...coreParams, ...ownedAdditional], [coreParams, ownedAdditional]);
+
   const rows = useMemo(
     () =>
       (decks ?? []).filter((d) => {
@@ -81,7 +90,7 @@ export function EvaluatePage() {
 
   function selectDeck(deck: DeckView) {
     setSelected(deck);
-    setValues(Object.fromEntries(params.map((p) => [p.key, 5])));
+    setValues(Object.fromEntries(allScored.map((p) => [p.key, 5])));
     setAiScores(new Map());
     setAiTotal(undefined);
     setRemarks("");
@@ -97,7 +106,7 @@ export function EvaluatePage() {
     setBusy(true);
     setError(null);
     try {
-      const scores: HumanScoreInput[] = params.map((p) => ({ key: p.key, value: values[p.key] ?? 0 }));
+      const scores: HumanScoreInput[] = allScored.map((p) => ({ key: p.key, value: values[p.key] ?? 0 }));
       await submitJuryScores(selected.id, scores, remarks || undefined);
       setSaved(true);
       await load();
@@ -115,7 +124,7 @@ export function EvaluatePage() {
     try {
       // Ensure the deck is in jury_evaluation (records scores + advances) first.
       if (selected.statusId === "assigned") {
-        const scores: HumanScoreInput[] = params.map((p) => ({ key: p.key, value: values[p.key] ?? 0 }));
+        const scores: HumanScoreInput[] = allScored.map((p) => ({ key: p.key, value: values[p.key] ?? 0 }));
         await submitJuryScores(selected.id, scores, remarks || undefined);
       }
       await transitionDeck(selected.id, action);
@@ -183,7 +192,8 @@ export function EvaluatePage() {
           ) : (
             <EvalScorecard
               deck={selected}
-              params={params}
+              params={coreParams}
+              additionalParams={ownedAdditional}
               values={values}
               onChangeValue={(key, value) => setValues((v) => ({ ...v, [key]: value }))}
               remarks={remarks}

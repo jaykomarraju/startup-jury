@@ -33,11 +33,13 @@ test("admin edits a core weight and the cohort thresholds", async ({ page }) => 
   await expect(page.getByText("6.0 – 7.9")).toBeVisible();
 });
 
-test("plan gating hides additional params on Standard for a jury member", async ({ page }) => {
+test("a jury member sees My Parameters read-only with role-scoped additional params", async ({ page }) => {
   // Jury member sees My Parameters read-only; with the seed on Premium the
-  // additional params list is visible.
+  // role-scoped additional params (grouped by owner role) are visible.
   await login(page, "rajesh.kumar@demo.startupjury.ai"); // inc_jury
   await page.goto("/app/myparams");
   await expect(page.getByRole("heading", { name: "My Parameters" })).toBeVisible();
-  await expect(page.getByText(/Read-only/)).toBeVisible();
+  // One seeded jury-owned additional param label is visible.
+  await expect(page.getByText("Founder Resilience & Coachability").first()).toBeVisible();
+  await expect(page.getByText(/Read-only/).first()).toBeVisible();
 });

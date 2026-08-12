@@ -8,8 +8,9 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
-import type { Edition } from "../../shared/roles";
-import { planAllowsAdditional, isPlan, type Plan } from "../../shared/plans";
+import type { Edition, Role } from "../../shared/roles";
+import { ADDITIONAL_PARAM_OWNERS, MAX_ADDITIONAL_PER_ROLE } from "../../shared/roles";
+import { planAllowsAdditional, planAllowsCore, isPlan, type Plan } from "../../shared/plans";
 import { requireAuth, requireRole } from "../auth/middleware";
 import { rescoreEdition } from "../config/rescore";
 
@@ -32,6 +33,7 @@ interface ParamRow {
   weight: number;
   informational: number;
   role_scope: string | null;
+  prompt: string | null;
   sort_order: number;
 }
 
@@ -61,7 +63,7 @@ function loadSettings(c: Context<AppEnv>, edition: Edition): Promise<SettingsRow
 async function loadParams(c: Context<AppEnv>, edition: Edition): Promise<ParamRow[]> {
   return (
     await c.env.DB.prepare(
-      "SELECT id, key, name, weight, informational, role_scope, sort_order FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
+      "SELECT id, key, name, weight, informational, role_scope, prompt, sort_order FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
     )
       .bind(edition)
       .all<ParamRow>()
@@ -76,6 +78,7 @@ function toParamView(p: ParamRow) {
     weight: p.weight,
     informational: p.informational === 1,
     roleScope: p.role_scope ?? undefined,
+    prompt: p.prompt ?? undefined,
   };
 }
 
@@ -100,6 +103,7 @@ config.get("/summary", async (c) => {
   const params = await loadParams(c, edition);
   return c.json({
     plan: s.plan,
+    coreConfigEnabled: planAllowsCore(s.plan),
     additionalEnabled: planAllowsAdditional(s.plan),
     thresholdBest: s.threshold_best,
     thresholdMediocre: s.threshold_mediocre,
@@ -118,6 +122,7 @@ config.get("/", requireRole("admin"), async (c) => {
   const params = await loadParams(c, edition);
   return c.json({
     plan: s.plan,
+    coreConfigEnabled: planAllowsCore(s.plan),
     additionalEnabled: planAllowsAdditional(s.plan),
     creditsBalance: s.credits_balance,
     aiSystemPrompt: s.ai_system_prompt ?? "",
@@ -141,6 +146,11 @@ interface WeightUpdate {
  *  renames), then re-score the whole edition. */
 config.put("/parameters", requireRole("admin"), async (c) => {
   const edition = c.var.user.edition;
+  const settings = await loadSettings(c, edition);
+  if (!settings) return c.json({ error: "not_found" }, 404);
+  // Configuring the core 13 weights requires Pro or above (Standard = no config).
+  if (!planAllowsCore(settings.plan)) return c.json({ error: "plan_required" }, 402);
+
   const body = await readBody<{ params: WeightUpdate[] }>(c);
   const updates = Array.isArray(body.params) ? body.params : [];
   if (updates.length === 0) return c.json({ error: "no_params" }, 400);
@@ -175,21 +185,49 @@ config.put("/parameters", requireRole("admin"), async (c) => {
   });
 });
 
-// ── Additional / informational parameters (plan-gated) ───────────────────────
+// ── Additional / role-scoped parameters (Premium-gated) ──────────────────────
+//
+// Additional params are always informational (weight 0 → never in the core-13
+// composite, which stays = 100%). Each is owned by one role (up to 3 per role)
+// and carries a configurable AI prompt. Editing any of them (add/rename/prompt/
+// delete) bumps criteria_version so the AI rescore guard treats it as a change.
 
-/** POST /api/config/additional-params — add an informational parameter. Requires
- *  a Pro+ plan (the plan gate); weighted extras are still allowed via `weight`. */
+/** Guard: additional-param configuration requires a Premium plan. */
+async function requirePremium(c: Context<AppEnv>, edition: Edition): Promise<SettingsRow | null> {
+  const s = await loadSettings(c, edition);
+  if (!s) return null;
+  return planAllowsAdditional(s.plan) ? s : null;
+}
+
+/** Validate a submitted owner role for the edition. */
+function validOwner(edition: Edition, role: unknown): Role | null {
+  return typeof role === "string" && (ADDITIONAL_PARAM_OWNERS[edition] as readonly string[]).includes(role)
+    ? (role as Role)
+    : null;
+}
+
+/** POST /api/config/additional-params — add a role-scoped additional param
+ *  (Premium only). Body: { name, roleScope, prompt? }. Enforces ≤3 per role. */
 config.post("/additional-params", requireRole("admin"), async (c) => {
   const edition = c.var.user.edition;
   const s = await loadSettings(c, edition);
   if (!s) return c.json({ error: "not_found" }, 404);
   if (!planAllowsAdditional(s.plan)) return c.json({ error: "plan_required" }, 402);
 
-  const body = await readBody<{ name: string; weight?: number; informational?: boolean }>(c);
+  const body = await readBody<{ name: string; roleScope: string; prompt?: string }>(c);
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name) return c.json({ error: "name_required" }, 400);
-  const informational = body.informational === false ? 0 : 1;
-  const weight = informational === 1 ? 0 : Math.max(0, Math.min(100, Number(body.weight) || 0));
+  const roleScope = validOwner(edition, body.roleScope);
+  if (!roleScope) return c.json({ error: "invalid_role" }, 400);
+  const prompt = typeof body.prompt === "string" && body.prompt.trim() ? body.prompt.trim() : null;
+
+  // Up to 3 additional params per owning role.
+  const count = await c.env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM parameters WHERE edition = ? AND active = 1 AND informational = 1 AND role_scope = ?",
+  )
+    .bind(edition, roleScope)
+    .first<{ n: number }>();
+  if ((count?.n ?? 0) >= MAX_ADDITIONAL_PER_ROLE) return c.json({ error: "role_full" }, 409);
 
   const suffix = crypto.randomUUID().slice(0, 8);
   const id = `${edition}_add_${suffix}`;
@@ -201,21 +239,55 @@ config.post("/additional-params", requireRole("admin"), async (c) => {
     .first<{ n: number }>();
   await c.env.DB.batch([
     c.env.DB.prepare(
-      "INSERT INTO parameters (id, edition, key, name, weight, informational, role_scope, sort_order, active) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 1)",
-    ).bind(id, edition, key, name, weight, informational, nextOrder?.n ?? 101),
+      "INSERT INTO parameters (id, edition, key, name, weight, informational, role_scope, prompt, sort_order, active) VALUES (?, ?, ?, ?, 0, 1, ?, ?, ?, 1)",
+    ).bind(id, edition, key, name, roleScope, prompt, nextOrder?.n ?? 101),
     // Adding a parameter changes the scoring criteria set → allow a re-score.
     bumpCriteriaVersion(c, edition),
   ]);
 
-  // A weighted extra changes the denominator — re-score to keep totals honest.
-  if (informational === 0) await rescoreEdition(c.env, edition);
-  return c.json({ ok: true, param: { id, key, name, weight, informational: informational === 1 } });
+  return c.json({
+    ok: true,
+    param: { id, key, name, weight: 0, informational: true, roleScope, prompt: prompt ?? undefined },
+  });
 });
 
-/** DELETE /api/config/additional-params/:id — retire an informational param
- *  (soft delete: active=0, so historical scores stay referenced). */
+/** PUT /api/config/additional-params/:id — rename an additional param and/or
+ *  edit its configurable AI prompt (Premium only). Bumps criteria_version so an
+ *  admin prompt change is a valid AI re-score reason. */
+config.put("/additional-params/:id", requireRole("admin"), async (c) => {
+  const edition = c.var.user.edition;
+  const s = await requirePremium(c, edition);
+  if (!s) return c.json({ error: "plan_required" }, 402);
+  const id = c.req.param("id");
+  const p = await c.env.DB.prepare(
+    "SELECT informational, name, prompt FROM parameters WHERE id = ? AND edition = ? AND active = 1",
+  )
+    .bind(id, edition)
+    .first<{ informational: number; name: string; prompt: string | null }>();
+  if (!p) return c.json({ error: "not_found" }, 404);
+  if (p.informational !== 1) return c.json({ error: "core_param" }, 400);
+
+  const body = await readBody<{ name?: string; prompt?: string | null }>(c);
+  const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : p.name;
+  // prompt: an empty string clears it (falls back to the default), undefined keeps it.
+  let prompt = p.prompt;
+  if (body.prompt !== undefined) {
+    prompt = typeof body.prompt === "string" && body.prompt.trim() ? body.prompt.trim() : null;
+  }
+
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE parameters SET name = ?, prompt = ? WHERE id = ?").bind(name, prompt, id),
+    bumpCriteriaVersion(c, edition),
+  ]);
+  return c.json({ ok: true, param: { id, name, prompt: prompt ?? undefined } });
+});
+
+/** DELETE /api/config/additional-params/:id — retire an additional param
+ *  (Premium only; soft delete active=0, so historical scores stay referenced). */
 config.delete("/additional-params/:id", requireRole("admin"), async (c) => {
   const edition = c.var.user.edition;
+  const s = await requirePremium(c, edition);
+  if (!s) return c.json({ error: "plan_required" }, 402);
   const id = c.req.param("id");
   const p = await c.env.DB.prepare(
     "SELECT informational FROM parameters WHERE id = ? AND edition = ? AND active = 1",
@@ -228,7 +300,6 @@ config.delete("/additional-params/:id", requireRole("admin"), async (c) => {
     c.env.DB.prepare("UPDATE parameters SET active = 0 WHERE id = ?").bind(id),
     bumpCriteriaVersion(c, edition),
   ]);
-  await rescoreEdition(c.env, edition);
   return c.json({ ok: true });
 });
 

@@ -14,7 +14,7 @@ import {
   type ConfigParam,
   type ProgramView,
 } from "../api";
-import { PLANS, PLAN_LABELS, type Plan } from "../../shared/plans";
+import { PLANS, PLAN_LABELS, PLAN_PRIVILEGES, planAllowsCore, type Plan } from "../../shared/plans";
 import { useAuth } from "../auth/useAuth";
 import { useActiveContext } from "../activeContext";
 import { editionLabel } from "../../shared/roles";
@@ -148,6 +148,7 @@ function WeightsSection({ cfg, onChange }: { cfg: FullConfig; onChange: (c: Full
   const [error, setError] = useState<string | null>(null);
 
   const total = useMemo(() => Object.values(weights).reduce((s, w) => s + (Number(w) || 0), 0), [weights]);
+  const locked = !cfg.coreConfigEnabled; // Standard plan — read-only.
 
   async function save() {
     setBusy(true);
@@ -177,12 +178,18 @@ function WeightsSection({ cfg, onChange }: { cfg: FullConfig; onChange: (c: Full
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <SavedBadge show={saved} />
-          <Button size="sm" variant="primary" disabled={busy} onClick={save}>
+          <Button size="sm" variant="primary" disabled={busy || locked} onClick={save}>
             {busy ? "Saving…" : "Save changes"}
           </Button>
         </div>
       </div>
 
+      {locked && (
+        <p className="mt-3 rounded-md border border-line bg-surface-2 px-3 py-2 text-xs text-fg-muted">
+          Read-only — configuring core parameters requires the Pro or Premium plan. Your current plan is{" "}
+          {PLAN_LABELS[cfg.plan]}.
+        </p>
+      )}
       {error && <p className="mt-3 text-sm text-signal-flagged">{error}</p>}
 
       <div className="mt-4 overflow-x-auto">
@@ -205,7 +212,8 @@ function WeightsSection({ cfg, onChange }: { cfg: FullConfig; onChange: (c: Full
                     type="number"
                     min={0}
                     max={100}
-                    className="sj-input h-8 w-20 py-0 text-sm"
+                    disabled={locked}
+                    className="sj-input h-8 w-20 py-0 text-sm disabled:opacity-60"
                     aria-label={`${p.name} weight`}
                     value={weights[p.id] ?? 0}
                     onChange={(e) => setWeights((w) => ({ ...w, [p.id]: Number(e.target.value) }))}
@@ -465,7 +473,13 @@ function PlanCreditsSection({ cfg, onChange }: { cfg: FullConfig; onChange: (c: 
     try {
       const p = await updatePlan(plan);
       const cr = await updateCredits(Math.max(0, Math.floor(Number(credits) || 0)));
-      onChange({ ...cfg, plan, additionalEnabled: p.additionalEnabled, creditsBalance: cr.creditsBalance });
+      onChange({
+        ...cfg,
+        plan,
+        coreConfigEnabled: planAllowsCore(plan),
+        additionalEnabled: p.additionalEnabled,
+        creditsBalance: cr.creditsBalance,
+      });
       setCredits(cr.creditsBalance);
       setSaved(true);
     } catch {
@@ -481,7 +495,8 @@ function PlanCreditsSection({ cfg, onChange }: { cfg: FullConfig; onChange: (c: 
         <div>
           <div className="u-label">Plan &amp; credits</div>
           <p className="mt-1 text-sm text-fg-muted">
-            The plan tier gates the additional evaluation parameters. Credits are consumed one per deck uploaded.
+            Standard = no parameter config · Pro = configure the 13 core areas · Premium = core plus 3 additional
+            params per role. Credits are consumed one per deck uploaded.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -507,9 +522,7 @@ function PlanCreditsSection({ cfg, onChange }: { cfg: FullConfig; onChange: (c: 
               </option>
             ))}
           </select>
-          <span className="text-xs text-fg-muted">
-            {plan === "standard" ? "Core params only" : "Additional params unlocked"}
-          </span>
+          <span className="max-w-[10rem] text-xs text-fg-muted">{PLAN_PRIVILEGES[plan]}</span>
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-xs font-medium text-fg-muted">Credits balance</span>

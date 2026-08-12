@@ -42,6 +42,11 @@ test("jury member scores an assigned deck and shortlists it", async ({ page }) =
   await expect(page.getByText("My Score", { exact: true })).toBeVisible();
   await expect(page.getByText("Average", { exact: true })).toBeVisible();
 
+  // The jury's role-scoped additional params render in their own section
+  // (assistive, not folded into the core-13 composite).
+  await expect(page.getByText("Additional parameters · your lens")).toBeVisible();
+  await expect(page.getByText("Founder Resilience & Coachability").first()).toBeVisible();
+
   await page.getByRole("button", { name: "Shortlist" }).click();
 
   // Deck leaves the to-evaluate list once shortlisted.

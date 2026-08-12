@@ -105,13 +105,21 @@ describe("incubator happy path: upload → AI → assign → jury → shortlist 
     expect(evalBody.status).toBe("jury_evaluation");
     expect(evalBody.weightedTotal).toBe(8);
 
-    // Human scores are persisted with evaluator_kind='human' + evaluator_id.
+    // Human scores persist with evaluator_kind='human' + evaluator_id. The jury
+    // owns only its own additional params — other roles' additional params are
+    // silently skipped, so the stored count is core + jury-owned, not every key.
+    const storable = (
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM parameters WHERE edition='incubator' AND active=1 AND (informational=0 OR role_scope='jury')",
+      ).first<{ n: number }>()
+    )!.n;
+    expect(storable).toBeLessThan(keys.length); // proves other-role additional params exist and were skipped
     const humanCount = await env.DB.prepare(
       "SELECT COUNT(*) AS n FROM scores WHERE deck_id = ? AND evaluator_kind = 'human' AND evaluator_id = 'inc_jury'",
     )
       .bind(id)
       .first<{ n: number }>();
-    expect(humanCount!.n).toBe(keys.length);
+    expect(humanCount!.n).toBe(storable);
 
     // Jury shortlists → shortlisted.
     expect((await post(`/api/decks/${id}/transition`, jury, { action: "shortlist" })).status).toBe(200);
@@ -284,6 +292,48 @@ describe("per-stage authorization", () => {
       scores: keys.map((key) => ({ key, value: 6 })),
     });
     expect(res.status).toBe(403);
+  });
+
+  it("stores the owning role's additional param scores but skips another role's", async () => {
+    const id = "authz_addparams";
+    await seedDeck(id, "assigned");
+    // Assign the deck to the jury member so they may score it.
+    await env.DB.prepare("UPDATE decks SET assigned_to = 'inc_jury' WHERE id = ?").bind(id).run();
+    const jury = await login(JURY);
+
+    // The jury owns the `add_jury_*` params; `add_pm_*` / `add_pa_*` are other roles'.
+    const res = await post(`/api/decks/${id}/evaluate`, jury, {
+      scores: [
+        { key: "traction_validation", value: 7 }, // core
+        { key: "add_jury_resilience", value: 9 }, // jury-owned additional → stored
+        { key: "add_pm_program_fit", value: 3 }, // PM's additional → skipped
+        { key: "add_pa_mandate_fit", value: 3 }, // PA's additional → skipped
+      ],
+      remarks: "focused",
+    });
+    expect(res.status).toBe(200);
+
+    const stored = (
+      await env.DB.prepare(
+        "SELECT p.key AS key FROM scores s JOIN parameters p ON p.id = s.parameter_id " +
+          "WHERE s.deck_id = ? AND s.evaluator_id = 'inc_jury' AND s.evaluator_kind = 'human' ORDER BY p.key",
+      )
+        .bind(id)
+        .all<{ key: string }>()
+    ).results.map((r) => r.key);
+    expect(stored).toContain("add_jury_resilience");
+    expect(stored).toContain("traction_validation");
+    expect(stored).not.toContain("add_pm_program_fit");
+    expect(stored).not.toContain("add_pa_mandate_fit");
+
+    // The composite (weighted_total) is unaffected by the assistive additional
+    // param: only the core Traction score (weight 10) contributes → 10*7/100 = 0.70.
+    const evalRow = await env.DB.prepare(
+      "SELECT weighted_total FROM evaluations WHERE deck_id = ? AND evaluator_id = 'inc_jury'",
+    )
+      .bind(id)
+      .first<{ weighted_total: number }>();
+    expect(evalRow!.weighted_total).toBeCloseTo(0.7, 2);
   });
 
   it("a program_manager is rejected by the assign endpoint gate (403)", async () => {

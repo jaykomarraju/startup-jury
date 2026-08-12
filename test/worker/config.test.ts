@@ -147,36 +147,104 @@ describe("weight change re-scores stored totals", () => {
   });
 });
 
-describe("plan tier gates additional params", () => {
-  it("blocks additional params on Standard and allows them on Pro+", async () => {
+describe("plan tier gates parameter config", () => {
+  it("Standard = no config · Pro = core 13 · Premium = additional too", async () => {
     const admin = await login(ADMIN);
+    const tractionId = await paramId("traction_validation");
+    const core = { params: [{ id: tractionId, weight: 10 }] };
+    const add = { name: "Thesis fit", roleScope: "jury" };
 
-    // Downgrade to Standard → gate closed.
+    // Standard → neither core nor additional config allowed.
     expect((await req("PUT", "/api/config/plan", admin, { plan: "standard" })).status).toBe(200);
-    let summary = (await (await get("/api/config/summary", admin)).json()) as { additionalEnabled: boolean };
-    expect(summary.additionalEnabled).toBe(false);
-    expect((await req("POST", "/api/config/additional-params", admin, { name: "Thesis fit" })).status).toBe(402);
-
-    // Upgrade to Pro → gate open, param created.
-    expect((await req("PUT", "/api/config/plan", admin, { plan: "pro" })).status).toBe(200);
-    summary = (await (await get("/api/config/summary", admin)).json()) as { additionalEnabled: boolean };
-    expect(summary.additionalEnabled).toBe(true);
-    const created = await req("POST", "/api/config/additional-params", admin, { name: "Thesis fit" });
-    expect(created.status).toBe(200);
-    const { param } = (await created.json()) as { param: { id: string; informational: boolean } };
-    expect(param.informational).toBe(true);
-
-    // It appears in the additional list, then can be retired.
-    const after = (await (await get("/api/config/summary", admin)).json()) as {
-      additionalParams: { id: string }[];
+    let s = (await (await get("/api/config/summary", admin)).json()) as {
+      coreConfigEnabled: boolean;
+      additionalEnabled: boolean;
     };
-    expect(after.additionalParams.some((p) => p.id === param.id)).toBe(true);
-    expect((await req("DELETE", `/api/config/additional-params/${param.id}`, admin)).status).toBe(200);
+    expect(s.coreConfigEnabled).toBe(false);
+    expect(s.additionalEnabled).toBe(false);
+    expect((await req("PUT", "/api/config/parameters", admin, core)).status).toBe(402);
+    expect((await req("POST", "/api/config/additional-params", admin, add)).status).toBe(402);
+
+    // Pro → core unlocked, additional still gated.
+    expect((await req("PUT", "/api/config/plan", admin, { plan: "pro" })).status).toBe(200);
+    s = (await (await get("/api/config/summary", admin)).json()) as {
+      coreConfigEnabled: boolean;
+      additionalEnabled: boolean;
+    };
+    expect(s.coreConfigEnabled).toBe(true);
+    expect(s.additionalEnabled).toBe(false);
+    expect((await req("PUT", "/api/config/parameters", admin, core)).status).toBe(200);
+    expect((await req("POST", "/api/config/additional-params", admin, add)).status).toBe(402);
+
+    // Premium → additional unlocked. Restore the seed plan for later tests.
+    expect((await req("PUT", "/api/config/plan", admin, { plan: "premium" })).status).toBe(200);
+    s = (await (await get("/api/config/summary", admin)).json()) as {
+      coreConfigEnabled: boolean;
+      additionalEnabled: boolean;
+    };
+    expect(s.additionalEnabled).toBe(true);
   });
 
   it("rejects an invalid plan value", async () => {
     const admin = await login(ADMIN);
     expect((await req("PUT", "/api/config/plan", admin, { plan: "enterprise" })).status).toBe(400);
+  });
+});
+
+describe("role-scoped additional params (Premium)", () => {
+  it("enforces ≤3 per role, validates the owner role, and edits rename/prompt", async () => {
+    const admin = await login(ADMIN);
+    expect((await req("PUT", "/api/config/plan", admin, { plan: "premium" })).status).toBe(200);
+
+    // Seed gives jury exactly 3 additional params → a 4th is blocked.
+    const juryParam = await env.DB.prepare(
+      "SELECT id FROM parameters WHERE edition='incubator' AND active=1 AND informational=1 AND role_scope='jury' ORDER BY sort_order LIMIT 1",
+    ).first<{ id: string }>();
+    expect(
+      (await req("POST", "/api/config/additional-params", admin, { name: "Extra", roleScope: "jury" })).status,
+    ).toBe(409);
+
+    // An invalid / non-owner role is rejected (founder never owns params).
+    expect(
+      (await req("POST", "/api/config/additional-params", admin, { name: "Bad", roleScope: "founder" })).status,
+    ).toBe(400);
+
+    // Free a slot → add succeeds (informational, role-scoped) → re-add blocked again.
+    expect((await req("DELETE", `/api/config/additional-params/${juryParam!.id}`, admin)).status).toBe(200);
+    const created = await req("POST", "/api/config/additional-params", admin, {
+      name: "Jury lens",
+      roleScope: "jury",
+      prompt: "Assess X. Score 0-10.",
+    });
+    expect(created.status).toBe(200);
+    const { param } = (await created.json()) as {
+      param: { id: string; informational: boolean; roleScope: string; prompt?: string };
+    };
+    expect(param.informational).toBe(true);
+    expect(param.roleScope).toBe("jury");
+    expect(
+      (await req("POST", "/api/config/additional-params", admin, { name: "One too many", roleScope: "jury" }))
+        .status,
+    ).toBe(409);
+
+    // Rename + prompt edit persists AND bumps criteria_version (rescore trigger).
+    const before = await env.DB.prepare(
+      "SELECT criteria_version FROM org_settings WHERE edition='incubator'",
+    ).first<{ criteria_version: number }>();
+    const upd = await req("PUT", `/api/config/additional-params/${param.id}`, admin, {
+      name: "Jury lens v2",
+      prompt: "New prompt. Score 0-10.",
+    });
+    expect(upd.status).toBe(200);
+    const after = await env.DB.prepare(
+      "SELECT criteria_version FROM org_settings WHERE edition='incubator'",
+    ).first<{ criteria_version: number }>();
+    expect(after!.criteria_version).toBeGreaterThan(before!.criteria_version);
+    const row = await env.DB.prepare("SELECT name, prompt FROM parameters WHERE id = ?")
+      .bind(param.id)
+      .first<{ name: string; prompt: string }>();
+    expect(row!.name).toBe("Jury lens v2");
+    expect(row!.prompt).toBe("New prompt. Score 0-10.");
   });
 });
 

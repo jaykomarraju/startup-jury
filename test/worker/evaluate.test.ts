@@ -3,6 +3,7 @@ import {
   buildTool,
   buildSystemPrompt,
   buildUserPrompt,
+  substituteVars,
   parseEvaluation,
   computeResult,
   type ParameterRow,
@@ -14,6 +15,19 @@ const PARAMS: ParameterRow[] = [
   { id: "inc_a", key: "problem", name: "Problem", weight: 8 },
   { id: "inc_b", key: "traction", name: "Traction", weight: 10 },
   { id: "inc_c", key: "team", name: "Team", weight: 2 },
+];
+
+// 13-core analogue plus one role-scoped additional param (weight 0, assistive).
+const WITH_ADDITIONAL: ParameterRow[] = [
+  ...PARAMS,
+  {
+    id: "inc_add",
+    key: "add_lens",
+    name: "Custom Lens",
+    weight: 0,
+    informational: true,
+    prompt: "Assess {{startup_name}} in {{sector}}. Score 0-10.",
+  },
 ];
 
 const ANCHORS: AnchorRow[] = [
@@ -49,6 +63,55 @@ describe("prompt building", () => {
     expect(prompt).toContain("problem — Problem (weight 8)");
     expect(prompt).toContain("traction — Traction (weight 10)");
     expect(prompt.indexOf("8–10: Strong")).toBeLessThan(prompt.indexOf("0–1: Absent"));
+  });
+
+  it("lists additional params in a separate assistive section with substituted guidance", () => {
+    const prompt = buildUserPrompt(WITH_ADDITIONAL, ANCHORS, { startupName: "Acme", sector: "fintech" });
+    // Core areas still appear in the weighted rubric.
+    expect(prompt).toContain("problem — Problem (weight 8)");
+    // The additional param is called out separately, not weighted.
+    expect(prompt).toContain("Additional parameters (assistive");
+    expect(prompt).toContain("add_lens — Custom Lens");
+    expect(prompt).toContain("Assess Acme in fintech. Score 0-10.");
+  });
+});
+
+describe("substituteVars", () => {
+  it("fills known vars and leaves unknown/empty placeholders intact", () => {
+    expect(
+      substituteVars("Hi {{startup_name}} in {{sector}} at {{stage}}", {
+        startupName: "Acme",
+        sector: "fintech",
+      }),
+    ).toBe("Hi Acme in fintech at {{stage}}");
+    expect(substituteVars("{{unknown}}", {})).toBe("{{unknown}}");
+  });
+});
+
+describe("additional params are AI-scored but out of the composite", () => {
+  it("buildTool's key enum includes additional param keys", () => {
+    const tool = buildTool(WITH_ADDITIONAL);
+    const schema = tool.input_schema as {
+      properties: { scores: { items: { properties: { key: { enum: string[] } } } } };
+    };
+    expect(schema.properties.scores.items.properties.key.enum).toContain("add_lens");
+  });
+
+  it("an informational param (weight 0) never moves the weighted composite", () => {
+    const parsed = parseEvaluation(
+      {
+        complete: true,
+        scores: [
+          { key: "problem", value: 8 },
+          { key: "traction", value: 8 },
+          { key: "team", value: 8 },
+          { key: "add_lens", value: 1 }, // low assistive score…
+        ],
+      },
+      WITH_ADDITIONAL,
+    );
+    // …but the composite is identical to the core-only 8.0 (denominator excludes weight 0).
+    expect(computeResult(parsed, WITH_ADDITIONAL, "incubator").weightedTotal).toBe(8);
   });
 });
 

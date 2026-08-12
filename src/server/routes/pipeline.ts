@@ -244,10 +244,10 @@ pipeline.post(
 
     const params = (
       await c.env.DB.prepare(
-        "SELECT id, key, weight FROM parameters WHERE edition = ? AND active = 1",
+        "SELECT id, key, weight, informational, role_scope FROM parameters WHERE edition = ? AND active = 1",
       )
         .bind(deck.edition)
-        .all<{ id: string; key: string; weight: number }>()
+        .all<{ id: string; key: string; weight: number; informational: number; role_scope: string | null }>()
     ).results;
     const byKey = new Map(params.map((p) => [p.key, p]));
 
@@ -256,6 +256,10 @@ pipeline.post(
     for (const s of rawScores) {
       const p = byKey.get(s.key);
       if (!p || seen.has(s.key)) continue;
+      // Additional (informational) params are owned by one role — only that role
+      // may score them. Silently skip another role's additional params (the form
+      // only presents the caller's own), never reject the whole submission.
+      if (p.informational === 1 && p.role_scope !== user.role) continue;
       seen.add(s.key);
       const value = Math.max(0, Math.min(10, Number.isFinite(s.value) ? s.value : 0));
       clean.push({ parameterId: p.id, weight: p.weight, value, comment: s.comment ?? null });
@@ -645,15 +649,24 @@ pipeline.get("/jury", requireRole("program_associate", "program_manager", "admin
   return c.json({ jury: rows });
 });
 
-/** GET /parameters — the caller edition's rubric parameters (scoring form). */
+/** GET /parameters — the caller edition's rubric parameters (scoring form).
+ *  Returns the informational flag + role_scope so the client can render the
+ *  core areas in the weighted composite and the caller's own role-scoped
+ *  additional params in a separate section. */
 pipeline.get("/parameters", async (c) => {
   const rows = (
     await c.env.DB.prepare(
-      "SELECT key, name, weight FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
+      "SELECT key, name, weight, informational, role_scope FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
     )
       .bind(c.var.user.edition)
-      .all<{ key: string; name: string; weight: number }>()
-  ).results;
+      .all<{ key: string; name: string; weight: number; informational: number; role_scope: string | null }>()
+  ).results.map((p) => ({
+    key: p.key,
+    name: p.name,
+    weight: p.weight,
+    informational: p.informational === 1,
+    roleScope: p.role_scope ?? undefined,
+  }));
   return c.json({ parameters: rows });
 });
 

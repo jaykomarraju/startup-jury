@@ -28,6 +28,33 @@ export interface ParameterRow {
   key: string;
   name: string;
   weight: number;
+  /** Additional / role-scoped param — assistive, never in the weighted composite. */
+  informational?: boolean;
+  /** Configurable AI extraction prompt (additional params); core areas leave this null. */
+  prompt?: string | null;
+}
+
+/** Deck-derived values substituted into an additional param's `{{...}}` prompt. */
+export interface PromptContext {
+  startupName?: string | null;
+  sector?: string | null;
+  stage?: string | null;
+  programType?: string | null;
+}
+
+/** Fill an additional-param prompt's template variables from the deck context.
+ *  Unknown / unprovided placeholders are left intact for the model to infer. */
+export function substituteVars(text: string, ctx: PromptContext): string {
+  const map: Record<string, string | null | undefined> = {
+    startup_name: ctx.startupName,
+    sector: ctx.sector,
+    stage: ctx.stage,
+    program_type: ctx.programType,
+  };
+  return text.replace(/\{\{\s*(\w+)\s*\}\}/g, (whole, name: string) => {
+    const v = map[name];
+    return v != null && v !== "" ? v : whole;
+  });
 }
 
 export interface AnchorRow {
@@ -168,20 +195,45 @@ export function buildSystemPrompt(orgOverride?: string | null): string {
   return orgOverride ? `${base}\n\nOrganisation guidance:\n${orgOverride.trim()}` : base;
 }
 
-/** User prompt: the rubric (parameters + weights) and the anchor bands. */
-export function buildUserPrompt(params: ParameterRow[], anchors: AnchorRow[]): string {
-  const rubric = params
-    .map((p) => `- ${p.key} — ${p.name} (weight ${p.weight})`)
-    .join("\n");
+/** User prompt: the rubric (parameters + weights) and the anchor bands.
+ *  Core areas form the weighted composite; role-scoped additional params are
+ *  listed separately as assistive lenses, each with its configurable prompt
+ *  (deck-context variables substituted). Both are scored, but only the core
+ *  areas count toward the composite (additional params carry weight 0). */
+export function buildUserPrompt(
+  params: ParameterRow[],
+  anchors: AnchorRow[],
+  ctx: PromptContext = {},
+): string {
+  const core = params.filter((p) => !p.informational);
+  const additional = params.filter((p) => p.informational);
+
+  const rubric = core.map((p) => `- ${p.key} — ${p.name} (weight ${p.weight})`).join("\n");
   const bands = anchors
     .slice()
     .sort((a, b) => b.min_score - a.min_score)
     .map((a) => `- ${a.min_score}–${a.max_score}: ${a.label}`)
     .join("\n");
+
+  let additionalBlock = "";
+  if (additional.length > 0) {
+    const items = additional
+      .map((p) => {
+        const guidance = p.prompt ? substituteVars(p.prompt, ctx) : `Score ${p.name} 0–10.`;
+        return `- ${p.key} — ${p.name}\n  Guidance: ${guidance}`;
+      })
+      .join("\n");
+    additionalBlock =
+      `\nAdditional parameters (assistive — score each 0–10 using its guidance, but ` +
+      `they do NOT count toward the weighted composite):\n${items}\n`;
+  }
+
   return (
     "Evaluate the attached pitch deck.\n\n" +
-    `Score every one of these ${params.length} parameters (use the exact key):\n${rubric}\n\n` +
-    `Anchor bands (apply consistently):\n${bands}\n\n` +
+    `Score every one of these ${params.length} parameters (use the exact key).\n\n` +
+    `Core rubric (weighted — these form the composite):\n${rubric}\n` +
+    additionalBlock +
+    `\nAnchor bands (apply consistently):\n${bands}\n\n` +
     "Extract the founder's name and the key slides, flag any missing essential " +
     "slides, and set complete=false if the deck is not evaluable. Then call " +
     "submit_evaluation with one score per parameter key above."
@@ -320,6 +372,9 @@ interface DeckRow {
   status: string;
   r2_key: string | null;
   content_version: number | null;
+  name: string | null;
+  sector: string | null;
+  stage: string | null;
 }
 
 export interface EvaluateOptions {
@@ -341,7 +396,7 @@ export async function evaluateDeck(
   const now = opts.now ?? (() => new Date().toISOString());
 
   const deck = await env.DB.prepare(
-    "SELECT id, edition, status, r2_key, content_version FROM decks WHERE id = ?",
+    "SELECT id, edition, status, r2_key, content_version, name, sector, stage FROM decks WHERE id = ?",
   )
     .bind(deckId)
     .first<DeckRow>();
@@ -350,11 +405,18 @@ export async function evaluateDeck(
 
   const params = (
     await env.DB.prepare(
-      "SELECT id, key, name, weight FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
+      "SELECT id, key, name, weight, informational, prompt FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
     )
       .bind(deck.edition)
-      .all<ParameterRow>()
-  ).results;
+      .all<{ id: string; key: string; name: string; weight: number; informational: number; prompt: string | null }>()
+  ).results.map((p) => ({
+    id: p.id,
+    key: p.key,
+    name: p.name,
+    weight: p.weight,
+    informational: p.informational === 1,
+    prompt: p.prompt,
+  }));
   const anchors = (
     await env.DB.prepare("SELECT band, min_score, max_score, label FROM rubric_anchors").all<AnchorRow>()
   ).results;
@@ -373,7 +435,12 @@ export async function evaluateDeck(
     apiKey: env.ANTHROPIC_API_KEY,
     model: env.ANTHROPIC_MODEL ?? DEFAULT_MODEL,
     system: buildSystemPrompt(org?.ai_system_prompt ?? null),
-    userText: buildUserPrompt(params, anchors),
+    userText: buildUserPrompt(params, anchors, {
+      startupName: deck.name,
+      sector: deck.sector,
+      stage: deck.stage,
+      programType: deck.edition === "vc" ? "venture fund" : "incubator",
+    }),
     tool,
     pdfBase64,
   });

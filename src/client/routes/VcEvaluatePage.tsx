@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, Button, ScoreChip, EmptyState } from "../components";
 import { EvalScorecard, type AiParamScore } from "../components/EvalScorecard";
+import { useAuth } from "../auth/useAuth";
 import type { DeckView, DeckAction } from "../types";
 import {
   listDecks,
@@ -25,6 +26,7 @@ const SCORING_STAGES = ["analyst_scoring", "associate_review", "partner_review"]
  * stage's role-gated actions.
  */
 export function VcEvaluatePage() {
+  const { user } = useAuth();
   const [decks, setDecks] = useState<DeckView[] | null>(null);
   const [params, setParams] = useState<RubricParameter[]>([]);
   const [selected, setSelected] = useState<DeckView | null>(null);
@@ -46,6 +48,15 @@ export function VcEvaluatePage() {
     load();
     listParameters().then((r) => setParams(r.parameters)).catch(() => setParams([]));
   }, [load]);
+
+  // Core areas form the weighted composite; the caller's own role-scoped
+  // additional params (associate / partner / IC member) score separately.
+  const coreParams = useMemo(() => params.filter((p) => !p.informational), [params]);
+  const ownedAdditional = useMemo(
+    () => params.filter((p) => p.informational && p.roleScope === user?.role),
+    [params, user],
+  );
+  const allScored = useMemo(() => [...coreParams, ...ownedAdditional], [coreParams, ownedAdditional]);
 
   const rows = useMemo(
     () => (decks ?? []).filter((d) => d.statusId && SCORING_STAGES.includes(d.statusId)),
@@ -78,7 +89,7 @@ export function VcEvaluatePage() {
     setSelected(deck);
     // Default every slider to 5, then overlay any scores this evaluator already
     // saved so reopening shows real values (not defaults).
-    setValues(Object.fromEntries(params.map((p) => [p.key, 5])));
+    setValues(Object.fromEntries(allScored.map((p) => [p.key, 5])));
     setAiScores(new Map());
     setAiTotal(undefined);
     setRemarks("");
@@ -94,7 +105,7 @@ export function VcEvaluatePage() {
     setBusy(true);
     setError(null);
     try {
-      const scores: HumanScoreInput[] = params.map((p) => ({ key: p.key, value: values[p.key] ?? 0 }));
+      const scores: HumanScoreInput[] = allScored.map((p) => ({ key: p.key, value: values[p.key] ?? 0 }));
       await submitJuryScores(selected.id, scores, remarks || undefined);
       setSaved(true);
       await load();
@@ -175,7 +186,8 @@ export function VcEvaluatePage() {
           ) : (
             <EvalScorecard
               deck={selected}
-              params={params}
+              params={coreParams}
+              additionalParams={ownedAdditional}
               values={values}
               onChangeValue={(key, value) => setValues((v) => ({ ...v, [key]: value }))}
               remarks={remarks}
