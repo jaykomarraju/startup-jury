@@ -687,3 +687,35 @@ each finish session). Landed so far:
     **`GET /api/decks/:id/versions`**. This is the mechanism Session 6's resubmit loop drives.
   - New client `ApiError` (carries status + JSON error body) so the workbench/stage screens can surface the
     floor's message verbatim.
+
+- **Session 6 — Incomplete-deck resubmit loop + real email** (commit `2b385ff`). Migration `0017` adds
+  **`resubmit_tokens`** and the outbox's **`error` / `provider_id` / `dedupe_key`** columns.
+  - **Real email.** `src/server/email/outbox.ts` `sendEmail` now dispatches through the **Cloudflare Email
+    Sending binding** (`send_email` → `env.EMAIL`, added to `wrangler.jsonc`), keeping `email_outbox` as the
+    audit log. `status` is **`sent`** (accepted; `provider_id` recorded) · **`failed`** (attempted and threw;
+    reason in `error`) · **`recorded`** (no binding/from configured → audited only). A send failure is caught
+    and recorded, never propagated. `dedupe_key` (UNIQUE) makes a notification idempotent.
+    **⚠️ Delivery is audit-only until `vars.EMAIL_FROM` is set** to an address on an onboarded sending
+    domain — one config line plus `wrangler deploy`, no code change. The binding itself is deployed.
+  - **Auto-notify on Incomplete.** `evaluateDeck` fires `notifyIncompleteDeck` (`src/server/resubmit.ts`)
+    **after its D1 batch commits**, wrapped so a mail failure never fails the evaluation, and injectable via
+    `EvaluateOptions.notify`. Idempotent on `content_version`, so a retry/re-score of unchanged content sends
+    nothing but a new-yet-still-incomplete version does. Recipient is `decks.founder_email` falling back to
+    the uploader's account. The email lists the missing intake columns **and** the `deck_extractions.missing`
+    sections.
+  - **Tokens.** 192-bit CSPRNG, **only the SHA-256 hash stored**, one deck, 30-day TTL, revocable, and
+    superseded on re-mint. `invalid_token` → 404; `token_expired`/`token_revoked` → 410.
+  - **Public route** **`/api/resubmit/:token`** (`routes/resubmit.ts`, mounted in `index.ts` **without**
+    `requireAuth`). `GET` returns only what the founder must fix — **no scores or evaluator data**. `POST`
+    takes the corrected PDF; uses are capped at 10 per token (429 `too_many_resubmits`).
+  - **Shared re-upload path.** The Session-5 version logic moved to **`src/server/decks/versions.ts`**
+    (`addDeckVersion`, `versionStatement`, `versionKey`, `reserveCredits`, `refundCredits`, `isPdf`,
+    `MAX_PDF_BYTES`), so the authed `POST /api/decks/:id/version` and the public tokenized POST run the same
+    path. A tokenized resubmit is attributed to `uploaded_by = NULL` with the note "Founder resubmission via
+    secure link".
+  - **Founder page** `src/client/routes/ResubmitPage.tsx` at **`/resubmit/:token`** — public, declared as a
+    **sibling of `/login`** in `App.tsx` (the `path="*"` catch-all would otherwise bounce it to login).
+    Feedback sections + one re-upload control; no Q&A form, per §8. Demo link seeded for NimbusHR:
+    `/resubmit/aisj-demo-nimbushr-resubmit-2026`.
+  - **NB `sendEmail` returns `status: 'recorded'` under Miniflare** (no email emulator), and `evaluateDeck`
+    now writes an outbox + token row for every Incomplete deck — including in tests.

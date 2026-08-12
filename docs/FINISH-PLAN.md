@@ -69,10 +69,10 @@ Full parity + all asks. Check items off as sessions land them.
 - [x] **Upload validation** — required founder/contact columns (founder, email, phone, city, sector) enforced; **PDF-only**; missing detail → **Incomplete** _(S5)_
 - [x] **Deck versioning** — re-uploads saved as a new version with history _(S5, `deck_versions`)_
 
-### Incomplete-deck resubmit loop + real email (Session 6)
-- [ ] **Real email** via Cloudflare Email (replaces stub outbox)
-- [ ] On **Incomplete**, auto-send the founder an email with a **tokenized link** listing the **missing/feedback sections** (traction/team/ask/etc.)
-- [ ] Link → founder **updates those sections in the deck and re-uploads** (new version) → **auto re-score** → back to the evaluator with a fresh perspective (consolidated in the deck, not scattered Q&A)
+### Incomplete-deck resubmit loop + real email (Session 6) ✅
+- [x] **Real email** via Cloudflare Email (replaces stub outbox) _(S6, `send_email` binding + `EMAIL_FROM`; **audit-only until the sending domain is onboarded** — see the §6 log)_
+- [x] On **Incomplete**, auto-send the founder an email with a **tokenized link** listing the **missing/feedback sections** (traction/team/ask/etc.) _(S6, `resubmit_tokens`, migration 0017)_
+- [x] Link → founder **updates those sections in the deck and re-uploads** (new version) → **auto re-score** → back to the evaluator with a fresh perspective (consolidated in the deck, not scattered Q&A) _(S6, public `/resubmit/:token`)_
 
 ### De-stub, scheduling, issue log (Session 7)
 - [ ] VC **Query** + **Intro calls** screens (currently stubs) → real
@@ -81,6 +81,9 @@ Full parity + all asks. Check items off as sessions land them.
 - [ ] Investigate/fix the **stuck-at-"pending"** upload bug (§9)
 
 ### Polish & ship (Session 8)
+- [ ] **Set the email sending domain** — onboard it, set `vars.EMAIL_FROM` in `wrangler.jsonc`, redeploy,
+      and do the **live inbox test** Session 6 could not (see the S6 §6 log). Then make `POST /api/users`
+      email the temp password instead of surfacing it in the UI (Session 4's leftover).
 - [ ] Brand polish; remove deprecated free-text program/cohort columns once migrated
 - [ ] e2e coverage for every new screen/role; full green gate
 - [ ] HANDOFF.md + demo docs + runbook updated; seed refreshed (programs/cohorts/params/fund data) so every screen is live
@@ -115,7 +118,7 @@ Full parity + all asks. Check items off as sessions land them.
 | 3 | Parameter model — core 13 + role-scoped additional (AI-scored) + prompts + plan gating | ✅ Done | `f19b50b` (+ docs) | 2026-08-12 |
 | 4 | Roles & permissions — PM authority, Associate/Analyst, user mgmt/mentor, admin console/account/credits | ✅ Done | `4467bf7` (+ docs) | 2026-08-12 |
 | 5 | Automation — shortlist floor, AI determinism, duplicates/returning, upload validation, deck versioning | ✅ Done | `aebe362`, `28c331e` (+ docs) | 2026-08-12 |
-| 6 | Incomplete-deck resubmit loop + real email | ⬜ Not started | — | — |
+| 6 | Incomplete-deck resubmit loop + real email | ✅ Done | `2b385ff` (+ docs) | 2026-08-12 |
 | 7 | De-stub VC screens + ICS scheduling + issue log + pending-bug fix | ⬜ Not started | — | — |
 | 8 | Polish, full e2e, docs, final deploy | ⬜ Not started | — | — |
 
@@ -547,6 +550,99 @@ _(Append newest at the bottom. One entry per completed session.)_
     "Dropped message … on queue" after the run — the new upload tests leave retrying queue messages behind
     (there is still no DLQ; that's §9/Session 7). **Exit code stays 0**; it is log noise, not a failure.
 
+- **2026-08-12 — Session 6 (Incomplete-deck resubmit loop + real email) shipped.** Commit `2b385ff`
+  (+ this doc commit). Delivery is no longer stubbed, and an Incomplete deck now **notifies its founder
+  automatically** with a tokenized link that takes a corrected deck straight back into scoring. Green gate:
+  typecheck + lint + **286 unit/worker/client (1 skipped)** + build + **43 e2e**. Deployed (remote D1
+  migrated first — `0017`) + `npm run smoke` **27/27**; **live-verified** the public endpoints on the
+  deployed Worker with the demo seed left untouched.
+  - **⚠️ THE SENDING DOMAIN IS STILL NOT SET — this is the one open item from this session.** The user was
+    asked and confirmed the domain isn't ready, so S6 built the real path **fully and configurably** instead
+    of blocking. The `send_email` binding **is deployed** (`env.EMAIL (unrestricted)` shows in
+    `wrangler deploy` output) and `sendEmail` really calls it — but sending is additionally gated on
+    `vars.EMAIL_FROM`, which is `""`. **To go live: (1) onboard the domain (Dashboard → Compute & AI →
+    Email Service → Email Sending → Onboard Domain, which adds SPF/DKIM; or `npx wrangler email sending
+    enable <domain>`), (2) set `EMAIL_FROM` in `wrangler.jsonc` to a verified address on it, (3)
+    `npx wrangler deploy`.** No code change. **NB the current wrangler OAuth token lacks the email scope**
+    — `wrangler email sending list` returns `Unauthorized [code: 2036]`, so onboarding must be done in the
+    dashboard or after a `wrangler login` that grants it. Consequently **no live inbox test was performed**;
+    that half of the §4 acceptance criterion is deliberately left for whoever sets the domain.
+  - **Real email.** `sendEmail(env, email, now?)` keeps its signature and `email_outbox` stays the audit
+    log, but `status` now tells the truth: **`sent`** (Cloudflare accepted it, `provider_id` recorded) ·
+    **`failed`** (attempted and threw — the reason lands in the new `error` column) · **`recorded`**
+    (no binding/from configured → audited only). `0017` **backfills the historical `'sent'` stub rows to
+    `'recorded'`**, because they were never dispatched. A send failure is **caught, never propagated** — a
+    misconfigured domain must not break the evaluation or pipeline action that triggered the mail. New
+    `EmailKind` `incomplete_resubmit`; new pure `buildIncompleteEmail` (text **and** HTML, with escaping).
+    **Miniflare has no emulator for `send_email`**, so tests exercise the `recorded` path by default and
+    inject a stub `EmailSender` to test real delivery.
+  - **Idempotency via `email_outbox.dedupe_key` (UNIQUE).** The key is
+    `incomplete:<deckId>:v<content_version>`, so a **queue retry or manual re-score of unchanged content
+    sends nothing**, while a **new version that is still incomplete sends again** with a fresh list. The
+    UNIQUE index (not just a read-then-write check) closes the concurrent-run race; `sendEmail` catches the
+    constraint violation and returns the row that won.
+  - **Tokens (`resubmit_tokens`, migration `0017`).** 192 bits of CSPRNG entropy, base64url; **only a
+    SHA-256 hash is stored** (unsalted on purpose — the token is already high-entropy and the lookup must be
+    `WHERE token_hash = ?`, which a salted PBKDF2 hash can't support). Scoped to one deck, **30-day TTL**,
+    revocable, and **superseded on re-mint** so a stale email stops working. Failures are distinguished:
+    `invalid_token` → 404, `token_expired` / `token_revoked` → 410, each with a founder-facing `message`.
+  - **Auto-notify.** `evaluateDeck` fires `notifyIncompleteDeck` **after `env.DB.batch` commits**, so the
+    email can never describe a state the DB doesn't hold. It is wrapped in try/catch — **a mail failure must
+    not fail the evaluation** (the caller would re-enqueue and re-score a deck that scored fine) — and is
+    injectable as `EvaluateOptions.notify`, matching the existing `callModel`/`now` seams. The deck SELECT
+    was widened for `uploaded_by`. **Recipient = `decks.founder_email`** (the merged value from the S5
+    intake merge) **falling back to the uploader's account email**, which is what covers the case where the
+    founder's own address is one of the missing fields, plus staff bulk uploads.
+  - **Public route `/api/resubmit/:token`** (`routes/resubmit.ts`, mounted in `index.ts` **without**
+    `requireAuth` — the pattern is `auth.ts`, whose router is also public). `GET` returns **only what the
+    founder must fix**: the deck's identity, `missingFields`, the `deck_extractions.missing` sections, and
+    their own upload history — **no scores, no evaluator data, no other deck** (test-locked). `POST` takes
+    the corrected PDF. Uses are **capped at 10 per token** → 429 `too_many_resubmits`, so a leaked link
+    can't be turned into an unbounded credit/Anthropic bill.
+  - **Shared re-upload path (`src/server/decks/versions.ts`).** The Session-5 version logic was extracted
+    out of `routes/decks.ts` into env-level helpers (`addDeckVersion`, `versionStatement`, `versionKey`,
+    `reserveCredits`, `refundCredits`, `isPdf`, `MAX_PDF_BYTES`) so the **authenticated** re-upload and the
+    **public tokenized** one run the *same* path — same credit accounting, same R2 layout, same
+    `content_version` bump (which is what makes the re-score legitimate under the S1 rescore guard). They
+    differ only in how the actor is authorised. `decks.ts` keeps thin `c`-bound credit wrappers.
+    A resubmit is attributed to **`uploaded_by = NULL`** with note *"Founder resubmission via secure link"* —
+    the actor is a link holder, not a platform login, and the note is what identifies the source.
+  - **Founder page** `src/client/routes/ResubmitPage.tsx` at **`/resubmit/:token`**, declared in `App.tsx`
+    as a **sibling of `/login`** (the `path="*"` catch-all would otherwise bounce it to the login screen).
+    `AuthProvider` wraps it harmlessly — it swallows the 401 from `/api/auth/me` and never redirects. Layout
+    follows the prototype's founder portal (`#fp-*` / `#qview-founder`): dark branded shell, "Action
+    required" badge, "Sections requiring your input", confirmation state. **Adapted per §8 from the
+    prototype's per-question textareas to a single re-upload control** — the meeting settled on updating the
+    sections *in the deck*, so there is deliberately no Q&A form (e2e asserts zero textareas).
+  - **Demo fixture.** `0017` seeds a working link for **NimbusHR** (`inc_deck_meera_incomplete` — real
+    founder account, one missing field `founderPhone`) plus the notification that carried it, so the whole
+    loop is demoable with **no credit spent**: `/resubmit/aisj-demo-nimbushr-resubmit-2026`. That token is a
+    **deliberately readable demo value** on a deck in the publicly-documented demo seed — it is not a
+    secret and grants nothing else. No `deck_versions` row was seeded for it: NimbusHR has no R2 object, and
+    a version row pointing at a non-existent file would be a lie in the audit trail.
+  - **Live verification (deployed Worker, seed untouched).** Public `GET` → 200 with NimbusHR +
+    `["founderPhone"]`, no cookie involved · bogus token → 404 with its founder-facing message · `POST` with
+    a non-PDF → 400 `pdf_required` (validation runs before any credit or R2 side effect) · `/resubmit/<token>`
+    serves the SPA as `text/html`. Afterwards remote D1 confirmed **`credits_balance` 42 unchanged**,
+    NimbusHR still `content_version=1` with 0 version rows, and **0 outbox rows claiming `'sent'`**. The
+    live **POST-with-a-real-PDF** path was deliberately **not** exercised against production (it would spend
+    a credit and an Anthropic call and mutate the demo deck) — it is covered by 20 worker tests + 3 e2e.
+  - **Gotchas for later sessions:** (1) **`sendEmail` no longer returns `status: 'sent'` in tests** — with no
+    binding it is `'recorded'`. Two existing assertions (`outbox.test.ts`, `pipeline.test.ts`) were updated;
+    anything new asserting on the outbox must expect `'recorded'` locally. (2) **`evaluateDeck` now writes an
+    `email_outbox` row + a `resubmit_tokens` row for every deck that lands Incomplete**, including in tests —
+    a test that counts outbox rows for a deck must account for it, or pass `opts.notify`. (3) The
+    `wrangler email …` CLI commands **fail with `Unauthorized [code: 2036]`** on the current OAuth token
+    (no email scope) — use the dashboard, or re-login. (4) **Session 4's leftover** — "`POST /api/users`
+    should email the temp password instead of surfacing it" — was **NOT** done: it is outside §4's Session-6
+    scope and the transport is audit-only until the domain lands, so mailing a credential now would silently
+    strand new users. Do it in **Session 8** once `EMAIL_FROM` is set; the composer pattern is
+    `buildIncompleteEmail`. (5) The e2e resubmit spec **mutates NimbusHR in the local e2e DB** (adds v2) —
+    harmless, since `e2e:serve` wipes `.wrangler/state` and re-migrates before every run. (6) A parallel
+    full-e2e run flaked **once** on `analytics.spec` "VC admin sees capital deployment" (passes alone; 43/43
+    on three consecutive full runs afterwards) — same parallel-config-edit interference already noted for
+    S5; unrelated to this session's code.
+
 ---
 
 ## 7. CURRENT NEXT-SESSION PROMPT
@@ -558,54 +654,56 @@ You are continuing the ai.STARTUPJURY finishing build. This is a FRESH session w
 
 START by reading, in order:
 1. docs/FINISH-PLAN.md  (the master plan — read ALL of it, especially §8 meeting clarifications, §9 known
-   issues, and the §6 Progress Log entries for Sessions 1–5 — what shipped + gotchas left for you)
+   issues, and the §6 Progress Log entries for Sessions 1–6 — what shipped + gotchas left for you)
 2. HANDOFF.md           (architecture, bindings, workflow, gotchas)
 Recall the project memories (startup-jury-completion-gap, startup-jury-requirements-sources,
 startup-jury-open-scope-decisions, startup-jury-meeting-clarifications, phase5-vc-visual-gate). Open the
-prototypes most relevant to the founder loop: the incubator Superuser "AISJ_IC_SuserV11.HTM" (Query panel,
-"Parameters needing response" / "Send to Query", the Incomplete-decks screen) and the founder-facing
-clarification form. Live copies: https://aisj-incubator-v2.netlify.app ·
-https://aisj-venturecapitalv2.netlify.app
+prototype you need this session: **`VC Final files/AISJ_VC_Superuser_V6.html`** — the Query panel
+(~1659) and the Intro-calls / scheduling screens are the two you must match. Live copies:
+https://aisj-incubator-v2.netlify.app · https://aisj-venturecapitalv2.netlify.app
 
-YOUR JOB THIS SESSION: complete **Session 6 — Incomplete-deck resubmit loop + real email** exactly as
-specified in docs/FINISH-PLAN.md §4 (Session 6):
-- **Real email via Cloudflare Email Sending** — replace the stub body of `src/server/email/outbox.ts`
-  `sendEmail` (keep `email_outbox` as the audit log); add the binding/secret to `wrangler.jsonc`. Load the
-  `cloudflare-email-service` skill first. **⚠️ ASK THE USER for the sending domain/address if it is not
-  already recorded here** — it was not captured in Sessions 1–5.
-- **Auto-notify on Incomplete** — when `evaluateDeck` lands a deck at `status='incomplete'`, automatically
-  email the founder a **tokenized link** listing the **missing/feedback sections**. Session 5 already stores
-  exactly what is missing: `decks.missing_fields` (a CSV of the `src/shared/intake.ts` field keys — parse it
-  with `parseMissingFields`, label it with `INTAKE_FIELD_LABELS`/`describeMissingFields`), plus the
-  `deck_extractions.missing` slide flags for the deck sections (traction/team/ask/…). The recipient is
-  `decks.founder_email` (S5) falling back to the uploader's email.
-- **Resubmit loop** — the tokenized link opens a founder page showing the feedback sections + a re-upload
-  control → **auto re-score** → the deck returns to the evaluator. **The versioning half is already built:**
-  `POST /api/decks/:id/version` (S5) stores a new version, bumps `content_version` and re-runs `evaluateDeck`
-  automatically; `GET /api/decks/:id/versions` serves the history. So Session 6 = the token, the public
-  founder page, the email, and wiring them to that endpoint. No separate Q&A form — feedback sections only
-  (§8).
+YOUR JOB THIS SESSION: complete **Session 7 — De-stub VC screens + ICS scheduling + issue log + pending
+bug** exactly as specified in docs/FINISH-PLAN.md §4 (Session 7):
+1. **VC Query + Intro calls screens** — both currently render `StubPage`. Build the real screens and wire
+   the VC branch in `src/client/App.tsx` (`NavRoute`) + `StagePage`/components. The incubator already has a
+   working query loop server-side (`GET/POST /api/decks/:id/queries`, `POST /api/queries/:id/respond` in
+   `routes/pipeline.ts`) — reuse it rather than inventing a second one.
+2. **ICS (.ics) invites** for **intro / partner / alignment** calls — a pure VCALENDAR/VEVENT builder
+   (unit-tested, no deps), organizer picks participants (team + founder, **any** email domain), populate
+   `calls.scheduled_at`, offer both an `.ics` download and an email invite. Jury/IC members on a call can
+   **view** their calls read-only. §8 is explicit that ICS is the final scheduling verdict — no
+   availability/rescheduling back-and-forth.
+3. **Internal issue log** — an in-app admin issue tracker so the team logs testing issues in one place.
+   Reuse the existing tickets infrastructure (`routes/support.ts`) with an internal category/route.
+4. **The §9 pending bug** — decks stuck at `pending_ai`. Root cause is confirmed and written up in §9;
+   Session 1 shipped only a partial mitigation. **You own the full fix:** a dead-letter queue for
+   `startup-jury-evals`, a cron sweep (or a manual re-drive endpoint / "re-run AI" action) for `pending_ai`
+   decks older than N minutes, **refund the credit** on a terminal eval failure, and surface the real
+   reason (replace the hardcoded "no AI key configured yet" upload copy; distinguish "failed" from
+   "in progress" in the decks table). Adding a DLQ will also silence the "Dropped message … on queue"
+   noise the worker suite currently logs.
 
-**Touch:** `src/server/email/outbox.ts`, `src/server/ai/evaluate.ts` (fire the notification),
-`src/server/routes/` (a public tokenized founder route — note it must bypass `requireAuth`),
-`src/client/routes/FounderPortal.tsx` (or a new public page), `wrangler.jsonc`, + a migration for the token.
-
-Context from S1–S5 you build on: `decks.missing_fields` / `founder_email` / `founder_phone` / `intake_flag`
-and the `deck_versions` table all exist (migration 0016); a missing required column already forces a deck
-Incomplete regardless of score; `evaluateDeck` scores 22 params (13 core = 100% composite + 9 informational)
-at `temperature: 0`; the per-program shortlist floor blocks below-threshold shortlists with 409
-`below_shortlist_minimum`; the client `json()` helper now throws a typed `ApiError`. Keep the demo seed
-pristine (S8 refreshes it) — `inc_deck_payroute` and `inc_deck_meera_incomplete` are seeded with real
-`missing_fields`, so they are your demo fixtures for the loop.
+**Context from Session 6 you build on:** email is REAL now — `sendEmail` in `src/server/email/outbox.ts`
+dispatches via the Cloudflare `send_email` binding (`env.EMAIL`) and records `sent`/`failed`/`recorded` in
+`email_outbox`; it takes optional `html` and a `dedupeKey`, and it never throws on a delivery failure. Use
+it for the ICS invite (attachments are supported by the binding — see the `cloudflare-email-service` skill).
+**⚠️ Delivery is still audit-only (`recorded`) until someone sets `vars.EMAIL_FROM` in `wrangler.jsonc` to
+an address on an onboarded domain** — do NOT block on that; build against `sendEmail` exactly as Session 6
+did. There is also a public unauthenticated route pattern to copy if you need one:
+`src/server/routes/resubmit.ts` (mounted in `index.ts` without `requireAuth`) plus its client page
+`src/client/routes/ResubmitPage.tsx` at `/resubmit/:token`, declared as a sibling of `/login` in `App.tsx`.
+Deck re-uploads go through `src/server/decks/versions.ts` (`addDeckVersion`) — shared by the authed and
+public paths. Latest migration is `0017`; next is `0018`.
 
 Be thorough — spend the tokens: use parallel subagents for discovery, write unit/worker/e2e tests, and
 follow the Standing Rules in §2 (green gate; commit to main with the Co-Authored-By trailer; wrangler
 pinned 4.110.0; deploy — **`wrangler d1 migrations apply startup-jury-db --remote` FIRST** if you add a
-migration — + npm run smoke at the end; keep the demo seed live). Node 22 via `nvm use`. If port 5173 is
-busy, e2e takes `E2E_PORT=<free port>`. NB: if `wrangler … --remote` hits a transient `code 7403`, just retry.
+migration — + npm run smoke at the end; keep the demo seed live and pristine). Node 22 via `nvm use`. If
+port 5173 is busy, e2e takes `E2E_PORT=<free port>`. NB: if `wrangler … --remote` hits a transient
+`code 7403`, just retry. Adding a DLQ needs `wrangler queues create <name>` before `wrangler deploy`.
 
 BEFORE FINISHING: do the §5 End-of-session checklist — check off §1 items, update the §3 tracker, append
-a §6 Progress Log entry, and replace this §7 prompt with the Session 7 prompt. Commit the updated plan to main.
+a §6 Progress Log entry, and replace this §7 prompt with the Session 8 prompt. Commit the updated plan to main.
 ```
 
 ### Next-session prompt template (for future sessions)
