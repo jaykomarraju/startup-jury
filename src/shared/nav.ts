@@ -91,6 +91,7 @@ const INCUBATOR_NAV: NavItem[] = [
   // Settings
   { id: "coreparams", label: "Core Parameters", icon: "SlidersHorizontal", section: "Settings", roles: ["admin"] },
   { id: "myparams", label: "My Parameters", icon: "Sliders", section: "Settings", roles: ["admin", "program_manager", "program_associate", "jury"] },
+  { id: "setup", label: "Set up", icon: "Wrench", section: "Settings", roles: ["admin"] },
   // Collaborate
   { id: "contactadmin", label: "Contact Admin", icon: "Mail", section: "Collaborate", roles: ["admin", "program_manager", "program_associate", "jury"] },
   { id: "contactteam", label: "Contact team", icon: "MessagesSquare", section: "Collaborate", roles: ["admin", "program_manager", "program_associate", "jury"] },
@@ -141,6 +142,7 @@ const VC_NAV: NavItem[] = [
   // Settings
   { id: "coreparams", label: "Core Parameters", icon: "SlidersHorizontal", section: "Settings", roles: ["admin"] },
   { id: "myparams", label: "My Parameters", icon: "Sliders", section: "Settings", roles: ["admin", "partner", "ic_member", "associate", "analyst"] },
+  { id: "setup", label: "Set up", icon: "Wrench", section: "Settings", roles: ["admin"] },
   // Collaborate
   { id: "contactadmin", label: "Contact Admin", icon: "Mail", section: "Collaborate", roles: ["admin", "partner", "ic_member", "associate", "analyst"] },
   { id: "contactteam", label: "Contact team", icon: "MessagesSquare", section: "Collaborate", roles: ["admin", "partner", "ic_member", "associate", "analyst"] },

@@ -4,6 +4,7 @@ import auth from "./routes/auth";
 import decks from "./routes/decks";
 import pipeline from "./routes/pipeline";
 import config from "./routes/config";
+import programs from "./routes/programs";
 import analytics from "./routes/analytics";
 import { tickets, messages } from "./routes/support";
 import { handleQueue } from "./queue";
@@ -23,6 +24,7 @@ app.get("/api/health", (c) =>
 
 app.route("/api/auth", auth);
 app.route("/api/config", config);
+app.route("/api/programs", programs);
 app.route("/api/analytics", analytics);
 app.route("/api/tickets", tickets);
 app.route("/api/messages", messages);

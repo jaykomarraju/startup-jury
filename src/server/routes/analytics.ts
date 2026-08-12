@@ -46,7 +46,8 @@ function guard(slug: string) {
   });
 }
 
-// VC fund size for capital pacing (₹ Cr committed) — a single-fund demo constant.
+// Fallback committed fund size (₹ Cr) used only when no VC program carries fund
+// economics yet — real numbers come from the programs' fund fields (see /capital).
 const FUND_COMMITTED = 300;
 
 function num(v: string | number | null): number | null {
@@ -216,9 +217,30 @@ async function loadPortfolio(c: Context<AppEnv>, edition: Edition): Promise<Port
   }));
 }
 
+/** Sum the edition's program-level fund economics (₹ Cr). Falls back to the
+ *  single-fund constant only when no program has a committed size yet. */
+async function loadFundTotals(
+  c: Context<AppEnv>,
+  edition: Edition,
+): Promise<{ committed: number; allocated: number }> {
+  const row = await c.env.DB.prepare(
+    "SELECT COALESCE(SUM(fund_size), 0) AS committed, COALESCE(SUM(fund_allocated), 0) AS allocated " +
+      "FROM programs WHERE edition = ? AND active = 1",
+  )
+    .bind(edition)
+    .first<{ committed: number; allocated: number }>();
+  const committed = row?.committed ?? 0;
+  return {
+    committed: committed > 0 ? committed : FUND_COMMITTED,
+    allocated: row?.allocated ?? 0,
+  };
+}
+
 analytics.get("/capital", guard("capital"), async (c) => {
-  const rows = await loadPortfolio(c, c.var.user.edition);
-  return c.json(capitalDeployment(rows, FUND_COMMITTED));
+  const edition = c.var.user.edition;
+  const rows = await loadPortfolio(c, edition);
+  const { committed, allocated } = await loadFundTotals(c, edition);
+  return c.json(capitalDeployment(rows, committed, allocated));
 });
 
 analytics.get("/portfolio", guard("portfolio"), async (c) => {

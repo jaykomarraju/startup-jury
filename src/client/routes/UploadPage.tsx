@@ -1,8 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Upload as UploadIcon, FileCheck, Loader2, FileText } from "lucide-react";
 import { Card, Button, SignalTag } from "../components";
-import { uploadSingle, uploadBulk, type SingleUploadResult } from "../api";
+import { uploadSingle, uploadBulk, listPrograms, type SingleUploadResult, type ProgramView } from "../api";
+import { useAuth } from "../auth/useAuth";
+import { useActiveContext } from "../activeContext";
 import type { DeckSignal } from "../theme/signals";
 
 type Method = "single" | "bulk";
@@ -25,6 +27,9 @@ function formatBytes(bytes: number): string {
  */
 export function UploadPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const edition = user?.edition ?? "incubator";
+  const [ctx, setCtx] = useActiveContext(edition);
   const [method, setMethod] = useState<Method>("single");
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<Phase | null>(null);
@@ -38,6 +43,29 @@ export function UploadPage() {
   const [stage, setStage] = useState(STAGES[1]);
   const [sector, setSector] = useState("");
   const [city, setCity] = useState("");
+  // Program/cohort tagging — defaults to the active context, editable per upload.
+  const [programs, setPrograms] = useState<ProgramView[]>([]);
+  const [programId, setProgramId] = useState<string>(ctx.programId ?? "");
+  const [cohortId, setCohortId] = useState<string>(ctx.cohortId ?? "");
+
+  useEffect(() => {
+    listPrograms()
+      .then((r) => setPrograms(r.programs))
+      .catch(() => setPrograms([]));
+  }, []);
+
+  const activeProgram = programs.find((p) => p.id === programId) ?? null;
+  const cohortOptions = activeProgram?.cohorts ?? [];
+
+  function onProgramChange(next: string) {
+    setProgramId(next);
+    setCohortId("");
+    setCtx({ programId: next || null, cohortId: null });
+  }
+  function onCohortChange(next: string) {
+    setCohortId(next);
+    setCtx({ programId: programId || null, cohortId: next || null });
+  }
   // Selected-file readouts so the user always sees what they picked.
   const [picked, setPicked] = useState<{ name: string; size: number } | null>(null);
   const [bulkPicked, setBulkPicked] = useState<{ name: string; size: number }[]>([]);
@@ -60,6 +88,8 @@ export function UploadPage() {
       form.set("stage", stage);
       form.set("sector", sector);
       form.set("city", city);
+      if (programId) form.set("programId", programId);
+      if (cohortId) form.set("cohortId", cohortId);
       setSingle(await uploadSingle(form));
     } catch {
       setError("Upload failed. Try again.");
@@ -165,6 +195,27 @@ export function UploadPage() {
               </Field>
               <Field label="City">
                 <input className="sj-input" value={city} onChange={(e) => setCity(e.target.value)} placeholder="e.g. Bengaluru" />
+              </Field>
+              <Field label="Program">
+                <select className="sj-input" value={programId} onChange={(e) => onProgramChange(e.target.value)}>
+                  <option value="">No program</option>
+                  {programs.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Cohort">
+                <select
+                  className="sj-input disabled:opacity-50"
+                  value={cohortId}
+                  disabled={!activeProgram || cohortOptions.length === 0}
+                  onChange={(e) => onCohortChange(e.target.value)}
+                >
+                  <option value="">No cohort</option>
+                  {cohortOptions.map((ch) => (
+                    <option key={ch.id} value={ch.id}>{ch.name}</option>
+                  ))}
+                </select>
               </Field>
             </div>
             <div className="flex items-center justify-end gap-2">

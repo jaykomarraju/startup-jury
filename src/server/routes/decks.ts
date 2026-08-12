@@ -58,19 +58,36 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role) {
   };
 }
 
-/** GET /api/decks — decks in the caller's edition (Review-decks table).
+/** GET /api/decks — decks in the caller's edition (Review-decks table),
+ *  optionally filtered by `programId` / `cohortId` (toolbar filter dropdowns).
  *  Founders are isolated to their own submissions (portal scope). */
 decks.get("/", async (c) => {
   const { id, edition, role } = c.var.user;
-  const base =
+  const programId = c.req.query("programId");
+  const cohortId = c.req.query("cohortId");
+
+  const clauses = ["d.edition = ?"];
+  const params: unknown[] = [edition];
+  if (role === "founder") {
+    clauses.push("d.uploaded_by = ?");
+    params.push(id);
+  }
+  if (programId) {
+    clauses.push("d.program_id = ?");
+    params.push(programId);
+  }
+  if (cohortId) {
+    clauses.push("d.cohort_id = ?");
+    params.push(cohortId);
+  }
+
+  const sql =
     "SELECT d.id, d.name, d.sector, d.stage, d.city, d.founder, d.ai_score, d.signal, d.status, " +
     "d.assigned_to, u.name AS assigned_to_name " +
-    "FROM decks d LEFT JOIN users u ON u.id = d.assigned_to WHERE d.edition = ?";
-  const stmt =
-    role === "founder"
-      ? c.env.DB.prepare(`${base} AND d.uploaded_by = ? ORDER BY d.created_at DESC`).bind(edition, id)
-      : c.env.DB.prepare(`${base} ORDER BY d.created_at DESC`).bind(edition);
-  const rows = (await stmt.all<DeckRow>()).results;
+    "FROM decks d LEFT JOIN users u ON u.id = d.assigned_to WHERE " +
+    clauses.join(" AND ") +
+    " ORDER BY d.created_at DESC";
+  const rows = (await c.env.DB.prepare(sql).bind(...params).all<DeckRow>()).results;
   return c.json({ decks: rows.map((r) => toDeckView(edition, r, role)) });
 });
 
@@ -230,8 +247,8 @@ interface DeckMeta {
   sector?: string;
   stage?: string;
   city?: string;
-  program?: string;
-  cohort?: string;
+  programId?: string;
+  cohortId?: string;
 }
 
 async function storeDeck(
@@ -245,7 +262,7 @@ async function storeDeck(
     httpMetadata: { contentType: "application/pdf" },
   });
   await c.env.DB.prepare(
-    "INSERT INTO decks (id, edition, name, sector, stage, city, program, cohort, status, r2_key, uploaded_by, complete) " +
+    "INSERT INTO decks (id, edition, name, sector, stage, city, program_id, cohort_id, status, r2_key, uploaded_by, complete) " +
       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_ai', ?, ?, 1)",
   )
     .bind(
@@ -255,8 +272,8 @@ async function storeDeck(
       meta.sector ?? null,
       meta.stage ?? null,
       meta.city ?? null,
-      meta.program ?? null,
-      meta.cohort ?? null,
+      meta.programId ?? null,
+      meta.cohortId ?? null,
       key,
       c.var.user.id,
     )
@@ -314,8 +331,8 @@ decks.post("/upload", async (c) => {
     sector: (form?.get("sector") as string) || undefined,
     stage: (form?.get("stage") as string) || undefined,
     city: (form?.get("city") as string) || undefined,
-    program: (form?.get("program") as string) || undefined,
-    cohort: (form?.get("cohort") as string) || undefined,
+    programId: (form?.get("programId") as string) || undefined,
+    cohortId: (form?.get("cohortId") as string) || undefined,
   };
   let id: string;
   try {

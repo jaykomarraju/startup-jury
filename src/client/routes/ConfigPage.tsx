@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Target } from "lucide-react";
 import { Card, Button, Badge, EmptyState } from "../components";
 import {
   getConfig,
@@ -8,10 +9,15 @@ import {
   updateBranding,
   updatePlan,
   updateCredits,
+  listPrograms,
   type FullConfig,
   type ConfigParam,
+  type ProgramView,
 } from "../api";
 import { PLANS, PLAN_LABELS, type Plan } from "../../shared/plans";
+import { useAuth } from "../auth/useAuth";
+import { useActiveContext } from "../activeContext";
+import { editionLabel } from "../../shared/roles";
 
 /** Admin "Core Parameters" configuration screen (nav slug `coreparams`). Folds
  *  the prototype's Core Parameters / Settings (AI prompt) / Branding / Plans
@@ -53,6 +59,7 @@ export function ConfigPage() {
           re-score the pipeline.
         </p>
       </div>
+      <AppliesToSection />
       <WeightsSection cfg={cfg} onChange={setCfg} />
       <ThresholdsSection cfg={cfg} />
       <AiPromptSection cfg={cfg} />
@@ -64,6 +71,70 @@ export function ConfigPage() {
 
 function SavedBadge({ show }: { show: boolean }) {
   return show ? <Badge tone="positive">Saved</Badge> : null;
+}
+
+// ── Applies to (program / cohort scope) ──────────────────────────────────────
+
+/** Program + cohort selector at the top of the config screen (prototype's
+ *  "Applies to" card). The core weights apply across the edition; this sets the
+ *  admin's working context, shared with the dashboard toolbar filters. */
+function AppliesToSection() {
+  const { user } = useAuth();
+  const edition = user?.edition ?? "incubator";
+  const [ctx, setCtx] = useActiveContext(edition);
+  const [programs, setPrograms] = useState<ProgramView[]>([]);
+
+  useEffect(() => {
+    listPrograms()
+      .then((r) => setPrograms(r.programs))
+      .catch(() => setPrograms([]));
+  }, []);
+
+  const activeProgram = programs.find((p) => p.id === ctx.programId) ?? null;
+  const cohortOptions = activeProgram?.cohorts ?? [];
+
+  return (
+    <Card>
+      <div className="u-label flex items-center gap-1.5">
+        <Target className="h-3.5 w-3.5" /> Applies to
+      </div>
+      <p className="mt-1 max-w-xl text-sm text-fg-muted">
+        The scope you're configuring. The core weights apply across the {editionLabel(edition)} edition; this sets your
+        working program &amp; cohort view (shared with the decks toolbar).
+      </p>
+      <div className="mt-4 grid max-w-xl gap-4 sm:grid-cols-2">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-fg-muted">Program</span>
+          <select
+            className="sj-input h-9"
+            aria-label="Applies-to program"
+            value={ctx.programId ?? ""}
+            onChange={(e) => setCtx({ programId: e.target.value || null, cohortId: null })}
+          >
+            <option value="">All programs</option>
+            {programs.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-fg-muted">Cohort</span>
+          <select
+            className="sj-input h-9 disabled:opacity-50"
+            aria-label="Applies-to cohort"
+            value={ctx.cohortId ?? ""}
+            disabled={!activeProgram || cohortOptions.length === 0}
+            onChange={(e) => setCtx({ programId: ctx.programId, cohortId: e.target.value || null })}
+          >
+            <option value="">All cohorts</option>
+            {cohortOptions.map((ch) => (
+              <option key={ch.id} value={ch.id}>{ch.name}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+    </Card>
+  );
 }
 
 // ── Core parameter weights ───────────────────────────────────────────────────

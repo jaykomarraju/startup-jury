@@ -452,15 +452,28 @@ export interface PortfolioRow {
 
 export interface CapitalReport {
   committed: number;
+  /** Committed to specific deals (reserved), from the programs' fund_allocated. */
+  allocated: number;
   deployed: number;
   dryPowder: number;
   deployedPct: number;
+  /** Allocated as a share of the committed fund. */
+  allocatedPct: number;
   companies: number;
   medianCheck: number;
   byCompany: Array<{ name: string; amount: number }>;
 }
 
-export function capitalDeployment(rows: PortfolioRow[], committed: number): CapitalReport {
+/**
+ * Capital pacing for a VC edition. `committed` (total fund size) and `allocated`
+ * (reserved to deals) come from the program-level fund fields; `deployed` is the
+ * sum of the onboarded portfolio positions.
+ */
+export function capitalDeployment(
+  rows: PortfolioRow[],
+  committed: number,
+  allocated = 0,
+): CapitalReport {
   const funded = rows.filter((r) => r.capitalDeployed !== null && r.capitalDeployed > 0) as Array<
     PortfolioRow & { capitalDeployed: number }
   >;
@@ -474,9 +487,11 @@ export function capitalDeployment(rows: PortfolioRow[], committed: number): Capi
         : (amounts[amounts.length / 2 - 1] + amounts[amounts.length / 2]) / 2;
   return {
     committed,
+    allocated: round(allocated, 1),
     deployed: round(deployed, 1),
     dryPowder: round(Math.max(0, committed - deployed), 1),
     deployedPct: committed === 0 ? 0 : Math.round((deployed / committed) * 100),
+    allocatedPct: committed === 0 ? 0 : Math.round((allocated / committed) * 100),
     companies: funded.length,
     medianCheck: round(median, 1),
     byCompany: funded

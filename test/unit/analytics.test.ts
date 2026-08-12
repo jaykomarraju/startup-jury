@@ -181,6 +181,18 @@ describe("capitalDeployment", () => {
     expect(r.deployedPct).toBe(32);
     expect(r.byCompany[0].name).toBe("B"); // largest first
   });
+  it("reports allocated (reserved) capital as a share of the committed fund", () => {
+    const r = capitalDeployment(rows, 100, 60);
+    expect(r.allocated).toBe(60);
+    expect(r.allocatedPct).toBe(60);
+    // Deployed math is unchanged by the allocated dimension.
+    expect(r.deployed).toBe(32);
+  });
+  it("defaults allocated to 0 when not supplied", () => {
+    const r = capitalDeployment(rows, 100);
+    expect(r.allocated).toBe(0);
+    expect(r.allocatedPct).toBe(0);
+  });
 });
 
 describe("portfolioConstruction", () => {

@@ -32,6 +32,7 @@ import {
   UserPlus,
   Users,
   Vote,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 
@@ -70,6 +71,7 @@ const ICONS: Record<string, LucideIcon> = {
   UserPlus,
   Users,
   Vote,
+  Wrench,
 };
 
 /** Resolve a nav icon name to a lucide component, falling back to a neutral dot. */

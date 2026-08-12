@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
 import {
   KpiTile,
@@ -11,8 +12,9 @@ import {
   type ExtractionSlide,
 } from "../components";
 import type { DeckView } from "../types";
-import { listDecks, getDeck, getConfigSummary } from "../api";
+import { listDecks, getDeck, getConfigSummary, listPrograms, type ProgramView } from "../api";
 import { cohortRating } from "../../shared/scoring";
+import { useActiveContext } from "../activeContext";
 
 interface Kpi {
   label: string;
@@ -75,7 +77,10 @@ const SIGNAL_COLORS: Record<string, string> = {
 
 export function DashboardPage() {
   const { user } = useAuth();
+  const edition = user?.edition ?? "incubator";
+  const [ctx, setCtx] = useActiveContext(edition);
   const [decks, setDecks] = useState<DeckView[] | null>(null);
+  const [programs, setPrograms] = useState<ProgramView[] | null>(null);
   const [selected, setSelected] = useState<DeckView | null>(null);
   const [report, setReport] = useState<{
     scores: ParamScoreView[];
@@ -87,11 +92,12 @@ export function DashboardPage() {
   // until the summary loads.
   const [thresholds, setThresholds] = useState({ best: 7.0, mediocre: 5.0 });
 
+  // Program/cohort hierarchy for the toolbar filter dropdowns.
   useEffect(() => {
     let live = true;
-    listDecks()
-      .then((r) => live && setDecks(r.decks))
-      .catch(() => live && setDecks([]));
+    listPrograms()
+      .then((r) => live && setPrograms(r.programs))
+      .catch(() => live && setPrograms([]));
     getConfigSummary()
       .then((c) => live && setThresholds({ best: c.thresholdBest, mediocre: c.thresholdMediocre }))
       .catch(() => {});
@@ -99,6 +105,18 @@ export function DashboardPage() {
       live = false;
     };
   }, []);
+
+  // Decks re-fetch whenever the active program/cohort filter changes.
+  useEffect(() => {
+    let live = true;
+    setDecks(null);
+    listDecks({ programId: ctx.programId ?? undefined, cohortId: ctx.cohortId ?? undefined })
+      .then((r) => live && setDecks(r.decks))
+      .catch(() => live && setDecks([]));
+    return () => {
+      live = false;
+    };
+  }, [ctx.programId, ctx.cohortId]);
 
   useEffect(() => {
     if (!selected) {
@@ -149,20 +167,72 @@ export function DashboardPage() {
   }, [decks]);
 
   if (!user) return null;
-  const edition = user.edition;
+  const isAdmin = user.role === "admin" || user.role === "superuser";
+  const activeProgram = programs?.find((p) => p.id === ctx.programId) ?? null;
+  const cohortOptions = activeProgram?.cohorts ?? [];
+  const showFirstRun = programs !== null && programs.length === 0 && isAdmin;
+
+  function selectProgram(programId: string) {
+    setCtx({ programId: programId || null, cohortId: null });
+  }
+  function selectCohort(cohortId: string) {
+    setCtx({ programId: ctx.programId, cohortId: cohortId || null });
+  }
 
   return (
     <div className="flex flex-col gap-5 p-5 lg:flex-row">
       <div className="min-w-0 flex-1">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-xl font-semibold text-fg">All decks</h1>
             <p className="mt-0.5 text-sm text-fg-muted">
               {decks === null ? "Loading…" : `${decks.length} submissions`}
+              {activeProgram ? ` · ${activeProgram.name}` : ""}
             </p>
           </div>
-          <Button variant="secondary" size="sm">Export</Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="sj-input h-9 w-40"
+              aria-label="Program filter"
+              value={ctx.programId ?? ""}
+              onChange={(e) => selectProgram(e.target.value)}
+            >
+              <option value="">All Programs</option>
+              {(programs ?? []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <select
+              className="sj-input h-9 w-40 disabled:opacity-50"
+              aria-label="Cohort filter"
+              value={ctx.cohortId ?? ""}
+              disabled={!activeProgram || cohortOptions.length === 0}
+              onChange={(e) => selectCohort(e.target.value)}
+            >
+              <option value="">All Cohorts</option>
+              {cohortOptions.map((ch) => (
+                <option key={ch.id} value={ch.id}>
+                  {ch.name}
+                </option>
+              ))}
+            </select>
+            <Button variant="secondary" size="sm">Export</Button>
+          </div>
         </div>
+
+        {showFirstRun && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent/40 bg-accent/5 px-4 py-3">
+            <div className="text-sm text-fg">
+              <span className="font-medium">Finish setting up your workspace.</span>{" "}
+              <span className="text-fg-muted">Add your sectors, programs and cohorts to organise decks.</span>
+            </div>
+            <Link to="/app/setup">
+              <Button size="sm">Open Set up</Button>
+            </Link>
+          </div>
+        )}
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
           {kpis.map((k, i) => (

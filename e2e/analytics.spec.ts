@@ -29,7 +29,7 @@ test("VC admin sees capital deployment and decision history", async ({ page }) =
 
   await page.goto("/app/capital");
   await expect(page.getByRole("heading", { name: "Capital Deployment & Pacing" })).toBeVisible();
-  await expect(page.getByText("Deployed vs. committed")).toBeVisible();
+  await expect(page.getByText("Deployed vs. allocated vs. committed")).toBeVisible();
 
   await page.goto("/app/decisions");
   await expect(page.getByRole("heading", { name: "Decision History" })).toBeVisible();

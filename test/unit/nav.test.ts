@@ -25,7 +25,9 @@ describe("nav manifest", () => {
     const su = ids(navForUser("incubator", "superuser"));
     expect(su).not.toContain("repscores");
     expect(su).not.toContain("jassigned");
-    expect(su).toHaveLength(20);
+    // Includes the Settings "Set up" wizard (Session 2).
+    expect(su).toContain("setup");
+    expect(su).toHaveLength(21);
   });
 
   it("founder sees only the founder portal; internal roles never see portal items", () => {

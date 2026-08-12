@@ -38,17 +38,20 @@ export function CapitalPage() {
           <div className="flex flex-col gap-4">
             <StatTiles
               stats={[
+                { label: "Committed", value: CR(d.committed), sublabel: "fund size" },
+                { label: "Allocated", value: CR(d.allocated), sublabel: `${d.allocatedPct}% of fund` },
                 { label: "Deployed", value: CR(d.deployed), sublabel: `${d.deployedPct}% of fund` },
                 { label: "Dry powder", value: CR(d.dryPowder), sublabel: `of ${CR(d.committed)} committed` },
                 { label: "Companies funded", value: d.companies },
                 { label: "Median check", value: CR(d.medianCheck) },
               ]}
             />
-            <Section title="Deployed vs. committed">
+            <Section title="Deployed vs. allocated vs. committed">
               <BarList
                 max={d.committed}
                 items={[
                   { label: "Deployed", value: d.deployed, sub: CR(d.deployed), color: "var(--color-deepgreen)" },
+                  { label: "Allocated", value: d.allocated, sub: CR(d.allocated), color: "var(--color-signal-moderate)" },
                   { label: "Dry powder", value: d.dryPowder, sub: CR(d.dryPowder), color: "var(--color-signal-absent)" },
                 ]}
               />
@@ -58,7 +61,8 @@ export function CapitalPage() {
             </Section>
             <Narrative>
               {CR(d.deployed)} deployed across {d.companies} companies ({d.deployedPct}% of the {CR(d.committed)} fund),
-              leaving {CR(d.dryPowder)} of dry powder for follow-ons and new checks.
+              with {CR(d.allocated)} allocated to deals and {CR(d.dryPowder)} of dry powder for follow-ons and new
+              checks.
             </Narrative>
           </div>
         )}

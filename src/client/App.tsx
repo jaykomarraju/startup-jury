@@ -14,6 +14,7 @@ import { IcVotePage } from "./routes/IcVotePage";
 import { QueryPage } from "./routes/QueryPage";
 import { ConfigPage } from "./routes/ConfigPage";
 import { MyParamsPage } from "./routes/MyParamsPage";
+import { SetupWizard } from "./routes/SetupWizard";
 import { FounderHomePage, FounderQueriesPage, FounderSignupPage } from "./routes/FounderPortal";
 import { TicketsPage, ContactPage } from "./routes/SupportPages";
 import {
@@ -60,6 +61,7 @@ function NavRoute() {
   // is admin-only; myparams is visible to all roles, editable by admins).
   if (navId === "coreparams") return <ConfigPage />;
   if (navId === "myparams") return <MyParamsPage />;
+  if (navId === "setup") return <SetupWizard />;
 
   // Analytics reports (Phase 7). Funnel is shared; the rest are edition-specific
   // but the nav guard already restricts visibility per edition/role.

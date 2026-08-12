@@ -19,8 +19,12 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function listDecks(): Promise<{ decks: DeckView[] }> {
-  return fetch("/api/decks").then((r) => json(r));
+export function listDecks(filter?: { programId?: string; cohortId?: string }): Promise<{ decks: DeckView[] }> {
+  const qs = new URLSearchParams();
+  if (filter?.programId) qs.set("programId", filter.programId);
+  if (filter?.cohortId) qs.set("cohortId", filter.cohortId);
+  const q = qs.toString();
+  return fetch(`/api/decks${q ? `?${q}` : ""}`).then((r) => json(r));
 }
 
 export interface DeckReport {
@@ -328,6 +332,77 @@ export function deleteAdditionalParam(id: string) {
   return fetch(`/api/config/additional-params/${id}`, { method: "DELETE" }).then((r) =>
     json<{ ok: true }>(r),
   );
+}
+
+// ── Session 2 — Program & Cohort hierarchy ────────────────────────────────────
+
+export interface CohortView {
+  id: string;
+  programId: string;
+  name: string;
+  startsOn?: string;
+  endsOn?: string;
+  active: boolean;
+}
+export interface ProgramView {
+  id: string;
+  name: string;
+  sector?: string;
+  description?: string;
+  fundSize?: number;
+  fundAllocated?: number;
+  capitalDeployed?: number;
+  active: boolean;
+  cohorts: CohortView[];
+}
+export interface SectorView {
+  id: string;
+  name: string;
+  active: boolean;
+}
+export interface ProgramsResponse {
+  sectors: SectorView[];
+  programs: ProgramView[];
+}
+
+export function listPrograms(all = false): Promise<ProgramsResponse> {
+  return fetch(`/api/programs${all ? "?all=1" : ""}`).then((r) => json(r));
+}
+
+export interface ProgramInput {
+  name: string;
+  sector?: string;
+  description?: string;
+  fundSize?: number | null;
+  fundAllocated?: number | null;
+  capitalDeployed?: number | null;
+}
+export function createProgram(input: ProgramInput) {
+  return postJson<{ ok: true; program: ProgramView }>("/api/programs", input);
+}
+export function updateProgram(id: string, input: Partial<ProgramInput> & { active?: boolean }) {
+  return putJson<{ ok: true; program: ProgramView }>(`/api/programs/${id}`, input);
+}
+export function deleteProgram(id: string) {
+  return fetch(`/api/programs/${id}`, { method: "DELETE" }).then((r) => json<{ ok: true }>(r));
+}
+export function createCohort(programId: string, input: { name: string; startsOn?: string; endsOn?: string }) {
+  return postJson<{ ok: true; cohort: CohortView }>(`/api/programs/${programId}/cohorts`, input);
+}
+export function updateCohort(
+  cohortId: string,
+  input: { name?: string; startsOn?: string; endsOn?: string; active?: boolean },
+) {
+  return putJson<{ ok: true; cohort: CohortView }>(`/api/programs/cohorts/${cohortId}`, input);
+}
+export function deleteCohort(cohortId: string) {
+  return fetch(`/api/programs/cohorts/${cohortId}`, { method: "DELETE" }).then((r) => json<{ ok: true }>(r));
+}
+export function createSector(name: string) {
+  return postJson<{ ok: true; sector: SectorView }>("/api/programs/sectors", { name });
+}
+export function deleteSector(id: string) {
+  return fetch(`/api/programs/sectors/${id}`, { method: "DELETE" }).then((r) => json<{ ok: true }>(r));
 }
 
 // ── Phase 7 — Analytics ───────────────────────────────────────────────────────
