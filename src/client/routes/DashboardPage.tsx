@@ -12,7 +12,9 @@ import {
   type ExtractionSlide,
 } from "../components";
 import type { DeckView } from "../types";
-import { listDecks, getDeck, getConfigSummary, listPrograms, type ProgramView } from "../api";
+import { listDecks, getDeck, getConfigSummary, listPrograms, type ProgramView,
+  type DeckVersionView,
+} from "../api";
 import { cohortRating } from "../../shared/scoring";
 import { useActiveContext } from "../activeContext";
 
@@ -86,6 +88,7 @@ export function DashboardPage() {
     scores: ParamScoreView[];
     extraction: ExtractionSlide[];
     verdict?: string;
+    versions?: DeckVersionView[];
     weightedTotal?: number;
   } | null>(null);
   // Cohort thresholds are org config (admin-editable); default to the spec bands
@@ -125,7 +128,7 @@ export function DashboardPage() {
     }
     let live = true;
     getDeck(selected.id)
-      .then((r) => live && setReport({ scores: r.scores, extraction: r.extraction, verdict: r.verdict, weightedTotal: r.weightedTotal }))
+      .then((r) => live && setReport({ scores: r.scores, extraction: r.extraction, verdict: r.verdict, weightedTotal: r.weightedTotal, versions: r.versions }))
       .catch(() => live && setReport({ scores: [], extraction: [] }));
     return () => {
       live = false;
@@ -338,6 +341,7 @@ export function DashboardPage() {
           verdict={report?.verdict}
           scores={report?.scores ?? []}
           extraction={report?.extraction ?? []}
+          versions={report?.versions ?? []}
         />
       )}
     </div>

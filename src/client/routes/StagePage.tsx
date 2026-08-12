@@ -17,6 +17,7 @@ import {
   transitionDeck,
   ApiError,
   sendSignup,
+  type DeckVersionView,
 } from "../api";
 
 export interface StageConfig {
@@ -52,6 +53,7 @@ export function StagePage({ config }: { config: StageConfig }) {
     scores: ParamScoreView[];
     extraction: ExtractionSlide[];
     verdict?: string;
+    versions?: DeckVersionView[];
   } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,7 +77,7 @@ export function StagePage({ config }: { config: StageConfig }) {
     }
     let live = true;
     getDeck(selected.id)
-      .then((r) => live && setReport({ scores: r.scores, extraction: r.extraction, verdict: r.verdict }))
+      .then((r) => live && setReport({ scores: r.scores, extraction: r.extraction, verdict: r.verdict, versions: r.versions }))
       .catch(() => live && setReport({ scores: [], extraction: [] }));
     return () => {
       live = false;
@@ -223,6 +225,7 @@ export function StagePage({ config }: { config: StageConfig }) {
           verdict={report?.verdict}
           scores={report?.scores ?? []}
           extraction={report?.extraction ?? []}
+          versions={report?.versions ?? []}
         />
       )}
     </div>

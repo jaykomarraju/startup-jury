@@ -126,6 +126,33 @@ describe("EvaluationDrawer", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(2);
   });
+
+  // Session 5 — intake guardrails + deck versioning surface in the report drawer.
+  it("shows the missing founder details, the intake alert and the version history", () => {
+    render(
+      <EvaluationDrawer
+        open
+        onClose={() => {}}
+        deck={{
+          ...deck,
+          missingFields: ["founderPhone", "city"],
+          intakeFlag: "returning",
+          intakeNote: "\u201cFinStack\u201d applied before at Seed and is back at Series A.",
+        }}
+        verdict="Incomplete — needs founder details"
+        versions={[
+          { id: "v2", version: 2, fileName: "finstack-v2.pdf", note: "Added traction", createdAt: "2026-08-10T00:00:00Z" },
+          { id: "v1", version: 1, fileName: "finstack.pdf", note: "Initial upload", createdAt: "2026-08-01T00:00:00Z" },
+        ]}
+      />,
+    );
+    expect(screen.getByText("Missing founder details: Phone, City")).toBeInTheDocument();
+    expect(screen.getByText("Returning company")).toBeInTheDocument();
+    expect(screen.getByText(/applied before at Seed/)).toBeInTheDocument();
+    expect(screen.getByText("Deck versions · 2")).toBeInTheDocument();
+    expect(screen.getByText("v2")).toBeInTheDocument();
+    expect(screen.getByText("Added traction")).toBeInTheDocument();
+  });
 });
 
 describe("Sidebar", () => {

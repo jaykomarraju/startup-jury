@@ -5,6 +5,17 @@ import { ScoreBars, type ParamScoreView } from "./ScoreBars";
 import { DeckPdfViewer } from "./DeckPdfViewer";
 import { SignalTag } from "./SignalTag";
 import { Badge } from "./Badge";
+import { INTAKE_FIELD_LABELS } from "../../shared/intake";
+
+/** One entry of a deck's upload history (Session 5 — deck versioning). */
+export interface DeckVersionSummary {
+  id: string;
+  version: number;
+  fileName?: string;
+  note?: string;
+  uploadedByName?: string;
+  createdAt: string;
+}
 
 export interface ExtractionSlide {
   label: string;
@@ -20,6 +31,8 @@ interface EvaluationDrawerProps {
   scores?: ParamScoreView[];
   extraction?: ExtractionSlide[];
   verdict?: string;
+  /** Upload history — a re-upload appends a version (Session 5). */
+  versions?: DeckVersionSummary[];
 }
 
 /**
@@ -34,6 +47,7 @@ export function EvaluationDrawer({
   scores = [],
   extraction = [],
   verdict,
+  versions = [],
 }: EvaluationDrawerProps) {
   useEffect(() => {
     if (!open) return;
@@ -80,7 +94,50 @@ export function EvaluationDrawer({
             <div className="mb-5 rounded-lg border border-line bg-surface-2 px-4 py-3">
               <div className="u-label">Verdict</div>
               <div className="mt-1 text-sm font-medium text-fg">{verdict}</div>
+              {deck.missingFields && deck.missingFields.length > 0 && (
+                <div className="mt-2 text-sm text-signal-flagged">
+                  Missing founder details:{" "}
+                  {deck.missingFields.map((f) => INTAKE_FIELD_LABELS[f]).join(", ")}
+                </div>
+              )}
             </div>
+          )}
+
+          {/* Soft intake alert (duplicate / returning company) — never a block. */}
+          {deck.intakeFlag && deck.intakeNote && (
+            <div className="mb-5 rounded-lg border border-line bg-surface-2 px-4 py-3">
+              <div className="u-label">
+                {deck.intakeFlag === "duplicate" ? "Possible duplicate" : "Returning company"}
+              </div>
+              <p className="mt-1 text-sm text-fg-muted">{deck.intakeNote}</p>
+            </div>
+          )}
+
+          {versions.length > 0 && (
+            <section className="mb-6">
+              <h3 className="u-label mb-3">
+                Deck versions · {versions.length}
+              </h3>
+              <ul className="flex flex-col gap-2">
+                {versions.map((v) => (
+                  <li key={v.id} className="flex items-start justify-between gap-3 rounded-lg border border-line px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <Badge tone={v.version === versions[0].version ? "info" : "neutral"}>
+                          v{v.version}
+                        </Badge>
+                        <span className="truncate text-sm text-fg">{v.fileName ?? "Pitch deck"}</span>
+                      </div>
+                      {v.note && <p className="mt-0.5 text-xs text-fg-muted">{v.note}</p>}
+                    </div>
+                    <span className="shrink-0 text-xs text-fg-muted">
+                      {new Date(v.createdAt).toLocaleDateString()}
+                      {v.uploadedByName ? ` · ${v.uploadedByName}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
           )}
 
           {scores.length > 0 && (
