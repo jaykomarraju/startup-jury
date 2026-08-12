@@ -602,6 +602,19 @@ All 9 phases (0–8) are shipped, green, and on `main`; the app is live at
   `+ npm run test:e2e` for UI), then `npm run build && npx wrangler deploy`, apply new migrations
   `--remote` first if any, and finish with **`npm run smoke`** against the live URL. Commit direct to `main`
   with the `Co-Authored-By` trailer; keep `wrangler` pinned at `4.110.0` (Phase 2 gotcha).
+  **Current baselines: 410 unit/worker/client (1 skipped) · 72 e2e · smoke 44/44.**
+- **Security headers / CSP** (`src/server/security.ts`, added 2026-08-12 — the last of Session 8's deferred
+  follow-ups). A real `Content-Security-Policy` on the SPA document plus `nosniff` + `Referrer-Policy`
+  everywhere. Three things will bite you:
+  1. **`assets.run_worker_first` in `wrangler.jsonc` and the CSP are ONE change.** Without it Cloudflare's
+     asset layer can answer a navigation from the edge and the Worker never runs — the header then reaches
+     `curl` but **not browsers**, silently. That exact failure happened on the first deploy of it.
+  2. **The CSP goes on HTML documents only.** Chrome renders a top-level PDF through a plugin document and
+     `object-src 'none'` on that response blanks it, breaking the deck viewer's "Open PDF" link.
+  3. **`img-src 'self' data:`, `worker-src 'self' blob:` and `style-src 'unsafe-inline'` are load-bearing**
+     for `DeckPdfViewer`. A green e2e run does **not** prove the viewer still works unless it goes through
+     `e2e/csp-enforce.ts` — in dev the Vite plugin serves the document itself, so an assertion straight off
+     `page.goto` passes vacuously. After touching the policy, open a deck with a real PDF in a browser.
 - **For a wider public launch:** revisit the open demo access (gate via Cloudflare Access or rotate the
   shared password) and consider a custom domain — both deferred by choice, neither is a code change.
 - The **carried-over follow-ups** above (sync upload / DLQ, founder-credit coupling, multi-juror panels) are
@@ -832,3 +845,19 @@ per-session progress log is `docs/FINISH-PLAN.md`. **There is no next session.**
   - Fixed a React `key`-spread warning in `ScoreBars` that the fuller seed made visible everywhere: a
     score carries the *parameter* key, and spreading it into JSX made React read it as the
     reconciliation key.
+
+## Post-finish maintenance log
+
+- **2026-08-12 — Content-Security-Policy shipped** (Session 8's deferred follow-up; see
+  `docs/FINISH-PLAN.md` §6, last entry). New `src/server/security.ts` + a Hono middleware in
+  `src/server/index.ts`; `wrangler.jsonc` gained `assets.run_worker_first`. Green gate: typecheck + lint +
+  **410 unit/worker/client (1 skipped)** + build + **72 e2e**; deployed; `npm run smoke` **44/44**.
+  Live-verified in a real browser against production: CloudBridge's **12-page PDF rendered 12 slides in
+  1.3 s with 0 CSP violations**, and the PDF stream still returns `application/pdf` with no CSP. No credit
+  spent, demo seed untouched (`credits_balance` 42 / 49). See the three CSP gotchas under
+  **Project complete / maintenance** before touching the policy.
+- **The email sending domain is STILL not onboarded** (asked and re-confirmed with the user, 2026-08-12,
+  in the same session). Delivery stays audit-only (`email_outbox.status='recorded'`) and **the live inbox
+  test has still never been run.** It remains a one-line change — `vars.EMAIL_FROM` + `npx wrangler deploy`
+  — with no code to write. `docs/DEMO.md`, `docs/DEMO-AUDIENCE.md` and `docs/DEMO-RUNBOOK.md` still
+  correctly describe email as composed-but-not-delivered; update them the day it lands.

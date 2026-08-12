@@ -6,7 +6,16 @@
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    // Route everything EXCEPT the hashed build output through the Worker, so
+    // the SPA document always picks up the security headers from
+    // src/server/security.ts. Without this the edge served navigations a
+    // cached `index.html` variant (cf-cache-status: HIT, content-encoding:
+    // zstd) that predated the header, while a plain curl — a different cache
+    // variant — got the fresh one: the CSP reached tooling but not browsers.
+    // `/assets/*` is content-hashed and immutable, so it still goes straight
+    // to the Asset Worker and keeps its edge caching.
+    "run_worker_first": ["/*", "!/assets/*", "!/favicon.png"]
   },
   "d1_databases": [
     {

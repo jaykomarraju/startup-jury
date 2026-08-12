@@ -12,10 +12,19 @@ import { tickets, messages, issues } from "./routes/support";
 import { calls } from "./routes/calls";
 import { handleQueue } from "./queue";
 import { runReminders, runStuckSweep } from "./scheduled";
+import { withSecurityHeaders } from "./security";
 
 export type { Env } from "./types";
 
 const app = new Hono<AppEnv>();
+
+// Security headers on every response (`src/server/security.ts` explains the
+// policy). Runs first so it wraps the SPA documents, the API and the R2 deck
+// stream alike — the CSP itself is applied to HTML documents only.
+app.use("*", async (c, next) => {
+  await next();
+  c.res = withSecurityHeaders(c.res);
+});
 
 app.get("/api/health", (c) =>
   c.json({

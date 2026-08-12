@@ -76,7 +76,14 @@ async function req(method, path, { token, body } = {}) {
     const m = c.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`));
     if (m && m[1] && m[1] !== "") sessionToken = m[1];
   }
-  return { status: res.status, json, text, token: sessionToken, contentType: res.headers.get("content-type") };
+  return {
+    status: res.status,
+    json,
+    text,
+    token: sessionToken,
+    contentType: res.headers.get("content-type"),
+    headers: res.headers,
+  };
 }
 
 async function login(email) {
@@ -103,6 +110,55 @@ async function main() {
       "health payload status=ok",
       r.json?.status === "ok" && r.json?.service === "startup-jury",
       JSON.stringify(r.json),
+    );
+  }
+
+  // 1b. Security headers on the SPA document (src/server/security.ts).
+  //
+  // Worth a live check rather than trusting the unit tests: the first deploy of
+  // this header reached `curl` but NOT browsers, because the edge was still
+  // serving a cached `index.html` variant. `run_worker_first` + `no-store` fixed
+  // it, and these assertions are what would catch that class of regression.
+  console.log("security headers");
+  {
+    const doc = await req("GET", "/login");
+    const csp = doc.headers.get("content-security-policy") ?? "";
+    check(
+      "SPA document → CSP with the deck-viewer directives",
+      doc.status === 200 &&
+        (doc.contentType ?? "").includes("text/html") &&
+        csp.includes("img-src 'self' data:") &&
+        csp.includes("worker-src 'self' blob:") &&
+        csp.includes("style-src 'self' 'unsafe-inline'"),
+      csp || "(no CSP header)",
+    );
+    check(
+      "SPA document → CSP locks scripts to self",
+      csp.includes("script-src 'self'") &&
+        csp.includes("default-src 'self'") &&
+        csp.includes("object-src 'none'") &&
+        csp.includes("frame-ancestors 'none'"),
+      csp || "(no CSP header)",
+    );
+    // The Worker sends `no-store`, but Cloudflare's asset layer rewrites it at
+    // the edge to `public, max-age=0, must-revalidate` (see security.ts). Both
+    // mean "revalidate before reuse", which is the property that matters: a
+    // long-lived cached document would strand browsers on a pre-deploy shell
+    // with no CSP and stale /assets/* references. Assert that, not the literal.
+    const cc = doc.headers.get("cache-control") ?? "";
+    check(
+      "SPA document → revalidated, never long-lived, + nosniff",
+      (cc.includes("no-store") || (cc.includes("max-age=0") && cc.includes("must-revalidate"))) &&
+        doc.headers.get("x-content-type-options") === "nosniff",
+      `cache-control=${cc} nosniff=${doc.headers.get("x-content-type-options")}`,
+    );
+    const api = await req("GET", "/api/health");
+    check(
+      "API → hardened, and carries no CSP",
+      api.headers.get("x-content-type-options") === "nosniff" &&
+        api.headers.get("referrer-policy") === "strict-origin-when-cross-origin" &&
+        api.headers.get("content-security-policy") === null,
+      `csp=${api.headers.get("content-security-policy")}`,
     );
   }
 

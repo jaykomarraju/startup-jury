@@ -919,6 +919,65 @@ _(Append newest at the bottom. One entry per completed session.)_
     drawer — the empty state is the honest answer); and a `deck_versions` row for any seeded deck, for
     the same reason Session 6 declined it.
 
+- **2026-08-12 — Maintenance: the CSP header (Session 8's deferred follow-up) shipped.** Green gate:
+  typecheck + lint + **410 unit/worker/client (1 skipped)** + build + **72 e2e** (69 → 72). Deployed (no
+  migration) + `npm run smoke` **44/44** (4 new checks). The email sending domain was asked about again
+  at the top of this session and is **still not onboarded**, so §7's one open item is unchanged.
+  - **The policy (`src/server/security.ts`).** `default-src 'self'` · `base-uri 'self'` ·
+    `object-src 'none'` · `frame-src 'none'` · `frame-ancestors 'none'` · `form-action 'self'` ·
+    **`img-src 'self' data:`** · `font-src 'self'` · **`style-src 'self' 'unsafe-inline'`** ·
+    **`worker-src 'self' blob:`** · `script-src 'self'` · `connect-src 'self'`. Plus `nosniff` +
+    `Referrer-Policy: strict-origin-when-cross-origin` on **every** response.
+  - **CSP is applied to HTML documents ONLY, deliberately.** Chrome renders a top-level PDF through a
+    plugin document and `object-src 'none'` on that response **blanks it** — which would break the deck
+    viewer's "Open PDF" fallback. `withSecurityHeaders` branches on `content-type`; a worker test locks
+    the `application/pdf` case.
+  - **Dev vs production.** `npm run e2e:serve` is the Vite dev server, whose injected React Refresh
+    preamble is an inline script, so the policy relaxes exactly two directives when
+    `import.meta.env.DEV` (`script-src 'unsafe-inline'`, `connect-src ws: wss:`). Vite **statically
+    inlines that to `false`** in the deployed bundle (verified in `dist/startup_jury/index.js`), so the
+    flag fails **closed**. Everything the deck viewer needs is byte-identical in both.
+  - **🔴 The e2e suite could not see the header at all, and would have passed vacuously.**
+    `@cloudflare/vite-plugin` short-circuits navigation requests (`Sec-Fetch-Dest: document` — note the
+    `Vary` it sets) into Vite's own HTML pipeline, so **in dev the Worker never serves the document**.
+    New `e2e/csp-enforce.ts` asks the Worker for the real policy over a non-navigation fetch and stamps
+    it onto the document via `page.route`, so Chromium enforces it for real. **Both load-bearing
+    directives were then negative-controlled:** dropping `data:` from `img-src` leaves the slide `<img>`
+    at `naturalWidth 0`, and `worker-src 'none'` raises console violations (pdf.js silently falls back
+    to main-thread rendering, so only the violation assertion catches that one).
+  - **🔴 THE HEADER REACHED `curl` BUT NOT BROWSERS ON THE FIRST DEPLOY.** The deploy changed only the
+    Worker, not the asset bundle, and Cloudflare's edge kept answering navigations from a cached
+    pre-deploy `index.html` (`cf-cache-status: HIT`, `content-encoding: zstd`) — a different cache
+    variant from the one a plain `curl` gets, which is why curl showed the CSP and headless Chromium
+    showed **none**. Fixed with **`assets.run_worker_first: ["/*", "!/assets/*", "!/favicon.png"]`** in
+    `wrangler.jsonc` (every navigation now reaches the Worker; the hashed, immutable `/assets/*` still
+    go straight to the Asset Worker and keep their edge caching) plus `Cache-Control: no-store` on the
+    document. **NB Cloudflare's asset layer rewrites that `no-store` back to
+    `public, max-age=0, must-revalidate` at the edge** — still revalidate-before-reuse, so the intent
+    holds; only the local response shows `no-store` verbatim, and the smoke check asserts the property,
+    not the literal.
+  - **Live verification (deployed Worker, real browser, seed untouched).** Headless Chromium against
+    production: the document carries the production policy (`script-src 'self'`, no `unsafe-inline` for
+    scripts), the app boots and logs in, and **CloudBridge's real 12-page PDF rendered 12 slides in
+    1.3 s** — first slide `naturalWidth 1008`, `src` a `data:image/png` — with **0 CSP violations**. The
+    PDF stream itself returns `200 application/pdf` with **no CSP** and `nosniff`. No credit spent; no
+    deck, seed row or R2 object touched.
+  - **Tests.** `test/worker/security.test.ts` (10) — the load-bearing directives, the lockdown set,
+    prod-vs-dev deltas, per-content-type behaviour, header/body/status preservation, the 101
+    passthrough, and the middleware actually being wired in. `e2e/csp.spec.ts` (3) — the served
+    document's headers, the API's, and a violation sweep over the core authed screens.
+    `e2e/upload.spec.ts` was upgraded from a **stub PDF buffer to the real
+    `docs/demo-assets/gridbloom-sample-deck.pdf`**, so it now also proves the viewer renders actual
+    slides under the policy. `npm run smoke` gained 4 live header checks (40 → 44).
+  - **Gotchas for later sessions:** (1) **`run_worker_first` and the CSP are one change** — remove
+    either and browsers silently stop receiving the header while `curl` still shows it. (2) A CSP on a
+    **PDF** response blanks Chrome's viewer; keep the content-type branch. (3) `/assets/*` bypasses the
+    Worker by design, so the hashed bundles carry **no** `nosniff` — they are content-hashed static
+    files served with correct content types. (4) e2e specs that assert on the CSP must go through
+    `enforceWorkerCsp`; asserting straight off `page.goto` passes vacuously in dev. (5) Re-running the
+    full e2e suite against an **already-running** `e2e:serve` fails ~6 mutating specs — the DB is only
+    wiped when the server boots. Kill it, or let Playwright start its own.
+
 ---
 
 ## 7. FINISH TRACK COMPLETE — no next session
@@ -926,10 +985,14 @@ _(Append newest at the bottom. One entry per completed session.)_
 **All 8 sessions shipped between 2026-08-11 and 2026-08-12.** The §3 tracker is fully ✅ and every §1
 box is ticked. Target delivery was Saturday 15 Aug 2026, 09:00 IST; the scope landed on 12 Aug.
 
-Live: **https://startup-jury.jay-komarraju.workers.dev** · final commit `7a011f7` ·
-green gate typecheck + lint + **400** unit/worker/client + build + **69** e2e · `npm run smoke` **40/40**.
+Live: **https://startup-jury.jay-komarraju.workers.dev** · finish-track commit `7a011f7` ·
+green gate typecheck + lint + **410** unit/worker/client + build + **72** e2e · `npm run smoke` **44/44**
+_(counts as of the 2026-08-12 CSP maintenance entry at the end of §6 — the last of Session 8's two
+deferred follow-ups is now closed; the other, `deck_extractions` for the seeded decks, was declined on
+purpose)._
 
-**One item is open, and it is not code.** The **email sending domain is still not onboarded**, so
+**One item is open, and it is not code.** The **email sending domain is still not onboarded** —
+re-confirmed with the user again on 2026-08-12 in the first post-finish maintenance session, so
 delivery is audit-only and the live inbox test has never run. To switch it on:
 
 1. Onboard the domain — Cloudflare Dashboard → Compute & AI → Email Service → Email Sending → Onboard
