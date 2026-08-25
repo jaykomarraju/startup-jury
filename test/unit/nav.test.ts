@@ -8,7 +8,14 @@ import {
   NAV_BY_EDITION,
   type NavItem,
 } from "../../src/shared/nav";
-import { INCUBATOR_ROLES, VC_ROLES, type Role, type Edition } from "../../src/shared/roles";
+import {
+  INCUBATOR_ROLES,
+  VC_ROLES,
+  canSeeEvaluatorScores,
+  evaluationRank,
+  type Role,
+  type Edition,
+} from "../../src/shared/roles";
 import { getPipeline } from "../../src/pipeline";
 
 const ids = (items: NavItem[]) => items.map((i) => i.id);
@@ -139,5 +146,30 @@ describe("nav manifest", () => {
         expect(nav.has("alldecks")).toBe(true);
       }
     }
+  });
+
+  // ── Evaluation hierarchy (Aug-2026 issue 21) ────────────────────────────────
+  it("lets an evaluator see at or below their own rank, never above", () => {
+    // Incubator ladder: program associate → jury → program manager.
+    expect(canSeeEvaluatorScores("incubator", "program_associate", "jury")).toBe(false);
+    expect(canSeeEvaluatorScores("incubator", "program_associate", "program_manager")).toBe(false);
+    expect(canSeeEvaluatorScores("incubator", "jury", "program_associate")).toBe(true);
+    expect(canSeeEvaluatorScores("incubator", "jury", "program_manager")).toBe(false);
+    expect(canSeeEvaluatorScores("incubator", "program_manager", "jury")).toBe(true);
+    // Your own level is always visible.
+    expect(canSeeEvaluatorScores("incubator", "jury", "jury")).toBe(true);
+    // Admin / superuser oversee the whole workspace.
+    expect(canSeeEvaluatorScores("incubator", "admin", "program_manager")).toBe(true);
+    expect(canSeeEvaluatorScores("incubator", "superuser", "program_manager")).toBe(true);
+    // A founder has no rank and sees no evaluator.
+    expect(canSeeEvaluatorScores("incubator", "founder", "program_associate")).toBe(false);
+  });
+
+  it("applies the same rule along the VC ladder", () => {
+    expect(evaluationRank("vc", "analyst")).toBeLessThan(evaluationRank("vc", "associate"));
+    expect(evaluationRank("vc", "associate")).toBeLessThan(evaluationRank("vc", "partner"));
+    expect(evaluationRank("vc", "partner")).toBeLessThan(evaluationRank("vc", "ic_member"));
+    expect(canSeeEvaluatorScores("vc", "analyst", "partner")).toBe(false);
+    expect(canSeeEvaluatorScores("vc", "ic_member", "partner")).toBe(true);
   });
 });

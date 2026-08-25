@@ -18,8 +18,14 @@ test("incubator juror works a deck in the evaluator workbench", async ({ page })
   await page.goto("/app/jassigned");
   await expect(page.getByRole("heading", { name: "Evaluate" })).toBeVisible();
 
-  await page.getByRole("button", { name: /TaxPilot/ }).click();
-  await expect(page.getByRole("heading", { name: "TaxPilot" })).toBeVisible();
+  // Aug-2026 issue 19 — Evaluate is three panels (startups · parameters ·
+  // parameter detail); the workbench opens from the row's Score button.
+  await page
+    .locator("li", { hasText: "TaxPilot" })
+    .getByRole("button", { name: "Score", exact: true })
+    .click();
+  const workbench = page.getByRole("dialog", { name: /Score TaxPilot/ });
+  await expect(workbench.getByRole("heading", { name: "TaxPilot" })).toBeVisible();
 
   // AI · My · Average summary tiles.
   await expect(page.getByText("AI Score", { exact: true })).toBeVisible();

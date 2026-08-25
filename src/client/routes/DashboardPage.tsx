@@ -248,7 +248,7 @@ export function DashboardPage() {
               <span className="sr-only">Search decks</span>
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted" />
               <input
-                className="sj-input h-9 w-48 pl-8"
+                className="sj-input h-9 w-44 pl-8"
                 type="search"
                 placeholder="Search startups…"
                 value={search}
@@ -256,7 +256,7 @@ export function DashboardPage() {
               />
             </label>
             <select
-              className="sj-input h-9 w-32"
+              className="sj-input h-9 w-28"
               aria-label="Tag filter"
               value={tagFilter}
               onChange={(e) => setTagFilter(e.target.value)}
@@ -269,7 +269,7 @@ export function DashboardPage() {
               ))}
             </select>
             <select
-              className="sj-input h-9 w-40"
+              className="sj-input h-9 w-36"
               aria-label="Program filter"
               value={ctx.programId ?? ""}
               onChange={(e) => selectProgram(e.target.value)}
@@ -282,7 +282,7 @@ export function DashboardPage() {
               ))}
             </select>
             <select
-              className="sj-input h-9 w-40 disabled:opacity-50"
+              className="sj-input h-9 w-36 disabled:opacity-50"
               aria-label="Cohort filter"
               value={ctx.cohortId ?? ""}
               disabled={!activeProgram || cohortOptions.length === 0}

@@ -97,8 +97,10 @@ test("incubator stage screens list their decks and open the report drawer", asyn
 test("incubator sign-up, onboarding and archive stages are all live", async ({ page }) => {
   await login(page, INC_ADMIN);
 
+  // Aug-2026 issue 28 deleted the "For Sign up" screen; issue 26 added the
+  // Program Manager's pipeline in its place in the Evaluation section.
   for (const [slug, heading, deck] of [
-    ["forsignup", "For Sign up", /Medixir|EduLift|LedgerLite/],
+    ["pmpipeline", "Prog Manager Pipeline", /InsureFlow|GreenRoute|AgroFresh/],
     ["incuration", "Sign up Pipeline", /LedgerLite/],
     ["curation", "Onboard ready", /Medixir/],
     ["archive", "Archive", /SolarCircuit/],

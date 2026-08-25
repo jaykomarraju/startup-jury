@@ -306,7 +306,7 @@ npm run test:e2e        # Playwright (auto-starts dev server)
   **founders are scoped to their own decks** in both list and detail.
 - **Client:** `api.ts` fetchers (transition/assign/evaluate/send-signup/queries/respond/jury/
   parameters/events); `DeckView` gains `statusId/assignedTo/assignedToName/actions`. Screens:
-  `StagePage` (config-driven — Jury Pipeline / Intro calls / For Sign up / Sign up Pipeline /
+  `StagePage` (config-driven — Jury Pipeline / Prog Manager Pipeline / Sign up Pipeline /
   Onboard ready / Archive), `AssignPage`, `EvaluatePage` (rubric sliders + live weighted total;
   reached via staff **Evaluate** and a jury member's **Assigned** slug), `QueryPage`, and the founder
   portal (`FounderPortal.tsx`: My Startup / Queries / Sign up). Wired in `App.tsx` `NavRoute` for the
@@ -861,3 +861,59 @@ per-session progress log is `docs/FINISH-PLAN.md`. **There is no next session.**
   test has still never been run.** It remains a one-line change — `vars.EMAIL_FROM` + `npx wrangler deploy`
   — with no code to write. `docs/DEMO.md`, `docs/DEMO-AUDIENCE.md` and `docs/DEMO-RUNBOOK.md` still
   correctly describe email as composed-but-not-delivered; update them the day it lands.
+- **2026-08-25 — the Aug-2026 issue log (31 items) closed.** The tester's issue table from 4/7 Aug,
+  worked against the two Superuser prototypes in `STARTUPJURY-TEAM-FOLDER/` and the issue text where
+  the two disagree (the prototypes predate items 6, 9, 12, 26 and 28). Four new migrations, one new
+  shared module for the stat boxes, one for the query areas, and one new report endpoint:
+  - **Alias titles (1).** `users.title` — an *organizational* title shown in the top ribbon in place of
+    the platform role, editable by the user (`PATCH /api/users/me`, My account) or an admin (Admin
+    console). **`role` is untouched**, so every `requireRole`, nav gate and pipeline transition is
+    unchanged; `GET /api/auth/me` re-reads the title from D1 because the KV session is written once.
+  - **Search & tag (2).** `decks.tags` (JSON array) + `GET /api/decks?q=&tag=`, `GET /api/decks/tags`,
+    `PUT /api/decks/:id/tags`. LIKE wildcards in `q` are escaped; tags are lowercased, de-duped and
+    capped (12 × 24 chars). Tag editing lives in the report drawer; founders may not tag.
+  - **All decks (3–8).** The six stat boxes now end **Assigned · Shortlisted** and drive the table
+    filter; the table is **Startup · Founder name · Email ID · Phone · City · Sector · Status** (no AI
+    score at this stage); the right rail's Pipeline progress is *the stat-box titles* (both come from
+    the new `src/shared/deckStats.ts`); an **Activity log** sits under Cohort rating thresholds, fed by
+    the new `GET /api/activity` over `pipeline_events`.
+  - **Nav (9, 26, 28).** `pmpipeline` ("Prog Manager Pipeline") added after Jury Pipeline; `forsignup`
+    deleted. Sidebar sections are now **collapsible** (issue 10): the Settings items were always there,
+    but a Super User's Evaluation section pushed them below the fold.
+  - **Upload (11–14).** Credits balance + Buy credits on top (`creditsBalance` added to
+    `/api/config/summary` for non-founders); startup name / stage / sector auto-recognised by the AI
+    (`startup_name` + `funding_stage` added to the extraction tool; `decks.name_auto` marks a file-name
+    stand-in as provisional) with a **manual override** panel writing through `PATCH /api/decks/:id`;
+    CRM / email-triage intake is offered and **raises a real customization ticket**; the button is
+    **Upload**.
+  - **Query (15–18).** Two tabs — Founder queries / Email query. Row checkboxes carry the selection to
+    the compose pane, which pre-fills a message listing that founder's areas. Clicking a startup opens
+    its **Areas requiring response**. Both come from `src/shared/queries.ts` over real state: missing
+    intake columns + absent deck sections + core areas the AI scored below the workspace's *mediocre*
+    threshold (two new derived columns on the deck view).
+  - **Evaluate (19).** Three panels — startups · evaluation parameters · the clicked parameter's prompt,
+    rubric anchors and AI score. The Session-1 workbench is intact, opened from the row's Score button.
+  - **The evaluation report (20, 21, 23, 24).** New `GET /api/decks/:id/report` + `EvaluationReportModal`:
+    **a column per evaluator**, so it widens as the deck passes hands, with Core Parameters and
+    Addl. parameters tabs. **The hierarchy is enforced server-side** (`EVALUATION_RANK` /
+    `canSeeEvaluatorScores` in `shared/roles.ts`): a program associate's browser never receives the
+    jury's or the PM's numbers — only a count of what was withheld.
+  - **Assign (22).** Four panels — decks · role · members · allocation. Assignment is no longer
+    jury-only (`ASSIGNABLE_EVALUATOR_ROLES`); picking several members spreads the selected decks
+    round-robin, previewed in panel 4 **before** anything is written (a deck carries one assignee).
+  - **Stage screens (25, 27, 29, 30, 31).** `StagePage` is column-driven now. Jury Pipeline and Prog
+    Manager Pipeline carry evaluators & status / AI / Jury / Avg / Addl. scores / assigned date; Intro
+    calls gained Jury score, Addl. scores, **Call completed** and Scheduler; Sign up Pipeline and
+    Onboard ready are backed by the new **`deck_onboarding`** table (payment, documents, curation stage,
+    lead, progress — editable in place); Archive shows reason / stage reached / archived on / by and
+    can **Restore** a startup back into the workflow, which is why `archived` is **no longer a terminal
+    stage** in either pipeline.
+  - **Migrations 0021–0024.** `0021` alias titles + tags + `name_auto`; `0022` `deck_onboarding`;
+    `0023` incubator pipeline history + founder contact detail on the seeded decks (the new All-decks
+    and Query columns had nothing to show without it); `0024` per-evaluator, per-parameter human scores
+    so the report's columns and the hierarchy are demonstrable on the seed.
+  - Green gate: typecheck + lint + **451 unit/worker/client (1 skipped)** + build + **72 e2e** + roles
+    harness **520/526** (the 6 failures are the *pre-existing* mentor gap — confirmed identical at
+    `f8c8d50` — where `mentor` reaches the list endpoints; flagged separately).
+  - `playwright.config.ts` now pins `workers: 2`. Above ~4 the single vite+miniflare dev server starts
+    dropping requests and the tail of the suite fails for reasons unrelated to the app.

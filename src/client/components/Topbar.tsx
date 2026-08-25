@@ -70,7 +70,11 @@ export function Topbar({
                 >
                   {aliasTitle}
                 </span>
-                <span className="text-[10px] text-topbar-fg/50">{roleLabel}</span>
+                {/* Only worth repeating when the org calls the role something
+                    else — otherwise the ribbon would say the same thing twice. */}
+                {aliasTitle !== roleLabel && (
+                  <span className="text-[10px] text-topbar-fg/50">{roleLabel}</span>
+                )}
               </>
             ) : (
               <span className="inline-flex items-center rounded-full bg-amber px-1.5 py-px text-[10px] font-semibold text-navy">

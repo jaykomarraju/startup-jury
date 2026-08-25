@@ -17,16 +17,19 @@ test("program associate assigns an AI-gated deck to a jury member", async ({ pag
   await page.goto("/app/assign");
 
   await expect(page.getByRole("heading", { name: "Assign" })).toBeVisible();
-  const row = page.getByRole("row", { name: /FinStack/ });
-  await expect(row).toBeVisible();
 
-  // Pick a jury member and assign.
-  await row.locator("select").selectOption({ label: "Rajesh Kumar" });
-  await row.getByRole("button", { name: "Assign" }).click();
+  // Aug-2026 issue 22 — four panels: decks → role → members → allocation.
+  await page.getByRole("checkbox", { name: "Select FinStack" }).check();
+  await page.getByRole("button", { name: /^Jury Member/ }).click();
+  await page.getByRole("checkbox", { name: "Select Rajesh Kumar" }).check();
 
-  // The row flips to the assignee badge + a read-only "Assigned" state.
-  await expect(row.getByText("Rajesh Kumar")).toBeVisible();
-  await expect(row.getByText("Assigned", { exact: true })).toBeVisible();
+  // Panel 4 previews the allocation before anything is written.
+  const summary = page.locator("li", { hasText: "FinStack" }).last();
+  await expect(summary).toContainText("Rajesh Kumar");
+
+  await page.getByRole("button", { name: /Confirm assignment/ }).click();
+  await expect(page.getByText(/Assignment confirmed/)).toBeVisible();
+  await expect(page.getByText("FinStack → Rajesh Kumar", { exact: false })).toBeVisible();
 });
 
 test("jury member scores an assigned deck and shortlists it", async ({ page }) => {
@@ -35,7 +38,11 @@ test("jury member scores an assigned deck and shortlists it", async ({ page }) =
   await page.goto("/app/jassigned");
 
   await expect(page.getByRole("heading", { name: "Evaluate" })).toBeVisible();
-  await page.getByRole("button", { name: /InsureFlow/ }).click();
+  // Issue 19 — panel 1 lists the startups; Score opens the workbench.
+  await page
+    .locator("li", { hasText: "InsureFlow" })
+    .getByRole("button", { name: "Score", exact: true })
+    .click();
 
   // The evaluator workbench opens with the AI · My · Average tiles.
   await expect(page.getByRole("heading", { name: "InsureFlow" })).toBeVisible();
@@ -57,12 +64,24 @@ test("staff query an incomplete deck; it records a sent query", async ({ page })
   await login(page, "sunita.rao@demo.startupjury.ai");
   await page.goto("/app/query");
 
-  await expect(page.getByRole("heading", { name: "Query", exact: true })).toBeVisible();
+  // Aug-2026 issues 15–18 — two tabs; tick the startups, then send from the
+  // Email query tab.
+  await expect(page.getByRole("heading", { name: "Founder queries" })).toBeVisible();
   // PayRoute seeds at incomplete.
-  await page.getByRole("button", { name: /PayRoute/ }).click();
-  await page.getByPlaceholder(/current MRR/).fill("Please share MRR, churn, and team size.");
+  await page.getByRole("checkbox", { name: "Select PayRoute" }).check();
+  await page.getByRole("tab", { name: /Email query/ }).click();
+
+  // The recipient and a generated message covering its areas are prefilled.
+  await expect(page.getByText(/vikram@payroute\.in/)).toBeVisible();
+  const body = page.getByRole("textbox", { name: "Body" });
+  await expect(body).toContainText("PayRoute");
+  await body.fill("Please share MRR, churn, and team size.");
   await page.getByRole("button", { name: "Send query" }).click();
 
-  await expect(page.getByText("Sent queries")).toBeVisible();
+  await expect(page.getByText(/Query sent to 1 founder/)).toBeVisible();
+
+  // The drill-down records it against the startup.
+  await page.getByRole("tab", { name: /Founder queries/ }).click();
+  await page.getByRole("button", { name: "PayRoute" }).click();
   await expect(page.getByText(/Please share MRR/)).toBeVisible();
 });

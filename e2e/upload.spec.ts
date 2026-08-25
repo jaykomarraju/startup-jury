@@ -34,9 +34,12 @@ test("upload a pitch deck, see it in All decks, and view its slides", async ({ p
   await page.goto("/app/upload");
 
   const name = `E2E Deck ${Date.now()}`;
-  await page.getByPlaceholder("e.g. GreenGrid").fill(name);
+  // Aug-2026 issue 12 — the startup name is auto-recognised from the deck, so
+  // the field advertises that; typing one still overrides it. Issue 14 made the
+  // submit button simply "Upload".
+  await page.getByLabel("Startup name").fill(name);
   await page.locator('input[type="file"]').setInputFiles(SAMPLE_DECK);
-  await page.getByRole("button", { name: /upload & evaluate/i }).click();
+  await page.getByRole("button", { name: "Upload", exact: true }).click();
 
   // Deferred-evaluation confirmation, then jump to the decks table. Session 7
   // replaced the old blanket "no AI key configured yet" copy with the real

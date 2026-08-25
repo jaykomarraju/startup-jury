@@ -393,6 +393,111 @@ async function main() {
     check("a bogus resubmit token → 404", bogus.status === 404, `HTTP ${bogus.status}`);
   }
 
+  // 4c. Aug-2026 issue log — the new surfaces, live.
+  console.log("\nAug-2026 issue log — alias titles, tags, activity, report");
+  {
+    // Issue 1 — the alias title rides on the session principal.
+    const me = await req("GET", "/api/auth/me", { token: inc.token });
+    check(
+      "the signed-in principal carries its alias title (issue 1)",
+      me.status === 200 && typeof me.json?.user?.title === "string" && me.json.user.title !== "",
+      `title: ${me.json?.user?.title ?? "(none)"}`,
+    );
+    check(
+      "…without changing the platform role",
+      me.json?.user?.role === inc.user?.role,
+      `role: ${me.json?.user?.role} (login said ${inc.user?.role})`,
+    );
+
+    // Issue 2 — search + tags.
+    const search = await req("GET", "/api/decks?q=FinStack", { token: inc.token });
+    const hits = Array.isArray(search.json?.decks) ? search.json.decks : [];
+    check(
+      "deck search narrows the list (issue 2)",
+      search.status === 200 && hits.length > 0 && hits.every((d) => /FinStack/i.test(d.name)),
+      `${hits.length} hit(s)`,
+    );
+    const tags = await req("GET", "/api/decks/tags", { token: inc.token });
+    check(
+      "the tag vocabulary is readable (issue 2)",
+      tags.status === 200 && Array.isArray(tags.json?.tags),
+      `HTTP ${tags.status}`,
+    );
+
+    // Issue 8 — the activity log.
+    const activity = await req("GET", "/api/activity?limit=5", { token: inc.token });
+    const events = Array.isArray(activity.json?.events) ? activity.json.events : [];
+    check(
+      "the activity log returns recent pipeline events (issue 8)",
+      activity.status === 200 && events.length > 0 && events.every((e) => e.deckName && e.toLabel),
+      `${events.length} event(s)`,
+    );
+
+    // Issue 22 — the assignable-evaluator roster.
+    const evaluators = await req("GET", "/api/evaluators", { token: inc.token });
+    const groups = Array.isArray(evaluators.json?.groups) ? evaluators.json.groups : [];
+    check(
+      "evaluators are grouped by role for the Assign screen (issue 22)",
+      evaluators.status === 200 && groups.some((g) => g.members.length > 0),
+      `${groups.map((g) => `${g.role}:${g.members.length}`).join(" ")}`,
+    );
+
+    // Issues 20/21 — the report widens per evaluator, and the hierarchy holds.
+    const deckList = await req("GET", "/api/decks", { token: inc.token });
+    const withJury = (deckList.json?.decks ?? []).find((d) => typeof d.juryScore === "number");
+    if (withJury) {
+      const asSuper = await req(`GET`, `/api/decks/${withJury.id}/report`, { token: inc.token });
+      const cols = Array.isArray(asSuper.json?.columns) ? asSuper.json.columns : [];
+      check(
+        "the evaluation report has a column per evaluator (issue 20)",
+        asSuper.status === 200 && cols.length >= 2 && cols[0].kind === "ai",
+        `${cols.length} column(s) on ${withJury.name}`,
+      );
+      check(
+        "…and the core 13 + role-scoped additional params (issues 23/24)",
+        Array.isArray(asSuper.json?.core) &&
+          asSuper.json.core.length === 13 &&
+          Array.isArray(asSuper.json?.additional) &&
+          asSuper.json.additional.length > 0,
+        `${asSuper.json?.core?.length} core · ${asSuper.json?.additional?.length} groups`,
+      );
+
+      // The program associate is the bottom of the ladder: they must not receive
+      // the higher-ranked evaluators' columns at all.
+      const pa = await login("sunita.rao@demo.startupjury.ai");
+      if (pa.token) {
+        const asPa = await req(`GET`, `/api/decks/${withJury.id}/report`, { token: pa.token });
+        const paCols = Array.isArray(asPa.json?.columns) ? asPa.json.columns : [];
+        check(
+          "a lower-ranked evaluator never receives higher-ranked scores (issue 21)",
+          asPa.status === 200 &&
+            paCols.length < cols.length &&
+            paCols.every((c) => c.kind === "ai" || c.role === "program_associate") &&
+            asPa.json?.hiddenEvaluators > 0,
+          `${paCols.length} column(s), ${asPa.json?.hiddenEvaluators} withheld`,
+        );
+        await req("POST", "/api/auth/logout", { token: pa.token });
+      }
+    } else {
+      check("the evaluation report has a column per evaluator (issue 20)", false, "no jury-scored deck found");
+    }
+
+    // Issue 26/28 — the nav slugs behind the Evaluation section.
+    const pm = await login("raj.kumar@demo.startupjury.ai");
+    if (pm.token) {
+      const pmPipeline = await req("GET", "/api/decks", { token: pm.token });
+      check(
+        "the Program Manager's decision queue has decks to act on (issue 26)",
+        pmPipeline.status === 200 &&
+          (pmPipeline.json?.decks ?? []).some((d) =>
+            ["jury_evaluation", "shortlisted", "rejected"].includes(d.statusId),
+          ),
+        `HTTP ${pmPipeline.status}`,
+      );
+      await req("POST", "/api/auth/logout", { token: pm.token });
+    }
+  }
+
   // 5. Logout.
   console.log("session teardown");
   {

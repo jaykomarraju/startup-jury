@@ -7,6 +7,12 @@ const baseURL = `http://localhost:${PORT}`;
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
+  // One vite+miniflare dev server backs the whole suite. Above ~4 browser
+  // workers the local Worker runtime starts dropping requests ("fetch failed" /
+  // ERR_ADDRESS_INVALID) and the tail of the run fails for reasons that have
+  // nothing to do with the app. Two workers is both reliable and faster than the
+  // default, because nothing burns a 30s timeout.
+  workers: 2,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? "list" : "html",

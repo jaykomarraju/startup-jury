@@ -48,7 +48,11 @@ test("the evaluator workbench shows the program's shortlist minimum", async ({ p
   await expect(page.getByRole("heading", { name: "Evaluate" })).toBeVisible();
 
   // TaxPilot sits in Climate Cohort, whose seeded floor is 5.5 (migration 0016).
-  await page.getByRole("button", { name: /TaxPilot/ }).click();
+  // Aug-2026 issue 19 — the workbench opens from panel 1's Score button.
+  await page
+    .locator("li", { hasText: "TaxPilot" })
+    .getByRole("button", { name: "Score", exact: true })
+    .click();
   await expect(page.getByRole("heading", { name: "TaxPilot" })).toBeVisible();
   await expect(page.getByText(/Shortlist minimum 5\.5 · this deck \d\.\d\d/)).toBeVisible();
 });

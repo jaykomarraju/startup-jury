@@ -30,8 +30,10 @@ test("VC intro calls is a real screen with the seeded call", async ({ page }) =>
   const row = page.getByRole("row", { name: /WealthOS/ });
   await expect(row).toBeVisible();
   await expect(row.getByText("Scheduled")).toBeVisible();
-  // The founder is on the invite at their own domain (§8: any email domain).
-  await expect(row.getByText(/WealthOS founder/)).toBeVisible();
+  // Aug-2026 issue 27 replaced the raw participant list with the design's
+  // Scheduler column (organiser + participant count); the invite itself is
+  // still one click away.
+  await expect(row.getByText(/participants?$/)).toBeVisible();
   await expect(row.getByRole("link", { name: ".ics" })).toBeVisible();
 });
 
@@ -97,7 +99,11 @@ test("the incubator intro-call screen schedules and moves the deck", async ({ pa
   const row = page.getByRole("row", { name: /GreenRoute/ });
   await expect(row).toBeVisible();
   await expect(row.getByText("Scheduled")).toBeVisible();
-  await expect(row.getByText(/Rajesh Kumar/)).toBeVisible(); // the invited juror
+  // Aug-2026 issue 27 — the Scheduler column names the organiser and counts the
+  // invited participants (the juror among them).
+  await expect(row.getByText(/participants?$/)).toBeVisible();
+  // …and the call can be closed out from the Call completed column.
+  await expect(row.getByRole("button", { name: "Mark completed" })).toBeVisible();
 });
 
 test("a jury member sees their intro call read-only", async ({ page }) => {
@@ -116,15 +122,22 @@ test("the VC Query screen lists founder queries and sends one", async ({ page })
   await login(page, "rhea.nair@demo.startupjury.ai"); // vc_analyst
   await page.goto("/app/query");
 
-  await expect(page.getByRole("heading", { name: "Query", exact: true })).toBeVisible();
+  // Aug-2026 issue 15 — two tabs on the top row.
+  await expect(page.getByRole("heading", { name: "Founder queries" })).toBeVisible();
   await expect(page.getByText("coming soon")).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: /Founder queries/ })).toBeVisible();
+  await expect(page.getByRole("tab", { name: /Email query/ })).toBeVisible();
   // The prototype's column set.
   await expect(page.getByRole("columnheader", { name: "Parameters needing response" })).toBeVisible();
 
-  await page.getByRole("button", { name: /CyberVault|WealthOS|QuantIQ/ }).first().click();
-  await page.getByPlaceholder(/current MRR/).fill("Please share ARR and net revenue retention.");
+  // Issue 16 — ticking a startup carries it to the Email query tab.
+  await page.getByRole("checkbox").nth(1).check();
+  await page.getByRole("tab", { name: /Email query/ }).click();
+  const body = page.getByRole("textbox", { name: "Body" });
+  await expect(body).not.toBeEmpty();
+  await body.fill("Please share ARR and net revenue retention.");
   await page.getByRole("button", { name: "Send query" }).click();
-  await expect(page.getByText(/Please share ARR/)).toBeVisible();
+  await expect(page.getByText(/Query sent to 1 founder/)).toBeVisible();
 });
 
 test("the team logs and triages an internal issue", async ({ page }) => {
