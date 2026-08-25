@@ -20,7 +20,8 @@ export const vcPipeline: PipelineConfig = {
     { id: "term_sheet", label: "Term Sheet", kind: "advancing" },
     { id: "legal_dd", label: "Legal DD", kind: "advancing" },
     { id: "onboard_ready", label: "Onboard Ready", kind: "advancing", terminal: true },
-    { id: "archived", label: "Archived", kind: "exit", terminal: true },
+    // Not terminal since Aug-2026 issue 31 — Archive can restore a deal.
+    { id: "archived", label: "Archived", kind: "exit" },
   ],
   transitions: [
     {
@@ -148,6 +149,15 @@ export const vcPipeline: PipelineConfig = {
       action: "complete_legal_dd",
       label: "Complete legal DD",
       roles: ["admin", "superuser"],
+    },
+    // Aug-2026 issue 31 (VC parity) — restore a passed deal back into the
+    // pipeline; it re-enters at analyst scoring.
+    {
+      from: "archived",
+      to: "analyst_scoring",
+      action: "restore",
+      label: "Restore",
+      roles: ["partner", "admin", "superuser"],
     },
   ],
 };

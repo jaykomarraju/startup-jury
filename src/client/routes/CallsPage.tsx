@@ -17,8 +17,16 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { CalendarPlus, CalendarCheck, Download, Mail, X } from "lucide-react";
-import { Button, Card, Badge, EmptyState, ScoreChip, EvaluationDrawer } from "../components";
+import { CalendarPlus, CalendarCheck, Download, Mail, X, BarChart3 } from "lucide-react";
+import {
+  Button,
+  Card,
+  Badge,
+  EmptyState,
+  ScoreChip,
+  EvaluationDrawer,
+  EvaluationReportModal,
+} from "../components";
 import { useAuth } from "../auth/useAuth";
 import {
   listDecks,
@@ -117,6 +125,9 @@ export function CallsPage({ config }: { config: CallsConfig }) {
 
   // Report drawer (same behaviour as the stage screens).
   const [selected, setSelected] = useState<DeckView | null>(null);
+  // Aug-2026 issue 27 — the "Addl. Parameter scores" column opens the
+  // consolidated report on its additional-parameters tab.
+  const [reportFor, setReportFor] = useState<DeckView | null>(null);
   const [report, setReport] = useState<{
     scores: ParamScoreView[];
     extraction: ExtractionSlide[];
@@ -271,6 +282,21 @@ export function CallsPage({ config }: { config: CallsConfig }) {
     return out;
   }
 
+  /** Issue 27 — close a call out from the "Call completed" column. */
+  async function markCompleted(call: CallView) {
+    setBusy(call.id);
+    setNotice(null);
+    try {
+      await updateCall(call.id, { status: "completed" });
+      await load();
+      setNotice(`${call.deckName}'s ${config.title.toLowerCase()} marked completed.`);
+    } catch {
+      setError("Couldn't mark the call completed. Try again.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function save() {
     if (!modalDeck || busy) return;
     setBusy("save");
@@ -384,15 +410,21 @@ export function CallsPage({ config }: { config: CallsConfig }) {
       ) : (
         <Card flush>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] text-left">
+            <table className="w-full min-w-[1240px] text-left">
               <thead>
                 <tr className="border-b border-line text-fg-muted">
+                  {/* Aug-2026 issue 27 — the design's column set. */}
                   <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Startup</th>
                   <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">AI score</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Jury score</th>
                   <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Avg. score</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">
+                    Addl. Parameter scores
+                  </th>
                   <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Call scheduled</th>
                   <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Call date</th>
-                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Participants</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Call completed</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Scheduler</th>
                   <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-right">Actions</th>
                 </tr>
               </thead>
@@ -416,7 +448,15 @@ export function CallsPage({ config }: { config: CallsConfig }) {
                         <ScoreChip value={deck.aiScore} />
                       </td>
                       <td className="px-4 py-3 font-mono text-sm text-fg">
+                        {deck.juryScore !== undefined ? deck.juryScore.toFixed(1) : "—"}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-sm text-fg">
                         {deck.decisionScore !== undefined ? deck.decisionScore.toFixed(2) : "—"}
+                      </td>
+                      <td className="px-4 py-3">
+                        <Button variant="secondary" size="sm" onClick={() => setReportFor(deck)}>
+                          <BarChart3 className="mr-1 h-3.5 w-3.5" /> View scores
+                        </Button>
                       </td>
                       <td className="px-4 py-3">
                         {call?.status === "cancelled" ? (
@@ -428,10 +468,30 @@ export function CallsPage({ config }: { config: CallsConfig }) {
                         )}
                       </td>
                       <td className="px-4 py-3 text-sm text-fg-muted">{fmtDateTime(call?.scheduledAt ?? null)}</td>
+                      <td className="px-4 py-3">
+                        {call?.status === "completed" ? (
+                          <Badge tone="positive">Completed</Badge>
+                        ) : call && canSchedule && call.scheduledAt ? (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={busy === call.id}
+                            onClick={() => markCompleted(call)}
+                          >
+                            Mark completed
+                          </Button>
+                        ) : (
+                          <span className="text-sm text-fg-muted">—</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-xs text-fg-muted">
-                        {call?.participants.length
-                          ? call.participants.map((p) => p.name ?? p.email).join(", ")
-                          : "—"}
+                        {call?.organizerName ?? (canSchedule ? "You, on scheduling" : "—")}
+                        {call?.participants.length ? (
+                          <div className="mt-0.5">
+                            {call.participants.length} participant
+                            {call.participants.length === 1 ? "" : "s"}
+                          </div>
+                        ) : null}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -696,6 +756,15 @@ export function CallsPage({ config }: { config: CallsConfig }) {
           scores={report?.scores ?? []}
           extraction={report?.extraction ?? []}
           versions={report?.versions ?? []}
+        />
+      ) : null}
+
+      {reportFor ? (
+        <EvaluationReportModal
+          deckId={reportFor.id}
+          deckName={reportFor.name}
+          initialTab="additional"
+          onClose={() => setReportFor(null)}
         />
       ) : null}
     </div>

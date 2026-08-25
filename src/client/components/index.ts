@@ -11,6 +11,7 @@ export { ScoreBar, ScoreBars, type ParamScoreView } from "./ScoreBars";
 export { EvaluationDrawer, type ExtractionSlide } from "./EvaluationDrawer";
 export { DeckPdfViewer } from "./DeckPdfViewer";
 export { TagEditor } from "./TagEditor";
+export { EvaluationReportModal } from "./EvaluationReport";
 export {
   ResearchMenu,
   RESEARCH_PROVIDERS,

@@ -24,7 +24,9 @@ export const incubatorPipeline: PipelineConfig = {
     { id: "signup", label: "Signup", kind: "advancing" },
     { id: "onboard_ready", label: "Ready to Onboard", kind: "advancing", terminal: true },
     { id: "rejected", label: "Rejected", kind: "exit" },
-    { id: "archived", label: "Archived", kind: "exit", terminal: true },
+    // Not terminal since Aug-2026 issue 31: Archive offers "Restore back into
+    // the workflow", so there IS a transition out of it.
+    { id: "archived", label: "Archived", kind: "exit" },
   ],
   transitions: [
     {
@@ -134,6 +136,22 @@ export const incubatorPipeline: PipelineConfig = {
       to: "archived",
       action: "archive",
       label: "Archive",
+      roles: ["program_manager", "admin", "superuser"],
+    },
+    // Aug-2026 issue 31 — "Restore any of them back into the workflow." A
+    // restored startup re-enters at the AI gate, ready to be assigned again.
+    {
+      from: "rejected",
+      to: "ai_evaluated",
+      action: "restore",
+      label: "Restore",
+      roles: ["program_manager", "admin", "superuser"],
+    },
+    {
+      from: "archived",
+      to: "ai_evaluated",
+      action: "restore",
+      label: "Restore",
       roles: ["program_manager", "admin", "superuser"],
     },
   ],

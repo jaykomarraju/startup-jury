@@ -46,7 +46,10 @@ const DECK_COLUMNS =
 const DECK_JOINS =
   "LEFT JOIN users u ON u.id = d.assigned_to " +
   "LEFT JOIN programs pr ON pr.id = d.program_id " +
-  "LEFT JOIN cohorts co ON co.id = d.cohort_id";
+  "LEFT JOIN cohorts co ON co.id = d.cohort_id " +
+  // Aug-2026 issues 29/30 — sign-up + curation state for the pipeline screens.
+  "LEFT JOIN deck_onboarding ob ON ob.deck_id = d.id " +
+  "LEFT JOIN users lead ON lead.id = ob.lead_user_id";
 const DECK_DERIVED =
   "u.name AS assigned_to_name, pr.shortlist_min AS shortlist_min, " +
   "pr.name AS program_name, co.name AS cohort_name, " +
@@ -58,7 +61,23 @@ const DECK_DERIVED =
   "(SELECT GROUP_CONCAT(p.name, '||') FROM scores s JOIN parameters p ON p.id = s.parameter_id " +
   "  WHERE s.deck_id = d.id AND s.evaluator_kind = 'ai' AND p.informational = 0 " +
   "    AND s.value < (SELECT o.threshold_mediocre FROM org_settings o WHERE o.edition = d.edition)) AS weak_areas, " +
-  "(SELECT GROUP_CONCAT(e.label, '||') FROM deck_extractions e WHERE e.deck_id = d.id AND e.missing = 1) AS missing_sections";
+  "(SELECT GROUP_CONCAT(e.label, '||') FROM deck_extractions e WHERE e.deck_id = d.id AND e.missing = 1) AS missing_sections, " +
+  // Aug-2026 issue 25 — the Jury Pipeline's "Assigned date" and whether the
+  // assignee has actually submitted their evaluation yet.
+  "(SELECT MAX(pe.created_at) FROM pipeline_events pe WHERE pe.deck_id = d.id AND pe.action = 'assign_jury') AS assigned_at, " +
+  "(SELECT COUNT(*) FROM evaluations ev WHERE ev.deck_id = d.id AND ev.evaluator_id IS NOT NULL AND ev.evaluator_id = d.assigned_to) AS assignee_submitted, " +
+  // Issue 27/29 — the intro call's schedule + status.
+  "(SELECT ca.scheduled_at FROM calls ca WHERE ca.deck_id = d.id AND ca.status != 'cancelled' ORDER BY ca.scheduled_at DESC LIMIT 1) AS call_at, " +
+  "(SELECT ca.status FROM calls ca WHERE ca.deck_id = d.id AND ca.status != 'cancelled' ORDER BY ca.scheduled_at DESC LIMIT 1) AS call_status, " +
+  // Issue 31 — how, when and by whom the startup left the active pipeline.
+  "(SELECT pe.from_stage FROM pipeline_events pe WHERE pe.deck_id = d.id AND pe.to_stage IN ('rejected', 'archived') ORDER BY pe.created_at DESC, pe.rowid DESC LIMIT 1) AS exit_from, " +
+  "(SELECT pe.action FROM pipeline_events pe WHERE pe.deck_id = d.id AND pe.to_stage IN ('rejected', 'archived') ORDER BY pe.created_at DESC, pe.rowid DESC LIMIT 1) AS exit_action, " +
+  "(SELECT pe.note FROM pipeline_events pe WHERE pe.deck_id = d.id AND pe.to_stage IN ('rejected', 'archived') ORDER BY pe.created_at DESC, pe.rowid DESC LIMIT 1) AS exit_note, " +
+  "(SELECT pe.created_at FROM pipeline_events pe WHERE pe.deck_id = d.id AND pe.to_stage IN ('rejected', 'archived') ORDER BY pe.created_at DESC, pe.rowid DESC LIMIT 1) AS exit_at, " +
+  "(SELECT au.name FROM pipeline_events pe LEFT JOIN users au ON au.id = pe.actor_id WHERE pe.deck_id = d.id AND pe.to_stage IN ('rejected', 'archived') ORDER BY pe.created_at DESC, pe.rowid DESC LIMIT 1) AS exit_by, " +
+  // Issues 29/30 — the onboarding row (may be absent = everything pending).
+  "ob.payment_status AS payment_status, ob.documents_status AS documents_status, " +
+  "ob.curation_stage AS curation_stage, ob.progress AS onboarding_progress, lead.name AS onboarding_lead";
 
 interface DeckRow {
   id: string;
@@ -90,6 +109,20 @@ interface DeckRow {
   human_avg?: number | null;
   weak_areas?: string | null;
   missing_sections?: string | null;
+  assigned_at?: string | null;
+  assignee_submitted?: number | null;
+  call_at?: string | null;
+  call_status?: string | null;
+  exit_from?: string | null;
+  exit_action?: string | null;
+  exit_note?: string | null;
+  exit_at?: string | null;
+  exit_by?: string | null;
+  payment_status?: string | null;
+  documents_status?: string | null;
+  curation_stage?: string | null;
+  onboarding_progress?: number | null;
+  onboarding_lead?: string | null;
 }
 
 export type AiState = "ok" | "in_progress" | "retrying" | "failed";
@@ -197,6 +230,22 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role) {
     tags: parseTags(row.tags),
     weakAreas: splitList(row.weak_areas),
     missingSections: splitList(row.missing_sections),
+    // Aug-2026 stage-screen columns (issues 25–31).
+    juryScore: typeof row.human_avg === "number" ? row.human_avg : undefined,
+    assignedAt: row.assigned_at ?? undefined,
+    assigneeSubmitted: (row.assignee_submitted ?? 0) > 0,
+    callScheduledAt: row.call_at ?? undefined,
+    callStatus: row.call_status ?? undefined,
+    exitFromLabel: row.exit_from ? statusLabel(edition, row.exit_from) : undefined,
+    exitAction: row.exit_action ?? undefined,
+    exitNote: row.exit_note ?? undefined,
+    exitAt: row.exit_at ?? undefined,
+    exitBy: row.exit_by ?? undefined,
+    paymentStatus: row.payment_status ?? undefined,
+    documentsStatus: row.documents_status ?? undefined,
+    curationStage: row.curation_stage ?? undefined,
+    onboardingProgress: row.onboarding_progress ?? undefined,
+    onboardingLead: row.onboarding_lead ?? undefined,
     uploadedAt: row.created_at ?? undefined,
     assignedTo: row.assigned_to ?? undefined,
     assignedToName: row.assigned_to_name ?? undefined,
@@ -353,6 +402,97 @@ decks.get("/:id", async (c) => {
     weightedTotal: evaluation?.weighted_total ?? row.ai_score ?? undefined,
     verdict: evaluation?.verdict ? VERDICT_LABELS[evaluation.verdict] ?? evaluation.verdict : undefined,
   });
+});
+
+// ── Sign-up / curation state (Aug-2026 issues 29 & 30) ───────────────────────
+
+const PAYMENT_STATUSES = ["pending", "partial", "paid", "waived"];
+const DOCUMENT_STATUSES = ["pending", "partial", "complete"];
+
+/** Who may record sign-up / curation progress. */
+const ONBOARDING_ROLES = ["program_associate", "program_manager", "admin", "partner"] as const;
+
+/**
+ * PUT /api/decks/:id/onboarding — record payment / documents / curation state.
+ *
+ * Issue 29 wants Payment status and Documents status on the Sign up Pipeline;
+ * issue 30 wants Curation stage, a jury-member lead and Progress on Onboard
+ * ready. One row per deck, created on first write.
+ */
+decks.put("/:id/onboarding", requireRole(...ONBOARDING_ROLES), async (c) => {
+  const { edition, id: actorId } = c.var.user;
+  const id = c.req.param("id");
+  const deck = await c.env.DB.prepare("SELECT id FROM decks WHERE id = ? AND edition = ?")
+    .bind(id, edition)
+    .first<{ id: string }>();
+  if (!deck) return c.json({ error: "not_found" }, 404);
+
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const existing = await c.env.DB.prepare(
+    "SELECT payment_status, documents_status, curation_stage, progress, lead_user_id, notes " +
+      "FROM deck_onboarding WHERE deck_id = ?",
+  )
+    .bind(id)
+    .first<{
+      payment_status: string;
+      documents_status: string;
+      curation_stage: string | null;
+      progress: number;
+      lead_user_id: string | null;
+      notes: string | null;
+    }>();
+
+  const pick = (value: unknown, allowed: string[], fallback: string) =>
+    typeof value === "string" && allowed.includes(value) ? value : fallback;
+  const text = (value: unknown, fallback: string | null) =>
+    typeof value === "string" ? (value.trim() || null) : fallback;
+
+  const payment = pick(body.paymentStatus, PAYMENT_STATUSES, existing?.payment_status ?? "pending");
+  const documents = pick(
+    body.documentsStatus,
+    DOCUMENT_STATUSES,
+    existing?.documents_status ?? "pending",
+  );
+  const stage = text(body.curationStage, existing?.curation_stage ?? null);
+  const notes = text(body.notes, existing?.notes ?? null);
+  const rawProgress = Number(body.progress);
+  const progress = Number.isFinite(rawProgress)
+    ? Math.max(0, Math.min(100, Math.round(rawProgress)))
+    : (existing?.progress ?? 0);
+
+  let leadId = existing?.lead_user_id ?? null;
+  if (typeof body.leadUserId === "string") {
+    const candidate = body.leadUserId.trim();
+    if (candidate === "") {
+      leadId = null;
+    } else {
+      const lead = await c.env.DB.prepare(
+        "SELECT id FROM users WHERE id = ? AND edition = ? AND active = 1",
+      )
+        .bind(candidate, edition)
+        .first<{ id: string }>();
+      if (!lead) return c.json({ error: "invalid_lead" }, 400);
+      leadId = lead.id;
+    }
+  }
+
+  await c.env.DB.prepare(
+    "INSERT INTO deck_onboarding (deck_id, payment_status, documents_status, curation_stage, progress, lead_user_id, notes, updated_at, updated_by) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+      "ON CONFLICT(deck_id) DO UPDATE SET payment_status = excluded.payment_status, " +
+      "documents_status = excluded.documents_status, curation_stage = excluded.curation_stage, " +
+      "progress = excluded.progress, lead_user_id = excluded.lead_user_id, notes = excluded.notes, " +
+      "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+  )
+    .bind(id, payment, documents, stage, progress, leadId, notes, new Date().toISOString(), actorId)
+    .run();
+
+  const updated = await c.env.DB.prepare(
+    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} WHERE d.id = ? AND d.edition = ?`,
+  )
+    .bind(id, edition)
+    .first<DeckRow>();
+  return c.json({ ok: true, deck: updated ? toDeckView(edition, updated, c.var.user.role) : null });
 });
 
 // ── Manual override of the auto-recognised details (Aug-2026 issue 12) ───────
@@ -521,9 +661,16 @@ decks.get("/:id/report", async (c) => {
       .all<ReportScoreRow>()
   ).results;
 
+  // Evaluators are sourced from BOTH the roll-up and the per-parameter scores: an
+  // evaluator who has submitted a total but whose per-parameter detail predates
+  // this report still earns a column (issue 20 — the report widens as the deck
+  // passes hands), it just has empty cells.
   const evaluationRows = (
     await c.env.DB.prepare(
-      "SELECT evaluator_id, weighted_total, remarks, submitted_at FROM evaluations WHERE deck_id = ?",
+      "SELECT e.evaluator_id, e.weighted_total, e.remarks, e.submitted_at, " +
+        "u.name AS evaluator_name, u.role AS evaluator_role, u.title AS evaluator_title, " +
+        "u.initials AS evaluator_initials " +
+        "FROM evaluations e LEFT JOIN users u ON u.id = e.evaluator_id WHERE e.deck_id = ?",
     )
       .bind(id)
       .all<{
@@ -531,6 +678,10 @@ decks.get("/:id/report", async (c) => {
         weighted_total: number | null;
         remarks: string | null;
         submitted_at: string | null;
+        evaluator_name: string | null;
+        evaluator_role: string | null;
+        evaluator_title: string | null;
+        evaluator_initials: string | null;
       }>()
   ).results;
 
@@ -553,33 +704,44 @@ decks.get("/:id/report", async (c) => {
   const seenEvaluators = new Map<string, Column>();
   let hidden = 0;
 
-  for (const r of scoreRows) {
-    if (r.evaluator_kind !== "human" || !r.evaluator_id) continue;
-    if (seenEvaluators.has(r.evaluator_id)) continue;
-    const evaluatorRole = (r.evaluator_role ?? "") as Role;
+  const addEvaluator = (person: {
+    evaluator_id: string | null;
+    evaluator_name: string | null;
+    evaluator_role: string | null;
+    evaluator_title: string | null;
+    evaluator_initials: string | null;
+  }) => {
+    if (!person.evaluator_id || seenEvaluators.has(person.evaluator_id)) return;
+    const evaluatorRole = (person.evaluator_role ?? "") as Role;
     // Issue 21 — your own column is always visible; anyone above you is not.
     const visible =
-      r.evaluator_id === viewerId || canSeeEvaluatorScores(edition, role, evaluatorRole);
+      person.evaluator_id === viewerId || canSeeEvaluatorScores(edition, role, evaluatorRole);
     if (!visible) {
       hidden += 1;
-      seenEvaluators.set(r.evaluator_id, {
-        id: r.evaluator_id,
+      seenEvaluators.set(person.evaluator_id, {
+        id: person.evaluator_id,
         kind: "human",
         name: "",
         rank: -1,
       });
-      continue;
+      return;
     }
-    seenEvaluators.set(r.evaluator_id, {
-      id: r.evaluator_id,
+    seenEvaluators.set(person.evaluator_id, {
+      id: person.evaluator_id,
       kind: "human",
-      name: r.evaluator_name ?? "Evaluator",
+      name: person.evaluator_name ?? "Evaluator",
       role: evaluatorRole,
       roleLabel: roleLabel(edition, evaluatorRole),
-      title: r.evaluator_title ?? undefined,
-      initials: r.evaluator_initials ?? undefined,
+      title: person.evaluator_title ?? undefined,
+      initials: person.evaluator_initials ?? undefined,
       rank: evaluationRank(edition, evaluatorRole),
     });
+  };
+
+  for (const r of evaluationRows) addEvaluator(r);
+  for (const r of scoreRows) {
+    if (r.evaluator_kind !== "human") continue;
+    addEvaluator(r);
   }
 
   const visibleEvaluators = [...seenEvaluators.values()]

@@ -79,6 +79,28 @@ export function setDeckTags(id: string, tags: string[]): Promise<{ ok: true; tag
   }).then((r) => json(r));
 }
 
+// ── Sign-up / curation state (issues 29 & 30) ────────────────────────────────
+
+export interface OnboardingInput {
+  paymentStatus?: string;
+  documentsStatus?: string;
+  curationStage?: string;
+  progress?: number;
+  leadUserId?: string;
+  notes?: string;
+}
+
+export function updateDeckOnboarding(
+  id: string,
+  input: OnboardingInput,
+): Promise<{ ok: true; deck: DeckView | null }> {
+  return fetch(`/api/decks/${id}/onboarding`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  }).then((r) => json(r));
+}
+
 // ── Consolidated evaluation report (issues 20/21/23/24) ──────────────────────
 
 /** One column of the report: the AI, or one human evaluator. */
@@ -455,9 +477,22 @@ export interface RubricParameter {
   informational?: boolean;
   /** The role that owns an additional param. */
   roleScope?: string;
+  /** The configurable AI evaluation prompt (shown in the parameter detail panel). */
+  prompt?: string;
 }
 
-export function listParameters(): Promise<{ parameters: RubricParameter[] }> {
+/** A 0–10 rubric band the AI scores against (parameter detail panel). */
+export interface RubricAnchor {
+  band: string;
+  min: number;
+  max: number;
+  label: string;
+}
+
+export function listParameters(): Promise<{
+  parameters: RubricParameter[];
+  anchors?: RubricAnchor[];
+}> {
   return fetch("/api/parameters").then((r) => json(r));
 }
 
@@ -910,7 +945,10 @@ export const listCallDirectory = () =>
 export const scheduleCall = (input: CallInput) =>
   postJson<{ ok: true; advanced: boolean; invited: number; call: CallView | null }>("/api/calls", input);
 
-export const updateCall = (id: string, patch: Partial<CallInput> & { status?: "cancelled" }) =>
+export const updateCall = (
+  id: string,
+  patch: Partial<CallInput> & { status?: "cancelled" | "completed" | "scheduled" },
+) =>
   fetch(`/api/calls/${id}`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },

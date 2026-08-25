@@ -61,6 +61,29 @@ export interface DeckView {
   weakAreas?: string[];
   /** Deck sections the extraction found absent (Traction, Team, Ask…). */
   missingSections?: string[];
+
+  // ── Aug-2026 stage-screen columns (issues 25–31) ──────────────────────────
+  /** Mean of the human evaluations submitted on this deck. */
+  juryScore?: number;
+  /** When the deck was last assigned to an evaluator. */
+  assignedAt?: string;
+  /** True once the current assignee has submitted their evaluation. */
+  assigneeSubmitted?: boolean;
+  /** The deck's live (non-cancelled) call, if one is scheduled. */
+  callScheduledAt?: string;
+  callStatus?: string;
+  /** How the startup left the active pipeline (Archive screen). */
+  exitFromLabel?: string;
+  exitAction?: string;
+  exitNote?: string;
+  exitAt?: string;
+  exitBy?: string;
+  /** Sign-up / curation state (Sign up Pipeline + Onboard ready). */
+  paymentStatus?: string;
+  documentsStatus?: string;
+  curationStage?: string;
+  onboardingProgress?: number;
+  onboardingLead?: string;
   /** ISO timestamp the deck was uploaded. */
   uploadedAt?: string;
   /** Transitions the current user may perform from this deck's stage. */

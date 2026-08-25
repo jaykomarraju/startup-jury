@@ -85,8 +85,12 @@ describe("nav manifest", () => {
     const pa = new Set(ids(navForUser("incubator", "program_associate")));
     expect(pa).toContain("assign");
     expect(pa).toContain("introcalls");
-    expect(pa).toContain("forsignup");
+    expect(pa).toContain("incuration");
     expect(pa).not.toContain("jurypipeline");
+    // Aug-2026 issue 26/28: Prog Manager Pipeline is the PM's surface, and
+    // "For Sign up" was deleted from the product.
+    expect(pa).not.toContain("pmpipeline");
+    expect(pa).not.toContain("forsignup");
     expect(pa).not.toContain("coreparams");
 
     const pm = new Set(ids(navForUser("incubator", "program_manager")));
@@ -97,6 +101,7 @@ describe("nav manifest", () => {
     expect(pm).toContain("jurypipeline");
     expect(pm).toContain("introcalls");
     expect(pm).toContain("setup");
+    expect(pm).toContain("pmpipeline");
     expect(pm).not.toContain("forsignup");
   });
 

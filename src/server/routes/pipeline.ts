@@ -29,6 +29,10 @@ pipeline.use("/queries/*", requireAuth);
 pipeline.use("/queries", requireAuth);
 pipeline.use("/jury", requireAuth);
 pipeline.use("/parameters", requireAuth);
+// Aug-2026: the workspace activity log (issue 8) and the assignable-evaluator
+// roster (issue 22) are authed like every other pipeline route.
+pipeline.use("/activity", requireAuth);
+pipeline.use("/evaluators", requireAuth);
 
 interface DeckRow {
   id: string;
@@ -914,18 +918,40 @@ pipeline.get("/jury", requireRole("program_associate", "program_manager", "admin
 pipeline.get("/parameters", async (c) => {
   const rows = (
     await c.env.DB.prepare(
-      "SELECT key, name, weight, informational, role_scope FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
+      "SELECT key, name, weight, informational, role_scope, prompt FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
     )
       .bind(c.var.user.edition)
-      .all<{ key: string; name: string; weight: number; informational: number; role_scope: string | null }>()
+      .all<{
+        key: string;
+        name: string;
+        weight: number;
+        informational: number;
+        role_scope: string | null;
+        prompt: string | null;
+      }>()
   ).results.map((p) => ({
     key: p.key,
     name: p.name,
     weight: p.weight,
     informational: p.informational === 1,
     roleScope: p.role_scope ?? undefined,
+    // Aug-2026 issue 19 — the Evaluate screen's third panel shows the evaluation
+    // prompt for whichever parameter is clicked in the second panel.
+    prompt: p.prompt ?? undefined,
   }));
-  return c.json({ parameters: rows });
+  // The shared 0–10 rubric bands, so the parameter detail panel can show the
+  // anchors the AI scored against.
+  const anchors = (
+    await c.env.DB.prepare(
+      "SELECT band, min_score, max_score, label FROM rubric_anchors ORDER BY min_score DESC",
+    ).all<{ band: string; min_score: number; max_score: number; label: string }>()
+  ).results.map((a) => ({
+    band: a.band,
+    min: a.min_score,
+    max: a.max_score,
+    label: a.label,
+  }));
+  return c.json({ parameters: rows, anchors });
 });
 
 export { pipeline };

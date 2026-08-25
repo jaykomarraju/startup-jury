@@ -504,9 +504,14 @@ calls.patch("/:id", async (c) => {
     sets.push("remarks = ?");
     binds.push(body.notes.trim() || null);
   }
-  if (body.status === "cancelled") {
+  // Aug-2026 issue 27 — the Intro calls screen has a "Call completed" column, so
+  // a scheduler can close a call out (and reopen one closed by mistake).
+  if (body.status === "cancelled" || body.status === "completed") {
     sets.push("status = ?");
-    binds.push("cancelled");
+    binds.push(body.status);
+  } else if (body.status === "scheduled" && existing.scheduled_at) {
+    sets.push("status = ?");
+    binds.push("scheduled");
   }
 
   const replaceParticipants = "participants" in body;
