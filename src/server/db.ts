@@ -9,6 +9,8 @@ export interface UserRow {
   edition: Edition;
   initials: string;
   active: number;
+  /** Organizational alias title (Aug-2026 issue 1); NULL = use the role label. */
+  title: string | null;
 }
 
 export async function getUserByEmail(

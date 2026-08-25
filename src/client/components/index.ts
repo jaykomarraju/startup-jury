@@ -10,6 +10,7 @@ export { DeckCard, DeckRow, ScoreChip } from "./DeckCard";
 export { ScoreBar, ScoreBars, type ParamScoreView } from "./ScoreBars";
 export { EvaluationDrawer, type ExtractionSlide } from "./EvaluationDrawer";
 export { DeckPdfViewer } from "./DeckPdfViewer";
+export { TagEditor } from "./TagEditor";
 export {
   ResearchMenu,
   RESEARCH_PROVIDERS,

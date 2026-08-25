@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   Upload as UploadIcon,
   FileCheck,
@@ -8,12 +8,18 @@ import {
   AlertTriangle,
   History,
   Copy,
+  Coins,
+  Sparkles,
+  Plug,
 } from "lucide-react";
 import { Card, Button, SignalTag } from "../components";
 import {
   uploadSingle,
   uploadBulk,
   listPrograms,
+  getConfigSummary,
+  updateDeckDetails,
+  createTicket,
   type SingleUploadResult,
   type BulkUploadResult,
   type BulkUploadRow,
@@ -33,6 +39,7 @@ type Method = "single" | "bulk";
 /** null = idle; drives the staged progress panel during a single upload. */
 type Phase = "uploading" | "scoring";
 
+/** "" means "let the AI read it off the deck" (Aug-2026 issue 12). */
 const STAGES = ["Pre-seed", "Seed", "Series A", "Series B+"];
 
 /** The columns the AI reads off the deck, in the order the results table shows
@@ -59,14 +66,15 @@ const BULK_ERRORS: Record<NonNullable<BulkUploadRow["error"]>, string> = {
 };
 
 /**
- * Upload screen (Evaluation → Upload). Single upload evaluates the PDF directly
- * against Claude and shows the AI verdict inline; bulk upload stores each PDF and
- * enqueues a per-deck evaluation job.
+ * Upload screen (Evaluation → Upload).
  *
- * Session 5 adds the intake guardrails: the required founder/contact columns
- * (founder, email, phone, city, sector) are surfaced and validated — the AI reads
- * them off the deck and anything still missing marks it **Incomplete** — plus soft
- * duplicate / returning-company alerts and per-row errors on a bulk upload.
+ * Aug-2026 issue log:
+ *   • 11 — the credits balance and a Buy-credits link sit on top.
+ *   • 12 — startup name, stage, sector and cohort are auto-recognised, with a
+ *          manual override panel once the deck has been read.
+ *   • 13 — CRM / email-triage intake is offered, and raises a customization
+ *          ticket rather than pretending to be built.
+ *   • 14 — the submit button is "Upload", not "Upload & evaluate".
  */
 export function UploadPage() {
   const navigate = useNavigate();
@@ -79,11 +87,12 @@ export function UploadPage() {
   const [error, setError] = useState<string | null>(null);
   const [single, setSingle] = useState<SingleUploadResult | null>(null);
   const [bulk, setBulk] = useState<BulkUploadResult | null>(null);
+  const [credits, setCredits] = useState<number | null>(null);
 
   const singleFile = useRef<HTMLInputElement>(null);
   const bulkFiles = useRef<HTMLInputElement>(null);
   const [name, setName] = useState("");
-  const [stage, setStage] = useState(STAGES[1]);
+  const [stage, setStage] = useState("");
   const [sector, setSector] = useState("");
   const [city, setCity] = useState("");
   const [founder, setFounder] = useState("");
@@ -98,6 +107,9 @@ export function UploadPage() {
     listPrograms()
       .then((r) => setPrograms(r.programs))
       .catch(() => setPrograms([]));
+    getConfigSummary()
+      .then((c) => setCredits(c.creditsBalance ?? null))
+      .catch(() => {});
   }, []);
 
   const activeProgram = programs.find((p) => p.id === programId) ?? null;
@@ -134,8 +146,9 @@ export function UploadPage() {
     try {
       const form = new FormData();
       form.set("file", file);
-      form.set("name", name || file.name.replace(/\.pdf$/i, ""));
-      form.set("stage", stage);
+      // Issue 12 — anything left blank is recognised from the deck by the AI.
+      if (name) form.set("name", name);
+      if (stage) form.set("stage", stage);
       form.set("sector", sector);
       form.set("city", city);
       form.set("founder", founder);
@@ -143,7 +156,10 @@ export function UploadPage() {
       form.set("founderPhone", founderPhone);
       if (programId) form.set("programId", programId);
       if (cohortId) form.set("cohortId", cohortId);
-      setSingle(await uploadSingle(form));
+      const res = await uploadSingle(form);
+      setSingle(res);
+      // One credit was just spent — keep the header honest without a reload.
+      setCredits((c) => (c === null ? c : Math.max(0, c - 1)));
     } catch {
       setError("Upload failed. Try again.");
     } finally {
@@ -163,7 +179,9 @@ export function UploadPage() {
     try {
       const form = new FormData();
       for (const f of Array.from(files)) form.append("files", f);
-      setBulk(await uploadBulk(form));
+      const res = await uploadBulk(form);
+      setBulk(res);
+      setCredits((c) => (c === null ? c : Math.max(0, c - (res.count ?? 0))));
     } catch {
       setError("Bulk upload failed. Try again.");
     } finally {
@@ -180,6 +198,9 @@ export function UploadPage() {
         </p>
       </div>
 
+      {/* Issue 11 — credits balance and the option to buy, on top. */}
+      <CreditsBar credits={credits} />
+
       <div className="flex gap-2">
         <button
           type="button"
@@ -187,7 +208,7 @@ export function UploadPage() {
           className={`flex-1 rounded-lg border px-4 py-3 text-left transition ${method === "single" ? "border-accent bg-accent/5" : "border-line hover:bg-surface-2"}`}
         >
           <div className="text-sm font-medium text-fg">Single upload</div>
-          <div className="text-xs text-fg-muted">One deck · evaluated immediately</div>
+          <div className="text-xs text-fg-muted">One deck · 1 credit</div>
         </button>
         <button
           type="button"
@@ -195,7 +216,7 @@ export function UploadPage() {
           className={`flex-1 rounded-lg border px-4 py-3 text-left transition ${method === "bulk" ? "border-accent bg-accent/5" : "border-line hover:bg-surface-2"}`}
         >
           <div className="text-sm font-medium text-fg">Bulk upload</div>
-          <div className="text-xs text-fg-muted">Many decks · queued for evaluation</div>
+          <div className="text-xs text-fg-muted">Many decks · N credits</div>
         </button>
       </div>
 
@@ -233,12 +254,25 @@ export function UploadPage() {
                 }}
               />
             </label>
+
+            {/* Issue 12 — everything below is auto-recognised from the deck.
+                Anything typed here overrides what the AI reads. */}
+            <div className="flex items-center gap-2 rounded-lg border border-accent/40 bg-accent/5 px-3 py-2 text-xs text-fg">
+              <Sparkles className="h-3.5 w-3.5 shrink-0 text-accent" />
+              <span>
+                <span className="font-medium">Auto-recognised.</span> Leave these blank and the AI
+                reads the startup name, stage, sector and founder details off the deck. Anything you
+                type wins, and you can correct every field after the scan.
+              </span>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <Field label="Startup name">
-                <input className="sj-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. GreenGrid" />
+                <input className="sj-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Auto-detect from deck" />
               </Field>
               <Field label="Stage">
                 <select className="sj-input" value={stage} onChange={(e) => setStage(e.target.value)}>
+                  <option value="">Auto-detect from deck</option>
                   {STAGES.map((s) => <option key={s}>{s}</option>)}
                 </select>
               </Field>
@@ -264,6 +298,10 @@ export function UploadPage() {
                 </select>
               </Field>
             </div>
+            <p className="-mt-1 text-xs text-fg-muted">
+              Cohort comes from your workspace context, not the deck — it is pre-selected from the
+              program and cohort you are working in.
+            </p>
 
             {/* Required founder/contact detail. The AI reads these off the deck —
                 anything you fill here wins, anything neither has marks the deck
@@ -300,8 +338,10 @@ export function UploadPage() {
               )}
             </div>
 
-            <div className="flex items-center justify-end gap-2">
-              <Button type="submit" disabled={busy}>{busy ? "Evaluating…" : "Upload & evaluate"}</Button>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-fg-muted">Cost for this deck · 1 credit</span>
+              {/* Issue 14 — the button is just "Upload". */}
+              <Button type="submit" disabled={busy}>{busy ? "Uploading…" : "Upload"}</Button>
             </div>
           </form>
 
@@ -333,10 +373,14 @@ export function UploadPage() {
               />
 
               {single.evaluated && single.result ? (
-                <ExtractedDetails
-                  deckName={name || picked?.name || "Deck"}
+                <RecognisedDetails
+                  deckId={single.deckId}
+                  recognized={single.result.recognized}
                   details={single.result.details}
                   missing={single.result.missingFields ?? []}
+                  programs={programs}
+                  programId={programId}
+                  cohortId={cohortId}
                 />
               ) : null}
 
@@ -403,8 +447,9 @@ export function UploadPage() {
               />
             </label>
             <p className="text-xs text-fg-muted">
-              No per-deck form on a bulk upload — the AI reads each founder&rsquo;s name, email, phone
-              and city off the deck. Any deck missing a detail is marked Incomplete.
+              No per-deck form on a bulk upload — the AI reads each startup&rsquo;s name and the
+              founder&rsquo;s name, email, phone and city off the deck. Any deck missing a detail is
+              marked Incomplete.
             </p>
             {bulkPicked.length > 0 && (
               <ul className="flex flex-col gap-1 text-xs text-fg-muted">
@@ -416,8 +461,11 @@ export function UploadPage() {
                 ))}
               </ul>
             )}
-            <div className="flex items-center justify-end">
-              <Button type="submit" disabled={busy}>{busy ? "Uploading…" : "Upload & queue"}</Button>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-fg-muted">
+                Cost · {bulkPicked.length || "N"} credit{bulkPicked.length === 1 ? "" : "s"}
+              </span>
+              <Button type="submit" disabled={busy}>{busy ? "Uploading…" : "Upload"}</Button>
             </div>
           </form>
 
@@ -440,7 +488,123 @@ export function UploadPage() {
           )}
         </Card>
       )}
+
+      {/* Issue 13 — other bulk intake routes are named here, and each raises a
+          customization request as a ticket rather than pretending to be built. */}
+      <OtherIntakeOptions />
     </div>
+  );
+}
+
+/** Issue 11 — the credits balance strip that sits above the upload methods. */
+function CreditsBar({ credits }: { credits: number | null }) {
+  const low = credits !== null && credits <= 5;
+  return (
+    <div
+      className={`flex flex-wrap items-center gap-3 rounded-lg border px-4 py-3 ${
+        low ? "border-signal-flagged/40 bg-signal-flagged/5" : "border-accent/40 bg-accent/5"
+      }`}
+    >
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent/15">
+        <Coins className="h-4 w-4 text-accent" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-fg">
+          Credits balance —{" "}
+          {credits === null ? "unavailable" : `${credits} remaining`}
+        </div>
+        <p className="text-xs text-fg-muted">
+          Each deck evaluated uses one credit. Credits are deducted when the AI runs.
+        </p>
+      </div>
+      <Link to="/app/billing">
+        <Button size="sm" variant={low ? "primary" : "secondary"}>
+          Buy credits
+        </Button>
+      </Link>
+    </div>
+  );
+}
+
+/** Issue 13 — CRM / email-triage intake, raised as a customization ticket. */
+function OtherIntakeOptions() {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [sent, setSent] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  const options = [
+    {
+      id: "crm",
+      title: "Pull decks from your CRM",
+      body: "Auto-sync deals from Salesforce, HubSpot, Pipedrive or your own API when they match your filter rules.",
+    },
+    {
+      id: "email",
+      title: "Email triage inbox",
+      body: "Forward founder emails to a dedicated address; attachments are triaged into the pipeline automatically.",
+    },
+  ];
+
+  async function request(option: { id: string; title: string; body: string }) {
+    setBusy(option.id);
+    setFailed(false);
+    try {
+      await createTicket(
+        `Customization request — ${option.title}`,
+        `${option.body}\n\nRaised from the Upload screen. Please scope this integration for our workspace.`,
+        false,
+      );
+      setSent(option.id);
+    } catch {
+      setFailed(true);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2">
+        <Plug className="h-4 w-4 text-fg-muted" />
+        <div className="u-label">Other ways to bring in decks</div>
+      </div>
+      <p className="mt-1 text-sm text-fg-muted">
+        These intake routes are built per workspace. Requesting one raises a customization ticket
+        with our team — it is not switched on automatically.
+      </p>
+      <ul className="mt-3 flex flex-col gap-2">
+        {options.map((o) => (
+          <li
+            key={o.id}
+            className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line px-3 py-2.5"
+          >
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-fg">{o.title}</div>
+              <p className="text-xs text-fg-muted">{o.body}</p>
+            </div>
+            {sent === o.id ? (
+              <span className="shrink-0 text-xs font-medium text-positive">
+                Request raised — we&rsquo;ll be in touch
+              </span>
+            ) : (
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={busy !== null}
+                onClick={() => request(o)}
+              >
+                {busy === o.id ? "Raising…" : "Request this"}
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {failed && (
+        <p className="mt-2 text-xs text-signal-flagged">
+          Couldn&rsquo;t raise the request. Try again, or file it from Support → Tickets.
+        </p>
+      )}
+    </Card>
   );
 }
 
@@ -475,13 +639,24 @@ export function IntakeAlert({
   );
 }
 
-/** The prototype's "Uploaded decks — AI-extracted details" table, for one deck. */
-function ExtractedDetails({
-  deckName,
+/**
+ * Issue 12 — what the AI recognised, every field editable.
+ *
+ * The prototype's read-only "Uploaded decks — AI-extracted details" table, with
+ * the manual override the issue asks for: correcting a value writes it straight
+ * back to the deck and re-derives whether it is still Incomplete.
+ */
+function RecognisedDetails({
+  deckId,
+  recognized,
   details,
   missing,
+  programs,
+  programId,
+  cohortId,
 }: {
-  deckName: string;
+  deckId: string;
+  recognized?: { name: string; stage: string | null };
   details?: {
     founder?: string | null;
     founderEmail?: string | null;
@@ -490,65 +665,101 @@ function ExtractedDetails({
     sector?: string | null;
   };
   missing: IntakeField[];
+  programs: ProgramView[];
+  programId: string;
+  cohortId: string;
 }) {
+  const [values, setValues] = useState<Record<string, string>>({
+    name: recognized?.name ?? "",
+    stage: recognized?.stage ?? "",
+    founder: details?.founder ?? "",
+    founderEmail: details?.founderEmail ?? "",
+    founderPhone: details?.founderPhone ?? "",
+    city: details?.city ?? "",
+    sector: details?.sector ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+
   const missingSet = new Set(missing);
-  const complete = missing.length === 0;
+  const program = programs.find((p) => p.id === programId);
+  const cohort = program?.cohorts.find((ch) => ch.id === cohortId);
+
+  function set(field: string, value: string) {
+    setValues((v) => ({ ...v, [field]: value }));
+    setSaved(false);
+  }
+
+  async function save() {
+    setSaving(true);
+    setSaveError(false);
+    try {
+      await updateDeckDetails(deckId, values);
+      setSaved(true);
+    } catch {
+      setSaveError(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const fields: { key: keyof typeof values; label: string; type?: string }[] = [
+    { key: "name", label: "Startup name" },
+    { key: "stage", label: "Stage" },
+    ...DETAIL_COLUMNS.map((f) => ({ key: f as keyof typeof values, label: INTAKE_FIELD_LABELS[f] })),
+  ];
+
   return (
     <div className="rounded-lg border border-line">
       <div className="border-b border-line px-4 py-2.5">
-        <div className="text-sm font-medium text-fg">Uploaded deck — AI-extracted details</div>
+        <div className="flex items-center gap-1.5 text-sm font-medium text-fg">
+          <Sparkles className="h-3.5 w-3.5 text-accent" />
+          Auto-recognised details
+        </div>
         <div className="text-xs text-fg-muted">
-          The AI scanned the deck and recorded the founder&rsquo;s details. A deck missing a
-          detail is automatically marked Incomplete.
+          The AI read these off the deck. Correct anything it got wrong — your edit wins and is
+          saved to the deck. A detail nobody supplies marks the deck Incomplete.
         </div>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-sm">
-          <thead>
-            <tr className="text-fg-muted">
-              {DETAIL_COLUMNS.map((f) => (
-                <th key={f} className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">{INTAKE_FIELD_LABELS[f]}</th>
-              ))}
-              <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr className="border-t border-line">
-              {DETAIL_COLUMNS.map((f) => {
-                const value = details?.[f] ?? null;
-                return (
-                  <td key={f} className="px-4 py-2.5">
-                    {missingSet.has(f) || !value ? (
-                      <span className="inline-flex items-center gap-1 italic text-signal-flagged">
-                        <AlertTriangle className="h-3.5 w-3.5" /> not captured
-                      </span>
-                    ) : (
-                      <span className="text-fg">{value}</span>
-                    )}
-                  </td>
-                );
-              })}
-              <td className="px-4 py-2.5">
-                <span
-                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                    complete
-                      ? "bg-positive/15 text-positive"
-                      : "bg-signal-flagged/15 text-signal-flagged"
-                  }`}
-                >
-                  {complete ? "Complete" : "Incomplete"}
-                </span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+
+      <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3">
+        {fields.map((f) => (
+          <label key={f.key} className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-fg-muted">
+              {f.label}
+              {missingSet.has(f.key as IntakeField) && !values[f.key] && (
+                <span className="ml-1 text-signal-flagged">· not captured</span>
+              )}
+            </span>
+            <input
+              className="sj-input h-9 text-sm"
+              type={f.type ?? "text"}
+              value={values[f.key]}
+              placeholder="Not captured"
+              onChange={(e) => set(f.key as string, e.target.value)}
+            />
+          </label>
+        ))}
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-fg-muted">Program · Cohort</span>
+          <span className="flex h-9 items-center text-sm text-fg-muted">
+            {[program?.name, cohort?.name].filter(Boolean).join(" · ") || "Not assigned"}
+          </span>
+        </div>
       </div>
-      <div className="border-t border-line px-4 py-2 text-xs text-fg-muted">
-        {complete
-          ? `All details captured for ${deckName}.`
-          : `${deckName} is marked Incomplete — missing ${missing
-              .map((f) => INTAKE_FIELD_LABELS[f].toLowerCase())
-              .join(", ")}. The founder is asked for the missing sections.`}
+
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-4 py-2.5">
+        <span className="text-xs text-fg-muted">
+          {saved
+            ? "Corrections saved to the deck."
+            : saveError
+              ? "Couldn't save the corrections. Try again."
+              : "Overriding a value replaces what the AI recognised."}
+        </span>
+        <Button size="sm" variant="secondary" disabled={saving} onClick={save}>
+          {saving ? "Saving…" : "Save corrections"}
+        </Button>
       </div>
     </div>
   );

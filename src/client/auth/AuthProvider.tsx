@@ -15,6 +15,11 @@ export interface AuthUser {
   initials: string;
   role: Role;
   edition: Edition;
+  /**
+   * Organizational ALIAS title (Aug-2026 issue 1). Shown in the top ribbon in
+   * place of the platform role label; `role` still drives every permission.
+   */
+  title?: string;
 }
 
 export interface AuthContextValue {
@@ -22,6 +27,8 @@ export interface AuthContextValue {
   loading: boolean;
   login: (email: string, password: string) => Promise<AuthUser>;
   logout: () => Promise<void>;
+  /** Patch the cached principal in place (e.g. after editing the alias title). */
+  updateUser: (patch: Partial<AuthUser>) => void;
 }
 
 export const AuthContext = createContext<AuthContextValue | null>(null);
@@ -75,9 +82,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
+  const updateUser = useCallback((patch: Partial<AuthUser>) => {
+    setUser((current) => (current ? { ...current, ...patch } : current));
+  }, []);
+
   const value = useMemo(
-    () => ({ user, loading, login, logout }),
-    [user, loading, login, logout],
+    () => ({ user, loading, login, logout, updateUser }),
+    [user, loading, login, logout, updateUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

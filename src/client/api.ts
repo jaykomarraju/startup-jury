@@ -46,12 +46,142 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function listDecks(filter?: { programId?: string; cohortId?: string }): Promise<{ decks: DeckView[] }> {
+export function listDecks(filter?: {
+  programId?: string;
+  cohortId?: string;
+  /** Free-text search over startup / founder / sector / city / email (issue 2). */
+  q?: string;
+  /** Narrow to one deck tag (issue 2). */
+  tag?: string;
+}): Promise<{ decks: DeckView[] }> {
   const qs = new URLSearchParams();
   if (filter?.programId) qs.set("programId", filter.programId);
   if (filter?.cohortId) qs.set("cohortId", filter.cohortId);
+  if (filter?.q) qs.set("q", filter.q);
+  if (filter?.tag) qs.set("tag", filter.tag);
   const q = qs.toString();
   return fetch(`/api/decks${q ? `?${q}` : ""}`).then((r) => json(r));
+}
+
+// ── Deck tags (Aug-2026 issue 2) ─────────────────────────────────────────────
+
+/** Every tag in use across the caller's edition (the tag filter's options). */
+export function listDeckTags(): Promise<{ tags: string[] }> {
+  return fetch("/api/decks/tags").then((r) => json(r));
+}
+
+/** Replace a deck's tag list. */
+export function setDeckTags(id: string, tags: string[]): Promise<{ ok: true; tags: string[] }> {
+  return fetch(`/api/decks/${id}/tags`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ tags }),
+  }).then((r) => json(r));
+}
+
+// ── Consolidated evaluation report (issues 20/21/23/24) ──────────────────────
+
+/** One column of the report: the AI, or one human evaluator. */
+export interface ReportColumn {
+  id: string;
+  kind: "ai" | "human";
+  name: string;
+  role?: string;
+  roleLabel?: string;
+  /** The evaluator's organizational alias title, where they set one. */
+  title?: string;
+  initials?: string;
+  rank: number;
+  total?: number;
+  remarks?: string;
+  submittedAt?: string;
+}
+
+export interface ReportRow {
+  key: string;
+  name: string;
+  weight: number;
+  roleScope?: string;
+  cells: Record<string, { value: number; comment?: string }>;
+}
+
+export interface ReportGroup {
+  role: string;
+  roleLabel: string;
+  rows: ReportRow[];
+}
+
+export interface DeckReportMatrix {
+  deck: DeckView;
+  columns: ReportColumn[];
+  core: ReportRow[];
+  additional: ReportGroup[];
+  /** Evaluators above the caller in the hierarchy, withheld per issue 21. */
+  hiddenEvaluators: number;
+}
+
+export function getDeckReport(id: string): Promise<DeckReportMatrix> {
+  return fetch(`/api/decks/${id}/report`).then((r) => json(r));
+}
+
+// ── Workspace activity log (issue 8) ─────────────────────────────────────────
+
+export interface ActivityEvent {
+  id: string;
+  deckId: string;
+  deckName: string;
+  toStage: string;
+  toLabel: string;
+  fromLabel: string | null;
+  action: string;
+  note: string | null;
+  actorName: string;
+  actorTitle?: string;
+  createdAt: string;
+}
+
+export function listActivity(filter?: {
+  limit?: number;
+  programId?: string;
+  cohortId?: string;
+}): Promise<{ events: ActivityEvent[] }> {
+  const qs = new URLSearchParams();
+  if (filter?.limit) qs.set("limit", String(filter.limit));
+  if (filter?.programId) qs.set("programId", filter.programId);
+  if (filter?.cohortId) qs.set("cohortId", filter.cohortId);
+  const q = qs.toString();
+  return fetch(`/api/activity${q ? `?${q}` : ""}`).then((r) => json(r));
+}
+
+// ── Assignable evaluators, grouped by role (issue 22) ────────────────────────
+
+export interface EvaluatorMember {
+  id: string;
+  name: string;
+  initials: string;
+  role: string;
+  title?: string;
+  openDecks: number;
+}
+
+export interface EvaluatorGroup {
+  role: string;
+  roleLabel: string;
+  members: EvaluatorMember[];
+}
+
+export function listEvaluators(): Promise<{ groups: EvaluatorGroup[] }> {
+  return fetch("/api/evaluators").then((r) => json(r));
+}
+
+// ── My own alias title (issue 1) ─────────────────────────────────────────────
+
+export function updateMyTitle(title: string): Promise<{ ok: true; title?: string }> {
+  return fetch("/api/users/me", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title }),
+  }).then((r) => json(r));
 }
 
 /** One entry in a deck's upload history (Session 5 — deck versioning). */
@@ -93,6 +223,28 @@ export interface IntakeMatchView {
   reason: string;
 }
 
+/** Manual override of the AI-recognised details (Aug-2026 issue 12). */
+export function updateDeckDetails(
+  id: string,
+  patch: {
+    name?: string;
+    stage?: string;
+    sector?: string;
+    city?: string;
+    founder?: string;
+    founderEmail?: string;
+    founderPhone?: string;
+    programId?: string;
+    cohortId?: string;
+  },
+): Promise<{ ok: true; deck: DeckView | null }> {
+  return fetch(`/api/decks/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  }).then((r) => json(r));
+}
+
 export interface EvaluationOutcome {
   weightedTotal: number;
   signal: string;
@@ -111,6 +263,8 @@ export interface EvaluationOutcome {
   };
   intakeFlag?: IntakeFlag | null;
   intakeNote?: string | null;
+  /** Startup name + funding stage the AI recognised (issue 12). */
+  recognized?: { name: string; stage: string | null };
 }
 
 export interface SingleUploadResult {
@@ -373,6 +527,8 @@ export interface ConfigSummary {
   thresholdBest: number;
   thresholdMediocre: number;
   branding: Record<string, unknown>;
+  /** Remaining evaluation credits. Absent for founders. */
+  creditsBalance?: number;
   coreParams: ConfigParam[];
   additionalParams: ConfigParam[];
 }
@@ -555,6 +711,8 @@ export interface UserView {
   email: string;
   role: string;
   roleLabel: string;
+  /** Organizational alias title (issue 1); shown instead of roleLabel when set. */
+  title?: string;
   /** 'staff' | 'mentor' — mentor is a directory user-type, not a pipeline role. */
   userType: string;
   initials: string;
@@ -572,6 +730,8 @@ export interface CreateUserInput {
   role?: string;
   /** 'staff' (default) or 'mentor'. */
   userType?: "staff" | "mentor";
+  /** Optional organizational alias title (issue 1). */
+  title?: string;
 }
 
 /** The fate of the new account's invite email. `delivered` is true only when
@@ -595,7 +755,7 @@ export function createUser(input: CreateUserInput) {
 /** Update a user's active flag, name, or role (staff only for re-roling). */
 export function updateUser(
   id: string,
-  patch: { active?: boolean; role?: string; name?: string },
+  patch: { active?: boolean; role?: string; name?: string; title?: string },
 ): Promise<{ ok: true; user: UserView }> {
   return fetch(`/api/users/${id}`, {
     method: "PATCH",

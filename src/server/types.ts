@@ -42,6 +42,12 @@ export interface SessionUser {
   initials: string;
   role: Role;
   edition: Edition;
+  /**
+   * Organizational ALIAS title shown in the top ribbon instead of the platform
+   * role label (Aug-2026 issue 1). Presentation only — `role` still drives every
+   * permission check. Undefined = fall back to the role label.
+   */
+  title?: string;
 }
 
 /** Hono environment for typed bindings + context variables. */

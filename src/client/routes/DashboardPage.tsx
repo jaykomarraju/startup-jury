@@ -1,83 +1,63 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { Search } from "lucide-react";
 import { useAuth } from "../auth/useAuth";
 import {
   KpiTile,
   Card,
   Button,
-  DeckRow,
+  Badge,
   EvaluationDrawer,
   EmptyState,
+  TagEditor,
   type ParamScoreView,
   type ExtractionSlide,
 } from "../components";
 import type { DeckView } from "../types";
 import { exportDecks } from "../exportCsv";
-import { listDecks, getDeck, getConfigSummary, listPrograms, retryDeckAi, type ProgramView,
+import {
+  listDecks,
+  getDeck,
+  getConfigSummary,
+  listPrograms,
+  listDeckTags,
+  setDeckTags,
+  listActivity,
+  retryDeckAi,
+  type ProgramView,
   type DeckVersionView,
+  type ActivityEvent,
 } from "../api";
 import { cohortRating } from "../../shared/scoring";
+import { deckStats, matchesStat, pipelineProgress, type DeckStatKey } from "../../shared/deckStats";
 import { useActiveContext } from "../activeContext";
 
-interface Kpi {
-  label: string;
-  value: number;
-  sublabel: string;
-  progress: number;
+/** "14 min ago" / "3 hr ago" / a date once it stops being today's news. */
+function relativeTime(iso: string): string {
+  const then = Date.parse(iso.endsWith("Z") || iso.includes("T") ? iso : `${iso.replace(" ", "T")}Z`);
+  if (Number.isNaN(then)) return iso;
+  const mins = Math.round((Date.now() - then) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs} hr ago`;
+  const days = Math.round(hrs / 24);
+  if (days < 7) return `${days} day${days === 1 ? "" : "s"} ago`;
+  return new Date(then).toLocaleDateString();
 }
 
-const PASS_STATUSES = new Set([
-  "AI Evaluated",
-  "Assigned",
-  "Jury Evaluation",
-  "Shortlisted",
-  "Intro",
-  "Signup",
-  "Ready to Onboard",
-  "Analyst Scoring",
-  "Associate Review",
-  "Partner Review",
-  "Partner Call",
-  "Investment DD",
-  "IC Review",
-  "Term Sheet",
-  "Legal DD",
-  "Onboard Ready",
-]);
-
-function pct(n: number, total: number): number {
-  return total === 0 ? 0 : Math.round((n / total) * 100);
-}
-
-function computeKpis(decks: DeckView[]): Kpi[] {
-  const total = decks.length;
-  const evaluated = decks.filter((d) => d.aiScore !== undefined).length;
-  const incomplete = decks.filter((d) => d.signal === "flagged" || d.status === "Incomplete").length;
-  const pending = decks.filter(
-    (d) => d.aiScore === undefined && d.status !== "Incomplete",
-  ).length;
-  const strong = decks.filter((d) => d.signal === "strong").length;
-  const advanced = decks.filter(
-    (d) => d.aiScore !== undefined && d.status !== undefined && PASS_STATUSES.has(d.status),
-  ).length;
-  return [
-    { label: "Uploaded", value: total, sublabel: "All submissions", progress: 100 },
-    { label: "Pending", value: pending, sublabel: "Awaiting evaluation", progress: pct(pending, total) },
-    { label: "Incomplete", value: incomplete, sublabel: "Missing details", progress: pct(incomplete, total) },
-    { label: "AI Evaluated", value: evaluated, sublabel: `${pct(evaluated, total)}% of uploaded`, progress: pct(evaluated, total) },
-    { label: "Advanced", value: advanced, sublabel: "Passed AI gate", progress: pct(advanced, total) },
-    { label: "Strong signal", value: strong, sublabel: "Score ≥ 8.0", progress: pct(strong, total) },
-  ];
-}
-
-const SIGNAL_COLORS: Record<string, string> = {
-  strong: "var(--color-signal-strong)",
-  moderate: "var(--color-signal-moderate)",
-  weak: "var(--color-signal-weak)",
-  absent: "var(--color-signal-absent)",
-  flagged: "var(--color-signal-flagged)",
-};
-
+/**
+ * All decks (Workflows → All decks).
+ *
+ * Aug-2026 issue log:
+ *   • 2 — search box + tag filter, with per-deck tagging in the report drawer.
+ *   • 3 — Export, Program and Cohort controls on the top row.
+ *   • 4/5 — the fifth and sixth stat boxes are Assigned and Shortlisted.
+ *   • 6 — the table is Startup · Founder name · Email ID · Phone · City ·
+ *         Sector · Status. No AI score column at this stage.
+ *   • 7 — the right rail's Pipeline progress uses the stat-box titles.
+ *   • 8 — an Activity log sits under Cohort rating thresholds.
+ */
 export function DashboardPage() {
   const { user } = useAuth();
   const edition = user?.edition ?? "incubator";
@@ -97,23 +77,57 @@ export function DashboardPage() {
   const [thresholds, setThresholds] = useState({ best: 7.0, mediocre: 5.0 });
   const [retrying, setRetrying] = useState<string | null>(null);
 
+  // Issue 2 — search & tag.
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [tagFilter, setTagFilter] = useState("");
+  const [allTags, setAllTags] = useState<string[]>([]);
+  const [taggingBusy, setTaggingBusy] = useState(false);
+
+  // Issue 4/5 — the stat boxes double as a table filter, as in the prototype.
+  const [statFilter, setStatFilter] = useState<DeckStatKey>("all");
+
+  // Issue 8 — the activity log.
+  const [activity, setActivity] = useState<ActivityEvent[] | null>(null);
+
   // Decks the AI pipeline gave up on (§9) — the credit was refunded and nothing
   // will pick them up again without an operator.
   const stuckDecks = useMemo(() => (decks ?? []).filter((d) => d.aiState === "failed"), [decks]);
+
+  const reload = useCallback(() => {
+    return listDecks({
+      programId: ctx.programId ?? undefined,
+      cohortId: ctx.cohortId ?? undefined,
+      q: debouncedSearch || undefined,
+      tag: tagFilter || undefined,
+    }).then((r) => r.decks);
+  }, [ctx.programId, ctx.cohortId, debouncedSearch, tagFilter]);
 
   async function retry(deckId: string) {
     setRetrying(deckId);
     try {
       await retryDeckAi(deckId);
-      const r = await listDecks({
-        programId: ctx.programId ?? undefined,
-        cohortId: ctx.cohortId ?? undefined,
-      });
-      setDecks(r.decks);
+      setDecks(await reload());
     } catch {
       // The row keeps its failed state; the reason is already on screen.
     } finally {
       setRetrying(null);
+    }
+  }
+
+  /** Save a deck's tags, then refresh the row and the tag suggestions. */
+  async function saveTags(deck: DeckView, tags: string[]) {
+    setTaggingBusy(true);
+    try {
+      const res = await setDeckTags(deck.id, tags);
+      setDecks((list) =>
+        (list ?? []).map((d) => (d.id === deck.id ? { ...d, tags: res.tags } : d)),
+      );
+      setSelected((cur) => (cur && cur.id === deck.id ? { ...cur, tags: res.tags } : cur));
+      const fresh = await listDeckTags().catch(() => ({ tags: allTags }));
+      setAllTags(fresh.tags);
+    } finally {
+      setTaggingBusy(false);
     }
   }
 
@@ -126,18 +140,42 @@ export function DashboardPage() {
     getConfigSummary()
       .then((c) => live && setThresholds({ best: c.thresholdBest, mediocre: c.thresholdMediocre }))
       .catch(() => {});
+    listDeckTags()
+      .then((r) => live && setAllTags(r.tags))
+      .catch(() => {});
     return () => {
       live = false;
     };
   }, []);
 
-  // Decks re-fetch whenever the active program/cohort filter changes.
+  // Debounce the search box so typing doesn't fire a request per keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 250);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Decks re-fetch whenever a filter changes.
   useEffect(() => {
     let live = true;
     setDecks(null);
-    listDecks({ programId: ctx.programId ?? undefined, cohortId: ctx.cohortId ?? undefined })
-      .then((r) => live && setDecks(r.decks))
+    reload()
+      .then((d) => live && setDecks(d))
       .catch(() => live && setDecks([]));
+    return () => {
+      live = false;
+    };
+  }, [reload]);
+
+  // Activity log follows the program/cohort filter so it matches the table.
+  useEffect(() => {
+    let live = true;
+    listActivity({
+      limit: 10,
+      programId: ctx.programId ?? undefined,
+      cohortId: ctx.cohortId ?? undefined,
+    })
+      .then((r) => live && setActivity(r.events))
+      .catch(() => live && setActivity([]));
     return () => {
       live = false;
     };
@@ -157,7 +195,14 @@ export function DashboardPage() {
     };
   }, [selected]);
 
-  const kpis = useMemo(() => computeKpis(decks ?? []), [decks]);
+  const stats = useMemo(() => deckStats(edition, decks ?? []), [edition, decks]);
+  const progress = useMemo(() => pipelineProgress(stats), [stats]);
+  const uploadedTotal = stats[0]?.value ?? 0;
+
+  const rows = useMemo(
+    () => (decks ?? []).filter((d) => matchesStat(edition, d, statFilter)),
+    [decks, edition, statFilter],
+  );
 
   // Bucket evaluated decks by the admin-configured cohort thresholds so an edit
   // actually re-classifies the cohort (not just the rail's labels).
@@ -170,32 +215,13 @@ export function DashboardPage() {
     return counts;
   }, [decks, thresholds]);
 
-  // Pipeline-progress rail: counts per distinct status present (top 5).
-  const progress = useMemo(() => {
-    const list = decks ?? [];
-    const counts = new Map<string, { count: number; signal?: string }>();
-    for (const d of list) {
-      const key = d.status ?? "Unknown";
-      const entry = counts.get(key) ?? { count: 0, signal: d.signal };
-      entry.count += 1;
-      counts.set(key, entry);
-    }
-    return [...counts.entries()]
-      .sort((a, b) => b[1].count - a[1].count)
-      .slice(0, 5)
-      .map(([label, { count, signal }]) => ({
-        label,
-        count,
-        pct: pct(count, list.length),
-        color: SIGNAL_COLORS[signal ?? ""] ?? "var(--color-navy)",
-      }));
-  }, [decks]);
-
   if (!user) return null;
   const isAdmin = user.role === "admin" || user.role === "superuser";
   const activeProgram = programs?.find((p) => p.id === ctx.programId) ?? null;
   const cohortOptions = activeProgram?.cohorts ?? [];
   const showFirstRun = programs !== null && programs.length === 0 && isAdmin;
+  const canTag = user.role !== "founder";
+  const filtering = debouncedSearch !== "" || tagFilter !== "" || statFilter !== "all";
 
   function selectProgram(programId: string) {
     setCtx({ programId: programId || null, cohortId: null });
@@ -215,7 +241,33 @@ export function DashboardPage() {
               {activeProgram ? ` · ${activeProgram.name}` : ""}
             </p>
           </div>
+          {/* Issue 3 — Export + Program + Cohort on the top row, alongside the
+              issue-2 search and tag controls. */}
           <div className="flex flex-wrap items-center gap-2">
+            <label className="relative">
+              <span className="sr-only">Search decks</span>
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted" />
+              <input
+                className="sj-input h-9 w-48 pl-8"
+                type="search"
+                placeholder="Search startups…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </label>
+            <select
+              className="sj-input h-9 w-32"
+              aria-label="Tag filter"
+              value={tagFilter}
+              onChange={(e) => setTagFilter(e.target.value)}
+            >
+              <option value="">All tags</option>
+              {allTags.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
             <select
               className="sj-input h-9 w-40"
               aria-label="Program filter"
@@ -246,8 +298,8 @@ export function DashboardPage() {
             <Button
               variant="secondary"
               size="sm"
-              disabled={!decks || decks.length === 0}
-              onClick={() => exportDecks(activeProgram?.name ?? "All decks", decks ?? [])}
+              disabled={!decks || rows.length === 0}
+              onClick={() => exportDecks(activeProgram?.name ?? "All decks", rows)}
             >
               Export
             </Button>
@@ -299,42 +351,107 @@ export function DashboardPage() {
         )}
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-          {kpis.map((k, i) => (
-            <KpiTile key={k.label} {...k} active={i === 0} />
+          {stats.map((s) => (
+            <KpiTile
+              key={s.key}
+              label={s.label}
+              value={s.value}
+              sublabel={s.sublabel}
+              progress={s.progress}
+              barColor={s.color}
+              active={statFilter === s.key}
+              onClick={() => setStatFilter(s.key)}
+            />
           ))}
         </div>
 
         <Card flush className="mt-5 overflow-x-auto">
-          {decks !== null && decks.length === 0 ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-2.5">
+            <div className="u-label">
+              {stats.find((s) => s.key === statFilter)?.label ?? "Uploaded"} · {rows.length}
+            </div>
+            {filtering && (
+              <button
+                type="button"
+                className="text-xs text-fg-muted underline-offset-2 hover:text-fg hover:underline"
+                onClick={() => {
+                  setSearch("");
+                  setTagFilter("");
+                  setStatFilter("all");
+                }}
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+          {decks !== null && rows.length === 0 ? (
             <div className="p-6">
               <EmptyState
                 icon="Upload"
-                title="No decks yet"
-                description="Upload a pitch deck to run AI extraction and rubric scoring."
+                title={filtering ? "No decks match those filters" : "No decks yet"}
+                description={
+                  filtering
+                    ? "Try a different search term, tag or stat box."
+                    : "Upload a pitch deck to run AI extraction and rubric scoring."
+                }
               />
             </div>
           ) : (
-            <table className="w-full min-w-[36rem] text-left">
+            <table className="w-full min-w-[56rem] text-left">
               <thead>
                 <tr className="text-fg-muted">
                   <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Startup</th>
-                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">
-                    {edition === "incubator" ? "Founder" : "Sector"}
-                  </th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Founder name</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Email ID</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Phone</th>
                   <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">City</th>
-                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">AI score</th>
-                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Signal</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Sector</th>
                   <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Status</th>
                 </tr>
               </thead>
               <tbody>
-                {(decks ?? []).map((deck) => (
-                  <DeckRow
+                {rows.map((deck) => (
+                  <tr
                     key={deck.id}
-                    deck={deck}
-                    secondary={edition === "incubator" ? "founder" : "sector"}
-                    onClick={setSelected}
-                  />
+                    onClick={() => setSelected(deck)}
+                    className="cursor-pointer border-t border-line hover:bg-surface-2"
+                  >
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-fg">{deck.name}</div>
+                      <div className="mt-0.5 text-xs text-fg-muted">
+                        {[deck.stage, deck.programName, deck.cohortName].filter(Boolean).join(" · ")}
+                      </div>
+                      {deck.tags && deck.tags.length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {deck.tags.map((t) => (
+                            <span
+                              key={t}
+                              className="rounded-full border border-line bg-surface-2 px-1.5 text-[10px] text-fg-muted"
+                            >
+                              {t}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-fg-muted">{deck.founder ?? "—"}</td>
+                    <td className="px-4 py-3 text-sm text-fg-muted">{deck.founderEmail ?? "—"}</td>
+                    <td className="px-4 py-3 text-sm text-fg-muted">{deck.founderPhone ?? "—"}</td>
+                    <td className="px-4 py-3 text-sm text-fg-muted">{deck.city ?? "—"}</td>
+                    <td className="px-4 py-3 text-sm text-fg-muted">{deck.sector ?? "—"}</td>
+                    <td className="px-4 py-3 text-sm text-fg-muted">
+                      {deck.status ?? "—"}
+                      {deck.aiState === "failed" ? (
+                        <div className="mt-0.5 text-xs text-signal-flagged">
+                          Failed{deck.aiError ? ` · ${deck.aiError}` : ""}
+                        </div>
+                      ) : deck.aiState === "retrying" ? (
+                        <div className="mt-0.5 text-xs text-amber">Retrying</div>
+                      ) : deck.aiState === "in_progress" ? (
+                        <div className="mt-0.5 text-xs text-fg-muted">In progress</div>
+                      ) : null}
+                    </td>
+                  </tr>
                 ))}
               </tbody>
             </table>
@@ -345,21 +462,27 @@ export function DashboardPage() {
       <aside className="flex w-full shrink-0 flex-col gap-4 lg:w-72">
         <Card>
           <div className="u-label">Pipeline progress</div>
+          <p className="mt-1 text-xs text-fg-muted">
+            {uploadedTotal} deck{uploadedTotal === 1 ? "" : "s"} uploaded · across {progress.length}{" "}
+            stages
+          </p>
           <div className="mt-3 flex flex-col gap-2.5">
-            {progress.length === 0 && <p className="text-xs text-fg-muted">No decks yet.</p>}
             {progress.map((p) => (
-              <div key={p.label}>
+              <div key={p.key}>
                 <div className="flex items-center justify-between text-xs">
                   <span className="flex items-center gap-1.5 text-fg">
                     <span className="h-2 w-2 rounded-full" style={{ background: p.color }} />
                     {p.label}
                   </span>
                   <span className="text-fg-muted">
-                    {p.count} · {p.pct}%
+                    {p.value} · {p.progress}%
                   </span>
                 </div>
                 <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-2">
-                  <div className="h-full rounded-full" style={{ width: `${p.pct}%`, background: p.color }} />
+                  <div
+                    className="h-full rounded-full"
+                    style={{ width: `${p.progress}%`, background: p.color }}
+                  />
                 </div>
               </div>
             ))}
@@ -392,6 +515,32 @@ export function DashboardPage() {
             </li>
           </ul>
         </Card>
+
+        {/* Issue 8 — Activity log, directly under Cohort rating thresholds. */}
+        <Card>
+          <div className="u-label">Activity log</div>
+          <div className="mt-3 flex flex-col gap-3">
+            {activity === null && <p className="text-xs text-fg-muted">Loading…</p>}
+            {activity !== null && activity.length === 0 && (
+              <p className="text-xs text-fg-muted">Nothing has happened here yet.</p>
+            )}
+            {(activity ?? []).map((e) => (
+              <div key={e.id} className="flex gap-2">
+                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+                <div className="min-w-0">
+                  <p className="text-xs text-fg">
+                    <span className="font-medium">{e.actorName}</span>
+                    {e.actorTitle ? (
+                      <span className="text-fg-muted"> ({e.actorTitle})</span>
+                    ) : null}{" "}
+                    moved <span className="font-medium">{e.deckName}</span> to {e.toLabel}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-fg-muted">{relativeTime(e.createdAt)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
       </aside>
 
       {selected && (
@@ -403,6 +552,22 @@ export function DashboardPage() {
           scores={report?.scores ?? []}
           extraction={report?.extraction ?? []}
           versions={report?.versions ?? []}
+          tagEditor={
+            <div>
+              <div className="u-label mb-2">Tags</div>
+              <TagEditor
+                tags={selected.tags ?? []}
+                suggestions={allTags}
+                busy={taggingBusy}
+                onChange={canTag ? (tags) => saveTags(selected, tags) : undefined}
+              />
+            </div>
+          }
+          badges={
+            selected.aiScore !== undefined ? (
+              <Badge tone="neutral">AI {selected.aiScore.toFixed(1)}</Badge>
+            ) : null
+          }
         />
       )}
     </div>

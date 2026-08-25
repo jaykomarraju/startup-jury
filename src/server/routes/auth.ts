@@ -18,6 +18,7 @@ function toSessionUser(row: {
   initials: string;
   role: SessionUser["role"];
   edition: SessionUser["edition"];
+  title?: string | null;
 }): SessionUser {
   return {
     id: row.id,
@@ -25,6 +26,7 @@ function toSessionUser(row: {
     initials: row.initials,
     role: row.role,
     edition: row.edition,
+    ...(row.title ? { title: row.title } : {}),
   };
 }
 
@@ -59,6 +61,25 @@ auth.post("/logout", async (c) => {
   return c.json({ ok: true });
 });
 
-auth.get("/me", requireAuth, (c) => c.json({ user: c.var.user }));
+/** GET /api/auth/me — the signed-in principal.
+ *
+ *  The session value in KV is written once at login, so the alias title is
+ *  re-read from D1 here: editing it under My account (or having an admin edit
+ *  it) then shows up on the next load rather than after a re-login. */
+auth.get("/me", requireAuth, async (c) => {
+  const session = c.var.user;
+  const row = await c.env.DB.prepare("SELECT title, name, initials FROM users WHERE id = ?")
+    .bind(session.id)
+    .first<{ title: string | null; name: string; initials: string }>();
+  if (!row) return c.json({ user: session });
+  return c.json({
+    user: {
+      ...session,
+      name: row.name,
+      initials: row.initials,
+      ...(row.title ? { title: row.title } : { title: undefined }),
+    },
+  });
+});
 
 export default auth;

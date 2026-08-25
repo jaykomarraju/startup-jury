@@ -29,6 +29,10 @@
   --color-signal-weak: #b45309;
   --color-signal-absent: #6b7280;
   --color-signal-flagged: #c0392b;
+
+  /* Informational accent (the prototype's --blue) — used by the Assigned stat
+     box and its pipeline-progress bar. Fixed in both themes, like the signals. */
+  --color-info: #2563eb;
 }
 
 /* Semantic runtime tokens — light default, dark override. Mapped into Tailwind

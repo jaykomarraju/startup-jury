@@ -116,6 +116,64 @@ export function isCallKind(value: unknown): value is CallKind {
   return typeof value === "string" && (CALL_KINDS as readonly string[]).includes(value);
 }
 
+/**
+ * Roles a deck may be ASSIGNED to for evaluation (Aug-2026 issue 22 — the Assign
+ * screen's four panels: decks → role → members → confirm). These are exactly the
+ * roles that carry their own additional parameters and score decks in the
+ * workbench, so an assignment always lands on someone who can actually evaluate.
+ */
+export const ASSIGNABLE_EVALUATOR_ROLES: Record<Edition, readonly Role[]> = {
+  incubator: ["jury", "program_manager", "program_associate"],
+  vc: ["analyst", "associate", "partner", "ic_member"],
+};
+
+export function isAssignableEvaluator(edition: Edition, role: string): boolean {
+  return (ASSIGNABLE_EVALUATOR_ROLES[edition] as readonly string[]).includes(role);
+}
+
+/**
+ * Evaluation HIERARCHY rank (Aug-2026 issue 21).
+ *
+ * "The evaluators up the journey from Prog associate to jury to Prog manager can
+ * view the scores given by the evaluators lower in the hierarchy, but lower guys
+ * must not be able to view the evaluators' scores up in the hierarchy."
+ *
+ * A viewer sees the AI column plus every human evaluator whose rank is <= their
+ * own. Admin / superuser oversee the whole workspace and see all of it. Roles
+ * absent from the map (founder, mentor) have rank 0 and see only the AI column —
+ * they never reach this surface anyway.
+ *
+ * The VC ladder is the same idea along its own pipeline: analyst scoring →
+ * associate review → partner review → investment committee.
+ */
+export const EVALUATION_RANK: Record<Edition, Partial<Record<Role, number>>> = {
+  incubator: {
+    program_associate: 1,
+    jury: 2,
+    program_manager: 3,
+    admin: 99,
+    superuser: 99,
+  },
+  vc: {
+    analyst: 1,
+    associate: 2,
+    partner: 3,
+    ic_member: 4,
+    admin: 99,
+    superuser: 99,
+  },
+};
+
+export function evaluationRank(edition: Edition, role: Role): number {
+  return EVALUATION_RANK[edition][role] ?? 0;
+}
+
+/** May `viewer` see the scores an evaluator holding `target` submitted? */
+export function canSeeEvaluatorScores(edition: Edition, viewer: Role, target: Role): boolean {
+  if (viewer === target) return true;
+  return evaluationRank(edition, viewer) >= evaluationRank(edition, target);
+}
+
 export const EDITION_LABELS: Record<Edition, string> = {
   incubator: "Incubator",
   vc: "Venture Capital",

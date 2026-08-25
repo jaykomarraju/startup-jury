@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { X } from "lucide-react";
 import type { DeckView } from "../types";
 import { ScoreBars, type ParamScoreView } from "./ScoreBars";
@@ -33,6 +33,10 @@ interface EvaluationDrawerProps {
   verdict?: string;
   /** Upload history — a re-upload appends a version (Session 5). */
   versions?: DeckVersionSummary[];
+  /** Deck tag chips / editor (Aug-2026 issue 2), rendered under the header. */
+  tagEditor?: ReactNode;
+  /** Extra chips beside the signal + status badges (e.g. the AI score). */
+  badges?: ReactNode;
 }
 
 /**
@@ -48,6 +52,8 @@ export function EvaluationDrawer({
   extraction = [],
   verdict,
   versions = [],
+  tagEditor,
+  badges,
 }: EvaluationDrawerProps) {
   useEffect(() => {
     if (!open) return;
@@ -70,9 +76,10 @@ export function EvaluationDrawer({
           <div>
             <div className="u-label">Evaluation report</div>
             <h2 className="mt-0.5 text-lg font-semibold text-fg">{deck.name}</h2>
-            <div className="mt-1 flex items-center gap-2">
+            <div className="mt-1 flex flex-wrap items-center gap-2">
               {deck.signal && <SignalTag signal={deck.signal} />}
               {deck.status && <Badge tone="info">{deck.status}</Badge>}
+              {badges}
             </div>
           </div>
           <button
@@ -86,6 +93,8 @@ export function EvaluationDrawer({
         </header>
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
+          {tagEditor && <section className="mb-5">{tagEditor}</section>}
+
           <section className="mb-5">
             <DeckPdfViewer deckId={deck.id} />
           </section>

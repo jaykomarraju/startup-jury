@@ -6,6 +6,12 @@ interface TopbarProps {
   userName: string;
   initials: string;
   roleLabel: string;
+  /**
+   * Organizational ALIAS title (Aug-2026 issue 1). When set it takes the ribbon's
+   * badge and the platform role is shown quietly beside it, so the underlying
+   * role stays visible to the person while the org's own title leads.
+   */
+  aliasTitle?: string;
   editionLabel: string;
   theme: Theme;
   onToggleTheme: () => void;
@@ -19,6 +25,7 @@ export function Topbar({
   userName,
   initials,
   roleLabel,
+  aliasTitle,
   editionLabel,
   theme,
   onToggleTheme,
@@ -55,9 +62,21 @@ export function Topbar({
           <div className="text-sm font-medium leading-tight">{userName}</div>
           <div className="flex items-center justify-end gap-1.5 leading-tight">
             <span className="text-[11px] text-topbar-fg/70">{editionLabel}</span>
-            <span className="inline-flex items-center rounded-full bg-amber px-1.5 py-px text-[10px] font-semibold text-navy">
-              {roleLabel}
-            </span>
+            {aliasTitle ? (
+              <>
+                <span
+                  className="inline-flex items-center rounded-full bg-amber px-1.5 py-px text-[10px] font-semibold text-navy"
+                  title={`Platform role: ${roleLabel}`}
+                >
+                  {aliasTitle}
+                </span>
+                <span className="text-[10px] text-topbar-fg/50">{roleLabel}</span>
+              </>
+            ) : (
+              <span className="inline-flex items-center rounded-full bg-amber px-1.5 py-px text-[10px] font-semibold text-navy">
+                {roleLabel}
+              </span>
+            )}
           </div>
         </div>
 

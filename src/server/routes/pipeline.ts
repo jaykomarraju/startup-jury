@@ -10,6 +10,11 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
+import {
+  ASSIGNABLE_EVALUATOR_ROLES,
+  isAssignableEvaluator,
+  roleLabel,
+} from "../../shared/roles";
 import { weightedTotal, signalTag, decisionScore } from "../../shared/scoring";
 import { getStage, performAction, transitionByAction } from "../../pipeline";
 import { requireAuth, requireRole } from "../auth/middleware";
@@ -265,12 +270,16 @@ pipeline.post(
 
     const body = await readBody<{ assigneeId: string }>(c);
     const assigneeId = typeof body.assigneeId === "string" ? body.assigneeId : "";
+    // Aug-2026 issue 22 — the Assign screen picks a ROLE and then members of it,
+    // so the assignee may be any evaluator role for the edition, not just jury.
     const assignee = await c.env.DB.prepare(
-      "SELECT id, name FROM users WHERE id = ? AND edition = ? AND role = 'jury' AND active = 1",
+      "SELECT id, name, role FROM users WHERE id = ? AND edition = ? AND active = 1",
     )
       .bind(assigneeId, deck.edition)
-      .first<{ id: string; name: string }>();
-    if (!assignee) return c.json({ error: "invalid_assignee" }, 400);
+      .first<{ id: string; name: string; role: string }>();
+    if (!assignee || !isAssignableEvaluator(deck.edition as Edition, assignee.role)) {
+      return c.json({ error: "invalid_assignee" }, 400);
+    }
 
     const result = performAction(deck.edition, deck.status, "assign_jury", user.role);
     if (!result.ok) {
@@ -306,7 +315,16 @@ interface ScoreInput {
  *  Incubator: jury/staff. VC: analyst/associate/partner core+additional scoring. */
 pipeline.post(
   "/decks/:id/evaluate",
-  requireRole("jury", "program_manager", "admin", "analyst", "associate", "partner"),
+  requireRole(
+    "jury",
+    "program_manager",
+    "program_associate",
+    "admin",
+    "analyst",
+    "associate",
+    "partner",
+    "ic_member",
+  ),
   async (c) => {
     const user = c.var.user;
     const deck = await loadDeck(c, c.req.param("id"));
@@ -757,6 +775,125 @@ pipeline.get("/decks/:id/my-scores", async (c) => {
   ).results;
   return c.json({ scores: rows });
 });
+
+/**
+ * GET /activity — the workspace ACTIVITY LOG (Aug-2026 issue 8).
+ *
+ * The All-decks right rail shows this under the cohort rating thresholds. It is
+ * the same `pipeline_events` audit trail as `/decks/:id/events`, but across the
+ * whole edition and capped, optionally narrowed to a program / cohort so it
+ * matches the toolbar filter the user is looking at.
+ */
+pipeline.get("/activity", async (c) => {
+  const { id: userId, edition, role } = c.var.user;
+  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 12) || 12, 1), 50);
+  const programId = c.req.query("programId");
+  const cohortId = c.req.query("cohortId");
+
+  const clauses = ["d.edition = ?"];
+  const params: unknown[] = [edition];
+  // Founders only ever see their own submissions' history.
+  if (role === "founder") {
+    clauses.push("d.uploaded_by = ?");
+    params.push(userId);
+  }
+  if (programId) {
+    clauses.push("d.program_id = ?");
+    params.push(programId);
+  }
+  if (cohortId) {
+    clauses.push("d.cohort_id = ?");
+    params.push(cohortId);
+  }
+  params.push(limit);
+
+  const rows = (
+    await c.env.DB.prepare(
+      "SELECT e.id, e.deck_id, e.from_stage, e.to_stage, e.action, e.note, e.created_at, " +
+        "d.name AS deck_name, u.name AS actor_name, u.title AS actor_title " +
+        "FROM pipeline_events e JOIN decks d ON d.id = e.deck_id " +
+        "LEFT JOIN users u ON u.id = e.actor_id WHERE " +
+        clauses.join(" AND ") +
+        " ORDER BY e.created_at DESC, e.rowid DESC LIMIT ?",
+    )
+      .bind(...params)
+      .all<{
+        id: string;
+        deck_id: string;
+        from_stage: string | null;
+        to_stage: string;
+        action: string;
+        note: string | null;
+        created_at: string;
+        deck_name: string;
+        actor_name: string | null;
+        actor_title: string | null;
+      }>()
+  ).results;
+
+  return c.json({
+    events: rows.map((r) => ({
+      id: r.id,
+      deckId: r.deck_id,
+      deckName: r.deck_name,
+      toStage: r.to_stage,
+      toLabel: getStage(edition, r.to_stage)?.label ?? r.to_stage,
+      fromLabel: r.from_stage ? getStage(edition, r.from_stage)?.label ?? r.from_stage : null,
+      action: r.action,
+      note: r.note,
+      actorName: r.actor_name ?? "AI",
+      actorTitle: r.actor_title ?? undefined,
+      createdAt: r.created_at,
+    })),
+  });
+});
+
+/**
+ * GET /evaluators — assignable evaluators grouped by role (Assign screen, panel
+ * 2 + 3). Each member carries their current open workload so the assigner can
+ * balance, and their alias title (issue 1) where one is set.
+ */
+pipeline.get(
+  "/evaluators",
+  requireRole("program_associate", "program_manager", "admin", "associate", "analyst", "partner"),
+  async (c) => {
+    const edition = c.var.user.edition as Edition;
+    const assignable = ASSIGNABLE_EVALUATOR_ROLES[edition];
+    const placeholders = assignable.map(() => "?").join(", ");
+    const rows = (
+      await c.env.DB.prepare(
+        "SELECT u.id, u.name, u.initials, u.role, u.title, " +
+          "(SELECT COUNT(*) FROM decks d WHERE d.assigned_to = u.id AND d.status IN ('assigned', 'jury_evaluation', 'analyst_scoring', 'associate_review', 'partner_review')) AS open_decks " +
+          `FROM users u WHERE u.edition = ? AND u.active = 1 AND u.role IN (${placeholders}) ORDER BY u.name`,
+      )
+        .bind(edition, ...assignable)
+        .all<{
+          id: string;
+          name: string;
+          initials: string;
+          role: string;
+          title: string | null;
+          open_decks: number;
+        }>()
+    ).results;
+
+    const groups = assignable.map((role) => ({
+      role,
+      roleLabel: roleLabel(edition, role),
+      members: rows
+        .filter((r) => r.role === role)
+        .map((r) => ({
+          id: r.id,
+          name: r.name,
+          initials: r.initials,
+          role: r.role,
+          title: r.title ?? undefined,
+          openDecks: r.open_decks ?? 0,
+        })),
+    }));
+    return c.json({ groups });
+  },
+);
 
 /** GET /jury — assignable jury members in the caller's edition (Assign screen). */
 pipeline.get("/jury", requireRole("program_associate", "program_manager", "admin"), async (c) => {

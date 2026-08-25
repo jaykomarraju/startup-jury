@@ -105,6 +105,9 @@ export interface AnchorRow {
 export interface RawEvaluation {
   complete?: boolean;
   founder?: string | null;
+  /** Aug-2026 issue 12 — auto-recognised company identity (overridable). */
+  startup_name?: string | null;
+  funding_stage?: string | null;
   /** Required intake detail read off the deck (Session 5 — upload validation).
    *  A bulk upload types nothing, so the extraction is the only source. */
   founder_email?: string | null;
@@ -138,6 +141,8 @@ export interface ScoreRow {
 export interface ParsedEvaluation {
   complete: boolean;
   founder: string | null;
+  /** Company identity read off the deck (issue 12); either may be null. */
+  recognized: { startupName: string | null; fundingStage: string | null };
   /** Contact/company detail the model read off the deck (may be all-null). */
   details: IntakeDetails;
   extractions: ExtractionRow[];
@@ -156,6 +161,8 @@ export interface EvaluationResult {
   missingFields: IntakeField[];
   /** The merged founder/contact detail now stored on the deck. */
   details: IntakeDetails;
+  /** The startup name + funding stage now stored (issue 12 auto-recognition). */
+  recognized: { name: string; stage: string | null };
   /** Soft duplicate / returning-company alert, or null. Never blocks. */
   intakeFlag: IntakeFlag | null;
   intakeNote: string | null;
@@ -201,6 +208,21 @@ export function buildTool(params: ParameterRow[]): AnthropicTool {
         founder: {
           type: ["string", "null"],
           description: "The founder or primary contact's full name, or null if absent.",
+        },
+        // Aug-2026 issue 12 — the startup name and funding stage are recognised
+        // from the deck so a bulk upload doesn't inherit a file name, and a
+        // single upload can be left blank. Anything the uploader typed wins.
+        startup_name: {
+          type: ["string", "null"],
+          description:
+            "The startup/company name exactly as printed on the deck, or null if the deck " +
+            "does not state one. Never invent one.",
+        },
+        funding_stage: {
+          type: ["string", "null"],
+          description:
+            "The round the startup is raising, as one of 'Pre-seed', 'Seed', 'Series A' or " +
+            "'Series B+', or null if the deck does not say.",
         },
         // Session 5 — the required intake columns. A bulk upload types nothing, so
         // these extractions are the only source of the founder's contact detail;
@@ -362,6 +384,10 @@ export function parseEvaluation(raw: RawEvaluation, params: ParameterRow[]): Par
   return {
     complete: raw.complete !== false,
     founder,
+    recognized: {
+      startupName: text(raw.startup_name),
+      fundingStage: text(raw.funding_stage),
+    },
     details: {
       founder,
       founderEmail: text(raw.founder_email),
@@ -468,6 +494,8 @@ interface DeckRow {
   r2_key: string | null;
   content_version: number | null;
   name: string | null;
+  /** 1 = the current name is a provisional file-name stand-in (issue 12). */
+  name_auto?: number | null;
   sector: string | null;
   stage: string | null;
   city: string | null;
@@ -508,7 +536,7 @@ export async function evaluateDeck(
   const notify = opts.notify ?? notifyIncompleteDeck;
 
   const deck = await env.DB.prepare(
-    "SELECT id, edition, status, r2_key, content_version, name, sector, stage, city, " +
+    "SELECT id, edition, status, r2_key, content_version, name, name_auto, sector, stage, city, " +
       "founder, founder_email, founder_phone, cohort_id, uploaded_by FROM decks WHERE id = ?",
   )
     .bind(deckId)
@@ -576,6 +604,14 @@ export async function evaluateDeck(
     parsed.details,
   );
   const missingFields = missingIntakeFields(details);
+
+  // Aug-2026 issue 12 — auto-recognise the startup name and funding stage. The
+  // uploader's own values always win: `name_auto` is only set when the server
+  // fell back to the file name, and `stage` is only filled when it was blank.
+  const recognizedName =
+    deck.name_auto === 1 && parsed.recognized.startupName ? parsed.recognized.startupName : null;
+  const effectiveName = recognizedName ?? deck.name;
+  const effectiveStage = deck.stage ?? parsed.recognized.fundingStage;
   const effective: ParsedEvaluation = {
     ...parsed,
     complete: parsed.complete && missingFields.length === 0,
@@ -635,7 +671,8 @@ export async function evaluateDeck(
       // statement — a deck can't be both scored and "failed", and doing it here
       // means every caller (upload, queue, re-score, re-upload, the cron sweep)
       // gets the reset for free.
-      "UPDATE decks SET ai_score = ?, signal = ?, status = ?, founder = ?, founder_email = ?, " +
+      "UPDATE decks SET ai_score = ?, signal = ?, status = ?, name = ?, name_auto = ?, " +
+        "stage = ?, founder = ?, founder_email = ?, " +
         "founder_phone = ?, city = ?, sector = ?, missing_fields = ?, intake_flag = ?, " +
         "intake_flag_note = ?, related_deck_id = ?, complete = ?, updated_at = ?, " +
         "ai_error = NULL, ai_failed_at = NULL, ai_attempts = 0 WHERE id = ?",
@@ -643,6 +680,9 @@ export async function evaluateDeck(
       total,
       signal,
       status,
+      effectiveName,
+      recognizedName ? 0 : (deck.name_auto ?? 0),
+      effectiveStage,
       details.founder ?? null,
       details.founderEmail ?? null,
       details.founderPhone ?? null,
@@ -701,6 +741,7 @@ export async function evaluateDeck(
 
   return {
     deckId,
+    recognized: { name: effectiveName ?? "Untitled deck", stage: effectiveStage ?? null },
     weightedTotal: total,
     signal,
     status,

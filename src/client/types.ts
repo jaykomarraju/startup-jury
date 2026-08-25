@@ -55,6 +55,14 @@ export interface DeckView {
   /** The program / cohort this deck sits under (Session 2 hierarchy). */
   programName?: string;
   cohortName?: string;
+  /** Free-text tags (Aug-2026 issue 2 — search & tag deck facility). */
+  tags?: string[];
+  /** Core evaluation areas the AI scored below the workspace's mediocre band. */
+  weakAreas?: string[];
+  /** Deck sections the extraction found absent (Traction, Team, Ask…). */
+  missingSections?: string[];
+  /** ISO timestamp the deck was uploaded. */
+  uploadedAt?: string;
   /** Transitions the current user may perform from this deck's stage. */
   actions?: DeckAction[];
 }

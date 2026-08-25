@@ -23,6 +23,7 @@ export function AppShell() {
         userName={user.name}
         initials={user.initials}
         roleLabel={roleLabel(user.edition, user.role)}
+        aliasTitle={user.title}
         editionLabel={editionLabel(user.edition)}
         theme={theme}
         onToggleTheme={toggleTheme}

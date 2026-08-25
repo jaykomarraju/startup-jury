@@ -36,6 +36,9 @@ export function AdminConsolePage() {
     invite: InviteResult;
   } | null>(null);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
+  // Aug-2026 issue 1 — an admin may set anyone's organizational alias title.
+  const [titleDraft, setTitleDraft] = useState<Record<string, string>>({});
+  const [aliasTitle, setAliasTitle] = useState("");
 
   const load = useCallback(() => {
     return listUsers()
@@ -58,6 +61,7 @@ export function AdminConsolePage() {
         email,
         userType,
         role: userType === "staff" ? role : undefined,
+        title: aliasTitle || undefined,
       });
       setCreated({
         name: res.user.name,
@@ -67,6 +71,7 @@ export function AdminConsolePage() {
       });
       setName("");
       setEmail("");
+      setAliasTitle("");
       await load();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
@@ -87,6 +92,24 @@ export function AdminConsolePage() {
       await load();
     } catch {
       /* surfaced by the row staying unchanged */
+    } finally {
+      setRowBusy(null);
+    }
+  }
+
+  async function saveTitle(u: UserView) {
+    const next = titleDraft[u.id] ?? u.title ?? "";
+    setRowBusy(u.id);
+    try {
+      await updateUser(u.id, { title: next });
+      setTitleDraft((d) => {
+        const rest = { ...d };
+        delete rest[u.id];
+        return rest;
+      });
+      await load();
+    } catch {
+      /* the field keeps the unsaved value so nothing is silently lost */
     } finally {
       setRowBusy(null);
     }
@@ -121,6 +144,9 @@ export function AdminConsolePage() {
               <tr className="text-fg-muted">
                 <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Member</th>
                 <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Role</th>
+                <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">
+                  Organizational title
+                </th>
                 <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Type</th>
                 <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">Status</th>
                 <th className="px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">Action</th>
@@ -141,6 +167,35 @@ export function AdminConsolePage() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-sm text-fg-muted">{u.roleLabel}</td>
+                  <td className="px-4 py-3">
+                    {canManageRow(u) ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          className="sj-input h-8 w-40 py-0 text-sm"
+                          maxLength={60}
+                          aria-label={`Organizational title for ${u.name}`}
+                          placeholder={u.roleLabel}
+                          value={titleDraft[u.id] ?? u.title ?? ""}
+                          onChange={(e) =>
+                            setTitleDraft((d) => ({ ...d, [u.id]: e.target.value }))
+                          }
+                        />
+                        {titleDraft[u.id] !== undefined &&
+                          titleDraft[u.id] !== (u.title ?? "") && (
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              disabled={rowBusy !== null}
+                              onClick={() => saveTitle(u)}
+                            >
+                              Save
+                            </Button>
+                          )}
+                      </div>
+                    ) : (
+                      <span className="text-sm text-fg-muted">{u.title ?? "—"}</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     {u.userType === "mentor" ? (
                       <Badge tone="info">Mentor</Badge>
@@ -233,6 +288,18 @@ export function AdminConsolePage() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="priya@yourorg.com"
                 required
+              />
+            </label>
+            <label className="flex min-w-[12rem] flex-1 flex-col gap-1">
+              <span className="text-xs font-medium text-fg-muted">
+                Organizational title <span className="font-normal">(optional)</span>
+              </span>
+              <input
+                className="sj-input h-9"
+                maxLength={60}
+                value={aliasTitle}
+                onChange={(e) => setAliasTitle(e.target.value)}
+                placeholder="e.g. Head of Programs"
               />
             </label>
           </div>

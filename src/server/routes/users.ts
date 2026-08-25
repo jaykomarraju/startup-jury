@@ -44,6 +44,7 @@ interface UserRosterRow {
   active: number;
   user_type: string;
   created_at: string;
+  title?: string | null;
 }
 
 async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
@@ -148,10 +149,22 @@ function toUserView(edition: Edition, r: UserRosterRow) {
     email: r.email,
     role: r.role,
     roleLabel: displayRole(edition, r.role, r.user_type),
+    // Aug-2026 issue 1 — the organizational alias the ribbon shows in place of
+    // the platform role. Empty means "no alias, use roleLabel".
+    title: r.title ?? undefined,
     userType: r.user_type,
     initials: r.initials,
     active: r.active === 1,
   };
+}
+
+/** Alias titles are free text but must not be a paragraph. */
+const MAX_TITLE = 60;
+
+function normaliseTitle(value: unknown): string | null | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim().replace(/\s+/g, " ").slice(0, MAX_TITLE);
+  return trimmed === "" ? null : trimmed;
 }
 
 // ── Roster ───────────────────────────────────────────────────────────────────
@@ -161,12 +174,35 @@ users.get("/", requireRole("admin"), async (c) => {
   const edition = c.var.user.edition;
   const rows = (
     await c.env.DB.prepare(
-      "SELECT id, name, email, role, initials, active, user_type, created_at FROM users WHERE edition = ? ORDER BY active DESC, name",
+      "SELECT id, name, email, role, initials, active, user_type, created_at, title FROM users WHERE edition = ? ORDER BY active DESC, name",
     )
       .bind(edition)
       .all<UserRosterRow>()
   ).results;
   return c.json({ users: rows.map((r) => toUserView(edition, r)) });
+});
+
+// ── My own profile (alias title) ─────────────────────────────────────────────
+
+/**
+ * PATCH /api/users/me — set (or clear) your own organizational ALIAS TITLE.
+ *
+ * Aug-2026 issue 1: "the user role should have provision to add alias title.
+ * Our default role remains same in the background but their organizational role
+ * would be visible." Deliberately open to every authenticated role including
+ * founders — it changes a display string on your own row and nothing else. The
+ * platform `role` is NOT settable here.
+ */
+users.patch("/me", async (c) => {
+  const body = await readBody<{ title: string }>(c);
+  const title = normaliseTitle(body.title);
+  if (title === undefined) return c.json({ error: "title_required" }, 400);
+
+  await c.env.DB.prepare("UPDATE users SET title = ? WHERE id = ?")
+    .bind(title, c.var.user.id)
+    .run();
+
+  return c.json({ ok: true, title: title ?? undefined });
 });
 
 // ── Create ───────────────────────────────────────────────────────────────────
@@ -176,6 +212,7 @@ interface CreateUserBody {
   email: string;
   role: string;
   userType: string;
+  title: string;
 }
 
 /** POST /api/users — create a team member or mentor (Super User / Admin).
@@ -211,13 +248,14 @@ users.post("/", requireRole("admin"), async (c) => {
 
   const id = `usr_${crypto.randomUUID().slice(0, 8)}`;
   const initials = initialsFrom(name);
+  const title = normaliseTitle(body.title) ?? null;
   const password = tempPassword();
   const passwordHash = await hashPassword(password);
 
   await c.env.DB.prepare(
-    "INSERT INTO users (id, name, email, password_hash, role, edition, initials, active, user_type) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)",
+    "INSERT INTO users (id, name, email, password_hash, role, edition, initials, active, user_type, title) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
   )
-    .bind(id, name, email, passwordHash, role, edition, initials, userType)
+    .bind(id, name, email, passwordHash, role, edition, initials, userType, title)
     .run();
 
   const invite = await deliverInvite(c.env, {
@@ -244,6 +282,7 @@ users.post("/", requireRole("admin"), async (c) => {
       active: 1,
       user_type: userType,
       created_at: "",
+      title,
     }),
   });
 });
@@ -254,6 +293,7 @@ interface UpdateUserBody {
   active: boolean;
   role: string;
   name: string;
+  title: string;
 }
 
 /** PATCH /api/users/:id — update a user's active flag, name, or role (Super
@@ -263,7 +303,7 @@ users.patch("/:id", requireRole("admin"), async (c) => {
   const edition = c.var.user.edition;
   const id = c.req.param("id");
   const target = await c.env.DB.prepare(
-    "SELECT id, name, email, role, initials, active, user_type, created_at FROM users WHERE id = ? AND edition = ?",
+    "SELECT id, name, email, role, initials, active, user_type, created_at, title FROM users WHERE id = ? AND edition = ?",
   )
     .bind(id, edition)
     .first<UserRosterRow>();
@@ -285,15 +325,26 @@ users.patch("/:id", requireRole("admin"), async (c) => {
 
   const active = typeof body.active === "boolean" ? (body.active ? 1 : 0) : target.active;
 
+  // undefined = field absent, keep what's there; null = explicitly cleared.
+  const titleUpdate = normaliseTitle(body.title);
+  const title = titleUpdate === undefined ? (target.title ?? null) : titleUpdate;
+
   await c.env.DB.prepare(
-    "UPDATE users SET name = ?, role = ?, initials = ?, active = ? WHERE id = ? AND edition = ?",
+    "UPDATE users SET name = ?, role = ?, initials = ?, active = ?, title = ? WHERE id = ? AND edition = ?",
   )
-    .bind(name, role, initialsFrom(name), active, id, edition)
+    .bind(name, role, initialsFrom(name), active, title, id, edition)
     .run();
 
   return c.json({
     ok: true,
-    user: toUserView(edition, { ...target, name, role, initials: initialsFrom(name), active }),
+    user: toUserView(edition, {
+      ...target,
+      name,
+      role,
+      initials: initialsFrom(name),
+      active,
+      title,
+    }),
   });
 });
 

@@ -64,6 +64,16 @@ const INCUBATOR_NAV: NavItem[] = [
     labelOverrides: { jury: "Evaluated" },
   },
   {
+    // Aug-2026 issue 26 — the Program Manager's own decision surface, added
+    // directly after Jury Pipeline. The jury scores; the PM (the decision maker
+    // per §8) signs off here and sends the deck on to the intro call.
+    id: "pmpipeline",
+    label: "Prog Manager Pipeline",
+    icon: "ClipboardList",
+    section: "Evaluation",
+    roles: ["admin", "program_manager"],
+  },
+  {
     // The intro-call decision surface: shortlist routes to the PM, who schedules
     // (or delegates to the associate). Jury sees the calls they're on.
     id: "introcalls",
@@ -73,7 +83,6 @@ const INCUBATOR_NAV: NavItem[] = [
     roles: ["admin", "program_manager", "program_associate", "jury"],
     labelOverrides: { jury: "My Intro calls" },
   },
-  { id: "forsignup", label: "For Sign up", icon: "Send", section: "Evaluation", roles: ["admin", "program_associate"] },
   { id: "incuration", label: "Sign up Pipeline", icon: "GitBranch", section: "Evaluation", roles: ["admin", "program_associate"] },
   { id: "curation", label: "Onboard ready", icon: "CircleCheck", section: "Evaluation", roles: ["admin", "program_associate"] },
   {

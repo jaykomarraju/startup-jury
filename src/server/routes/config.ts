@@ -108,6 +108,10 @@ config.get("/summary", async (c) => {
     thresholdBest: s.threshold_best,
     thresholdMediocre: s.threshold_mediocre,
     branding: parseBranding(s.branding_json),
+    // Aug-2026 issue 11 — the Upload screen shows the credit balance on top for
+    // everyone who can upload, not just admins (who also get it from GET /config
+    // along with the AI prompt). Founders never see the org's balance.
+    ...(c.var.user.role === "founder" ? {} : { creditsBalance: s.credits_balance }),
     coreParams: params.filter((p) => p.informational === 0).map(toParamView),
     additionalParams: params.filter((p) => p.informational === 1).map(toParamView),
   });
