@@ -10,10 +10,10 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
-import { requireAuth, requireRole } from "../auth/middleware";
+import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
 
 const programs = new Hono<AppEnv>();
-programs.use("*", requireAuth);
+programs.use("*", requireAuth, denyMentor);
 
 interface SectorRow {
   id: string;

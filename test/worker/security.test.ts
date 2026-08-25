@@ -144,3 +144,48 @@ describe("the middleware is actually wired into the app", () => {
     expect(res.headers.get("content-security-policy")).toBeNull();
   });
 });
+
+// ── AuthZ: the mentor user-type ──────────────────────────────────────────────
+// Session 4 resolved `mentor` as a DIRECTORY user-type, not a role: it appears
+// in no authZ list and no nav manifest, so `requireRole` refuses it everywhere
+// a role list is named. The surfaces below name none — they only asked for an
+// authenticated user — so before `denyMentor` a signed-in mentor could read the
+// whole deck pipeline. `npm run roles` asserts the same six as a live probe.
+
+describe("the mentor user-type reaches no pipeline surface", () => {
+  const MENTOR = "anil.mehta@demo.startupjury.ai"; // seeded incubator mentor
+
+  async function mentorCookie(): Promise<string> {
+    const res = await SELF.fetch("https://example.com/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: MENTOR, password: "demo1234" }),
+    });
+    expect(res.status).toBe(200); // a mentor still holds a valid session
+    return (res.headers.get("set-cookie") ?? "").split(";")[0];
+  }
+
+  it("is refused on every read that only required a session", async () => {
+    const cookie = await mentorCookie();
+    for (const path of [
+      "/api/decks",
+      "/api/programs",
+      "/api/parameters",
+      "/api/issues",
+      "/api/calls",
+    ]) {
+      const res = await SELF.fetch(`https://example.com${path}`, { headers: { cookie } });
+      expect([path, res.status]).toEqual([path, 403]);
+    }
+  });
+
+  it("is refused before the handler validates a write body", async () => {
+    // 403, not the 400 an empty body would otherwise earn: the gate runs first.
+    const res = await SELF.fetch("https://example.com/api/issues", {
+      method: "POST",
+      headers: { cookie: await mentorCookie(), "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(res.status).toBe(403);
+  });
+});

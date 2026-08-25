@@ -2,6 +2,7 @@ import { createMiddleware } from "hono/factory";
 import { getCookie } from "hono/cookie";
 import type { AppEnv } from "../types";
 import type { Role } from "../../shared/roles";
+import { isMentor } from "../../shared/roles";
 import { getSession, SESSION_COOKIE } from "./session";
 
 /** Populates `c.var.user` from the session cookie, or returns 401. */
@@ -27,3 +28,18 @@ export function requireRole(...roles: Role[]) {
     await next();
   });
 }
+
+/**
+ * Refuses the `mentor` user-type. A mentor is a directory record, not a
+ * pipeline actor: it holds no nav item and no transition, so `requireRole`
+ * already turns it away everywhere a role list is named. This is the gate for
+ * the surfaces that ask only for *some* authenticated user — without it a
+ * signed-in mentor could read the whole deck pipeline. Must run after
+ * requireAuth. There is no superuser bypass: `mentor` is never a superuser.
+ */
+export const denyMentor = createMiddleware<AppEnv>(async (c, next) => {
+  const user = c.var.user;
+  if (!user) return c.json({ error: "unauthorized" }, 401);
+  if (isMentor(user.role)) return c.json({ error: "forbidden" }, 403);
+  await next();
+});

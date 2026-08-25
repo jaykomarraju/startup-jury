@@ -17,22 +17,24 @@ import {
 } from "../../shared/roles";
 import { weightedTotal, signalTag, decisionScore } from "../../shared/scoring";
 import { getStage, performAction, transitionByAction } from "../../pipeline";
-import { requireAuth, requireRole } from "../auth/middleware";
+import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
 import { sendEmail, buildQueryEmail, buildSignupEmail } from "../email/outbox";
 
 const pipeline = new Hono<AppEnv>();
 // Scope auth to this router's own prefixes (not "*"): mounted at /api, a "*"
 // middleware would 401 every unmatched /api path and mask the app's JSON 404.
-pipeline.use("/decks/*", requireAuth);
-pipeline.use("/queries/*", requireAuth);
+// `denyMentor` rides along with `requireAuth`: every prefix below is a pipeline
+// surface, and the mentor user-type is a directory record with no part in it.
+pipeline.use("/decks/*", requireAuth, denyMentor);
+pipeline.use("/queries/*", requireAuth, denyMentor);
 // The bare "/queries" listing is NOT matched by "/queries/*" — it needs its own.
-pipeline.use("/queries", requireAuth);
-pipeline.use("/jury", requireAuth);
-pipeline.use("/parameters", requireAuth);
+pipeline.use("/queries", requireAuth, denyMentor);
+pipeline.use("/jury", requireAuth, denyMentor);
+pipeline.use("/parameters", requireAuth, denyMentor);
 // Aug-2026: the workspace activity log (issue 8) and the assignable-evaluator
 // roster (issue 22) are authed like every other pipeline route.
-pipeline.use("/activity", requireAuth);
-pipeline.use("/evaluators", requireAuth);
+pipeline.use("/activity", requireAuth, denyMentor);
+pipeline.use("/evaluators", requireAuth, denyMentor);
 
 interface DeckRow {
   id: string;

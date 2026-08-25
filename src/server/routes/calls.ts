@@ -18,7 +18,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv, Env } from "../types";
-import { requireAuth } from "../auth/middleware";
+import { denyMentor, requireAuth } from "../auth/middleware";
 import {
   CALL_KIND_LABELS,
   CALL_KINDS_BY_EDITION,
@@ -32,7 +32,7 @@ import { buildCallInviteEmail, sendEmail } from "../email/outbox";
 import { performAction } from "../../pipeline";
 
 const calls = new Hono<AppEnv>();
-calls.use("*", requireAuth);
+calls.use("*", requireAuth, denyMentor);
 
 async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
   return (await c.req.json().catch(() => ({}))) as Partial<T>;

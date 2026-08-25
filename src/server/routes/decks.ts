@@ -10,7 +10,7 @@ import { canSeeEvaluatorScores, evaluationRank, roleLabel } from "../../shared/r
 import { getStage, allowedTransitions } from "../../pipeline";
 import { decisionScore } from "../../shared/scoring";
 import { missingIntakeFields, parseMissingFields, type IntakeMatch } from "../../shared/intake";
-import { requireAuth, requireRole } from "../auth/middleware";
+import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
 import { detectIntakeFlags, intakeFlagStatement } from "../intake";
 import { evaluateDeck } from "../ai/evaluate";
 import {
@@ -31,7 +31,9 @@ import {
 } from "../decks/versions";
 
 const decks = new Hono<AppEnv>();
-decks.use("*", requireAuth);
+// The deck pipeline is staff-only: a mentor is a directory record, not an
+// actor, so it never reaches the listing, a deck's report or its PDF.
+decks.use("*", requireAuth, denyMentor);
 
 // The deck columns every view selects. Kept in one place because the list, the
 // detail report and the version endpoints all need the Session-5 intake columns.

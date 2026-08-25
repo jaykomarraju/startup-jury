@@ -11,7 +11,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
-import { requireAuth, requireRole } from "../auth/middleware";
+import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
 
 /** Issue workflow states. `in_progress` is the "someone is on it" middle step. */
 const ISSUE_STATUSES = ["open", "in_progress", "closed"] as const;
@@ -98,7 +98,9 @@ tickets.post("/:id/status", requireRole("admin"), async (c) => {
 // Triage (status / severity / owner / resolution) stays admin-only.
 
 const issues = new Hono<AppEnv>();
-issues.use("*", requireAuth);
+// Internal-only: founders are turned away per-handler (they legitimately hold
+// a session for the portal), and the mentor user-type at the router edge.
+issues.use("*", requireAuth, denyMentor);
 
 /** Founders are external; the issue log is an internal surface. */
 function denyFounder(c: Context<AppEnv>): Response | null {

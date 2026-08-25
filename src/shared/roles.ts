@@ -33,6 +33,20 @@ export const ROLES_BY_EDITION: Record<Edition, readonly Role[]> = {
   vc: VC_ROLES,
 };
 
+/**
+ * The `mentor` user-type (Session 4: a user-type, not a role). A mentor is a
+ * DIRECTORY record — an advisor the org keeps on file — with no screens and no
+ * transitions, so the value is deliberately absent from `Role` and from every
+ * authZ / nav list. It is still what a mentor row persists as (`users.role =
+ * 'mentor'`) and therefore what a signed-in mentor carries on their session,
+ * which is why the check is a string compare rather than a `Role` comparison.
+ */
+export const MENTOR_ROLE = "mentor";
+
+export function isMentor(role: Role | string): boolean {
+  return role === MENTOR_ROLE;
+}
+
 /** Human-readable role labels (edition-aware where they differ). */
 export const ROLE_LABELS: Record<Edition, Partial<Record<Role, string>>> = {
   incubator: {
