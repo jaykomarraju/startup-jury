@@ -16,7 +16,7 @@ import { QueryPage } from "./routes/QueryPage";
 import { ConfigPage } from "./routes/ConfigPage";
 import { MyParamsPage } from "./routes/MyParamsPage";
 import { SetupWizard } from "./routes/SetupWizard";
-import { AdminConsolePage } from "./routes/AdminConsolePage";
+import { AdminConsole } from "./routes/admin";
 import { AccountPage } from "./routes/AccountPage";
 import { BuyCreditsPage } from "./routes/BuyCreditsPage";
 import { FounderHomePage, FounderQueriesPage, FounderSignupPage } from "./routes/FounderPortal";
@@ -69,9 +69,10 @@ function NavRoute() {
   if (navId === "myparams") return <MyParamsPage />;
   if (navId === "setup") return <SetupWizard />;
 
-  // Admin console (user management), My account, Buy credits (Session 4) —
+  // Admin console (W1-C) — the prototype's full-screen sixteen-section overlay,
+  // not an in-shell page. My account and Buy credits (Session 4) are
   // edition-agnostic; the nav guard already gates admin/superuser vs all roles.
-  if (navId === "admin") return <AdminConsolePage />;
+  if (navId === "admin") return <AdminConsole />;
   if (navId === "account") return <AccountPage />;
   if (navId === "billing") return <BuyCreditsPage />;
 
