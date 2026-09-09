@@ -21,12 +21,26 @@
 ALTER TABLE cohorts ADD COLUMN seat_capacity INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE cohorts ADD COLUMN seats_filled  INTEGER NOT NULL DEFAULT 0;
 
--- Demo capacities in the prototype's proportions — one near-full cohort, one
--- comfortable, one exactly at capacity (which is what makes the `seatless`
--- path reachable on the seed).
-UPDATE cohorts SET seat_capacity = 20, seats_filled = 18 WHERE name = 'Cohort 5';
-UPDATE cohorts SET seat_capacity = 15, seats_filled =  9 WHERE name = 'Cohort 6';
-UPDATE cohorts SET seat_capacity = 12, seats_filled = 12 WHERE name NOT IN ('Cohort 5', 'Cohort 6');
+-- The prototype's three demo rows — 20/18, 15/9 and 12/12 — laid onto the
+-- cohorts this workspace actually has, in a stable order. Cohort names repeat
+-- across programmes, so the assignment is by (program, name) rather than by
+-- name alone. The third row is deliberately AT capacity: that is what makes the
+-- `seatless` path reachable on the seed. A workspace with more than three
+-- cohorts cycles through the same three figures rather than leaving any at 0.
+WITH ordered AS (
+  SELECT c.id, ROW_NUMBER() OVER (ORDER BY c.program_id, c.name) - 1 AS rn
+  FROM cohorts c
+),
+seeded AS (
+  SELECT id,
+         CASE rn % 3 WHEN 0 THEN 20 WHEN 1 THEN 15 ELSE 12 END AS cap,
+         CASE rn % 3 WHEN 0 THEN 18 WHEN 1 THEN  9 ELSE 12 END AS filled
+  FROM ordered
+)
+UPDATE cohorts SET
+  seat_capacity = (SELECT cap    FROM seeded WHERE seeded.id = cohorts.id),
+  seats_filled  = (SELECT filled FROM seeded WHERE seeded.id = cohorts.id)
+WHERE EXISTS (SELECT 1 FROM seeded WHERE seeded.id = cohorts.id);
 
 -- Any completed sign-up in a cohort with no free seat is seatless. On today's
 -- seed no sign-up has reached 'completed', so this writes nothing — it is here

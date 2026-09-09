@@ -40,7 +40,9 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_category ON audit_log (edition, categor
 CREATE INDEX IF NOT EXISTS idx_audit_log_deck     ON audit_log (deck_id, created_at DESC);
 
 -- ── Demo trail, transcribed from the ten rows on `s-al.html` ────────────────
--- Four categories, five with no deck at all — which is the point of the table.
+-- Four categories, and eight of the ten with no deck at all — which is the
+-- point of the table. Actors are mapped onto this workspace's own seeded users;
+-- the prototype's "Rajan S." has no counterpart here.
 INSERT INTO audit_log (id, edition, category, actor_id, actor_label, action, summary, deck_id, target_type, target_id, created_at) VALUES
   ('aud_0001', 'incubator', 'config',  'inc_admin', 'Nisha K.', 'crm_rule_updated',
    'Updated Salesforce filter rule trigger value to "Submitted for evaluation"', NULL, 'crm_connection', 'crm_inc_salesforce', '2026-06-04 11:42:00'),

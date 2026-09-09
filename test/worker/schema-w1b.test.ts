@@ -300,7 +300,7 @@ describe("audit_log", () => {
       { category: "score", n: 2 },
       { category: "team", n: 1 },
     ]);
-    // Five of the ten are not about a deck at all.
+    // Eight of the ten are not about a deck at all — config, team and billing.
     expect(await count("SELECT COUNT(*) n FROM audit_log WHERE id LIKE 'aud_%' AND deck_id IS NULL")).toBe(8);
   });
 
@@ -616,11 +616,19 @@ describe("agreements & signatures", () => {
 // ── 0036 · seat capacity ────────────────────────────────────────────────────
 
 describe("seat capacity", () => {
-  it("gives every cohort a capacity and a filled count", async () => {
+  it("gives every cohort one of the prototype's three demo capacities", async () => {
     expect(await count("SELECT COUNT(*) n FROM cohorts WHERE seat_capacity IS NULL OR seats_filled IS NULL")).toBe(0);
-    const c5 = await env.DB.prepare("SELECT seat_capacity, seats_filled FROM cohorts WHERE name = 'Cohort 5'")
-      .first<{ seat_capacity: number; seats_filled: number }>();
-    expect(c5).toEqual({ seat_capacity: 20, seats_filled: 18 });
+    expect(await count("SELECT COUNT(*) n FROM cohorts WHERE seat_capacity = 0")).toBe(0);
+    const { results } = await env.DB.prepare("SELECT seat_capacity, seats_filled FROM cohorts")
+      .all<{ seat_capacity: number; seats_filled: number }>();
+    const prototypeRows = ["20/18", "15/9", "12/12"];
+    for (const r of results) {
+      expect(prototypeRows).toContain(`${r.seat_capacity}/${r.seats_filled}`);
+    }
+  });
+
+  it("leaves at least one cohort exactly at capacity, so the seatless path is reachable", async () => {
+    expect(await count("SELECT COUNT(*) n FROM cohorts WHERE seats_filled >= seat_capacity")).toBeGreaterThan(0);
   });
 
   it("leaves the VC Fund Deployment figures on programs, where 0011 put them", async () => {

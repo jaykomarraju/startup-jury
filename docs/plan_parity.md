@@ -810,6 +810,8 @@ One row per session. The integration session fills the wave row.
 | *(pre-flight)* | done | — | typecheck ✓ · lint ✓ · 453 passed / 1 skipped ✓ · build ✓ | Baseline measured on `main` @ `5592a4d`. Lint was red with 318 errors — all from the stale nested worktree `.claude/worktrees/determined-tu-6abd99`, none from application code; fixed by ignoring `.claude/worktrees/**` in `eslint.config.js`. `npm run roles` needs a dev server and exits 0 without one — see §2.3. E2E and roles not yet run; that is `W0`. |
 | `W0` | **done** | — (harness session; closes no findings) | typecheck ✓ · lint ✓ · **453 passed / 1 skipped** ✓ · build ✓ · **e2e 84** (72 inherited + 12 new) ✓ · **roles 526/526** ✓ · `parity:nav` 208/278 ✓ · `parity:tokens` 4/27 ✓ | Baseline re-confirmed on `main` @ `437e78b` and **it is green** — the programme may start. E2E and roles were the two unmeasured legs: **72 e2e** and **526/526** both landed exactly where the previous track left them (roles run against a real server on port 5199, not a bare `npm run roles`). Added `npm run parity:nav`, `npm run parity:tokens` and `e2e/parity.spec.ts` (§2.5), each with a frozen, reasoned baseline. Proved all three fail loudly: a bad token, a fixed-but-unclaimed gap, a role removed from `nav.ts`, and a renamed column each exit 1; every temporary break was reverted and the app code is untouched. |
 
+| `W1-B` | **done** | — (schema session; closes no findings, unblocks Waves 2–6) | typecheck ✓ · lint ✓ · **527 passed / 1 skipped** ✓ (453 baseline + 74 new) · build ✓ · **e2e 82 / 84** ⚠ (see note) · **roles 526/526** ✓ (live server, port 5183) | **Migrations `0025`–`0037` — one contiguous block, thirteen files.** `0025` parameters (specs §6.2 canonical names + `description` + `config_permitted`) · `0026` org_scoring_settings · `0027` parameter_rubric_bands + per-area AI guidance prompts · `0028` question_bank · `0029` role_permissions · `0030` audit_log · `0031` notification_preferences · `0032` credit_ledger · `0033` price configuration (currencies · fx_rates · price_plans · price_amounts · pricing_settings) · `0034` signups + required_documents + signup_documents · `0035` agreement templates/fields/programs/flow_steps + agreements + signatures + authorised_signatories · `0036` seat capacity on cohorts · `0037` crm_connections. **Any later session that needs a column starts at `0038`.** New `src/shared/types.ts` carries the row types and seed vocabularies; `src/server/db.ts` gains `ParameterRow` / `getParameters`. Migrations apply to a fresh D1 **and** re-applying the whole set changes nothing — both proved, the second inside `test/worker/migrations-w1b.test.ts`. Three test files edited that I do not own, each because `0025` renamed a parameter and the literal moved, never the assertion: `test/worker/pipeline.test.ts` (3 keys), `e2e/incubator.spec.ts` and `e2e/config.spec.ts` (one label each). **E2E: 82 of 84 pass; the two `coverage.spec.ts` nav sweeps fail — and they fail identically on unmodified `main`**, which I checked in a throwaway worktree at `218658c` under the same conditions. Each walks ~28 slugs sequentially inside one 30-second test budget, which a machine running three parity worktrees at load 20–60 cannot meet. Not caused by this branch; see the §9 row. |
+
 <!-- Append a row per session. Do not rewrite history; add. -->
 
 ---
@@ -827,6 +829,12 @@ best reading and note it.
 | Q4 | `W0` (`parity:nav`) | `AISJ_ICAdmin_V6` is the only incubator prototype whose sidebar drops **both** Collaborate items (Contact Admin, Contact team); Super User, PM, PA and Jury all keep them. Prototype inconsistency, or a deliberate "the admin *is* who you contact" trim? | Keep both for admin (the app's current behaviour). `W3-A` confirms when it owns `nav.ts`. |
 | Q5 | `W0` (`parity:nav`) | The PM prototype offers **Sign up Pipeline** and **Onboard ready**; the app reserves both for admin + program associate. §1.4 gives the PM decision authority, which points the other way. | Likely a real gap. `W3-A` settles it with the runtime permission set. |
 | Q6 | `W0` (`parity:nav`) | **Core Parameters** (6 roles) and **Set up** (3 VC roles) appear in non-admin prototype sidebars but are admin-only in the app, and `PUT /api/config/parameters` is admin+superuser at 526/526. Read-only visibility, or no visibility? | No visibility, as today. `W3-A` decides; read-only is the likelier prototype intent. |
+| Q7 | `W1-B` | The prototype's **task-permission matrix disagrees with the shipped app for the `admin` role**: its "Client admin" column has no Upload, Evaluate, Assign or Query (the section even says "Admins are read-only on evaluation … by default"), while this application's `admin` has had all four since Phase 1 and the roles harness asserts it. | Today's app wins (plan §1.1 puts the prototype below the shipped contract here, and narrowing would break 526/526). The seed grants `admin` those four; `W4-A` can offer the prototype's narrower default as a *reset* if the user wants it. |
+| Q8 | `W1-B` | `role_permissions` is seeded as a **gate, not a grant**: `granted = 0` removes a capability, `granted = 1` leaves the app's finer rules (pipeline transition role lists, `requireRole`, stage gating) in place. A single boolean cannot express the prototype's real distinction between *seeing* the Archive screen and *performing* an archive. | `W3-A` must AND the permission with the existing rule rather than replacing it — that is what keeps `npm run roles` at 526/526 on the default seed while still making every cell meaningful. If the user wants view/act as separate cells, that is a second column and a wider matrix. |
+| Q9 | `W1-B` | Two VC tasks have **no nav slug of their own**: *MP approval* is seeded from the `mp_approve_dd` transition (partner + superuser), and *Open checklist* from the union of the Investment DD and Legal DD screens. Both readings are judgement calls. | As seeded. `W3-A` / `W4-A` confirm when they render the grid; `PERMISSION_TASKS` in `src/shared/types.ts` records the mapping per task so changing it is a one-line edit plus a seed migration. |
+| Q10 | `W1-B` | The **Rubric anchors** screen still shows the stale three-parameter taxonomy (P1 Super User · P2 Program Manager · P3 Jury Member) while the shipped model — and spec §6.2 — has nine role parameters per edition. | Seeded five band rows for all nine (text NULL, exactly as the prototype renders P1–P3 blank), so the screen has somewhere to write. `W2-B` renders nine sections, not three. |
+| Q11 | `W1-B` | The notification event **"All jury complete — ready for mentor review"** names a mentor review step that §1.2 says does not exist — `mentor` is a directory record with no pipeline authority. | Kept the prototype's label verbatim on the seeded row (`event_key` is the neutral `all_evaluations_complete`), so nothing is lost. `W3-B` should reword the label when it builds the producer; only the user can say whether the *step* was ever meant to exist. |
+| Q12 | `W1-B` | The **agreement templates' programme mapping** uses the prototype's own demo programme names (`Accelerator · Cohort 8`, `Seed Fund II`), none of which exist in this workspace. | Linked the two active templates per edition to real seeded programmes (Fintech Accelerator / SaaS Accelerator; Fund II / Deep Tech Fund) so the mapping is live rather than dangling. A programme that is absent simply inserts no row. `W5-B` re-points them if the user's real programmes differ. |
 
 ---
 
@@ -838,6 +846,9 @@ session places it.
 | From | File needed | Change | Placed by |
 |---|---|---|---|
 | `W0` | `tsconfig.node.json` | Add `"scripts"` to `include`. `scripts/*.ts` is not typechecked by `npm run typecheck` today — `role-matrix.ts` never was, and W0's three new scripts inherit that hole. All four compile clean under exactly the options already in that file, verified with a throwaway config; the change is one line and green. | Wave 1 integration |
+| `W1-B` | `src/server/ai/evaluate.ts:562`, `src/server/routes/pipeline.ts:948` | Both still read the **global four-band `rubric_anchors`** table from `0001` (0–1 / 2–4 / 5–7 / 8–10). The specs' five-band scale now lives per parameter in `parameter_rubric_bands` (`0027`), with `band_name` carrying the spec §7 labels. **`W2-B` owns this reconciliation** (it is the §1.5 defect); I have not touched either file, and `0027` deliberately leaves `rubric_anchors` in place so nothing breaks before W2-B lands. | `W2-B` |
+| `W1-B` | `test/worker/pipeline.test.ts`, `e2e/incubator.spec.ts`, `e2e/config.spec.ts` | **Already placed, flagged per §4.** `0025` renamed the nine role parameters to the specs' §6.2 canonical set, and these three files named the old labels. I changed only the literals — `add_jury_resilience` → `add_barriers_of_entry`, `add_pm_program_fit` → `add_trl_stage`, `add_pa_mandate_fit` → `add_program_fit`, and "Founder Resilience & Coachability" → "Barriers of entry" — never the assertion. Parameter **ids** are untouched, so no seeded score or FK moved. | placed by `W1-B` |
+| `W1-B` | `e2e/coverage.spec.ts` (or `playwright.config.ts`) | **The two nav-sweep tests have no timeout budget for the work they do.** Each logs in and then walks ~28 slugs sequentially inside the default 30 s per-test budget — about 1 s per navigation with nothing to spare. They pass on a quiet machine and fail on a busy one, on `main` as well as on any branch, which makes every session's e2e leg look red for reasons that have nothing to do with its work. Fix by giving those two tests their own `test.setTimeout(120_000)`, or by splitting the sweep per section. I did not touch either file — neither is mine, and a timeout is exactly the kind of test change §4 says to raise rather than make. | Wave 1 integration |
 
 ---
 
@@ -1067,6 +1078,195 @@ FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
   Commit to parity/W1-C. Do not merge to main.
+```
+
+---
+
+### Wave 2 — written by `W1-B` (the schema these three consume)
+
+> These three branch from `main` **after Wave 1 integration**, not from `parity/W1-B`. They are the
+> direct consumers of migrations `0025`–`0037`; `W1-B` wrote them because it knows what those tables
+> hold. If `W1-A` or `W1-C` also drafted Wave 2 prompts, the integration session keeps one copy.
+>
+> All three share one rule: **the schema already exists and is seeded.** Do not add a migration —
+> `migrations/` is `W1-B`'s for the whole programme. If you truly need a column, say so loudly in
+> your handoff and start at `0038`.
+
+### `W2-A` — scoring framework & area weights
+
+```
+You are running session W2-A — the Scoring framework and Area weights admin sections — of the
+ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  nvm use
+  git worktree add ../sj-W2-A -b parity/W2-A main
+  cd ../sj-W2-A && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules (§1.2 binds you), §2 Session protocol, §4 Testing,
+     then ONLY your entry for W2-A in §6, and §7 row `W1-B` for what the schema already holds.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" \
+         --screen "s-fw|s-wt|Scoring framework|Area weights" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-fw.html and s-wt.html, and
+     `updWt` / `permitTog` in that directory's _scripts.js. The VC build's s-fw is byte-identical.
+  4. migrations/0026_org_scoring_settings.sql and the `OrgScoringSettingsRow` /
+     `ScoreScale` / `CompositeFormula` / `AI_WEIGHT_CHOICES` exports in src/shared/types.ts.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  The schema is done and seeded — `org_scoring_settings` holds one row per edition at the
+  prototype's exact defaults. Your job is the UI, the API and, above all, the BEHAVIOUR:
+  1. The five AI-engine toggles and the four transparency toggles, each actually honoured by the
+     evaluation path. A toggle that renders but changes nothing is not closed.
+       - ai_pre_scoring_enabled     — no AI pass at all when off
+       - auto_clarification         — no auto-triggered query when off
+       - show_ai_score_to_jury      — WITHHELD SERVER-SIDE, not hidden in CSS
+       - require_override_rationale — enforce at `override_rationale_delta` (default 2.0)
+       - jury_sees_peer_scores      — off by default; respect EVALUATION_RANK either way
+       - show_three_score_view · show_score_drift · include_ai_evidence · intro_call_ai_prompts
+  2. Score composition: `score_scale`, `composite_formula` and `ai_weight_pct` re-cut
+     src/shared/scoring.ts. Not cosmetic — a median composite must actually compute a median.
+  3. `shortlist_threshold` (org_scoring_settings) and the Best/Poor cohort bands
+     (org_settings.threshold_best / .threshold_mediocre — they stay where they are).
+  4. Area weights: bars, a live 100 % total, and the per-parameter *Permit configuration* control,
+     which is `parameters.config_permitted` (seeded: parameter 1 of each owning role is permitted).
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/ScoringFramework.tsx, AreaWeights.tsx,
+    src/server/routes/config.ts, src/shared/scoring.ts.
+  - §1.2: OMIT "Mentor can adjust composite after all jury complete". The column does not exist
+    and must not be added — `mentor` has no pipeline authority (commit 8822db2).
+  - Do not touch src/shared/analytics.ts — the four-vs-five band defect is W2-B's.
+  - Add no migration. The table is `org_scoring_settings`; if you need a column, start at 0038 and
+    say so loudly.
+
+TEST
+  - Unit: each composite formula and each score scale, including the 0 % AI (jury-only) split.
+  - Worker: the AI path reads the settings; authZ (admin/superuser allowed, a non-admin 403s).
+  - E2E: blind scoring genuinely withholds the AI score — assert the API response, not the DOM.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  Plus `npm run roles` (start `npm run e2e:serve` on a port unique to this session and pass
+  ROLES_BASE — a bare `npm run roles` exits 0 with no server and is a false pass; §2.3).
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W2-A. Do not merge to main.
+```
+
+### `W2-B` — rubric anchors
+
+```
+You are running session W2-B — the Rubric anchors admin section, and the four-vs-five band defect —
+of the ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W2-B -b parity/W2-B main
+  cd ../sj-W2-B && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, §1.5 (your defect), §2, §4, then ONLY your entry for
+     W2-B in §6, plus §8 Q10 and the §9 row addressed to you.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "rubric|s-rb" --full
+  3. The specs' §7 "Scoring & Aggregation" band mapping in
+     docs/prototype/source/specs/incubator.html — it is the authority over both prototypes.
+  4. migrations/0027_rubric_anchors.sql and the `RUBRIC_BANDS` / `ParameterRubricBandRow` exports
+     in src/shared/types.ts.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  The schema is done and seeded: `parameter_rubric_bands` holds five rows for EVERY active
+  parameter in both editions — 65 anchor strings per edition already written from the prototype's
+  RUBRICS literal, and the nine role parameters scaffolded with NULL text. `parameters.prompt` now
+  carries the per-area AI guidance prompt for all 13 core areas as well as the nine role ones.
+  1. The section: an area picker (13 core + 9 role parameters — NOT the prototype's stale P1/P2/P3
+     trio, see §8 Q10), the AI guidance prompt textarea, five band textareas, Save and Revert.
+  2. **Reconcile the bands.** src/shared/analytics.ts:181-187 uses five bands, src/shared/scoring.ts
+     :21-26 uses four, and `src/server/ai/evaluate.ts:562` + `src/server/routes/pipeline.ts:948`
+     still read the global four-band `rubric_anchors` table from 0001. Drive all of it onto the
+     spec's five bands, which `parameter_rubric_bands.band_name` already carries (Exceptional ·
+     Strong · Moderate · Weak · Insufficient, band_index 0…4). One source, one set of labels.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/RubricAnchors.tsx, the anchors routes in
+    src/server/routes/config.ts, src/shared/analytics.ts (band constant only), and — for the
+    reconciliation, agreed in §9 — the anchor reads in src/server/ai/evaluate.ts and
+    src/server/routes/pipeline.ts.
+  - Do not touch src/shared/scoring.ts's composite maths; that is W2-A's. Coordinate on the band
+    constant only, and say in your handoff which of you moved it.
+  - Add no migration. If you drop the legacy `rubric_anchors` table, that IS a migration — say so
+    loudly and start at 0038.
+
+TEST
+  - Unit: one band table drives both scoring and analytics — the same score gets the same label
+    from both, which is the defect.
+  - Worker: save, revert and authZ (a non-admin 403s), and an anchor edit surviving a round trip.
+  - Client: the picker renders 22 parameters per edition, and a scaffolded role parameter shows
+    five empty bands rather than nothing.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W2-B. Do not merge to main.
+```
+
+### `W2-C` — question bank
+
+```
+You are running session W2-C — the clarification question bank — of the ai.STARTUPJURY parity
+programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W2-C -b parity/W2-C main
+  cd ../sj-W2-C && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §4 Testing, then ONLY your entry
+     for W2-C in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "question|s-qb" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-qb.html — the accordion's shape.
+     The question TEXT is already in the database; you do not need to transcribe it.
+  4. migrations/0028_question_bank.sql, src/shared/queries.ts, and the `QuestionBankRow` export in
+     src/shared/types.ts.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  The schema is done and seeded: `question_bank` holds 68 questions per edition, keyed to
+  `parameters.id` — five per area, eight for Climate Impact & Integrity, in the prototype's own
+  words and order.
+  1. The per-area accordion with the question count chip, and add / edit / delete / reorder.
+     Reorder writes `seq`; delete is a soft `active = 0` so a query already sent still reads back.
+  2. **Wire the bank into clarification generation.** src/shared/queries.ts today emits a bullet
+     list of area LABELS; a triggered query must draw the real questions for the weak-signal areas.
+     Respect `org_scoring_settings.auto_clarification` (W2-A owns that toggle's UI; you own the
+     producer honouring it — if it is not merged yet, read the column directly).
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/QuestionBank.tsx, src/shared/queries.ts, and the
+    question-bank routes in src/server/routes/config.ts.
+  - Add no migration. If you need a column, start at 0038 and say so loudly.
+
+TEST
+  - Unit: a weak-signal area selects that area's questions, in `seq` order, skipping inactive ones;
+    Climate Impact returns eight.
+  - Worker: add / edit / delete / reorder, plus authZ (a non-admin 403s).
+  - E2E: an admin edits a question and the edited text appears in a generated query.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W2-C. Do not merge to main.
 ```
 
 ---
