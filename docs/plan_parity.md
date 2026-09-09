@@ -810,6 +810,8 @@ One row per session. The integration session fills the wave row.
 | *(pre-flight)* | done | — | typecheck ✓ · lint ✓ · 453 passed / 1 skipped ✓ · build ✓ | Baseline measured on `main` @ `5592a4d`. Lint was red with 318 errors — all from the stale nested worktree `.claude/worktrees/determined-tu-6abd99`, none from application code; fixed by ignoring `.claude/worktrees/**` in `eslint.config.js`. `npm run roles` needs a dev server and exits 0 without one — see §2.3. E2E and roles not yet run; that is `W0`. |
 | `W0` | **done** | — (harness session; closes no findings) | typecheck ✓ · lint ✓ · **453 passed / 1 skipped** ✓ · build ✓ · **e2e 84** (72 inherited + 12 new) ✓ · **roles 526/526** ✓ · `parity:nav` 208/278 ✓ · `parity:tokens` 4/27 ✓ | Baseline re-confirmed on `main` @ `437e78b` and **it is green** — the programme may start. E2E and roles were the two unmeasured legs: **72 e2e** and **526/526** both landed exactly where the previous track left them (roles run against a real server on port 5199, not a bare `npm run roles`). Added `npm run parity:nav`, `npm run parity:tokens` and `e2e/parity.spec.ts` (§2.5), each with a frozen, reasoned baseline. Proved all three fail loudly: a bad token, a fixed-but-unclaimed gap, a role removed from `nav.ts`, and a renamed column each exit 1; every temporary break was reverted and the app code is untouched. |
 
+| `W1-C` | **done** | **F0039, F0131, F0133, F0152** closed outright; **F0001, F0006, F0176** closed for the shell they name, with their section bodies handed to Waves 2–5; **F0038, F0151** deferred to §8 Q7 (a client decision, not a build) | typecheck ✓ · lint ✓ · **475 passed / 1 skipped** ✓ (453 → +22 client) · build ✓ · **e2e 103** ✓ (84 → +19, `e2e/admin-console.spec.ts`) · **roles 526/526** ✓ · `parity:nav` 208/278 ✓ **unchanged** · `parity:tokens` 4/27 ✓ unchanged | Built `src/client/routes/admin/**`: the full-screen overlay (46 px `#4A6644` header, Close, body scroll lock, Escape), the 210 px olive rail with four groups and sixteen sections, the title bar (section label + program/cohort chip + global **Save changes**), the pending-invite badge, and the off-canvas drawer below 760 px. Sections switch through `?section=`, so `nav.ts` is untouched and the `admin` slug did not move — `parity:nav` is byte-identical. **Section bodies are placeholders that name their contents and their owning session**, so Waves 2–5 land in a slot rather than inventing one; `saveContext.tsx` is the wire from a section to the title-bar button (disabled today, since nothing owns state yet). **Edition split:** the VC console's fourth Sign-up section is `sufund` *Fund Deployment*, not `suseat` *Seat capacity* — the registry resolves per edition and both e2e walks assert it. **§1.2:** *User access* is titled and described reset-only; a client test asserts its copy never says reveal/show/stored password. **Two files nobody owned this wave were touched, deliberately:** `src/client/routes/AdminConsolePage.tsx` was `git mv`d to `src/client/routes/admin/TeamRoles.tsx` (the path `W4-A`'s entry already names) and kept working verbatim as the Team & roles section; and `e2e/roles.spec.ts` had two `goto("/app/admin")` calls re-pointed at `?section=tm` — **route only, no assertion weakened** (§4). **`e2e/parity.spec.ts` unchanged:** the four `/admin` rows were re-captured (`PARITY_CAPTURE=1`); the title is still `Admin console` and the union of the old header set with the new `tables: []` is the old row, so there was nothing to write. The console now opens on Scoring framework, so the walk no longer *sees* the roster — its exact header set is pinned in `e2e/admin-console.spec.ts` instead, at `?section=tm`. **Trap hit, for the record:** the first `npm run roles` scored 526/526 against port 5183 — which turned out to be **`sj-W1-B`'s** dev server, not this worktree's. §2.3's warning is about a *missing* server; a *neighbour's* server is the same false pass wearing a better disguise. Re-run on 5193 and verified by `ps` before believing it. Pick a port and check who owns it. |
+
 <!-- Append a row per session. Do not rewrite history; add. -->
 
 ---
@@ -827,6 +829,7 @@ best reading and note it.
 | Q4 | `W0` (`parity:nav`) | `AISJ_ICAdmin_V6` is the only incubator prototype whose sidebar drops **both** Collaborate items (Contact Admin, Contact team); Super User, PM, PA and Jury all keep them. Prototype inconsistency, or a deliberate "the admin *is* who you contact" trim? | Keep both for admin (the app's current behaviour). `W3-A` confirms when it owns `nav.ts`. |
 | Q5 | `W0` (`parity:nav`) | The PM prototype offers **Sign up Pipeline** and **Onboard ready**; the app reserves both for admin + program associate. §1.4 gives the PM decision authority, which points the other way. | Likely a real gap. `W3-A` settles it with the runtime permission set. |
 | Q6 | `W0` (`parity:nav`) | **Core Parameters** (6 roles) and **Set up** (3 VC roles) appear in non-admin prototype sidebars but are admin-only in the app, and `PUT /api/config/parameters` is admin+superuser at 526/526. Read-only visibility, or no visibility? | No visibility, as today. `W3-A` decides; read-only is the likelier prototype intent. |
+| Q7 | `W1-C` (F0038, F0151) | **Who reaches the Admin console, and to do what?** All eleven prototypes ship a console; the seven non-admin ones carry a 12-section variant (`crm`, `nt`, `al` included) that is fully editable — jury and analyst get live CRM Connect/Disconnect buttons and the same ten writable toggles. That is almost certainly a prototype oversight for CRM and billing, but it is clearly deliberate for **Notifications**: `s-nt`'s own sub-line scopes it per person ("…for your account"), so a jury member has no reachable screen on which to switch off their own mail. Two decisions the client must make: (a) does every internal role get a console entry, and (b) is the non-admin console read-only? | Console stays admin + superuser only, as today — `W1-C` built no read-only variant (its §6 note forbids one) and `parity:nav` did not move. The shell is nevertheless ready for a widening: `canSeeAdminGroup()` gates the **Sign-up** group independently of console reachability, so opening `nt`/`al` to every role cannot leak Required documents, Agreements, Signatories or Seats/Fund with it. `W3-A` (permissions) and `W3-B` (notifications) both need the answer; `W3-B` is where it bites. |
 
 ---
 
@@ -838,6 +841,9 @@ session places it.
 | From | File needed | Change | Placed by |
 |---|---|---|---|
 | `W0` | `tsconfig.node.json` | Add `"scripts"` to `include`. `scripts/*.ts` is not typechecked by `npm run typecheck` today — `role-matrix.ts` never was, and W0's three new scripts inherit that hole. All four compile clean under exactly the options already in that file, verified with a throwaway config; the change is one line and green. | Wave 1 integration |
+| `W1-C` | `migrations/**` (owner `W1-B`) + `src/server/routes/users.ts` and `src/client/api.ts` (owner `W4-A`) | **An invite-acceptance state on `users`.** The console rail's red `.nb` badge on Team & roles counts members whose invite is still pending (prototype `tmMembers[].pending`, `admin/_style.css:26`). The repo has no such state — `users` carries `active` only, and `InviteResult` reports *email delivery*, not acceptance. `W1-C` shipped the badge and `pendingInviteCount()`, which reads an optional `invitePending` defensively and is therefore 0 today, so nothing renders. Add the column, return it on `GET /api/users`, and the badge lights up with no client change. | `W1-B` (column) + `W4-A` (route + type) |
+| `W1-C` | `src/client/index.css` (owner `W1-A`) — **no edit needed, read this instead** | The prototype's Admin console is a **separate document with its own palette**: `--olive:#4A6644` / `--olive-lt:#EEF3EA`, materially darker than the app shell's `--olive:#6B8454` / `--olive-lt:#EBF0E4` that `W1-A` is adding. `W1-C` did not declare a global token — the console's two values are scoped to the overlay as `--ac-olive` / `--ac-olive-lt` in `AdminConsole.tsx`, where they cannot collide with W1-A's family. If the client would rather the console adopt the app hue, it is a two-value edit in that one file. | nobody — informational |
+| `W1-C` | `src/client/routes/admin/TeamRoles.tsx` (owner `W4-A`) | **The file `W4-A`'s entry names already exists.** `W1-C` moved `src/client/routes/AdminConsolePage.tsx` there verbatim (`git mv`, imports re-pointed, page-level `<h1>` dropped because the console title bar supplies it) and exported it as `TeamRolesSection`. `W4-A` replaces its body; the console needs nothing else. | `W4-A` |
 
 ---
 
@@ -1070,6 +1076,197 @@ FINISH
 ```
 
 ---
+
+---
+
+### Wave 2 — admin console: evaluation configuration *(written by `W1-C`)*
+
+> **Read this before the three prompts below.** `W1-C` built the console shell these sections land
+> in, so none of them writes chrome. The contract is small and identical for all three:
+>
+> - Your section is a component under `src/client/routes/admin/`, registered as **one line** in
+>   `src/client/routes/admin/registry.tsx`, keyed by the prototype section id (`fw`, `wt`, `rb`,
+>   `qb`). That file exists to be the merge point for parallel sessions — add your line, change
+>   nothing else in the shell. Anything not in the map renders `SectionPlaceholder`.
+> - **Do not draw page chrome.** The title bar already supplies the section label, the
+>   program/cohort context chip and the global **Save changes** button. Your component renders the
+>   prototype's `.sec-title` / `.sec-sub` pair as an `<h2>` plus one description line, then its
+>   cards — exactly as `SectionPlaceholder` does.
+> - To take over the title bar's save button, call `useAdminSave({ dirty, saving, onSave })` from
+>   `src/client/routes/admin/saveContext`. With no section registered it is disabled with a hint.
+> - Your section is reached at `/app/admin?section=<id>` — that is how e2e navigates to it.
+> - `src/client/routes/admin/sections.ts` already carries your section's exact prototype heading and
+>   sub-line. Use them; do not re-derive the copy.
+>
+> **Gate to enter:** Wave 1 integrated. These three run in parallel and their files are disjoint
+> except `src/server/routes/config.ts`, which `W2-A` owns — `W2-B` and `W2-C` add their routes in
+> their own modules and mount them, rather than editing it.
+
+#### `W2-A` — scoring framework + area weights
+
+```
+You are running session W2-A — the console's Scoring framework and Area weights sections — of the
+ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  nvm use
+  git worktree add ../sj-W2-A -b parity/W2-A main
+  cd ../sj-W2-A && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §4 Testing, the Wave 2 contract
+     note in §10, then ONLY your entry for W2-A in §6.
+  2. Your worklist:
+     python3 docs/prototype/tools/findings.py --area "Admin console" \
+       --screen "s-fw|s-wt|Scoring framework|Area weights" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-fw.html and s-wt.html, plus the
+     renderers for them in admin/_scripts.js. Cross-check AISJ_VC_Superuser_V8/admin/s-wt.html —
+     the VC area set differs. Do NOT read a prototype HTML whole.
+  4. src/shared/scoring.ts, src/server/routes/config.ts, and the console shell contract in
+     src/client/routes/admin/registry.tsx.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB).
+
+BUILD
+  1. Scoring framework: the five AI-engine toggles (pre-scoring, auto-clarification, show AI score
+     before scoring, override rationale, jury peer visibility) and the five transparency/report
+     toggles — each HONOURED by the evaluation path. A toggle that renders and changes nothing is
+     not closed.
+  2. Score scale, composite formula and the AI/Jury weight split, re-cutting src/shared/scoring.ts
+     rather than sitting beside it. The composite is hard-coded today (F0104).
+  3. The organisation shortlist threshold.
+  4. Area weights: per-area bars with a live 100% total, and the "Permit configuration" control
+     per role (F0077).
+  5. Register both sections in src/client/routes/admin/registry.tsx (fw, wt).
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/ScoringFramework.tsx, src/client/routes/admin/AreaWeights.tsx,
+    the two lines you add to src/client/routes/admin/registry.tsx, src/server/routes/config.ts,
+    src/shared/scoring.ts. Need something else? Record it in §9; do not edit it.
+  - OMIT "Mentor can adjust composite" (§1.2) — it contradicts the shipped decision that `mentor`
+    is a directory record with no pipeline authority.
+  - Do not draw page chrome; see the Wave 2 contract note in §10.
+  - W1-B created the org scoring settings tables. Read them; do not add migrations.
+
+TEST
+  - Unit tests for each composite formula and each score scale.
+  - Worker tests that the AI evaluation path actually reads the settings, and 403 for a forbidden
+    role on every route you add.
+  - E2E proving blind scoring withholds the AI score SERVER-SIDE, not just visually — navigate to
+    /app/admin?section=fw, flip the toggle, then assert the API response for a scorer omits it.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build
+  Plus: npm run test:e2e · npm run roles (live server on a port unique to you — verify with
+  `lsof -ti:<port>` that it is YOURS; a neighbouring worktree's server is a false pass, §2.3)
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests, then write the next prompt(s) into §10 using the §5 template. Commit to parity/W2-A.
+  Do not merge to main.
+```
+
+#### `W2-B` — rubric anchors
+
+```
+You are running session W2-B — the console's Rubric anchors section — of the ai.STARTUPJURY parity
+programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W2-B -b parity/W2-B main
+  cd ../sj-W2-B && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules (§1.5 names the defect you own), §2, §4, the Wave 2
+     contract note in §10, then ONLY your entry for W2-B in §6.
+  2. Your worklist:
+     python3 docs/prototype/tools/findings.py --area "Admin console" --screen "rubric|s-rb" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-rb.html and its renderer in
+     admin/_scripts.js. Do NOT read a prototype HTML whole.
+  4. src/shared/scoring.ts:21-26 and src/shared/analytics.ts:181-187 — the four-band/five-band
+     split you must reconcile — and src/client/routes/admin/registry.tsx.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB).
+
+BUILD
+  1. Per-area anchors across the spec's five bands (9-10 / 7-8 / 5-6 / 3-4 / 0-2): 16 areas x 5
+     editable strings, 65 pre-seeded from W1-B's migration.
+  2. A per-area AI guidance prompt, with save and revert.
+  3. Fix the §1.5 defect: analytics uses five bands and scoring uses four, so the same score can be
+     labelled two ways. ONE band table drives both.
+  4. Register the section in src/client/routes/admin/registry.tsx (rb).
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/RubricAnchors.tsx, the one line you add to
+    src/client/routes/admin/registry.tsx, the anchors routes (add them in your own module under
+    src/server/routes/ and mount them — W2-A owns config.ts), and the band constant in
+    src/shared/analytics.ts. Record anything else in §9.
+  - Do not draw page chrome; see the Wave 2 contract note in §10.
+  - The written spec outranks the prototype (§1.1). Five bands is the spec's answer.
+
+TEST
+  - A unit test that one band table drives BOTH scoring and analytics — it must fail if either
+    diverges again.
+  - Worker tests for save, revert and authZ (allowed role and a forbidden one -> 403).
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build
+  Plus: npm run test:e2e · npm run roles (live server on a port unique to you — verify the owner)
+
+FINISH
+  Complete the §2.4 exit checklist, then write the next prompt(s) into §10. Commit to parity/W2-B.
+  Do not merge to main.
+```
+
+#### `W2-C` — question bank
+
+```
+You are running session W2-C — the console's Question bank section — of the ai.STARTUPJURY parity
+programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W2-C -b parity/W2-C main
+  cd ../sj-W2-C && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, the Wave 2 contract note in §10, then ONLY your entry for
+     W2-C in §6.
+  2. Your worklist:
+     python3 docs/prototype/tools/findings.py --area "Admin console" --screen "question|s-qb" --full
+     …and read F0041 and F0042 in full — the trigger mechanism, not just the screen.
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-qb.html and its renderer in
+     admin/_scripts.js. Do NOT read a prototype HTML whole.
+  4. src/shared/queries.ts, the clarification-generation path, and
+     src/client/routes/admin/registry.tsx.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB).
+
+BUILD
+  1. The 68 curated clarification questions across the 13 areas (Climate Impact & Integrity has 8,
+     the rest 5) as an editable per-area accordion: add, edit, delete, reorder.
+  2. Wire the bank into clarification generation so a triggered query draws REAL questions instead
+     of today's bullet list of area labels.
+  3. F0042: the "weak signal" that selects areas currently reads the All-Decks cohort rating
+     threshold, not the rubric's Weak band — so moving a cohort threshold silently re-targets
+     founder questions. Point it at the band table (W2-B owns that constant; if it has not landed
+     in your worktree, code against the shape and say so in §9).
+  4. Register the section in src/client/routes/admin/registry.tsx (qb).
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/QuestionBank.tsx, the one line you add to
+    src/client/routes/admin/registry.tsx, src/shared/queries.ts, and the question-bank routes in
+    your own module under src/server/routes/ (W2-A owns config.ts). Record anything else in §9.
+  - Do not draw page chrome; see the Wave 2 contract note in §10.
+
+TEST
+  - A unit test that a weak-signal area selects the right questions from the bank.
+  - E2E: an admin edits a question at /app/admin?section=qb and it appears in a generated query.
+  - Worker test for authZ on every route you add.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build
+  Plus: npm run test:e2e · npm run roles (live server on a port unique to you — verify the owner)
+
+FINISH
+  Complete the §2.4 exit checklist, then write the next prompt(s) into §10. Commit to parity/W2-C.
+  Do not merge to main.
+```
 
 ## 11. Reference
 

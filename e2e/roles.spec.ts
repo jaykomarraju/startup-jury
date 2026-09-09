@@ -19,8 +19,11 @@ const INC_JURY = "rajesh.kumar@demo.startupjury.ai";
 
 test("admin creates a user in the Admin console and gets a temp password", async ({ page }) => {
   await login(page, INC_ADMIN);
-  await page.goto("/app/admin");
+  // W1-C: the Admin console is now the prototype's sixteen-section overlay and
+  // opens on Scoring framework. The user roster is its Team & roles section.
+  await page.goto("/app/admin?section=tm");
   await expect(page.getByRole("heading", { name: "Admin console" })).toBeVisible();
+  await expect(page.getByTestId("admin-section-title")).toHaveText("Team & roles");
 
   // A unique email so repeat runs against a warm dev server don't collide.
   const email = `e2e.juror.${Date.now()}@newteam.io`;
@@ -37,7 +40,7 @@ test("admin creates a user in the Admin console and gets a temp password", async
 
 test("admin can add a mentor as a user-type", async ({ page }) => {
   await login(page, INC_ADMIN);
-  await page.goto("/app/admin");
+  await page.goto("/app/admin?section=tm");
   const email = `e2e.mentor.${Date.now()}@advisors.io`;
   await page.getByLabel("Full name").fill("E2E Mentor");
   await page.getByLabel("Work email").fill(email);
