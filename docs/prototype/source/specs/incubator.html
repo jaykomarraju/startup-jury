@@ -1,0 +1,431 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<!-- This site is hosted on Netlify. Anyone can build and deploy a site
+     like this one for free: https://netlify.new/?utm_campaign=ai-legible&utm_source=comment&utm_medium=referral&utm_id=30045095-4541-4ec6-b5f6-24e70b35a7ec
+     Netlify hosting facts for this site: static/SSR served via Netlify Edge. -->
+<meta name="hosting-provider" content="Netlify">
+<meta name="netlify-deploy" content="https://netlify.new/?utm_campaign=ai-legible&amp;utm_source=meta&amp;utm_medium=referral&amp;utm_id=30045095-4541-4ec6-b5f6-24e70b35a7ec">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Incubator Product Specification — ai.STARTUPJURY</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --olive:#6B8454;--olive-dk:#4A5E3A;--olive-lt:#EBF0E4;--olive-md:#8FA67A;
+  --gold:#E8A020;--gold-lt:#FDF3E0;--gold-dk:#B87A10;
+  --navy:#1A1E2E;--stone:#ECEAE4;--stone-dk:#D4D0C8;--offwht:#F7F6F2;
+  --text:#1A1E2E;--text-2:#4A4840;--text-3:#9A9488;--surface:#fff;
+}
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:'DM Sans',system-ui,sans-serif;background:var(--offwht);color:var(--text);line-height:1.62;font-size:15px}
+.topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:12px;padding:11px 20px;background:var(--olive);color:#fff;box-shadow:0 2px 14px -6px rgba(0,0,0,.4)}
+.topbar a.back{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:#fff;text-decoration:none;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.22);border-radius:8px;padding:6px 12px}
+.topbar a.back:hover{background:rgba(255,255,255,.22)}
+.lw{font-size:13.5px;font-weight:700;display:flex;align-items:baseline;gap:1px;margin-left:2px}
+.lw .d{color:var(--gold);font-weight:900;margin:0 2px}.lw .s{color:var(--gold)}
+.doc-kind{margin-left:auto;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:rgba(255,255,255,.82);font-weight:700}
+.wrap{max-width:820px;margin:0 auto;padding:38px 24px 90px}
+h1{font-family:'Playfair Display',serif;font-weight:700;font-size:31px;line-height:1.14;color:var(--navy);margin:8px 0 6px;letter-spacing:-.01em}
+h2{font-family:'Playfair Display',serif;font-weight:700;font-size:21px;color:var(--olive-dk);margin:38px 0 10px;padding-bottom:7px;border-bottom:2px solid var(--olive-lt)}
+h3{font-size:15.5px;font-weight:700;color:var(--navy);margin:22px 0 6px}
+p{margin:11px 0}
+strong{color:var(--navy)}
+a{color:var(--gold-dk);text-decoration:none;border-bottom:1px solid var(--gold-lt)}
+a:hover{border-bottom-color:var(--gold-dk)}
+ul,ol{margin:10px 0;padding-left:22px}li{margin:5px 0}
+hr{border:none;border-top:1px solid var(--stone-dk);margin:30px 0}
+blockquote{margin:14px 0;padding:11px 16px;background:var(--gold-lt);border-left:3px solid var(--gold);border-radius:0 8px 8px 0;color:var(--text-2);font-size:14px}
+blockquote p{margin:4px 0}
+code{font-family:'DM Mono',ui-monospace,monospace;font-size:12.5px;background:var(--olive-lt);color:var(--olive-dk);padding:1.5px 5px;border-radius:5px}
+pre{background:var(--navy);color:#EDEBE4;padding:16px 18px;border-radius:12px;overflow:auto;font-size:12.5px;line-height:1.55;margin:14px 0}
+pre code{background:none;color:inherit;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px;background:var(--surface);border-radius:10px;overflow:hidden;box-shadow:0 1px 0 var(--stone-dk)}
+th{background:var(--olive);color:#fff;text-align:left;padding:9px 12px;font-weight:600;font-size:12.5px}
+td{padding:8px 12px;border-top:1px solid var(--stone)}
+tr:nth-child(even) td{background:#FAFBF8}
+em{color:var(--text-2)}
+.foot{max-width:820px;margin:0 auto;padding:0 24px 50px;color:var(--text-3);font-size:11.5px;text-align:center}
+@media(max-width:560px){.wrap{padding:26px 16px 70px}h1{font-size:25px}table{font-size:12px}}
+</style></head><body>
+<div class="topbar">
+  <a class='back' href='/'>&larr; Portal</a>
+  <span class="lw"><span>ai</span><span class="d">&middot;</span><span class="s">STARTUPJURY</span></span>
+  <span class="doc-kind">Incubator spec</span>
+</div>
+<main class="wrap"><h1 id="aistartupjury-incubator-product-specification">ai.STARTUPJURY — Incubator Product Specification</h1>
+<p><strong>Purpose of this document.</strong> This is the single source of truth for the AISJ incubator product. The prototype ships as <strong>five standalone HTML files</strong> (one per role) plus a launcher. Each file is a self-contained mock with its own hard-coded, in-memory seed data — there is <strong>no shared runtime state or backend between the files</strong>. What they <em>do</em> share is one domain model and one workflow, rendered through different role lenses. This spec defines that model so the build stays coherent across roles instead of five sessions each re-deriving the schema.</p>
+<p><strong>How to use it.</strong> Build against the entity model (§5), the parameter taxonomy (§6), the scoring rules (§7), and the state machines (§8) as the contract. The prototypes are the reference UI, not the schema — where a prototype's seed data disagrees with this doc, this doc wins. Read §11 (Conventions &amp; Gotchas) before touching any prototype file.</p>
+<hr />
+<h2 id="1-quick-reference-tldr">1. Quick Reference (TL;DR)</h2>
+<p><strong>Product.</strong> A B2B venture-intelligence SaaS for institutional buyers (incubators, accelerators, VCs) to run AI-assisted pitch-deck evaluation: upload decks → AI pre-scores 13 standard areas → role-specific human scoring → jury aggregation/averaging → pipeline management → founder sign-up/onboarding.</p>
+<p><strong>Roles (incubator).</strong> Super User, Program Manager (PM), Program Associate (PA), Jury Member, Admin.</p>
+<p><strong>Core entities.</strong> Organization · Program/Cohort · User(Role) · Deck(Startup) · ParameterDefinition · Evaluation · EvaluationScore/Remark · Assignment · IntroCall · PipelineStatus · Signup(+Documents/Agreements/Signatures) · Plan/Subscription · CreditLedger · SupportTicket.</p>
+<p><strong>13 standard evaluation areas</strong> (weighted, sum = 100%), scored 0–10 each:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Area</th>
+<th>Weight</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Problem &amp; Market Clarity</td>
+<td>8%</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Solution &amp; Value Proposition</td>
+<td>8%</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Market Size &amp; Opportunity</td>
+<td>7%</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Product &amp; Technology</td>
+<td>7%</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Business Model &amp; Unit Economics</td>
+<td>8%</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Traction &amp; Validation</td>
+<td>10%</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Competitive Landscape</td>
+<td>6%</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Go-To-Market Strategy</td>
+<td>6%</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Team &amp; Execution Capability</td>
+<td>10%</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Business Risks</td>
+<td>8%</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Business Attractiveness</td>
+<td>8%</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Climate Impact &amp; Integrity</td>
+<td>10%</td>
+</tr>
+<tr>
+<td>13</td>
+<td>Storytelling &amp; Deck Quality</td>
+<td>4%</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>Area 12 (Climate Impact &amp; Integrity) reflects the platform's origin with Global Carbon Warriors (a climate-tech incubator). Treat the 13-area set and weights as <strong>per-organization configurable</strong>, not global constants.</p>
+</blockquote>
+<p><strong>Role-specific parameters</strong> (3 per role, on top of the 13 standard areas; default weight <code>Informational</code> = not weighted into the composite):</p>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>P1</th>
+<th>P2</th>
+<th>P3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Program Manager</td>
+<td>TRL stage</td>
+<td>Product-Market Fit</td>
+<td>Traction</td>
+</tr>
+<tr>
+<td>Program Associate</td>
+<td>Program fit</td>
+<td>Investment stage</td>
+<td>Ask</td>
+</tr>
+<tr>
+<td>Jury Member</td>
+<td>Barriers of entry</td>
+<td>Scalability</td>
+<td>Industry growth</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Scoring bands</strong> (applied per area, 0–10): <code>9–10 Exceptional</code> · <code>7–8 Strong</code> · <code>5–6 Moderate</code> · <code>3–4 Weak</code> · <code>0–2 Insufficient</code>.</p>
+<p><strong>Key enums.</strong>
+- Evaluation state: <code>pending</code> → <code>draft</code> → <code>submitted</code>
+- Sign-up / pipeline status: <code>shortlisted</code>, <code>rejected</code>, <code>initiated</code>, <code>progress</code>, <code>completed</code>, <code>onboarded</code>, <code>archived</code>
+- Document status: <code>not_requested</code> → <code>awaiting</code> → <code>submitted</code> → <code>verified</code>
+- Plan tiers: <code>standard</code>, <code>pro</code>, <code>premium</code></p>
+<hr />
+<h2 id="2-product-overview">2. Product Overview</h2>
+<p>AISJ replaces manual, Excel-based jury coordination with an AI-assisted evaluation pipeline. The buyer (an incubator/accelerator) uploads founder pitch decks; the platform's AI pre-populates a suggested score (0–10) for each of the 13 standard evaluation areas using per-parameter extraction prompts. Human evaluators (Program Managers, Program Associates, Jury Members) then review and override scores, add remarks, and each contributes their own 3 role-specific parameters. Scores are aggregated and averaged across the jury to rank the pipeline. Selected startups move through a sign-up/onboarding workflow (documents → agreements → e-signature). Access is gated by plan tier and metered by evaluation credits (one credit per deck evaluated).</p>
+<p>The tagline is <em>"Venture Intelligence First."</em></p>
+<hr />
+<h2 id="3-role-taxonomy">3. Role Taxonomy</h2>
+<h3 id="incubator-roles-this-prototype">Incubator roles (this prototype)</h3>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Super User</strong></td>
+<td>Org owner. Configures parameters for all roles, manages team/roles/permissions, sees all pipelines and the full evaluation report, drives sign-up/onboarding.</td>
+</tr>
+<tr>
+<td><strong>Program Manager (PM)</strong></td>
+<td>Manages a cohort. Evaluates decks with the PM parameter lens. Can be assigned sign-up workspaces by a Super User/Admin.</td>
+</tr>
+<tr>
+<td><strong>Program Associate (PA)</strong></td>
+<td>Supports the program. Scores decks at the <strong>assign</strong> stage with the PA lens.</td>
+</tr>
+<tr>
+<td><strong>Jury Member</strong></td>
+<td>External/internal evaluator. Scores assigned decks with the Jury lens; work feeds jury aggregation.</td>
+</tr>
+<tr>
+<td><strong>Admin (Client Admin)</strong></td>
+<td>Org administration — team &amp; roles, required documents, agreements library, seat capacity, billing/approvals. Shares the parameter-configuration surface with Super User.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="vc-side-mapping-parallel-product-line-for-reference">VC-side mapping (parallel product line — for reference)</h3>
+<p>The same engine serves a VC configuration via a role mapping. Include only if building the unified platform:
+<code>Managing Partner → Super User</code> · <code>Partner/Principal → Program Manager</code> · <code>IC Member → Jury Member</code> · <code>Investment Associate/Analyst → Program Associate</code>. VC replaces incubator-specific surfaces (e.g. "Seat capacity" → "Fund Deployment").</p>
+<hr />
+<h2 id="4-prototype-file-inventory">4. Prototype File Inventory</h2>
+<table>
+<thead>
+<tr>
+<th>Role file</th>
+<th>Role</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AISJ_IC_SuserV15.HTM</code></td>
+<td>Super User</td>
+<td>Most complete; stage-aware evaluation report.</td>
+</tr>
+<tr>
+<td><code>AISJ_IC_PM_V5.HTM</code></td>
+<td>Program Manager</td>
+<td>My Parameters has all 3 role tabs.</td>
+</tr>
+<tr>
+<td><code>AISJ_IC_PA_V3.HTM</code></td>
+<td>Program Associate</td>
+<td>Scores at the assign screen (defaults role to PA).</td>
+</tr>
+<tr>
+<td><code>AISJ_IC_Jury_V4.html</code></td>
+<td>Jury Member</td>
+<td>Assigned/Evaluated/Intro-calls; progress banner.</td>
+</tr>
+<tr>
+<td><code>AISJ_ICAdmin_V6.html</code></td>
+<td>Admin</td>
+<td>Admin console + stage-aware report parity with Super User.</td>
+</tr>
+<tr>
+<td><code>AISJ_LauncherV7.html</code></td>
+<td>Launcher</td>
+<td>Embeds all five as base64 blobs, decoded into an iframe.</td>
+</tr>
+</tbody>
+</table>
+<p>Each role file is a single self-contained HTML document with inline CSS/JS and seeded in-memory data.</p>
+<hr />
+<h2 id="5-domain-model-entities-relationships">5. Domain Model — Entities &amp; Relationships</h2>
+<pre><code>Organization 1───∞ Program(Cohort) 1───∞ Deck(Startup)
+Organization 1───∞ User ───(role)
+Organization 1───∞ ParameterDefinition        (13 standard + role-custom)
+ParameterDefinition 1───∞ ParameterRubricBand  (5 bands per standard area)
+Deck 1───∞ DeckFile                            (pitch deck upload)
+Deck 1───∞ Evaluation      (one per evaluator per deck)
+User 1───∞ Evaluation
+Evaluation 1───∞ EvaluationScore  (one per parameter: score 0–10)
+Evaluation 1───∞ EvaluationRemark (one per parameter, optional)
+Evaluation 1───0..1 IntroCallNote
+Deck ∞───∞ User  via Assignment (deck ↔ evaluator, carries role)
+Deck 1───0..1 Signup 1───∞ SignupDocument
+Signup 1───∞ Agreement 1───∞ Signature (+authorised signatory)
+Organization 1───1 Subscription ───(plan tier) 1───∞ CreditLedgerEntry
+Organization 1───∞ SupportTicket
+</code></pre>
+<p><strong>Entity notes</strong>
+- <strong>ParameterDefinition</strong> covers both the 13 org-level standard areas (weighted) and the role-custom parameters (3 per role, default <code>Informational</code>). A parameter has: name, scope (<code>standard</code> | role id), weight, description-shown-to-scorer, AI-extraction prompt.
+- <strong>Evaluation</strong> is the unit of one person's scoring of one deck. Its lifecycle is <code>pending → draft → submitted</code>. <code>submitted</code> requires all applicable parameters scored.
+- <strong>Assignment</strong> links a deck to an evaluator and records the role lens; it gates whether a user gets an editable vs read-only workspace.
+- <strong>Deck</strong> carries an AI composite (<code>ai</code>) and a computed human composite; both are 0–10.</p>
+<hr />
+<h2 id="6-parameter-taxonomy">6. Parameter Taxonomy</h2>
+<h3 id="61-standard-areas-13-weighted-org-configurable">6.1 Standard areas (13, weighted, org-configurable)</h3>
+<p>See the table in §1. Each area is scored <strong>0–10</strong> and has a five-band rubric (§7). Weights sum to 100% and feed the AI/human composite. Each area also has an AI extraction prompt (per-area; prototype stores these per org).</p>
+<h3 id="62-role-specific-parameters-3-per-role">6.2 Role-specific parameters (3 per role)</h3>
+<p>Default weight <code>Informational</code> (not weighted into the composite unless the org raises it to <code>5%</code>/<code>10%</code>). Each has a scorer-facing description and an AI prompt. Template variables available to prompts: <code>{{startup_name}}</code>, <code>{{sector}}</code>, <code>{{stage}}</code>, <code>{{program_type}}</code>.</p>
+<p><strong>Program Manager</strong>
+| Parameter | Description (shown while scoring) | AI extraction prompt |
+|-----------|----------------------------------|----------------------|
+| TRL stage | Maturity on the Technology Readiness Level scale (1–9): concept (1–3), validated prototype/pilots (4–6), market-ready/proven (7–9). | From the deck, determine {{startup_name}}'s Technology Readiness Level. Look for prototypes, pilots, deployments and third-party validation, then map to TRL 1–9. Score 0–10 accordingly. |
+| Product-Market Fit | Strength of PMF: retention, repeat/organic usage, unsolicited demand, customers who'd be disappointed without it. | Assess product-market fit for {{startup_name}} — retention, repeat usage, organic referrals and customer love. Score 0–10. |
+| Traction | Revenue, active customers/users, growth rate, pipeline, notable logos — relative to stage. | Evaluate {{startup_name}}'s traction (revenue, users, growth rate, pipeline, key customers) relative to {{stage}}. Score 0–10. |</p>
+<p><strong>Program Associate</strong>
+| Parameter | Description | AI extraction prompt |
+|-----------|-------------|----------------------|
+| Program fit | Alignment with the programme's sector focus, stage requirements and thesis — strategic fit beyond financials. | Assess {{startup_name}}'s fit with the {{program_type}} programme operating in {{sector}} — stage alignment, sector relevance and thesis fit. Score 0–10. |
+| Investment stage | Pre-seed / seed / post-seed classification from traction, funding, team — and fit with the target stage. | From traction, funding history and team size, classify {{startup_name}} as pre-seed, seed or post-seed, and rate alignment with the programme's target stage. Score 0–10. |
+| Ask | Reasonableness of the funding ask given stage, traction, use of funds, runway. | Assess whether {{startup_name}}'s funding ask is reasonable for its stage and traction, and whether use-of-funds and runway are credible. Score 0–10. |</p>
+<p><strong>Jury Member</strong> (descriptions are written from the juror's lens)
+| Parameter | Description | AI extraction prompt |
+|-----------|-------------|----------------------|
+| Barriers of entry | Defensibility vs new entrants — IP, network effects, switching costs, data advantage, regulatory moats. | Assess {{startup_name}}'s barriers to entry — IP, network effects, switching costs, data advantage or regulatory moats. Score 0–10. |
+| Scalability | Ability to grow revenue without proportional cost — margins, operational leverage, unit economics. | Evaluate the scalability of {{startup_name}} — gross margins, operational leverage and whether growth requires proportional cost. Score 0–10. |
+| Industry growth | Growth trajectory and tailwinds of the industry — market expansion, regulation, structural demand. | Assess the growth of {{sector}} for {{startup_name}} — TAM expansion, tailwinds, regulation and demand drivers. Score 0–10. |</p>
+<blockquote>
+<p><strong>Consistency rule:</strong> these role-parameter names are canonical across every file. The Super User / Admin "My Parameters — Role configuration" panel defines them for all roles; each role file's My Parameters shows the same set. Keep the standard 13 areas and these 3×3 role parameters identical everywhere.</p>
+</blockquote>
+<hr />
+<h2 id="7-scoring-aggregation">7. Scoring &amp; Aggregation</h2>
+<ul>
+<li><strong>Per-area score:</strong> integer/half-step 0–10 (<code>step 0.5</code>). AI supplies a suggested value; the human can override.</li>
+<li><strong>Band mapping</strong> (<code>band(v)</code>): <code>v≥9 → Exceptional(0)</code>, <code>v≥7 → Strong(1)</code>, <code>v≥5 → Moderate(2)</code>, <code>v≥3 → Weak(3)</code>, else <code>Insufficient(4)</code>. Band index also drives colour coding.</li>
+<li><strong>Rubric text per band</strong> exists per area (5 short descriptors guiding the scorer). Store as <code>ParameterRubricBand(parameter_id, band_label, description)</code>.</li>
+<li><strong>Composite for a deck (per evaluator):</strong> weighted average of the 13 standard-area scores by their weights. Reference implementation:
+  <code>composite = Σ(score_i × weight_i) / Σ(weight_i)</code>; if no weights, fall back to the raw AI value.</li>
+<li><strong>Role-custom parameters</strong> default to <code>Informational</code> and are <strong>excluded</strong> from the composite unless weighted (<code>5%</code>/<code>10%</code>). They are shown and averaged within their own section but reported separately, clearly labelled as custom.</li>
+<li><strong>Jury aggregation:</strong> across all jury evaluations of a deck, average the per-parameter scores (and the composite). This average is what ranks the pipeline. (Prototype uses deterministic seeded scores where real jury data isn't present.)</li>
+</ul>
+<hr />
+<h2 id="8-workflows-state-machines">8. Workflows &amp; State Machines</h2>
+<h3 id="81-evaluation-lifecycle">8.1 Evaluation lifecycle</h3>
+<p><code>pending</code> → (scoring begins / Save draft) → <code>draft</code> → (Submit, all parameters scored) → <code>submitted</code>.
+Submission is blocked until every applicable parameter has a score; on submit, the deck is marked evaluated for that evaluator and the assigned-list/stat counts update.</p>
+<h3 id="82-pipeline-sign-up-status">8.2 Pipeline / sign-up status</h3>
+<p><code>shortlisted</code>, <code>rejected</code>, <code>initiated</code>, <code>progress</code>, <code>completed</code>, <code>onboarded</code>, <code>archived</code>. These label a deck's position in the buyer's funnel; <code>initiated → progress → completed → onboarded</code> is the sign-up happy path; <code>archived</code> and <code>rejected</code> are terminal.</p>
+<h3 id="83-sign-up-onboarding-workspace-three-tabs">8.3 Sign-up / onboarding workspace (three tabs)</h3>
+<ol>
+<li><strong>Documents</strong> — required documents, each with status <code>not_requested → awaiting → submitted → verified</code> (with a "Verify all" bulk action). The Documents tab and the Founder tab share one document set.</li>
+<li><strong>Agreement</strong> — agreements library (e.g. Incubation Agreement, Mentorship MOU); an <strong>Authorised signatory</strong> must be assigned in-workspace (from the org's role/people list) before countersign is enabled; a <strong>signing method</strong> is chosen per record and locked once the founder signs.</li>
+<li><strong>Founder</strong> — the founder-facing view: submit documents, choose/see "How you'll sign", and sign.</li>
+</ol>
+<p><strong>Signing method model:</strong> <code>provider ∈ {SignDesk, DocuSign, Adobe, Zoho, eMudhra}</code>; <code>sigType ∈ {Standard e-signature, Certificate (DSC/Aadhaar/QES)}</code>; flags <code>inApp</code>, <code>wetInk</code>.</p>
+<p><strong>Assignment gating (PM example):</strong> a Program Manager's sign-up workspace is <strong>read-only</strong> until a Super User/Admin assigns them (<code>pmAssigned</code>); when assigned they get the full editable workspace.</p>
+<h3 id="84-assignment-report-stage-awareness">8.4 Assignment &amp; report stage-awareness</h3>
+<p>Which role parameters appear in the evaluation report depends on the <strong>stage/screen</strong> the report is opened from (detected in the prototype by which panel is visible):
+- <strong>Assign stage</strong> → report shows <strong>Program associate + Program manager</strong> parameter sections.
+- <strong>Intro calls stage</strong> → report shows <strong>Program associate + Program manager + Jury</strong> parameter sections (jury section as read-only "completed").
+- Other stages → single-role behaviour.
+In the <strong>Jury</strong> file specifically: the Assigned screen adds a <strong>Program associate</strong> reference section; Intro calls adds <strong>PA + PM</strong> reference sections; the jury's own 3 parameters are always shown (editable).</p>
+<hr />
+<h2 id="9-screen-panel-inventory">9. Screen / Panel Inventory</h2>
+<p>Panels are shown/hidden by a <code>showPanel(name)</code> switch (all hidden, one shown). Canonical panel ids (Super User; other roles are subsets):</p>
+<p><code>alldecks, evaluate, upload, assign, query, myparams, coreparams, settings, introcalls, jurypipeline, forsignup, incuration, branding, curation, archive, cohortsummary, evaluatorscores, scoredrift, funnel, contactadmin, contactteam, support</code></p>
+<p>Jury-file specifics: <code>jassigned</code> (<strong>Assigned</strong>), <code>jurypipeline</code> (<strong>Evaluated</strong>), <code>introcalls</code> (<strong>My Intro calls</strong>), <code>repdecks / repscores / repdrift</code> (reports).</p>
+<p><strong>My Parameters — Role configuration</strong> panel (<code>panel-myparams</code>): tabs per role (<code>rt-pm / rt-pa / rt-men</code>) with panels (<code>rp-pm / rp-pa / rp-men</code>); each parameter block has a label, weight, "Description shown during scoring", and an AI-extraction prompt. Parameters set here flow into that role's scoring view and into role-attributed reports.</p>
+<hr />
+<h2 id="10-cross-cutting-behaviours">10. Cross-Cutting Behaviours</h2>
+<ul>
+<li><strong>My Parameters → scoring:</strong> the 3 role parameters configured in My Parameters are the exact parameters that role scores in the evaluation report; AI pre-fills a suggested score using each parameter's prompt.</li>
+<li><strong>Plans &amp; credits:</strong> tiers <code>standard / pro / premium</code>. Evaluation is credit-metered — <strong>one credit per deck evaluated</strong>; new orgs start with trial credits (e.g. 3) on Standard. Some role parameters (Pro-tier feature) require a plan to activate.</li>
+<li><strong>Permissions:</strong> parameter configuration is editable by Super Users, Program Managers and Client Admins by default; other roles are read-only unless granted "Configure 3 additional parameters" in Admin → Team &amp; roles.</li>
+<li><strong>Support/ticketing:</strong> shared module with Admin and Super User views and a billing-approval chain.</li>
+<li><strong>Founder clarification portal:</strong> founders can respond to evaluator questions (round-trip Q&amp;A tied to a deck).</li>
+</ul>
+<hr />
+<h2 id="11-prototype-conventions-gotchas-read-before-editing-any-file">11. Prototype Conventions &amp; Gotchas (read before editing any file)</h2>
+<ol>
+<li><strong>No cross-file state.</strong> Every file is standalone with seeded in-memory data. Nothing persists across reload; there is no shared store between roles. The launcher just base64-decodes each file into an isolated iframe.</li>
+<li><strong>Two report builders per role file — one is dead.</strong> The <strong>active</strong> report builder is the later <code>window.openReport</code>/<code>jrOpen</code> overlay (jr-<em> classes, "Evaluate — {name}"). An earlier <code>buildDoc</code> (rpt-</em> / rpt-doc, read-only document) and an <code>ncOpen</code> slide-over are <strong>dead code</strong> in most files. Always edit the active builder. In the <strong>Jury</strong> file, the Assigned screen opens the editable <code>jrOpen</code> overlay (not <code>buildDoc</code>).</li>
+<li><strong>Report role sections are stage-detected via visible panel</strong>, not via call-site opts — do not rely on adding opts to onclick strings.</li>
+<li><strong>Quote hazard.</strong> Row/onclick HTML is built inside single-quoted JS strings; never inject an unescaped single-quoted literal (e.g. <code>role:'pa'</code>) into them — it terminates the string. Escape (<code>\'pa\'</code>) or resolve in code.</li>
+<li><strong>Parameter names appear in multiple structures.</strong> <code>ROLE_PARAMS</code> (report), <code>CUSTOM_PARAMS</code> (jury report defaults), the My Parameters panel HTML, plus <strong>Admin → Team &amp; roles</strong> member-config arrays and input placeholders. The Team &amp; roles data is a <strong>separate surface</strong> and in the current prototypes still carries the old placeholder names (<code>Founder resilience &amp; coachability</code>, etc.); align it if you want full consistency.</li>
+<li><strong>Some stat cards are static.</strong> e.g. the Jury Assigned screen's "Evaluated / Drafts" counts are hard-coded and not yet wired to the live completion store (<code>jaDone</code>); the report's progress banner is live. Wire these to one store in the real build.</li>
+<li><strong>Completion tracking is illustrative.</strong> <code>jrSubmit</code> marks a deck done in <code>jaDone</code> only after all parameters are scored; seed values approximate the static stat cards.</li>
+<li><strong>Deterministic mock scores.</strong> Where real evaluator data is absent (e.g. other roles' scores shown as reference), the prototype hashes the startup name to produce stable pseudo-scores. Replace with real data.</li>
+<li><strong>Validation convention used while building:</strong> every injected change asserts anchor uniqueness, checks <code>&lt;div&gt;</code>/<code>&lt;/div&gt;</code> balance, and is functionally validated in a headless DOM. Keep this discipline.</li>
+</ol>
+<hr />
+<h2 id="12-suggested-backend-schema-starting-point">12. Suggested Backend Schema (starting point)</h2>
+<p>Relational sketch; adapt to your stack. <code>⟶</code> = FK.</p>
+<p><strong>organizations</strong> ( id, name, type[<code>incubator</code>|<code>vc</code>], canonical_domain, created_at )</p>
+<p><strong>users</strong> ( id, org_id ⟶ organizations, name, email, created_at )</p>
+<p><strong>user_roles</strong> ( id, user_id ⟶ users, org_id ⟶ organizations, role[<code>super_user</code>|<code>program_manager</code>|<code>program_associate</code>|<code>jury_member</code>|<code>admin</code>], can_configure_params bool )</p>
+<p><strong>programs</strong> ( id, org_id ⟶ organizations, name, program_type, target_stage, sector_focus, created_at )</p>
+<p><strong>decks</strong> ( id, org_id ⟶ organizations, program_id ⟶ programs, name, sector, stage, city, ai_composite numeric, human_composite numeric, pipeline_status[enum §8.2], created_at )</p>
+<p><strong>deck_files</strong> ( id, deck_id ⟶ decks, kind[<code>pitch_deck</code>|…], storage_url, uploaded_by ⟶ users, uploaded_at )</p>
+<p><strong>parameter_definitions</strong> ( id, org_id ⟶ organizations, scope[<code>standard</code>|<code>pm</code>|<code>pa</code>|<code>jury</code>], name, weight[<code>Informational</code>|<code>5%</code>|<code>10%</code>|numeric for standard], display_order, description, ai_prompt, active bool )</p>
+<p><strong>parameter_rubric_bands</strong> ( id, parameter_id ⟶ parameter_definitions, band_label[<code>9–10</code>|<code>7–8</code>|<code>5–6</code>|<code>3–4</code>|<code>0–2</code>], band_index int, description )</p>
+<p><strong>assignments</strong> ( id, deck_id ⟶ decks, user_id ⟶ users, role[enum], assigned_by ⟶ users, assigned_at )</p>
+<p><strong>evaluations</strong> ( id, deck_id ⟶ decks, evaluator_id ⟶ users, role[enum], state[<code>pending</code>|<code>draft</code>|<code>submitted</code>], composite numeric, submitted_at, updated_at )</p>
+<p><strong>evaluation_scores</strong> ( id, evaluation_id ⟶ evaluations, parameter_id ⟶ parameter_definitions, ai_suggested numeric, score numeric(0–10), overridden bool )</p>
+<p><strong>evaluation_remarks</strong> ( id, evaluation_id ⟶ evaluations, parameter_id ⟶ parameter_definitions, remark text )</p>
+<p><strong>intro_calls</strong> ( id, deck_id ⟶ decks, evaluator_id ⟶ users, scheduled_at, remark text, status )</p>
+<p><strong>founder_clarifications</strong> ( id, deck_id ⟶ decks, asked_by ⟶ users, question text, answer text, answered_at )</p>
+<p><strong>signups</strong> ( id, deck_id ⟶ decks, status[enum §8.2], signing_provider, sig_type, in_app bool, wet_ink bool, authorised_signatory_user_id ⟶ users )</p>
+<p><strong>signup_documents</strong> ( id, signup_id ⟶ signups, name, status[<code>not_requested</code>|<code>awaiting</code>|<code>submitted</code>|<code>verified</code>], file_url, verified_by ⟶ users )</p>
+<p><strong>agreements</strong> ( id, signup_id ⟶ signups, kind[<code>incubation_agreement</code>|<code>mentorship_mou</code>|…], template_url, countersigned_by ⟶ users )</p>
+<p><strong>signatures</strong> ( id, agreement_id ⟶ agreements, signer_user_id ⟶ users, method_provider, signed_at )</p>
+<p><strong>subscriptions</strong> ( id, org_id ⟶ organizations, plan[<code>standard</code>|<code>pro</code>|<code>premium</code>], status, renews_at )</p>
+<p><strong>credit_ledger</strong> ( id, org_id ⟶ organizations, delta int, reason[<code>trial_grant</code>|<code>deck_evaluated</code>|<code>purchase</code>], deck_id ⟶ decks nullable, created_at )</p>
+<p><strong>support_tickets</strong> ( id, org_id ⟶ organizations, opened_by ⟶ users, subject, body, status, billing_approval_state )</p>
+<p><strong>Aggregation views</strong> (materialized or computed):
+- <code>deck_ai_composite</code> = weighted avg of standard <code>evaluation_scores.ai_suggested</code>.
+- <code>deck_jury_score</code> = avg of jury <code>evaluations.composite</code> for a deck.
+- <code>deck_pipeline_rank</code> = order by <code>deck_jury_score</code> within a program.</p>
+<hr />
+<h2 id="13-suggested-api-surface-indicative">13. Suggested API Surface (indicative)</h2>
+<pre><code>POST   /orgs/:id/decks                      upload + create deck (+ file)
+POST   /decks/:id/ai-score                  run AI extraction over the 13 areas
+GET    /decks/:id/evaluations               list evaluations (role-filtered)
+POST   /decks/:id/evaluations               create/open my evaluation (pending)
+PATCH  /evaluations/:id                      save draft (scores + remarks)
+POST   /evaluations/:id/submit               validate all-scored → submitted
+GET    /decks/:id/report?stage=assign|intro  stage-aware composite report
+POST   /decks/:id/assignments                assign evaluator (+role)
+GET    /orgs/:id/parameters?scope=pm|pa|jury|standard
+PATCH  /parameters/:id                        edit label/weight/description/prompt
+POST   /decks/:id/signup                      start onboarding workflow
+PATCH  /signups/:id/documents/:docId          set document status
+POST   /agreements/:id/sign                   record signature
+GET    /orgs/:id/credits                      balance + ledger
+</code></pre>
+<hr />
+<h2 id="14-brand-tokens-for-ui-parity">14. Brand Tokens (for UI parity)</h2>
+<ul>
+<li>Olive <code>#6B8454</code> · Olive-dark <code>#4A6644</code> / <code>#4A5E3A</code> · Military green <code>#3B4A3F</code></li>
+<li>Amber/gold <code>#E8A020</code> · Gold-dark <code>#B87A10</code></li>
+<li>Off-white <code>#F5F7F2</code> · Stone-dark <code>#D4D0C8</code></li>
+<li>Type: <strong>DM Sans</strong> (UI), <strong>DM Mono</strong> (numeric scores)</li>
+<li>Iconography: radar/web-chart mark. Tagline: <em>"Venture Intelligence First."</em></li>
+</ul>
+<hr />
+<p><em>End of specification. This document describes the incubator product line. The VC line (§3) shares the same engine via a role mapping and can be folded into this spec if/when the two product lines are unified.</em></p></main>
+<div class="foot">ai.STARTUPJURY &middot; internal prototype specification &middot; single source of truth</div>
+</body></html>
