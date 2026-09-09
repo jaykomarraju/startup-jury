@@ -16,26 +16,26 @@ export const SIGNAL_STYLES: Record<DeckSignal, SignalStyle> = {
   strong: {
     label: "Strong",
     pill: "bg-signal-strong/12 text-signal-strong ring-1 ring-signal-strong/25",
-    color: "var(--color-signal-strong)",
+    color: "var(--signal-strong)",
   },
   moderate: {
     label: "Moderate",
     pill: "bg-signal-moderate/12 text-signal-moderate ring-1 ring-signal-moderate/30",
-    color: "var(--color-signal-moderate)",
+    color: "var(--signal-moderate)",
   },
   weak: {
     label: "Weak",
     pill: "bg-signal-weak/12 text-signal-weak ring-1 ring-signal-weak/25",
-    color: "var(--color-signal-weak)",
+    color: "var(--signal-weak)",
   },
   absent: {
     label: "Absent",
     pill: "bg-signal-absent/12 text-signal-absent ring-1 ring-signal-absent/25",
-    color: "var(--color-signal-absent)",
+    color: "var(--signal-absent)",
   },
   flagged: {
     label: "Flagged",
     pill: "bg-signal-flagged/12 text-signal-flagged ring-1 ring-signal-flagged/25",
-    color: "var(--color-signal-flagged)",
+    color: "var(--signal-flagged)",
   },
 };

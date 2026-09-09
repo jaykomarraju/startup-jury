@@ -30,7 +30,7 @@ export function DeckCard({ deck, onClick }: DeckProps) {
     <button
       type="button"
       onClick={() => onClick?.(deck)}
-      className="flex w-full flex-col gap-3 rounded-xl border border-line bg-surface p-4 text-left transition-colors hover:border-amber/50"
+      className="flex w-full flex-col gap-3 rounded-xl border border-line bg-surface p-4 text-left transition-colors hover:border-olive-md"
     >
       <div className="flex items-start justify-between gap-2">
         <div>

@@ -37,7 +37,7 @@ function ColumnHead({ col }: { col: ReportColumn }) {
       <div className="flex flex-col items-center gap-1">
         <span
           className={`flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-semibold ${
-            col.kind === "ai" ? "bg-accent/20 text-accent" : "bg-surface-2 text-fg"
+            col.kind === "ai" ? "bg-olive-lt text-olive-dk" : "bg-surface-2 text-fg-2"
           }`}
         >
           {col.kind === "ai" ? <Sparkles className="h-3.5 w-3.5" /> : (col.initials ?? "?")}
@@ -184,7 +184,7 @@ export function EvaluationReportModal({
             aria-selected={tab === "core"}
             onClick={() => setTab("core")}
             className={`-mb-px border-b-2 px-3 py-2 text-sm ${
-              tab === "core" ? "border-amber font-medium text-fg" : "border-transparent text-fg-muted hover:text-fg"
+              tab === "core" ? "border-olive font-medium text-olive-dk" : "border-transparent text-fg-muted hover:text-fg-2"
             }`}
           >
             Core Parameters
@@ -196,7 +196,7 @@ export function EvaluationReportModal({
             onClick={() => setTab("additional")}
             className={`-mb-px border-b-2 px-3 py-2 text-sm ${
               tab === "additional"
-                ? "border-amber font-medium text-fg"
+                ? "border-olive font-medium text-olive-dk"
                 : "border-transparent text-fg-muted hover:text-fg"
             }`}
           >
