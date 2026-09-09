@@ -7,9 +7,10 @@ application, and leave the product **launch-ready**.
 worktree. Every wave ends with a short **integration session** that merges the wave, re-runs the full
 green gate on the merged result, and writes the next wave's prompts.
 
-**Status:** **Wave 0 complete** on branch `parity/W0` (not merged) — the baseline is green and the
-parity harness exists (§2.5). Wave 1 is ready: three parallel sessions, prompts in §10. Baseline
-`main` @ `437e78b`: typecheck ✓ · lint ✓ · 453 unit ✓ · build ✓ · 84 e2e ✓ · roles 526/526 ✓.
+**Status:** **Wave 0 complete and merged to `main`** (`a761703`, 2026-09-09) — the baseline is green
+and the parity harness is live (§2.5). Wave 1 is ready: three parallel sessions, prompts in §10.
+Baseline on `main`: typecheck ✓ · lint ✓ · 453 unit ✓ · build ✓ · 84 e2e ✓ · roles 526/526 ✓ ·
+`parity:nav` 208/278 ✓ · `parity:tokens` 4/27 ✓.
 
 ---
 
@@ -845,10 +846,9 @@ session places it.
 The prompts to paste into the next wave's sessions. Each session appends here; each integration
 session replaces this list with the following wave's.
 
-> **Wave 1 — three sessions, run in parallel, all branching from `main`.** `W0` is complete and its
-> harness is on `parity/W0`; it has **not** been merged. `W1-A` and `W1-C` therefore will not see
-> `parity:tokens` / `parity:nav` until Wave 1 integration merges `parity/W0` first — **integration
-> must merge `parity/W0` before the wave**, and each prompt below assumes it has.
+> **Wave 1 — three sessions, run in parallel, all branching from `main`.** `W0` is merged
+> (`a761703`), so `npm run parity:nav`, `npm run parity:tokens` and `e2e/parity.spec.ts` are all on
+> `main` and every worktree cut from it inherits them. Nothing gates this wave.
 
 ### `W1-A` — design system & chrome
 
