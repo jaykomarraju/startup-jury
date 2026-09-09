@@ -7,7 +7,7 @@ application, and leave the product **launch-ready**.
 worktree. Every wave ends with a short **integration session** that merges the wave, re-runs the full
 green gate on the merged result, and writes the next wave's prompts.
 
-**Status:** Wave 0 not started. Baseline `main` @ `8822db2`.
+**Status:** pre-flight done, Wave 0 ready to start. Baseline `main` @ `89e5125`.
 
 ---
 
@@ -817,11 +817,18 @@ READ FIRST (in this order, and nothing else)
   Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
 
 BUILD
-  1. Run the full green gate on a clean tree and record the REAL counts in §7 of the plan:
-       npm run typecheck && npm run lint && npm test && npm run build
-       npm run test:e2e
-       npm run roles
-     If any of it is already red, STOP and report. Do not start a programme on a red baseline.
+  1. Establish the rest of the baseline and record the REAL counts in §7 of the plan.
+     Pre-flight already measured these on main @ 89e5125 — re-confirm, do not re-investigate:
+       typecheck clean · lint clean · 453 passed / 1 skipped · build clean
+     What is NOT yet measured, and is yours:
+       npm run test:e2e                      # expect 72 from the previous track
+       npm run e2e:serve   (in THIS worktree, own port) then
+       ROLES_BASE=http://localhost:<port> npm run roles      # expect 526/526
+     `npm run roles` is a runtime probe that exits 0 EVEN WHEN IT CANNOT CONNECT — it only
+     prints "runtime probe could not reach ...". Confirm you actually got 526/526; a bare
+     `npm run roles` with no server is a false pass. `e2e:serve` starts with
+     `rm -rf .wrangler/state`, so never run it outside your own worktree.
+     If e2e or roles is red, STOP and report. Do not start a programme on a red baseline.
   2. Add `npm run parity:nav` (scripts/parity-nav.ts): for all 11 prototype _sidebar.html files
      under ${TMPDIR:-/tmp}/sj-prototype-split, assert every sidebar item maps to a route that
      role can reach, comparing against navForUser() in src/shared/nav.ts. It WILL fail today —
@@ -838,6 +845,8 @@ BUILD
 
 CONSTRAINTS
   - Own only: scripts/, e2e/parity.spec.ts, package.json (scripts block), docs/plan_parity.md.
+  - eslint.config.js already ignores .claude/worktrees/** — pre-flight fixed 318 lint errors
+    coming from a stale nested worktree. Do not undo it.
   - Change no application code. This session builds measurement, not fixes.
   - The three harness commands must fail loudly when pointed at something wrong — prove it by
     temporarily breaking a token and showing parity:tokens catches it.
