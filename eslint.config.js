@@ -10,6 +10,13 @@ export default tseslint.config(
       "playwright-report/**",
       "test-results/**",
       "worker-configuration.d.ts",
+      // Nested git worktrees carry a second copy of the project, tsconfig and
+      // all, which makes typescript-eslint fail every file in them with
+      // "multiple candidate TSConfigRootDirs". They are checkouts of code that
+      // is linted where it lives, so never lint them here. The parity
+      // programme's own worktrees live outside the repo (`../sj-*`); this
+      // covers the ones the harness creates inside it.
+      ".claude/worktrees/**",
     ],
   },
   js.configs.recommended,

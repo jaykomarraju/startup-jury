@@ -146,12 +146,21 @@ No session ends without this passing in its worktree:
 ```bash
 npm run typecheck && npm run lint && npm test && npm run build
 npm run test:e2e          # required for any UI change
-npm run roles             # required for any authZ / nav change
+npm run roles             # required for any authZ / nav change — SEE BELOW
 ```
 
-Baselines to meet or beat: **453 unit/worker/client · 72 e2e · roles 526/526**. If your change moves a
-count, the new count is the baseline — record it in §7. A red gate is never "someone else's problem":
-if you broke it, fix it; if you inherited it, say so in your handoff and stop.
+**`npm run roles` needs a running server.** It is a runtime probe against
+`http://localhost:5173` (override with `ROLES_BASE`), and it exits **0 even when it cannot connect** —
+it just reports `runtime probe could not reach …` in its findings. A session that runs it without a
+server will believe it passed. Start `npm run e2e:serve` in that worktree first, on a port unique to
+your session, and pass `ROLES_BASE`. Note `e2e:serve` begins with `rm -rf .wrangler/state`, so run it
+only inside your own worktree.
+
+Baselines, measured on `main` @ `5592a4d` (2026-09-09): **typecheck clean · lint clean ·
+453 passed / 1 skipped · build clean**. E2E and roles are W0's to establish — expect **72 e2e** and
+**roles 526/526** from the previous track. If your change moves a count, the new count is the
+baseline — record it in §7. A red gate is never "someone else's problem": if you broke it, fix it; if
+you inherited it, say so in your handoff and stop.
 
 ### 2.4 Exit checklist
 
@@ -754,7 +763,8 @@ One row per session. The integration session fills the wave row.
 
 | Session | Status | Findings closed | Gate (unit · e2e · roles) | Notes |
 |---|---|---|---|---|
-| `W0` | not started | — | baseline: 453 · 72 · 526/526 *(to confirm)* | |
+| *(pre-flight)* | done | — | typecheck ✓ · lint ✓ · 453 passed / 1 skipped ✓ · build ✓ | Baseline measured on `main` @ `5592a4d`. Lint was red with 318 errors — all from the stale nested worktree `.claude/worktrees/determined-tu-6abd99`, none from application code; fixed by ignoring `.claude/worktrees/**` in `eslint.config.js`. `npm run roles` needs a dev server and exits 0 without one — see §2.3. E2E and roles not yet run; that is `W0`. |
+| `W0` | not started | — | to establish: e2e (expect 72) · roles (expect 526/526) | |
 
 <!-- Append a row per session. Do not rewrite history; add. -->
 
