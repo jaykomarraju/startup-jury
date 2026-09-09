@@ -7,7 +7,9 @@ application, and leave the product **launch-ready**.
 worktree. Every wave ends with a short **integration session** that merges the wave, re-runs the full
 green gate on the merged result, and writes the next wave's prompts.
 
-**Status:** pre-flight done, Wave 0 ready to start. Baseline `main` @ `89e5125`.
+**Status:** **Wave 0 complete** on branch `parity/W0` (not merged) — the baseline is green and the
+parity harness exists (§2.5). Wave 1 is ready: three parallel sessions, prompts in §10. Baseline
+`main` @ `437e78b`: typecheck ✓ · lint ✓ · 453 unit ✓ · build ✓ · 84 e2e ✓ · roles 526/526 ✓.
 
 ---
 
@@ -156,11 +158,52 @@ server will believe it passed. Start `npm run e2e:serve` in that worktree first,
 your session, and pass `ROLES_BASE`. Note `e2e:serve` begins with `rm -rf .wrangler/state`, so run it
 only inside your own worktree.
 
-Baselines, measured on `main` @ `5592a4d` (2026-09-09): **typecheck clean · lint clean ·
-453 passed / 1 skipped · build clean**. E2E and roles are W0's to establish — expect **72 e2e** and
-**roles 526/526** from the previous track. If your change moves a count, the new count is the
-baseline — record it in §7. A red gate is never "someone else's problem": if you broke it, fix it; if
-you inherited it, say so in your handoff and stop.
+**The e2e suite must run on a freshly seeded database.** `e2e:serve` wipes and re-migrates local
+D1 on start, and Playwright's `reuseExistingServer` means a server you left running from an earlier
+command is reused *as it is* — carrying every mutation the last run made. Six specs mutate seeded
+rows and fail on a second pass over the same state. Let Playwright start its own server (just run
+`npx playwright test`), or restart `e2e:serve` before each full run. W0 lost half an hour to this.
+
+Baselines, measured on `main` @ `437e78b` (2026-09-09, W0):
+
+| | |
+|---|---|
+| `npm run typecheck` | clean |
+| `npm run lint` | clean |
+| `npm test` | **453 passed / 1 skipped** (34 files passed, 1 skipped) |
+| `npm run build` | clean |
+| `npm run test:e2e` | **72 passed** → **84** with W0's `e2e/parity.spec.ts` (+12) |
+| `npm run roles` | **526 / 526**, confirmed against a live server on a private port |
+| `npm run parity:nav` | 208 / 278 · **70 known gaps** (W0 baseline) |
+| `npm run parity:tokens` | 4 / 27 · **23 known gaps** (W0 baseline) |
+
+If your change moves a count, the new count is the baseline — record it in §7. A red gate is never
+"someone else's problem": if you broke it, fix it; if you inherited it, say so in your handoff and
+stop.
+
+### 2.5 The parity harness
+
+Two commands W0 added. Both compare the application against the **split prototypes**, so run
+`split-prototypes.py` first. Both are green today and carry a frozen baseline of the gaps that exist,
+each with a reason and an owning session:
+
+```bash
+npm run parity:nav        # every prototype sidebar item → a route that role can reach
+npm run parity:tokens     # src/client/index.css vs the prototype :root palette
+npm run parity:tokens -- --strict    # known gaps fail too — drive your area to zero
+```
+
+They exit **1** on an unexpected failure *and* on a baseline gap that has started passing. The second
+case is the un-skip mechanic: close a gap and you must delete its `EXPECTED_GAPS` entry in the same
+commit, so the baseline can never drift out of date. Exit **2** means the harness could not run at
+all (no split, wrong cwd, prototypes disagreeing) — not a finding.
+
+`e2e/parity.spec.ts` is the third piece: a per-role walk over all 243 reachable screens asserting the
+page title and every table's header set against a snapshot. **Change a screen's columns and you
+re-capture its rows** (`PARITY_CAPTURE=1 npx playwright test e2e/parity.spec.ts`, then union the new
+rows into `EXPECTED`) in the same commit. That diff is the reviewable record of which columns moved.
+The snapshot is what the application renders **today**, not what the prototype specifies — it stops
+accidental drift; closing the real column gaps is Waves 7–9.
 
 ### 2.4 Exit checklist
 
@@ -764,7 +807,7 @@ One row per session. The integration session fills the wave row.
 | Session | Status | Findings closed | Gate (unit · e2e · roles) | Notes |
 |---|---|---|---|---|
 | *(pre-flight)* | done | — | typecheck ✓ · lint ✓ · 453 passed / 1 skipped ✓ · build ✓ | Baseline measured on `main` @ `5592a4d`. Lint was red with 318 errors — all from the stale nested worktree `.claude/worktrees/determined-tu-6abd99`, none from application code; fixed by ignoring `.claude/worktrees/**` in `eslint.config.js`. `npm run roles` needs a dev server and exits 0 without one — see §2.3. E2E and roles not yet run; that is `W0`. |
-| `W0` | not started | — | to establish: e2e (expect 72) · roles (expect 526/526) | |
+| `W0` | **done** | — (harness session; closes no findings) | typecheck ✓ · lint ✓ · **453 passed / 1 skipped** ✓ · build ✓ · **e2e 84** (72 inherited + 12 new) ✓ · **roles 526/526** ✓ · `parity:nav` 208/278 ✓ · `parity:tokens` 4/27 ✓ | Baseline re-confirmed on `main` @ `437e78b` and **it is green** — the programme may start. E2E and roles were the two unmeasured legs: **72 e2e** and **526/526** both landed exactly where the previous track left them (roles run against a real server on port 5199, not a bare `npm run roles`). Added `npm run parity:nav`, `npm run parity:tokens` and `e2e/parity.spec.ts` (§2.5), each with a frozen, reasoned baseline. Proved all three fail loudly: a bad token, a fixed-but-unclaimed gap, a role removed from `nav.ts`, and a renamed column each exit 1; every temporary break was reverted and the app code is untouched. |
 
 <!-- Append a row per session. Do not rewrite history; add. -->
 
@@ -780,6 +823,9 @@ best reading and note it.
 | Q1 | audit | Pricing contradicts itself: three per-deck base rates (₹500 / ₹999 / ₹500–700), two pay-as-you-go catalogues (20/35/50 vs 10/50/100) and four enterprise vocabularies. | `W4-D` implements one canonical model and records the alternatives here. |
 | Q2 | audit | Does the workspace **launcher** belong in the product, or is it only a prototype navigation device? | Not a product feature. `W10-B` to confirm. |
 | Q3 | audit | VC has **four** additional-parameter owner roles (12 params) in the prototype; the app has three (9). | Follow spec §6.2. `W8-B` to reconcile. |
+| Q4 | `W0` (`parity:nav`) | `AISJ_ICAdmin_V6` is the only incubator prototype whose sidebar drops **both** Collaborate items (Contact Admin, Contact team); Super User, PM, PA and Jury all keep them. Prototype inconsistency, or a deliberate "the admin *is* who you contact" trim? | Keep both for admin (the app's current behaviour). `W3-A` confirms when it owns `nav.ts`. |
+| Q5 | `W0` (`parity:nav`) | The PM prototype offers **Sign up Pipeline** and **Onboard ready**; the app reserves both for admin + program associate. §1.4 gives the PM decision authority, which points the other way. | Likely a real gap. `W3-A` settles it with the runtime permission set. |
+| Q6 | `W0` (`parity:nav`) | **Core Parameters** (6 roles) and **Set up** (3 VC roles) appear in non-admin prototype sidebars but are admin-only in the app, and `PUT /api/config/parameters` is admin+superuser at 526/526. Read-only visibility, or no visibility? | No visibility, as today. `W3-A` decides; read-only is the likelier prototype intent. |
 
 ---
 
@@ -790,6 +836,7 @@ session places it.
 
 | From | File needed | Change | Placed by |
 |---|---|---|---|
+| `W0` | `tsconfig.node.json` | Add `"scripts"` to `include`. `scripts/*.ts` is not typechecked by `npm run typecheck` today — `role-matrix.ts` never was, and W0's three new scripts inherit that hole. All four compile clean under exactly the options already in that file, verified with a throwaway config; the change is one line and green. | Wave 1 integration |
 
 ---
 
@@ -798,67 +845,228 @@ session places it.
 The prompts to paste into the next wave's sessions. Each session appends here; each integration
 session replaces this list with the following wave's.
 
-> **Wave 0 is a single session. Its prompt is below.**
+> **Wave 1 — three sessions, run in parallel, all branching from `main`.** `W0` is complete and its
+> harness is on `parity/W0`; it has **not** been merged. `W1-A` and `W1-C` therefore will not see
+> `parity:tokens` / `parity:nav` until Wave 1 integration merges `parity/W0` first — **integration
+> must merge `parity/W0` before the wave**, and each prompt below assumes it has.
+
+### `W1-A` — design system & chrome
 
 ```
-You are running session W0 — baseline, guardrails and the parity test harness — of the
-ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
+You are running session W1-A — the design system and app chrome — of the ai.STARTUPJURY parity
+programme. You have no prior context. Everything you need is in the repo.
 
 SETUP
-  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
-  git worktree add ../sj-W0 -b parity/W0 main
-  cd ../sj-W0 && npm ci
+  nvm use
+  git worktree add ../sj-W1-A -b parity/W1-A main
+  cd ../sj-W1-A && npm ci
   python3 docs/prototype/tools/split-prototypes.py
 
 READ FIRST (in this order, and nothing else)
-  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §3 Prototypes, §4 Testing,
-     §5 Prompt template, and ONLY the Wave 0 entry in §6.
-  2. HANDOFF.md — the Status block and the workflow section. Skim, do not read whole.
+  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol (§2.5 is the harness you will
+     live in), §4 Testing, then ONLY your entry for W1-A in §6.
+  2. Your worklist:
+     python3 docs/prototype/tools/findings.py --area "Design system" --full
+  3. The prototype chrome, from ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/:
+     _style.css (the :root block and the .tb / .si / .sgrp / toast rules), _sidebar.html,
+     _topnav.html. Cross-check one VC build (AISJ_VC_Superuser_V8) — the palette is identical
+     across all eleven, so read it once.
+  4. The repo files your entry says you own.
   Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
 
 BUILD
-  1. Establish the rest of the baseline and record the REAL counts in §7 of the plan.
-     Pre-flight already measured these on main @ 89e5125 — re-confirm, do not re-investigate:
-       typecheck clean · lint clean · 453 passed / 1 skipped · build clean
-     What is NOT yet measured, and is yours:
-       npm run test:e2e                      # expect 72 from the previous track
-       npm run e2e:serve   (in THIS worktree, own port) then
-       ROLES_BASE=http://localhost:<port> npm run roles      # expect 526/526
-     `npm run roles` is a runtime probe that exits 0 EVEN WHEN IT CANNOT CONNECT — it only
-     prints "runtime probe could not reach ...". Confirm you actually got 526/526; a bare
-     `npm run roles` with no server is a false pass. `e2e:serve` starts with
-     `rm -rf .wrangler/state`, so never run it outside your own worktree.
-     If e2e or roles is red, STOP and report. Do not start a programme on a red baseline.
-  2. Add `npm run parity:nav` (scripts/parity-nav.ts): for all 11 prototype _sidebar.html files
-     under ${TMPDIR:-/tmp}/sj-prototype-split, assert every sidebar item maps to a route that
-     role can reach, comparing against navForUser() in src/shared/nav.ts. It WILL fail today —
-     commit it with the current failures listed as expected, so later sessions un-skip their part.
-  3. Add `npm run parity:tokens` (scripts/parity-tokens.ts): assert the CSS custom properties in
-     src/client/index.css match the prototype :root block for the tokens the prototype actually
-     uses. Same expected-failure treatment. Note the prototype's primary family is OLIVE
-     (--olive #6B8454, --olive-dk #4A5E3A, --olive-lt #EBF0E4, --olive-md #8FA67A); the app has
-     no olive token and paints those states amber.
-  4. Add e2e/parity.spec.ts: a per-role walk that visits every nav item and asserts the page
-     title and the table header set. Seed it with what passes today.
-  5. Confirm docs/prototype/tools/split-prototypes.py and findings.py both run clean from this
-     fresh worktree.
+  1. Add the OLIVE family and re-point the chrome at it. The prototype's primary hue is olive,
+     not gold: --olive #6B8454, --olive-dk #4A5E3A, --olive-lt #EBF0E4, --olive-md #8FA67A. The
+     application has no olive token and paints every one of those states amber. Re-point the top
+     bar, sidebar active state, primary button, progress fills, selected-tile outline and tab
+     underline; gold stays for the logo and sparse accents. Add dark-mode counterparts.
+  2. Close the other 22 token gaps `npm run parity:tokens` lists — the drifted values
+     (--navy → #1A1E2E, --offwht → #F7F6F2, --text-3 → #9A9488, --stone-dk → #D4D0C8) and the
+     tokens with no counterpart at all (--gold-dk, --stone, --text-2, the four *-lt tints,
+     --purple, --ink). Read each EXPECTED_GAPS reason in scripts/parity-tokens.ts before you
+     move a value — two carry warnings. In particular --green: the app's #4a6644 is close to the
+     olive family, so check you are not looking at an olive/green conflation before repointing it
+     at the prototype's #16A34A.
+  3. Move to the prototype's 9–13.5 px density, with a fixed-height shell and independently
+     scrolling panes.
+  4. Add the `.tb` surface-toolbar primitive that replaces the in-flow `h1` on every screen, plus
+     sidebar item badges/counts and section dividers.
+  5. Add the toast primitive — the prototype has 36 `showToast` call sites.
+  6. Fix the branding-wipe defect (§1.5): `BrandingSection.save()` in
+     src/client/routes/ConfigPage.tsx:402 posts only {wordmark, tagline, accent} while
+     PUT /api/config/branding replaces branding_json wholesale, silently wiping orgName/orgType.
+     SetupWizard.tsx:106-114 already re-reads and merges — do the same here. Client-side only:
+     the server route is not yours.
 
 CONSTRAINTS
-  - Own only: scripts/, e2e/parity.spec.ts, package.json (scripts block), docs/plan_parity.md.
-  - eslint.config.js already ignores .claude/worktrees/** — pre-flight fixed 318 lint errors
-    coming from a stale nested worktree. Do not undo it.
-  - Change no application code. This session builds measurement, not fixes.
-  - The three harness commands must fail loudly when pointed at something wrong — prove it by
-    temporarily breaking a token and showing parity:tokens catches it.
+  - Own only: src/client/index.css, src/client/components/**, src/client/theme/**,
+    src/client/routes/ConfigPage.tsx (the branding save fix ONLY). src/client/index.css is a
+    serialisation hazard and you are its sole owner this wave. Need something else changed?
+    Record it in §9; do not edit it.
+  - Do not touch src/shared/nav.ts (W3-A owns it) or src/server/** (nobody this wave).
+  - If a screen's markup must change to adopt `.tb`, and that file is not yours, add the
+    primitive and record the adoption as a cross-session request — the screen sessions
+    (Waves 7–9) apply it.
 
 TEST
-  The harness itself is the deliverable; it must be green with documented, enumerated skips.
+  - `npm run parity:tokens` must reach 27/27. Delete each EXPECTED_GAPS entry as you close it —
+    the check FAILS on a gap that passes while still listed. When the map is empty, `--strict`
+    and the default run are the same thing.
+  - Client tests for the toolbar and the toast primitives, covering the states the prototype
+    draws (a toast appears, auto-dismisses, and stacks).
+  - A worker test proving a branding save preserves orgName. (Read-only on the route; assert
+    through the API.)
+  - `e2e/parity.spec.ts`: chrome changes must not move any page title or table header. If one
+    moves deliberately, re-capture that row and say why in your handoff.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build
+  Plus: npm run test:e2e (let Playwright start its own server — see §2.3) and
+        npm run parity:tokens
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W1-A. Do not merge to main.
+```
+
+### `W1-B` — schema
+
+```
+You are running session W1-B — every migration the programme needs — of the ai.STARTUPJURY parity
+programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W1-B -b parity/W1-B main
+  cd ../sj-W1-B && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules (§1.2 and §1.3 both bind you), §2 Session protocol,
+     §4 Testing, then ONLY your entry for W1-B in §6.
+  2. The written specs are your primary source, not the prototypes:
+     docs/prototype/source/specs/incubator.html and vc.html — §6.2 (role parameters) and §12
+     (sign-up, agreements, signatures). §1.1: where seed data disagrees with these, these win.
+  3. For the defaults each table seeds, the admin console sections, from
+     ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/ and
+     .../AISJ_VC_Superuser_V8/admin/ — read the s-*.html for the areas you are modelling, not
+     the whole _ADMIN-CONSOLE.html.
+  4. migrations/, src/server/db.ts, src/shared/types.ts.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  One numbered block of migrations creating everything Waves 2–6 need, with NO UI and NO routes:
+  1. Org scoring settings — the ~15 Scoring-framework controls.
+  2. Per-area rubric anchors across five bands, plus a per-area AI guidance prompt.
+  3. A question bank: 13 areas × 5 questions, Climate Impact 8.
+  4. role_permissions(edition, role, task_id, granted), seeded to reproduce TODAY'S matrix
+     exactly — W3-A depends on `npm run roles` staying 526/526 when it reads this table.
+  5. A real audit_log with a NULLABLE deck_id and a category, so config/team/billing events are
+     storable, not just deck events.
+  6. Notification preferences per event × channel × recipient.
+  7. A credit ledger and price configuration.
+  8. signups, signup_documents, agreements, signatures — per spec §12.
+  9. Seat capacity on cohorts, and the `seatless` flag.
+ 10. CRM connection settings.
+ 11. Correct the nine role-parameter names to the spec §6.2 canonical set.
+
+CONSTRAINTS
+  - Own only: migrations/** (yours for the WHOLE programme), src/server/db.ts,
+    src/shared/types.ts. Ship types and seeds only — no routes, no UI. Those belong to the
+    sessions that own them.
+  - Number your migrations in one contiguous block above anything already in the tree, and state
+    the range loudly in your handoff. A colliding migration number is the one merge conflict that
+    is genuinely painful.
+  - §1.2 binds the schema: store NO password reveal field (PBKDF2 hashes only, reset-only flow),
+    and NO card number / CVV columns anywhere — payment goes through a provider-hosted surface.
+    Omit any "mentor adjusts composite" flag; `mentor` is a directory record with no pipeline
+    authority (commit 8822db2).
+  - §1.3: payments, e-signature and CRM are interface-complete, provider-stubbed. Model the
+    tables; add no vendor SDK and no credential.
+
+TEST
+  - A worker test per table: it exists, its constraints reject a bad row, and its seed matches
+    the prototype default.
+  - Migrations apply cleanly to a fresh local D1 AND are idempotent on re-run — prove both.
+  - `npm run roles` stays 526/526 with the seeded role_permissions (start `npm run e2e:serve` on
+    a port unique to this session and pass ROLES_BASE — a bare `npm run roles` exits 0 with no
+    server and is a false pass; §2.3).
   Green gate: npm run typecheck && npm run lint && npm test && npm run build
 
 FINISH
-  Complete the §2.4 exit checklist. Record the real baseline counts in §7. Then write the three
-  Wave 1 prompts (W1-A design system, W1-B schema, W1-C admin console shell) into §10 using the
-  §5 template, each branching from main. Commit to parity/W0. Do not merge to main.
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W1-B. Do not merge to main.
+```
+
+### `W1-C` — admin console shell
+
+```
+You are running session W1-C — the admin console shell — of the ai.STARTUPJURY parity programme.
+You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W1-C -b parity/W1-C main
+  cd ../sj-W1-C && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §3 Prototypes (read the callout
+     about openAdmin() and ADMIN_B64 — it is why this console does not exist yet), §4 Testing,
+     then ONLY your entry for W1-C in §6.
+  2. Your worklist:
+     python3 docs/prototype/tools/findings.py --area "Admin console" \
+       --screen "shell|chrome|whole|title.bar|overlay|nav|section" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/_ADMIN-CONSOLE.html for the shell —
+     the header, the section rail and the title bar. Do NOT read the 16 admin/s-*.html section
+     bodies; they belong to Waves 2–5. Cross-check AISJ_VC_Superuser_V8/_ADMIN-CONSOLE.html,
+     which also carries 16 sections.
+  4. src/client/App.tsx (the `admin` branch only) and the existing user-CRUD page.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. The full-screen overlay: a 46 px header, Escape closes it.
+  2. The 210 px olive section rail — four groups (Evaluation · Organisation · Sign-up · System)
+     and all 16 items.
+  3. The section title bar: the program/cohort context chip and the global Save changes button.
+  4. The pending-invite badge.
+  5. The off-canvas drawer below 760 px.
+  6. Every section renders a placeholder that NAMES what will fill it, so Waves 2–5 have a slot
+     to land in. Keep the existing user-CRUD page reachable as the Team & roles placeholder until
+     W4-A replaces it.
+  7. The Sign-up group is visible to admin/superuser only.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/** (new) and the `admin` branch of src/client/App.tsx.
+    App.tsx is a serialisation hazard and you are its sole owner this wave — touch only the admin
+    branch. Need something else changed? Record it in §9; do not edit it.
+  - Do NOT touch src/shared/nav.ts (W3-A owns it) or src/client/index.css (W1-A owns it). If you
+    need an olive token, W1-A is adding the family this wave — coordinate through §9 rather than
+    declaring your own.
+  - Do NOT build a read-only console for non-admin roles. The 12-section payload inside the seven
+    non-admin prototypes is dead code carrying a stale role taxonomy; only the Admin and Super
+    User sidebars call openAdmin().
+  - §1.2: the User access section must never display a stored password. Reset only — issue a
+    temporary credential and force a change at next sign-in. If your placeholder names the
+    section, name it that way.
+
+TEST
+  - E2E: an admin walks all 16 sections; a non-admin cannot reach the console at all; the Sign-up
+    group is absent for the non-admin roles that could otherwise reach it (test the negative, §4).
+  - `npm run roles` green at 526/526 — start `npm run e2e:serve` on a port unique to this session
+    and pass ROLES_BASE. A bare `npm run roles` exits 0 with no server and is a false pass (§2.3).
+  - `npm run parity:nav` stays green. The `admin` slug already resolves for admin and superuser in
+    both editions, so it should not move; if it does, you changed reachability and must say so.
+  - `e2e/parity.spec.ts` records `/app/admin` as titled "Admin console" with the current
+    user-CRUD table. If your shell changes either, re-capture those four rows
+    (`PARITY_CAPTURE=1 npx playwright test e2e/parity.spec.ts`) and union them in — see §2.5.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build
+  Plus: npm run test:e2e · npm run roles · npm run parity:nav
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W1-C. Do not merge to main.
 ```
 
 ---
@@ -875,6 +1083,9 @@ FINISH
 | Written product specs | `docs/prototype/source/specs/{incubator,vc}.html` |
 | Extracted build spec (709 requirements) | `docs/PARITY-BUILD-SPEC.md` |
 | How the sources fit together | `docs/prototype/README-sources.md` |
+| Parity harness — nav | `scripts/parity-nav.ts` · `npm run parity:nav` (§2.5) |
+| Parity harness — tokens | `scripts/parity-tokens.ts` · `npm run parity:tokens` (§2.5) |
+| Parity harness — screen walk | `e2e/parity.spec.ts` · titles + table headers, 243 screens |
 | Architecture & workflow | `HANDOFF.md` |
 | The previous finish track | `docs/FINISH-PLAN.md` (§8 meeting decisions stay authoritative) |
 | The tester's closed issue log | `docs/issue-log-2026-08.csv` |
