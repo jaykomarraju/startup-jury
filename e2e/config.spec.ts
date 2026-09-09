@@ -39,7 +39,8 @@ test("a jury member sees My Parameters read-only with role-scoped additional par
   await login(page, "rajesh.kumar@demo.startupjury.ai"); // inc_jury
   await page.goto("/app/myparams");
   await expect(page.getByRole("heading", { name: "My Parameters" })).toBeVisible();
-  // One seeded jury-owned additional param label is visible.
-  await expect(page.getByText("Founder Resilience & Coachability").first()).toBeVisible();
+  // One seeded jury-owned additional param label is visible — the specs' §6.2
+  // canonical name (migration 0025).
+  await expect(page.getByText("Barriers of entry").first()).toBeVisible();
   await expect(page.getByText(/Read-only/).first()).toBeVisible();
 });

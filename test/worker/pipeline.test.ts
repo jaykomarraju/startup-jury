@@ -307,13 +307,14 @@ describe("per-stage authorization", () => {
     await env.DB.prepare("UPDATE decks SET assigned_to = 'inc_jury' WHERE id = ?").bind(id).run();
     const jury = await login(JURY);
 
-    // The jury owns the `add_jury_*` params; `add_pm_*` / `add_pa_*` are other roles'.
+    // Keys are the specs' §6.2 canonical set (migration 0025). The jury owns
+    // Barriers of entry; TRL stage is the PM's and Program fit the PA's.
     const res = await post(`/api/decks/${id}/evaluate`, jury, {
       scores: [
         { key: "traction_validation", value: 7 }, // core
-        { key: "add_jury_resilience", value: 9 }, // jury-owned additional → stored
-        { key: "add_pm_program_fit", value: 3 }, // PM's additional → skipped
-        { key: "add_pa_mandate_fit", value: 3 }, // PA's additional → skipped
+        { key: "add_barriers_of_entry", value: 9 }, // jury-owned additional → stored
+        { key: "add_trl_stage", value: 3 }, // PM's additional → skipped
+        { key: "add_program_fit", value: 3 }, // PA's additional → skipped
       ],
       remarks: "focused",
     });
@@ -327,10 +328,10 @@ describe("per-stage authorization", () => {
         .bind(id)
         .all<{ key: string }>()
     ).results.map((r) => r.key);
-    expect(stored).toContain("add_jury_resilience");
+    expect(stored).toContain("add_barriers_of_entry");
     expect(stored).toContain("traction_validation");
-    expect(stored).not.toContain("add_pm_program_fit");
-    expect(stored).not.toContain("add_pa_mandate_fit");
+    expect(stored).not.toContain("add_trl_stage");
+    expect(stored).not.toContain("add_program_fit");
 
     // The composite (weighted_total) is unaffected by the assistive additional
     // param: only the core Traction score (weight 10) contributes → 10*7/100 = 0.70.

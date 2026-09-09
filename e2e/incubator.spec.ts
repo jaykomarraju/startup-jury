@@ -52,7 +52,9 @@ test("jury member scores an assigned deck and shortlists it", async ({ page }) =
   // The jury's role-scoped additional params render in their own section
   // (assistive, not folded into the core-13 composite).
   await expect(page.getByText("Additional parameters · your lens")).toBeVisible();
-  await expect(page.getByText("Founder Resilience & Coachability").first()).toBeVisible();
+  // "Barriers of entry" is the jury's first parameter in the specs' §6.2
+  // canonical set (migration 0025).
+  await expect(page.getByText("Barriers of entry").first()).toBeVisible();
 
   await page.getByRole("button", { name: "Shortlist" }).click();
 
