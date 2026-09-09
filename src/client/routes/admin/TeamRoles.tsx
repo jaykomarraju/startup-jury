@@ -1,19 +1,25 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { Card, Button, Badge, EmptyState } from "../components";
-import { useAuth } from "../auth/useAuth";
-import { listUsers, createUser, updateUser, type InviteResult, type UserView } from "../api";
-import { creatableStaffRoles, roleLabel, type Role } from "../../shared/roles";
+import { Card, Button, Badge, EmptyState } from "../../components";
+import { useAuth } from "../../auth/useAuth";
+import { listUsers, createUser, updateUser, type InviteResult, type UserView } from "../../api";
+import { creatableStaffRoles, roleLabel, type Role } from "../../../shared/roles";
 
 /**
- * Admin console → Team & roles (Session 4). Super User / Admin manage the org's
- * users: jurors, staff and MENTORS. Mentor is a user-type (a directory/advisor
- * record with no pipeline authority), not a role. Creating a user issues a
- * one-time temporary password, which Session 8 EMAILS to them — the screen only
- * shows the password when that mail could not be delivered (no verified sending
- * domain configured yet), so the admin can still relay it.
- * Weights / branding / credits live on their own admin screens.
+ * Admin console → Team & roles. Super User / Admin manage the org's users:
+ * jurors, staff and MENTORS. Mentor is a user-type (a directory/advisor record
+ * with no pipeline authority), not a role. Creating a user issues a one-time
+ * temporary password, which is EMAILED to them — the screen only shows the
+ * password when that mail could not be delivered (no verified sending domain
+ * configured yet), so the admin can still relay it.
+ *
+ * W1-C moved this here verbatim from `routes/AdminConsolePage.tsx`: it was the
+ * whole of the repo's "Admin console" and is one of the console's sixteen
+ * sections. It keeps working as the Team & roles section until W4-A replaces it
+ * with the prototype's full roster — workspace-type switch, invite lifecycle
+ * and the task-permission matrix. Its page-level heading is gone because the
+ * console's title bar supplies it.
  */
-export function AdminConsolePage() {
+export function TeamRolesSection() {
   const { user } = useAuth();
   const edition = user?.edition ?? "incubator";
   const [rows, setRows] = useState<UserView[] | null>(null);
@@ -118,12 +124,12 @@ export function AdminConsolePage() {
   const canManageRow = (u: UserView) => u.id !== user?.id && u.role !== "superuser";
 
   return (
-    <div className="flex flex-col gap-5 p-5">
+    <div className="flex flex-col gap-4">
       <div>
-        <h1 className="text-xl font-semibold text-fg">Admin console</h1>
-        <p className="mt-0.5 max-w-2xl text-sm text-fg-muted">
-          Manage your team — jurors, staff and mentors — and their roles. Rubric weights, branding and
-          plan &amp; credits are on the Core Parameters and Buy credits screens.
+        <h2 className="text-base font-semibold tracking-tight text-fg">Team &amp; roles</h2>
+        <p className="mt-0.5 max-w-3xl text-[13px] text-fg-muted">
+          Choose your workspace type, then manage users and roles for that organisation. Pending
+          invites shown in red.
         </p>
       </div>
 
