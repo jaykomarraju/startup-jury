@@ -6,6 +6,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import {
   Armchair,
@@ -150,9 +151,32 @@ export function AdminConsole() {
     };
   }, []);
 
-  // Move focus into the overlay so keyboard users are not left behind it.
+  // Move focus into the overlay, and RESTORE it to whatever opened the console on
+  // the way out — otherwise a keyboard user is dropped on <body>.
   useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
     containerRef.current?.focus();
+    return () => opener?.focus?.();
+  }, []);
+
+  // `aria-modal` is a promise to assistive tech, not an implementation. The app
+  // shell stays mounted behind this overlay, so without `inert` the whole of it —
+  // the top bar's theme toggle and Log out, every sidebar link, and below 640px
+  // the shell's "Open menu" — is still in the tab order beneath an opaque
+  // surface. Tab out, press Enter, and the console unmounts mid-edit.
+  //
+  // This only appears once the console renders inside the shell, which is why it
+  // survived W1-C: its client tests mount the console in a bare router and the
+  // e2e walk never presses Tab. Found at Wave 1 integration.
+  useEffect(() => {
+    const shell = document.querySelector<HTMLElement>("[data-app-shell-frame]");
+    if (!shell) return;
+    shell.setAttribute("inert", "");
+    shell.setAttribute("aria-hidden", "true");
+    return () => {
+      shell.removeAttribute("inert");
+      shell.removeAttribute("aria-hidden");
+    };
   }, []);
 
   const register = useCallback((next: AdminSaveState | null) => setSave(next), []);
@@ -170,7 +194,11 @@ export function AdminConsole() {
   // Built section, or the placeholder that names what will fill it.
   const Body = SECTION_COMPONENTS[active.id];
 
-  return (
+  // Portalled to <body> so the overlay is a SIBLING of the app shell rather than
+  // a descendant of it. That is what lets the shell be marked `inert` above
+  // without disabling the console itself, and it matches the prototype, whose
+  // console is injected as its own document rather than nested inside the app.
+  return createPortal(
     <div
       ref={containerRef}
       tabIndex={-1}
@@ -312,7 +340,8 @@ export function AdminConsole() {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

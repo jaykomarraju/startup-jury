@@ -159,6 +159,23 @@ server will believe it passed. Start `npm run e2e:serve` in that worktree first,
 your session, and pass `ROLES_BASE`. Note `e2e:serve` begins with `rm -rf .wrangler/state`, so run it
 only inside your own worktree.
 
+> **A neighbour's server is the same false pass wearing a better disguise.** `W1-C` scored a
+> confident 526/526 against port 5183 — which was **`sj-W1-B`'s** dev server, three worktrees away,
+> serving that session's code. When waves run in parallel there are several servers up at once, and
+> `ROLES_BASE` will happily point at any of them. Pick a port from your session id (`W1-A` → 5171,
+> `W2-B` → 5222, and so on), and **prove you own it before you believe the number**:
+>
+> ```bash
+> PORT=51xx
+> lsof -nP -iTCP:$PORT -sTCP:LISTEN            # must be empty BEFORE you start
+> E2E_PORT=$PORT npm run e2e:serve &            # then, once it is up:
+> lsof -nP -iTCP:$PORT -sTCP:LISTEN            # must be your worktree's node
+> ROLES_BASE=http://localhost:$PORT npm run roles
+> ```
+>
+> Kill your server when the session ends, and do not leave `until …; do sleep; done` watcher shells
+> behind — Wave 1 left several still polling `/tmp` logs after its sessions had finished.
+
 **The e2e suite must run on a freshly seeded database.** `e2e:serve` wipes and re-migrates local
 D1 on start, and Playwright's `reuseExistingServer` means a server you left running from an earlier
 command is reused *as it is* — carrying every mutation the last run made. Six specs mutate seeded
@@ -814,6 +831,8 @@ One row per session. The integration session fills the wave row.
 | `W1-A` | **done** | 19 closed · 6 partial · 13 not this session's | typecheck ✓ · lint ✓ · **474 passed / 1 skipped** (453 + 21) ✓ · build ✓ · **e2e 88 (84 + 4 new chrome specs)** ✓ · **roles 526/526** ✓ · `parity:tokens` **27/27, EXPECTED_GAPS now EMPTY** ✓ · `parity:nav` 208/278 ✓ (untouched) | **The olive family is in and the chrome is re-pointed at it.** `src/client/index.css` now declares the prototype's whole 27-token `:root` block verbatim, a semantic layer expressed in terms of it, and the prototype's `body.dark` overrides — so `parity:tokens` is 27/27 with an **empty** baseline map, and `--strict` and the default run are now the same command. Top bar, sidebar active state, primary button, KPI progress fill, selected-tile outline and the report tab underline are olive; gold is the logo and accent numerals. Shell is a fixed frame at the prototype's 9–13.5px density, with the 52px icon-rail tier at 900px and the drawer at 640px. New primitives: `.tb` / `<PageToolbar>` / `<PanelFrame>` (toolbar + pinned footer + 278px rail) and `<ToastProvider>` / `useToast()` (the prototype's 2.4s bottom-centre pill, stacking). Sidebar gained `.bx` badges, section rules, the ruled Settings block, the drawer's Menu header, force-expand-the-active-section and the icon-rail's force-open-every-group. §1.5 branding wipe fixed in `ConfigPage` by re-reading and merging. **Closed:** F0352 F0353 F0358 F0360 F0361 F0364 F0367 F0369 F0372 F0375 F0376 F0377 F0381 F0382 F0384 F0385 F0386, plus the §1.5 defect. **Partial, deliberately:** F0357 / F0374 — the density landed in the shell, the rail, the ribbon and every shared component, but the 24 in-flow `text-xl` `<h1>`s live in routes this session does not own. F0362 — the `.tb` primitive ships and is tested, adoption is Waves 7–9 (§9). F0365 / F0366 — the toast ships and is mounted in the shell, but has no call sites yet and there is still no notification bell. F0368 — badge primitive + tests, no live counts (§9, with the measurement that killed the obvious wiring). F0373 — the role pill is now a translucent ribbon pill, but the edition is still printed beside it because `e2e/nav.spec.ts:42` asserts it (§9). F0380 — table header tint/rule tokens exist, the table markup is the screens'. **Not this session's:** F0349 F0355 F0363 (auth + profile menu), F0351 F0359 (branding application — `W4-B`), F0354 (Export actions), F0356 (For Sign up screen), F0378 F0379 (icon set, custom dropdown), and F0350's per-screen conversions. **One regression found and fixed inside the session:** a blanket `body{overflow:hidden}` — which is literally what the prototype does — clipped the two standalone public pages (`/login`, `/resubmit/:token`) that are `min-h-screen` and legitimately outgrow the viewport, making their lower half unreachable. It is now scoped to `body[data-app-shell]`, set by `<AppShell>` while mounted. `e2e/chrome.spec.ts` pins both halves. **Not a regression:** `e2e/coverage.spec.ts`'s two nav walks fail under machine load. Run alone they are 15.5s and 24.2s against a 30s budget — the same marginality W0 recorded when it gave `e2e/parity.spec.ts` its own 180s timeout. See §9. |
 | `W1-C` | **done** | **F0039, F0131, F0133, F0152** closed outright; **F0001, F0006, F0176** closed for the shell they name, with their section bodies handed to Waves 2–5; **F0038, F0151** deferred to §8 Q7 (a client decision, not a build) | typecheck ✓ · lint ✓ · **475 passed / 1 skipped** ✓ (453 → +22 client) · build ✓ · **e2e 103** ✓ (84 → +19, `e2e/admin-console.spec.ts`) · **roles 526/526** ✓ · `parity:nav` 208/278 ✓ **unchanged** · `parity:tokens` 4/27 ✓ unchanged | Built `src/client/routes/admin/**`: the full-screen overlay (46 px `#4A6644` header, Close, body scroll lock, Escape), the 210 px olive rail with four groups and sixteen sections, the title bar (section label + program/cohort chip + global **Save changes**), the pending-invite badge, and the off-canvas drawer below 760 px. Sections switch through `?section=`, so `nav.ts` is untouched and the `admin` slug did not move — `parity:nav` is byte-identical. **Section bodies are placeholders that name their contents and their owning session**, so Waves 2–5 land in a slot rather than inventing one; `saveContext.tsx` is the wire from a section to the title-bar button (disabled today, since nothing owns state yet). **Edition split:** the VC console's fourth Sign-up section is `sufund` *Fund Deployment*, not `suseat` *Seat capacity* — the registry resolves per edition and both e2e walks assert it. **§1.2:** *User access* is titled and described reset-only; a client test asserts its copy never says reveal/show/stored password. **Two files nobody owned this wave were touched, deliberately:** `src/client/routes/AdminConsolePage.tsx` was `git mv`d to `src/client/routes/admin/TeamRoles.tsx` (the path `W4-A`'s entry already names) and kept working verbatim as the Team & roles section; and `e2e/roles.spec.ts` had two `goto("/app/admin")` calls re-pointed at `?section=tm` — **route only, no assertion weakened** (§4). **`e2e/parity.spec.ts` unchanged:** the four `/admin` rows were re-captured (`PARITY_CAPTURE=1`); the title is still `Admin console` and the union of the old header set with the new `tables: []` is the old row, so there was nothing to write. The console now opens on Scoring framework, so the walk no longer *sees* the roster — its exact header set is pinned in `e2e/admin-console.spec.ts` instead, at `?section=tm`. **Trap hit, for the record:** the first `npm run roles` scored 526/526 against port 5183 — which turned out to be **`sj-W1-B`'s** dev server, not this worktree's. §2.3's warning is about a *missing* server; a *neighbour's* server is the same false pass wearing a better disguise. Re-run on 5193 and verified by `ps` before believing it. Pick a port and check who owns it. |
 
+| **Wave 1 integration** | **done** | — (integration closes no findings) | typecheck ✓ · lint ✓ · **570 passed / 1 skipped** ✓ (453 + 21 + 74 + 22, exact) · build ✓ · **e2e 107** ✓ · `parity:tokens` **0 gaps** ✓ · `parity:nav` 70 known gaps ✓ | Merged `W1-B` → `W1-A` → `W1-C`. **Ownership held**: `docs/plan_parity.md` was the only file two branches both touched. Placed both requests addressed here — `tsconfig.node.json` now includes `scripts/`, and the two `coverage.spec.ts` nav sweeps got a 120 s budget. **Two merge defects found and fixed.** (1) §10 was mangled: `W1-B` and `W1-C` both drafted Wave 2 prompts and the union left a headless fragment — which carried the only copy of the `config.ts` ownership arbitration. All three Wave 2 prompts claimed `src/server/routes/config.ts`; arbitrated in §10 (W2-A sole owner; W2-B/W2-C get their own modules). (2) The console declared `aria-modal` while the whole app shell stayed keyboard-reachable behind it — invisible to `W1-C`, whose client tests mount the console in a bare router and whose e2e never presses Tab. The console is now portalled to `<body>`, the shell is `inert` while it is open, and focus returns to the opener. **One e2e flake diagnosed, not papered over:** `parity.spec.ts › vc/superuser` failed once and passes clean — Playwright runs `fullyParallel` at 2 workers against one D1, so the read-only parity walk races the specs that mutate deals. Recorded as Q17. A five-lane adversarial review of the merge produced the §9 rows above and Q17–Q19. |
+
 <!-- Append a row per session. Do not rewrite history; add. -->
 
 ---
@@ -841,6 +860,9 @@ best reading and note it.
 | Q14 | `W1-A` | The prototype **inverts `--navy`** in dark mode (`#1A1E2E` → `#EDEFF5`) because it uses navy as an inverted surface (`.prof-btn{background:var(--navy);color:var(--surface)}`). This application uses navy as fixed ink on a gold chip (`bg-accent text-navy`, in routes W1-A does not own) and as a modal scrim — both must stay dark. | `--navy` is declared at the prototype's light value and deliberately **not** inverted in dark; `index.css` says so at the point of declaration. A later session needing the inverting-surface role should add a token for it rather than flip this one. |
 | Q15 | `W1-A` | The prototype **abandons the fixed frame on mobile**: `@media (max-width:640px){body{overflow:auto} .view{height:auto;min-height:100vh;overflow:visible}}`. The application's shell stays `h-screen` at every width. | Left as-is — it is what the application already did, so it is an unclosed parity detail rather than a regression, and it interacts with `<PanelFrame>`'s `position:absolute` frame, which no screen has adopted yet. Whichever wave adopts `PanelFrame` should close it. |
 | Q16 | `W1-C` (F0038, F0151) | **Who reaches the Admin console, and to do what?** All eleven prototypes ship a console; the seven non-admin ones carry a 12-section variant (`crm`, `nt`, `al` included) that is fully editable — jury and analyst get live CRM Connect/Disconnect buttons and the same ten writable toggles. That is almost certainly a prototype oversight for CRM and billing, but it is clearly deliberate for **Notifications**: `s-nt`'s own sub-line scopes it per person ("…for your account"), so a jury member has no reachable screen on which to switch off their own mail. Two decisions the client must make: (a) does every internal role get a console entry, and (b) is the non-admin console read-only? | Console stays admin + superuser only, as today — `W1-C` built no read-only variant (its §6 note forbids one) and `parity:nav` did not move. The shell is nevertheless ready for a widening: `canSeeAdminGroup()` gates the **Sign-up** group independently of console reachability, so opening `nt`/`al` to every role cannot leak Required documents, Agreements, Signatories or Seats/Fund with it. `W3-A` (permissions) and `W3-B` (notifications) both need the answer; `W3-B` is where it bites. |
+| Q17 | Wave 1 integration | `e2e/parity.spec.ts` is read-only but shares one local D1 with specs that mutate deals, under `fullyParallel` + 2 workers. It failed once on a screen that gained rows it did not have at capture time, and passes on a clean run. Union the capture, or give the walk its own serial project? | Left as-is for now — it passes clean and the harness's own docstring anticipates unioning. `W12-B` decides during the regression pass. |
+| Q18 | Wave 1 integration | `W1-A`'s §7 disposition does not reconcile: **F0370, F0371 and F0383 are dispositioned nowhere**, and F0380 is listed PARTIAL but received no work. | `W12-A`'s sweep picks up anything unclaimed; no finding is lost, but the wave's closure count is 3 lower than it reads. |
+| Q19 | Wave 1 integration | Six of `W1-A`'s closed findings have **no test that fails if the change is reverted** — they are closed by inspection, not by assertion, which is what §4 warns against. | Acceptable for token-level changes that `parity:tokens` now pins wholesale; `W12-B` to confirm coverage during the regression pass. |
 
 ---
 
@@ -864,6 +886,12 @@ session places it.
 | `W1-C` | `migrations/**` (owner `W1-B`) + `src/server/routes/users.ts` and `src/client/api.ts` (owner `W4-A`) | **An invite-acceptance state on `users`.** The console rail's red `.nb` badge on Team & roles counts members whose invite is still pending (prototype `tmMembers[].pending`, `admin/_style.css:26`). The repo has no such state — `users` carries `active` only, and `InviteResult` reports *email delivery*, not acceptance. `W1-C` shipped the badge and `pendingInviteCount()`, which reads an optional `invitePending` defensively and is therefore 0 today, so nothing renders. Add the column, return it on `GET /api/users`, and the badge lights up with no client change. | `W1-B` (column) + `W4-A` (route + type) |
 | `W1-C` | `src/client/index.css` (owner `W1-A`) — **no edit needed, read this instead** | The prototype's Admin console is a **separate document with its own palette**: `--olive:#4A6644` / `--olive-lt:#EEF3EA`, materially darker than the app shell's `--olive:#6B8454` / `--olive-lt:#EBF0E4` that `W1-A` is adding. `W1-C` did not declare a global token — the console's two values are scoped to the overlay as `--ac-olive` / `--ac-olive-lt` in `AdminConsole.tsx`, where they cannot collide with W1-A's family. If the client would rather the console adopt the app hue, it is a two-value edit in that one file. | nobody — informational |
 | `W1-C` | `src/client/routes/admin/TeamRoles.tsx` (owner `W4-A`) | **The file `W4-A`'s entry names already exists.** `W1-C` moved `src/client/routes/AdminConsolePage.tsx` there verbatim (`git mv`, imports re-pointed, page-level `<h1>` dropped because the console title bar supplies it) and exported it as `TeamRolesSection`. `W4-A` replaces its body; the console needs nothing else. | `W4-A` |
+| Wave 1 integration | `migrations/0038*` + `src/server/routes/config.ts` *(`W2-A`)* | **`0025` rewrote all 18 AI scoring prompts but never bumped `org_settings.criteria_version`.** The re-score guard (`src/server/routes/decks.ts:918-949`) compares a deck's `scored_criteria_version` against the current one, so every seeded AI evaluation now reads as current against a rubric that changed underneath it and **re-score returns 409**. Verified at integration: `criteria_version` appears nowhere in `0025`. `W2-A` owns the scoring config and is the natural place — bump it in a `0038` migration in the same commit as the framework settings. | `W2-A` |
+| Wave 1 integration | `migrations/0038*` *(`W2-A`)* | **`0025` left two duplicate `(edition, key)` parameter rows.** `0007` created `add_program_fit` (incubator) and `add_thesis_fit` (vc); `0025` renamed two *different* rows onto the same keys. `parameters` has no UNIQUE on `(edition, key)`, so both persist. Verified NOT live: `0013` sets `active = 0` on every informational row, so the `0007` pair is inactive, and nothing in `src/` looks a parameter up by `key`. It is a latent trap for the first `WHERE key = ?` that forgets `active = 1`. Fix by deleting the retired rows and adding `CREATE UNIQUE INDEX … ON parameters(edition, key) WHERE active = 1`. | `W2-A` |
+| Wave 1 integration | `migrations/0014_seed_role_param_scores.sql` *(`W2-A`)* | **Twelve of eighteen seeded AI comments now contradict the labels above them** — `0014` wrote them against the pre-`0025` parameter names, so the demo data explains "Founder Resilience & Coachability" under a heading that now reads "Barriers of entry". Cosmetic in production, but it is what a client sees in the demo. Re-seed the comments alongside the `0038` work. | `W2-A` |
+| Wave 1 integration | `test/worker/migrations-w1b.test.ts` *(`W2-A` or `W12-B`)* | **The idempotence test proves nothing.** `applyD1Migrations` skips migrations already recorded as applied, so the second call executes zero SQL and the assertion passes regardless. Re-point it at re-running the migration *bodies* against a populated database, or drop the claim. | `W12-B` |
+| Wave 1 integration | `src/client/routes/admin/AdminConsole.tsx:181` *(Waves 2–5)* | **The console overlay is `z-50`, tied with every other app modal** (`EvaluationDrawer`, `EvaluationReport`, `CallsPage`, `EvaluatePage`) and *below* `DeckPdfViewer`'s `z-[60]`. Harmless today because every section body is a placeholder, but the first section that opens a deck preview or an evaluation report inside the console will paint it over the console chrome. Give the console its own tier — `z-[2000]`, between the app modals and the toast viewport's `z-[3000]`. | first Wave 2–5 session to open a modal inside a section |
+| Wave 1 integration | `src/client/routes/admin/sections.ts:122` *(`W2-B`)* | The Rubric anchors placeholder tells `W2-B` there are **16 areas**; the specs and `0027` have **22** (13 core + 9 role), and the "16 × 5 = 65" arithmetic in the same string is wrong either way. Correct the copy when you build the section. | `W2-B` |
 
 ---
 
@@ -1107,6 +1135,22 @@ FINISH
 > `migrations/` is `W1-B`'s for the whole programme. If you truly need a column, say so loudly in
 > your handoff and start at `0038`.
 
+> **Server-route ownership for this wave — read before you write a handler.** All three Wave 2
+> drafts originally claimed `src/server/routes/config.ts`. Three sessions cannot own one file; that
+> is the collision §2.2 exists to prevent, and in application code it is far more expensive to
+> unpick than in this document. Arbitrated at Wave 1 integration:
+>
+> | Session | Server routes live in | Mount |
+> |---|---|---|
+> | `W2-A` | `src/server/routes/config.ts` *(sole owner this wave)* | already mounted at `/api/config` |
+> | `W2-B` | **new** `src/server/routes/anchors.ts` | add `app.route("/api/anchors", anchors)` |
+> | `W2-C` | **new** `src/server/routes/questions.ts` | add `app.route("/api/questions", questions)` |
+>
+> `src/server/index.ts` is the one shared file: `W2-B` and `W2-C` each add **one import and one
+> `app.route(...)` line**, and nothing else, so the two appends land in different places and merge
+> cleanly. Declare the line you added in §9 so integration can verify it. If you find yourself
+> wanting a second line in `index.ts`, stop and record it instead.
+
 ### `W2-A` — scoring framework & area weights
 
 ```
@@ -1151,7 +1195,8 @@ BUILD
 
 CONSTRAINTS
   - Own only: src/client/routes/admin/ScoringFramework.tsx, AreaWeights.tsx,
-    src/server/routes/config.ts, src/shared/scoring.ts.
+    src/server/routes/config.ts, src/shared/scoring.ts. You are the sole owner of config.ts this
+    wave (see the ownership note above).
   - §1.2: OMIT "Mentor can adjust composite after all jury complete". The column does not exist
     and must not be added — `mentor` has no pipeline authority (commit 8822db2).
   - Do not touch src/shared/analytics.ts — the four-vs-five band defect is W2-B's.
@@ -1209,8 +1254,9 @@ BUILD
      Strong · Moderate · Weak · Insufficient, band_index 0…4). One source, one set of labels.
 
 CONSTRAINTS
-  - Own only: src/client/routes/admin/RubricAnchors.tsx, the anchors routes in
-    src/server/routes/config.ts, src/shared/analytics.ts (band constant only), and — for the
+  - Own only: src/client/routes/admin/RubricAnchors.tsx, a NEW module
+    src/server/routes/anchors.ts (see the ownership note above — W2-A owns config.ts),
+    src/shared/analytics.ts (band constant only), and — for the
     reconciliation, agreed in §9 — the anchor reads in src/server/ai/evaluate.ts and
     src/server/routes/pipeline.ts.
   - Do not touch src/shared/scoring.ts's composite maths; that is W2-A's. Coordinate on the band
@@ -1267,8 +1313,8 @@ BUILD
      producer honouring it — if it is not merged yet, read the column directly).
 
 CONSTRAINTS
-  - Own only: src/client/routes/admin/QuestionBank.tsx, src/shared/queries.ts, and the
-    question-bank routes in src/server/routes/config.ts.
+  - Own only: src/client/routes/admin/QuestionBank.tsx, src/shared/queries.ts, and a NEW module
+    src/server/routes/questions.ts (see the ownership note above — W2-A owns config.ts).
   - Add no migration. If you need a column, start at 0038 and say so loudly.
 
 TEST
@@ -1282,48 +1328,6 @@ FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
   Commit to parity/W2-C. Do not merge to main.
-```
-
----
-
-  1. docs/plan_parity.md — §1, §2, §4, the Wave 2 contract note in §10, then ONLY your entry for
-     W2-C in §6.
-  2. Your worklist:
-     python3 docs/prototype/tools/findings.py --area "Admin console" --screen "question|s-qb" --full
-     …and read F0041 and F0042 in full — the trigger mechanism, not just the screen.
-  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-qb.html and its renderer in
-     admin/_scripts.js. Do NOT read a prototype HTML whole.
-  4. src/shared/queries.ts, the clarification-generation path, and
-     src/client/routes/admin/registry.tsx.
-  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB).
-
-BUILD
-  1. The 68 curated clarification questions across the 13 areas (Climate Impact & Integrity has 8,
-     the rest 5) as an editable per-area accordion: add, edit, delete, reorder.
-  2. Wire the bank into clarification generation so a triggered query draws REAL questions instead
-     of today's bullet list of area labels.
-  3. F0042: the "weak signal" that selects areas currently reads the All-Decks cohort rating
-     threshold, not the rubric's Weak band — so moving a cohort threshold silently re-targets
-     founder questions. Point it at the band table (W2-B owns that constant; if it has not landed
-     in your worktree, code against the shape and say so in §9).
-  4. Register the section in src/client/routes/admin/registry.tsx (qb).
-
-CONSTRAINTS
-  - Own only: src/client/routes/admin/QuestionBank.tsx, the one line you add to
-    src/client/routes/admin/registry.tsx, src/shared/queries.ts, and the question-bank routes in
-    your own module under src/server/routes/ (W2-A owns config.ts). Record anything else in §9.
-  - Do not draw page chrome; see the Wave 2 contract note in §10.
-
-TEST
-  - A unit test that a weak-signal area selects the right questions from the bank.
-  - E2E: an admin edits a question at /app/admin?section=qb and it appears in a generated query.
-  - Worker test for authZ on every route you add.
-  Green gate: npm run typecheck && npm run lint && npm test && npm run build
-  Plus: npm run test:e2e · npm run roles (live server on a port unique to you — verify the owner)
-
-FINISH
-  Complete the §2.4 exit checklist, then write the next prompt(s) into §10. Commit to parity/W2-C.
-  Do not merge to main.
 ```
 
 ## 11. Reference

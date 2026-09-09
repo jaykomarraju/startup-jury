@@ -47,7 +47,11 @@ export function AppShell() {
 
   return (
     <ToastProvider>
-      <div className="flex h-screen flex-col overflow-hidden bg-bg">
+      {/* `data-app-shell-frame` is the handle the Admin console overlay uses to
+          mark this frame `inert` while it is open — see AdminConsole.tsx. Placed at
+          Wave 1 integration; the console is portalled to <body>, so it is NOT a
+          descendant of this div and is unaffected by the attribute. */}
+      <div data-app-shell-frame className="flex h-screen flex-col overflow-hidden bg-bg">
         <Topbar
           userName={user.name}
           initials={user.initials}

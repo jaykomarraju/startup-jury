@@ -39,7 +39,14 @@ async function expectRealScreen(page: Page) {
 
 // ── The regression guard the finish track was actually aiming at ─────────────
 
+// Each of these walks ~28 slugs sequentially in one test — roughly a second per
+// navigation against the default 30s budget, so they pass on an idle machine and
+// fail on a busy one, on `main` as much as on any branch. Raised at Wave 1
+// integration at the request of W1-A and W1-B, who both hit it while three parity
+// worktrees were running suites at once. `e2e/parity.spec.ts` carries the same
+// allowance for the same reason.
 test("every incubator nav slug renders a real screen, not a stub", async ({ page }) => {
+  test.setTimeout(120_000);
   await login(page, INC_SUPER);
   // The superuser superset, minus the founder-portal items (a portal slug is
   // founder-only by design — `canSeeNav` gives it no superuser bypass).
@@ -53,7 +60,14 @@ test("every incubator nav slug renders a real screen, not a stub", async ({ page
   }
 });
 
+// Each of these walks ~28 slugs sequentially in one test — roughly a second per
+// navigation against the default 30s budget, so they pass on an idle machine and
+// fail on a busy one, on `main` as much as on any branch. Raised at Wave 1
+// integration at the request of W1-A and W1-B, who both hit it while three parity
+// worktrees were running suites at once. `e2e/parity.spec.ts` carries the same
+// allowance for the same reason.
 test("every VC nav slug renders a real screen, not a stub", async ({ page }) => {
+  test.setTimeout(120_000);
   await login(page, VC_SUPER);
   const slugs = navForUser("vc", "superuser").map((i) => i.id);
   expect(slugs.length).toBeGreaterThan(20);
