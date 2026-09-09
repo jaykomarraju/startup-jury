@@ -2,12 +2,17 @@ import type { ReactNode } from "react";
 
 type Tone = "neutral" | "amber" | "positive" | "danger" | "info";
 
+/**
+ * The prototype's status pills (`.sp-n/.sp-p/.sp-d/.sp-i`) are a flat tint plus
+ * the solid hue — `background:var(--green-lt);color:var(--green)` — not an
+ * alpha wash of one colour, so each tone here maps onto its own tint token.
+ */
 const TONES: Record<Tone, string> = {
   neutral: "bg-surface-2 text-fg-muted ring-1 ring-line",
-  amber: "bg-amber/12 text-amber ring-1 ring-amber/30",
-  positive: "bg-positive/12 text-positive ring-1 ring-positive/25",
-  danger: "bg-signal-flagged/12 text-signal-flagged ring-1 ring-signal-flagged/25",
-  info: "bg-navy/8 text-navy ring-1 ring-navy/15 dark:bg-white/10 dark:text-white dark:ring-white/20",
+  amber: "bg-warn-lt text-warn ring-1 ring-warn/20",
+  positive: "bg-green-lt text-green ring-1 ring-green/20",
+  danger: "bg-red-lt text-red ring-1 ring-red/20",
+  info: "bg-blue-lt text-blue ring-1 ring-blue/20",
 };
 
 interface BadgeProps {
@@ -16,11 +21,11 @@ interface BadgeProps {
   className?: string;
 }
 
-/** Small pill for statuses, counts, and role/edition labels. */
+/** `.sp` — a 10px status pill for statuses, counts and role labels. */
 export function Badge({ children, tone = "neutral", className }: BadgeProps) {
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${TONES[tone]} ${className ?? ""}`}
+      className={`inline-flex items-center gap-1 rounded-full px-[7px] py-px text-meta font-medium ${TONES[tone]} ${className ?? ""}`}
     >
       {children}
     </span>

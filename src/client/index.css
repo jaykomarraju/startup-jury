@@ -8,84 +8,210 @@
 /* Dark mode is driven by data-theme="dark" on <html> (set by ThemeProvider). */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
+/* ══ The prototype palette ══════════════════════════════════════════════════
+   All eleven role prototypes declare an IDENTICAL 27-token `:root` block
+   (docs/prototype/source/<role>/_style.css:1). Those names are reproduced verbatim
+   below so that `npm run parity:tokens` — and any future audit — is a two-file
+   diff rather than an archaeology exercise. Everything else in this file is
+   expressed in terms of them.
+
+   The primary hue is OLIVE, not gold. Olive carries selection, primary action,
+   progress and the top bar; gold is the logo and a few accent numerals.
+   ══════════════════════════════════════════════════════════════════════════ */
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* Olive — primary. */
+  --olive: #6b8454;
+  --olive-dk: #4a5e3a;
+  --olive-lt: #ebf0e4;
+  --olive-md: #8fa67a;
+
+  /* Gold — logo + sparse accents. */
+  --gold: #e8a020;
+  --gold-lt: #fdf3e0;
+  --gold-dk: #b87a10;
+
+  /* Warm neutral ramp (beige/taupe, not the cool green-grey we had). */
+  --offwht: #f7f6f2;
+  --surface: #ffffff;
+  --stone: #eceae4;
+  --stone-dk: #d4d0c8;
+  --text: #1a1e2e;
+  --text-2: #4a4840;
+  --text-3: #9a9488;
+  --navy: #1a1e2e;
+  --ink: #1a1e2e;
+
+  /* Status hues and their tints. */
+  --blue: #2563eb;
+  --blue-lt: #eff6ff;
+  --blue-dk: #1d4ed8;
+  --green: #16a34a;
+  --green-lt: #f0fdf4;
+  --amber: #d97706;
+  --amber-lt: #fffbeb;
+  --red: #dc2626;
+  --red-lt: #fef2f2;
+  --purple: #7c3aed;
+  --purple-lt: #f5f3ff;
+
+  /* ── Semantic layer ──────────────────────────────────────────────────────
+     Named for the role, valued from the palette above. These are what the
+     components consume (via the Tailwind mapping in `@theme inline`), so a
+     retheme changes the palette block and nothing else. */
+  --bg: var(--offwht);
+  /* The application's inset/zebra neutral, half a step between --offwht and
+     --stone. The prototype has no such token because it only ever puts an inset
+     block on a WHITE card, where plain --offwht reads; this application's
+     screens put them straight on the page ground, where --offwht would be
+     invisible. Hover states that the prototype specifies exactly (`.si:hover`,
+     `.tbb:hover`, `.dr:hover` — all --offwht on white) use --offwht directly. */
+  --surface-2: #f2f0ea;
+  --line: var(--stone-dk); /* structural rule */
+  --line-soft: var(--stone); /* row separator, section divider */
+  --fg: var(--text);
+  --fg-2: var(--text-2);
+  --fg-muted: var(--text-3);
+  --topbar: var(--olive-dk);
+  --topbar-fg: #ffffff;
+  --sidebar: var(--surface);
+  --sidebar-active: var(--olive-lt);
+  --accent: var(--gold);
+  --positive: var(--green);
+
+  /* Deck-signal ramp. This is the application's own four-band scale, NOT the
+     prototype's status palette: the prototype paints scores from `asScoreCol`
+     (#3A7D44 / #BA7517 / #B42318, three bands, hardcoded). Kept distinct from
+     --green so the two roles cannot be conflated — see §8 of docs/plan_parity.md. */
+  --signal-strong: #4a6644;
+  --signal-moderate: #e8a020;
+  --signal-weak: #b45309;
+  --signal-absent: #6b7280;
+  --signal-flagged: #c0392b;
+}
+
+/* Dark theme. Mirrors the prototype's `body.dark` block
+   (docs/prototype/source/<role>/_rest.html `#aisj-dark`): tints darken, the
+   mid-hues lift, and `--olive-dk` is deliberately NOT overridden so the brand
+   ribbon stays olive rather than going near-black. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --olive: #8fa67a;
+  --olive-lt: #1f2a1c;
+
+  --gold-lt: #2c2410;
+  --gold-dk: #e8a020;
+
+  --offwht: #13161f;
+  --surface: #1b1f2b;
+  --stone: #2a2f3d;
+  --stone-dk: #39404f;
+  --text: #e9e7e1;
+  --text-2: #c3c6cf;
+  --text-3: #8b90a0;
+  --ink: #2a2f3d;
+
+  --blue-lt: #0f1b2e;
+  --blue-dk: #5b8def;
+  --green: #3dbe6b;
+  --green-lt: #13241a;
+  --amber-lt: #241b0e;
+  --red-lt: #2a1414;
+  --purple-lt: #1e1830;
+
+  /* `--navy` is deliberately NOT inverted. The prototype flips it because it
+     uses navy as an inverted surface; this application uses it as fixed ink on
+     a gold chip and as a modal scrim, both of which must stay dark. */
+
+  /* The semantic aliases above (--bg, --line, --fg, --topbar, --positive, …)
+     all resolve through the palette tokens this block overrides, so they follow
+     automatically; only the two that are literal need restating. */
+  --surface-2: #232838;
+
+  /* The signal ramp has no prototype counterpart to copy, so it is lifted in
+     the same proportion the prototype lifts --green (#16A34A → #3DBE6B). */
+  --signal-strong: #6f9068;
+  --signal-weak: #e08a3c;
+  --signal-absent: #9aa0a6;
+  --signal-flagged: #ef6a5c;
+}
+
 @theme {
   --font-sans: "DM Sans Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "DM Mono", ui-monospace, "SFMono-Regular", monospace;
 
-  /* Fixed brand palette (startupjury_brand_guidelines.docx) */
-  --color-amber: #e8a020;
-  --color-navy: #1a1a2e;
-  --color-offwhite: #f5f7f2;
-  --color-military: #3b4a3f;
-  --color-deepgreen: #4a6644;
-  --color-divider: #d8ddd2;
-  --color-divider-dark: #2d3d2a;
-  --color-mute: #888888;
+  /* Compact console type scale. The prototype is a dense operations console —
+     9 to 13.5px — not a roomy web app; every one of these is a measured
+     prototype value, named for the element it comes from. */
+  --text-label: 9px; /* .sbl sidebar section label */
+  --text-meta: 10px; /* .dth th, .sm, .scs */
+  --text-sub: 10.5px; /* .tbs toolbar subtitle */
+  --text-ui: 11px; /* .tbb buttons, .sch, .nrp */
+  --text-item: 11.5px; /* .si nav item, .dr td table cell, .tab */
+  --text-body: 12.5px; /* toast, prose */
+  --text-title: 13.5px; /* .tbt toolbar title */
+  --text-metric: 21px; /* .scv KPI value */
 
-  /* Signal / status hues (deck signal tags, pipeline bars). Keys mirror the
-     SignalTag union in src/shared/scoring.ts, plus a deck-level "flagged". */
-  --color-signal-strong: #4a6644;
-  --color-signal-moderate: #e8a020;
-  --color-signal-weak: #b45309;
-  --color-signal-absent: #6b7280;
-  --color-signal-flagged: #c0392b;
-
-  /* Informational accent (the prototype's --blue) — used by the Assigned stat
-     box and its pipeline-progress bar. Fixed in both themes, like the signals. */
-  --color-info: #2563eb;
-}
-
-/* Semantic runtime tokens — light default, dark override. Mapped into Tailwind
-   utilities via @theme inline below (e.g. bg-surface, text-fg, border-line). */
-:root,
-:root[data-theme="light"] {
-  color-scheme: light;
-  --bg: #f5f7f2;
-  --surface: #ffffff;
-  --surface-2: #fbfcfa;
-  --line: #d8ddd2;
-  --fg: #1a1a2e;
-  --fg-muted: #888888;
-  --topbar: #3b4a3f;
-  --topbar-fg: #ffffff;
-  --topbar-line: #2d3d2a;
-  --sidebar: #ffffff;
-  --sidebar-active: #fdf3e0;
-  --accent: #e8a020;
-  --positive: #4a6644;
-}
-
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #14171f;
-  --surface: #1e2230;
-  --surface-2: #191d28;
-  --line: #2d3d2a;
-  --fg: #f5f7f2;
-  --fg-muted: #9aa0a6;
-  --topbar: #101019;
-  --topbar-fg: #ffffff;
-  --topbar-line: #2d3d2a;
-  --sidebar: #1a1e2a;
-  --sidebar-active: #2a2416;
-  --accent: #e8a020;
-  --positive: #6f9068;
+  /* Navy is FIXED dark in both themes — see the note in the dark block. */
+  --color-navy: #1a1e2e;
 }
 
 @theme inline {
+  /* Prototype palette as Tailwind colours (bg-olive, text-text-3, …). */
+  --color-olive: var(--olive);
+  --color-olive-dk: var(--olive-dk);
+  --color-olive-lt: var(--olive-lt);
+  --color-olive-md: var(--olive-md);
+  --color-gold: var(--gold);
+  --color-gold-lt: var(--gold-lt);
+  --color-gold-dk: var(--gold-dk);
+  --color-stone: var(--stone);
+  --color-stone-dk: var(--stone-dk);
+  --color-offwhite: var(--offwht);
+  --color-ink: var(--ink);
+  --color-blue: var(--blue);
+  --color-blue-lt: var(--blue-lt);
+  --color-blue-dk: var(--blue-dk);
+  --color-green: var(--green);
+  --color-green-lt: var(--green-lt);
+  --color-warn: var(--amber);
+  --color-warn-lt: var(--amber-lt);
+  --color-red: var(--red);
+  --color-red-lt: var(--red-lt);
+  --color-purple: var(--purple);
+  --color-purple-lt: var(--purple-lt);
+
+  /* `bg-amber` is the GOLD, kept as a legacy alias so the call sites that
+     predate the olive family keep rendering the brand accent. New code should
+     use `bg-gold` for the accent and `bg-warn` for the prototype's warning
+     amber (#D97706) — they are different colours. */
+  --color-amber: var(--gold);
+
+  /* Semantic tokens. */
   --color-bg: var(--bg);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
   --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
   --color-fg: var(--fg);
+  --color-fg-2: var(--fg-2);
   --color-fg-muted: var(--fg-muted);
   --color-topbar: var(--topbar);
   --color-topbar-fg: var(--topbar-fg);
-  --color-topbar-line: var(--topbar-line);
   --color-sidebar: var(--sidebar);
   --color-sidebar-active: var(--sidebar-active);
   --color-accent: var(--accent);
   --color-positive: var(--positive);
+
+  /* Deck-signal ramp. */
+  --color-signal-strong: var(--signal-strong);
+  --color-signal-moderate: var(--signal-moderate);
+  --color-signal-weak: var(--signal-weak);
+  --color-signal-absent: var(--signal-absent);
+  --color-signal-flagged: var(--signal-flagged);
 }
 
 @layer base {
@@ -98,28 +224,191 @@
     background: var(--bg);
     color: var(--fg);
     font-family: var(--font-sans);
+    font-size: 12.5px;
   }
-  /* Uppercase letter-spaced label convention from the brand guidelines. */
+  /* The signed-in shell is a fixed frame: the document behind it never scrolls,
+     only the panes inside it do (prototype `body{overflow:hidden}` +
+     `.view{height:100vh}`). <AppShell> sets this attribute while it is mounted,
+     rather than the rule living on `body` unconditionally — the standalone
+     public pages (/login, /resubmit/:token) are `min-h-screen` and grow past
+     the viewport, and a blanket `overflow:hidden` makes their lower half
+     unreachable. */
+  body[data-app-shell] {
+    overflow: hidden;
+  }
+  /* Uppercase letter-spaced label convention (prototype `.sbl` / `.scl` / `.rpt`). */
   .u-label {
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    font-size: 0.6875rem;
+    letter-spacing: 0.06em;
+    font-size: 9.5px;
     font-weight: 600;
     color: var(--fg-muted);
   }
-  /* Form input convention used by the Upload screen (theme-aware). */
+  /* Form input convention (prototype `.prof-in` / `.set-in`). */
   .sj-input {
     width: 100%;
     border: 1px solid var(--line);
     background: var(--surface);
     color: var(--fg);
-    border-radius: 0.5rem;
-    padding: 0.5rem 0.625rem;
-    font-size: 0.8125rem;
+    border-radius: 6px;
+    padding: 6px 9px;
+    font-size: 11.5px;
     font-family: var(--font-sans);
   }
   .sj-input:focus {
-    outline: 2px solid var(--accent);
+    outline: 2px solid var(--olive);
     outline-offset: -1px;
+  }
+}
+
+@layer components {
+  /* ── `.tb` — the surface toolbar ────────────────────────────────────────
+     The prototype's persistent white strip with a hairline under it, holding
+     the screen's title, subtitle and right-aligned actions. It is what anchors
+     every screen in place of an in-flow `<h1>` on the page background.
+     `<PanelFrame>` / `<PageToolbar>` render this; the classes are also usable
+     directly by screens that adopt the frame in their own markup. */
+  .tb {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-shrink: 0;
+    padding: 9px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--stone-dk);
+  }
+  .tbt {
+    font-size: 13.5px;
+    font-weight: 600;
+    line-height: 1.25;
+    color: var(--text);
+  }
+  .tbs {
+    font-size: 10.5px;
+    line-height: 1.3;
+    color: var(--text-3);
+    margin-top: 1px;
+  }
+  .tbr {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .tbb {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    padding: 5px 11px;
+    border-radius: 7px;
+    border: 1px solid var(--stone-dk);
+    background: var(--surface);
+    color: var(--text-2);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tbb:hover:not(:disabled) {
+    background: var(--offwht);
+  }
+  .tbb:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .tbb.pr {
+    background: var(--olive);
+    border-color: var(--olive);
+    color: #fff;
+  }
+  .tbb.pr:hover:not(:disabled) {
+    background: var(--olive-dk);
+  }
+  /* The pinned footer under the scrolling body: count on the left, legend right. */
+  .tb-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-shrink: 0;
+    padding: 10px 16px;
+    background: var(--surface);
+    border-top: 1px solid var(--stone);
+    font-size: 10.5px;
+    color: var(--text-3);
+  }
+
+  /* A screen that has adopted <PanelFrame> becomes the fixed frame itself:
+     it fills the content pane and scrolls only its own body. Screens that have
+     not adopted it keep scrolling <main> as before. */
+  .sj-frame {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Sidebar item badge family (prototype `.bx`). */
+  .bx {
+    margin-left: auto;
+    font-size: 9.5px;
+    font-weight: 600;
+    line-height: 1.4;
+    padding: 1px 5px;
+    border-radius: 9px;
+  }
+  .bx-b {
+    background: var(--blue-lt);
+    color: var(--blue);
+  }
+  .bx-g {
+    background: var(--green-lt);
+    color: var(--green);
+  }
+  .bx-a {
+    background: var(--amber-lt);
+    color: var(--amber);
+  }
+  .bx-r {
+    background: var(--red-lt);
+    color: var(--red);
+  }
+}
+
+/* The 52px icon-rail tier (prototype `_style.css:280-306`). Between 640px and
+   900px the rail keeps only the glyphs: section headers, labels and count
+   badges are hidden and the items centre themselves. Below 640px the rail is
+   replaced by the off-canvas drawer, which always shows labels. */
+@media (max-width: 899px) {
+  .sj-rail nav,
+  .sj-rail [data-section] {
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .sj-rail [data-section] > button {
+    display: none;
+  }
+  /* `.sb-s .sdiv{display:none}` — the group rules go with the group headers. */
+  .sj-rail [data-section] {
+    border-top: 0;
+  }
+  .sj-rail a {
+    justify-content: center;
+    padding: 8px;
+    border-left-width: 0;
+  }
+  .sj-rail a > span {
+    display: none;
+  }
+  .sj-rail a > svg {
+    height: 16px;
+    width: 16px;
+    opacity: 1;
+  }
+  /* `.tbr .tbb:not(.pr){display:none}` — a narrow toolbar keeps only the
+     primary action. */
+  .tbr .tbb:not(.pr) {
+    display: none;
   }
 }

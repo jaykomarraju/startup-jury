@@ -19,6 +19,14 @@ export {
   type ResearchDeck,
   type ResearchProvider,
 } from "./ResearchMenu";
-export { Sidebar } from "./Sidebar";
+export { Sidebar, type NavBadge } from "./Sidebar";
 export { Topbar } from "./Topbar";
 export { AppShell } from "./AppShell";
+export { PanelFrame, PageToolbar, ToolbarButton } from "./PanelFrame";
+export {
+  ToastProvider,
+  useToast,
+  TOAST_DURATION_MS,
+  type Toast,
+  type ToastTone,
+} from "./Toast";

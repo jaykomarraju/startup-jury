@@ -810,6 +810,8 @@ One row per session. The integration session fills the wave row.
 | *(pre-flight)* | done | — | typecheck ✓ · lint ✓ · 453 passed / 1 skipped ✓ · build ✓ | Baseline measured on `main` @ `5592a4d`. Lint was red with 318 errors — all from the stale nested worktree `.claude/worktrees/determined-tu-6abd99`, none from application code; fixed by ignoring `.claude/worktrees/**` in `eslint.config.js`. `npm run roles` needs a dev server and exits 0 without one — see §2.3. E2E and roles not yet run; that is `W0`. |
 | `W0` | **done** | — (harness session; closes no findings) | typecheck ✓ · lint ✓ · **453 passed / 1 skipped** ✓ · build ✓ · **e2e 84** (72 inherited + 12 new) ✓ · **roles 526/526** ✓ · `parity:nav` 208/278 ✓ · `parity:tokens` 4/27 ✓ | Baseline re-confirmed on `main` @ `437e78b` and **it is green** — the programme may start. E2E and roles were the two unmeasured legs: **72 e2e** and **526/526** both landed exactly where the previous track left them (roles run against a real server on port 5199, not a bare `npm run roles`). Added `npm run parity:nav`, `npm run parity:tokens` and `e2e/parity.spec.ts` (§2.5), each with a frozen, reasoned baseline. Proved all three fail loudly: a bad token, a fixed-but-unclaimed gap, a role removed from `nav.ts`, and a renamed column each exit 1; every temporary break was reverted and the app code is untouched. |
 
+| `W1-A` | **done** | 19 closed · 6 partial · 13 not this session's | typecheck ✓ · lint ✓ · **474 passed / 1 skipped** (453 + 21) ✓ · build ✓ · **e2e 88 (84 + 4 new chrome specs)** ✓ · **roles 526/526** ✓ · `parity:tokens` **27/27, EXPECTED_GAPS now EMPTY** ✓ · `parity:nav` 208/278 ✓ (untouched) | **The olive family is in and the chrome is re-pointed at it.** `src/client/index.css` now declares the prototype's whole 27-token `:root` block verbatim, a semantic layer expressed in terms of it, and the prototype's `body.dark` overrides — so `parity:tokens` is 27/27 with an **empty** baseline map, and `--strict` and the default run are now the same command. Top bar, sidebar active state, primary button, KPI progress fill, selected-tile outline and the report tab underline are olive; gold is the logo and accent numerals. Shell is a fixed frame at the prototype's 9–13.5px density, with the 52px icon-rail tier at 900px and the drawer at 640px. New primitives: `.tb` / `<PageToolbar>` / `<PanelFrame>` (toolbar + pinned footer + 278px rail) and `<ToastProvider>` / `useToast()` (the prototype's 2.4s bottom-centre pill, stacking). Sidebar gained `.bx` badges, section rules, the ruled Settings block, the drawer's Menu header, force-expand-the-active-section and the icon-rail's force-open-every-group. §1.5 branding wipe fixed in `ConfigPage` by re-reading and merging. **Closed:** F0352 F0353 F0358 F0360 F0361 F0364 F0367 F0369 F0372 F0375 F0376 F0377 F0381 F0382 F0384 F0385 F0386, plus the §1.5 defect. **Partial, deliberately:** F0357 / F0374 — the density landed in the shell, the rail, the ribbon and every shared component, but the 24 in-flow `text-xl` `<h1>`s live in routes this session does not own. F0362 — the `.tb` primitive ships and is tested, adoption is Waves 7–9 (§9). F0365 / F0366 — the toast ships and is mounted in the shell, but has no call sites yet and there is still no notification bell. F0368 — badge primitive + tests, no live counts (§9, with the measurement that killed the obvious wiring). F0373 — the role pill is now a translucent ribbon pill, but the edition is still printed beside it because `e2e/nav.spec.ts:42` asserts it (§9). F0380 — table header tint/rule tokens exist, the table markup is the screens'. **Not this session's:** F0349 F0355 F0363 (auth + profile menu), F0351 F0359 (branding application — `W4-B`), F0354 (Export actions), F0356 (For Sign up screen), F0378 F0379 (icon set, custom dropdown), and F0350's per-screen conversions. **One regression found and fixed inside the session:** a blanket `body{overflow:hidden}` — which is literally what the prototype does — clipped the two standalone public pages (`/login`, `/resubmit/:token`) that are `min-h-screen` and legitimately outgrow the viewport, making their lower half unreachable. It is now scoped to `body[data-app-shell]`, set by `<AppShell>` while mounted. `e2e/chrome.spec.ts` pins both halves. **Not a regression:** `e2e/coverage.spec.ts`'s two nav walks fail under machine load. Run alone they are 15.5s and 24.2s against a 30s budget — the same marginality W0 recorded when it gave `e2e/parity.spec.ts` its own 180s timeout. See §9. |
+
 <!-- Append a row per session. Do not rewrite history; add. -->
 
 ---
@@ -827,6 +829,9 @@ best reading and note it.
 | Q4 | `W0` (`parity:nav`) | `AISJ_ICAdmin_V6` is the only incubator prototype whose sidebar drops **both** Collaborate items (Contact Admin, Contact team); Super User, PM, PA and Jury all keep them. Prototype inconsistency, or a deliberate "the admin *is* who you contact" trim? | Keep both for admin (the app's current behaviour). `W3-A` confirms when it owns `nav.ts`. |
 | Q5 | `W0` (`parity:nav`) | The PM prototype offers **Sign up Pipeline** and **Onboard ready**; the app reserves both for admin + program associate. §1.4 gives the PM decision authority, which points the other way. | Likely a real gap. `W3-A` settles it with the runtime permission set. |
 | Q6 | `W0` (`parity:nav`) | **Core Parameters** (6 roles) and **Set up** (3 VC roles) appear in non-admin prototype sidebars but are admin-only in the app, and `PUT /api/config/parameters` is admin+superuser at 526/526. Read-only visibility, or no visibility? | No visibility, as today. `W3-A` decides; read-only is the likelier prototype intent. |
+| Q7 | `W1-A` (`parity:tokens`) | The application's deck-signal ramp has no prototype counterpart. `--color-signal-strong` was `#4a6644`, which the token harness flagged as a possible olive/green conflation. It is neither: the prototype paints scores from `asScoreCol` (`_scripts.js:898` — `#3A7D44` / `#BA7517` / `#B42318`, **three** bands, hardcoded, no token), while `--green #16A34A` is the status-pill hue (`.sp-d`, `.bx-g`). The application has **four** bands. Retune the four onto the prototype's three, or keep four and choose tokens for them? | Kept the four-band ramp under its own `--signal-*` tokens, distinct from `--green`, and declared `--green` at the prototype value. Repointing the ramp recolours scores on every screen in Waves 7–9, so it is theirs to settle. |
+| Q8 | `W1-A` | The prototype **inverts `--navy`** in dark mode (`#1A1E2E` → `#EDEFF5`) because it uses navy as an inverted surface (`.prof-btn{background:var(--navy);color:var(--surface)}`). This application uses navy as fixed ink on a gold chip (`bg-accent text-navy`, in routes W1-A does not own) and as a modal scrim — both must stay dark. | `--navy` is declared at the prototype's light value and deliberately **not** inverted in dark; `index.css` says so at the point of declaration. A later session needing the inverting-surface role should add a token for it rather than flip this one. |
+| Q9 | `W1-A` | The prototype **abandons the fixed frame on mobile**: `@media (max-width:640px){body{overflow:auto} .view{height:auto;min-height:100vh;overflow:visible}}`. The application's shell stays `h-screen` at every width. | Left as-is — it is what the application already did, so it is an unclosed parity detail rather than a regression, and it interacts with `<PanelFrame>`'s `position:absolute` frame, which no screen has adopted yet. Whichever wave adopts `PanelFrame` should close it. |
 
 ---
 
@@ -838,6 +843,12 @@ session places it.
 | From | File needed | Change | Placed by |
 |---|---|---|---|
 | `W0` | `tsconfig.node.json` | Add `"scripts"` to `include`. `scripts/*.ts` is not typechecked by `npm run typecheck` today — `role-matrix.ts` never was, and W0's three new scripts inherit that hole. All four compile clean under exactly the options already in that file, verified with a throwaway config; the change is one line and green. | Wave 1 integration |
+| `W1-A` | `src/shared/nav.ts` *(`W3-A`)* + a new counts route | The sidebar renders `.bx` count badges from a `badges` prop (`<Sidebar badges={…}>`), but nothing supplies it, so the prototype's blue **All decks** count and red open-**Tickets** count do not appear. Two things are needed: an optional `badge` key on `NavItem` so the manifest says which items carry one, and a **cheap** counts endpoint. The obvious wiring (`listDecks()` + `listTickets()` from `AppShell`) was built and **measured**: it pushed `e2e/coverage.spec.ts`'s 30-slug VC walk from 22.7s past its 30s budget — two full list queries on every page load. It was reverted. Do not re-add it without a counts route. | Wave 3 (`W3-A`) |
+| `W1-A` | every routed screen under `src/client/routes/**` *(Waves 7–9)* | Adopt `<PanelFrame>` / `<PageToolbar>`. The `.tb` primitive and the fixed frame ship and are tested — including a real-browser geometry test in `e2e/chrome.spec.ts` — but **no screen uses them yet**: 24 screens still render an in-flow `text-xl <h1>` on the page background, which is F0362 and half of F0357/F0374. `<PanelFrame title subtitle actions footer rail>` is a drop-in: it absolutely fills the shell's content pane, scrolls only its body, and pins the toolbar and the count+legend footer. Adopting it moves no page title text, so `e2e/parity.spec.ts` stays green. | Waves 7–9 |
+| `W1-A` | `e2e/nav.spec.ts:42` | The ribbon still prints the **edition** beside the role pill because this assertion requires it for all eleven role walks. The prototype's ribbon (`_topnav.html`) shows name + role pill only — that is F0373. Per §4 the assertion was not weakened; the session that closes F0373 changes it in the same commit and says so. | whichever session closes F0373 |
+| `W1-A` | `e2e/coverage.spec.ts:42,56` | Both nav walks run at the default 30s test timeout while taking 15.5s and 24.2s on an idle machine — they fail whenever anything else is using the CPU, and did so repeatedly during this session while the sibling W1 worktrees were running their own suites. `e2e/parity.spec.ts:113` already carries `test.setTimeout(180_000)` with a comment saying exactly this. Give these two the same. Not touched here: it is a test-robustness change in a file this session does not own. | Wave 1 integration |
+| `W1-A` | `src/client/routes/QueryPage.tsx` | Its tab strip still underlines the active tab in amber. `EvaluationReport.tsx` (owned here) is now `border-olive` / `text-olive-dk`; QueryPage should match. One line, no behaviour change. | Wave 7 |
+| `W1-A` | screens using `bg-surface-2` as a **card** on the page ground | `--surface-2` is now the warm inset neutral `#F2F0EA` (was `#FBFCFA`), a half-step between the prototype's `--offwht` ground and its `--stone` rule. Anything using it as a card should be `bg-surface` (white), which is what the prototype draws. Nothing is broken today — this is a legibility improvement to make while converting each screen. | Waves 7–9 |
 
 ---
 
@@ -1067,6 +1078,61 @@ FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
   Commit to parity/W1-C. Do not merge to main.
+```
+
+---
+
+### `WAVE-1-INT` — Wave 1 integration
+
+> Written by `W1-A`. `W1-B` and `W1-C` should **extend the request list inside this prompt** rather
+> than append a second integration prompt.
+
+```
+You are running session WAVE-1-INT — integrating Wave 1 (foundations) — of the ai.STARTUPJURY parity
+programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  nvm use
+  git worktree add ../sj-WAVE-1-INT -b parity/wave-1 main
+  cd ../sj-WAVE-1-INT && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §4 Testing, §6 Wave 1,
+     then §7 Progress, §8 Open questions and §9 Cross-session requests (all three rows for
+     W1-A/B/C are yours to act on).
+  2. `git log --oneline main..parity/W1-A` and the same for W1-B and W1-C.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB).
+
+MERGE
+  Merge parity/W1-A, then parity/W1-B, then parity/W1-C into parity/wave-1, in that order.
+  Ownership was disjoint, so conflicts should be rare; resolve any in favour of the OWNING session
+  named in §6. The one file to watch is src/client/index.css — W1-A is its sole owner this wave, so
+  any conflict in it means someone edited a file they did not own; take W1-A's side and say so.
+
+PLACE THE §9 CROSS-SESSION REQUESTS
+  - W1-A → `src/shared/nav.ts`: add an optional `badge` key to `NavItem`. Do NOT wire live counts
+    from AppShell — W1-A measured that (`listDecks()` + `listTickets()` on every page load pushed
+    e2e/coverage.spec.ts's VC walk past its 30s budget) and reverted it. Note the counts route as
+    Wave 3 work if W3-A has not landed one.
+  - W0 → `tsconfig.node.json`: add "scripts" to `include`.
+  - Leave the `e2e/nav.spec.ts:42` edition assertion and the QueryPage tab colour alone; both are
+    tagged to later sessions in §9.
+
+GREEN GATE (on the merged result — this is the point of the session)
+  npm run typecheck && npm run lint && npm test && npm run build
+  npm run test:e2e        # let Playwright start its own server; see §2.3 — a stale server carries
+                          # the last run's mutations and six specs fail on a second pass
+  npm run roles           # needs a live server on a private port: `npm run e2e:serve` in THIS
+                          # worktree, then ROLES_BASE=http://localhost:<port> npm run roles
+  npm run parity:tokens   # must stay 27/27 with an EMPTY EXPECTED_GAPS map
+  npm run parity:nav
+  Fix what the merge broke. If a leg was already red on a session branch, say which and stop.
+
+FINISH
+  Record the merged counts in §7 as the Wave 1 row, merge parity/wave-1 to `main` directly (§1.4 —
+  no PR), remove the three session worktrees and delete their branches (§2.1), then REPLACE §10 with
+  the three Wave 2 prompts from §6 using the §5 template.
 ```
 
 ---

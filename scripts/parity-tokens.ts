@@ -162,39 +162,14 @@ function norm(v: string): string {
 // ── The Wave 0 baseline ──────────────────────────────────────────────────────
 
 /**
- * The 23 tokens that do NOT match today, each with why. `W1-A` owns
- * `src/client/index.css` and closes all of them; it must delete each entry here
- * as it does, or this check fails with "FIXED — claim it".
+ * The tokens that do NOT match. Empty since `W1-A`: `src/client/index.css` now
+ * declares the prototype's whole 27-token `:root` block verbatim, so the
+ * default run and `--strict` are the same thing and any regression fails.
  *
- * Four tokens already pass and are deliberately absent: `--gold` (the app's
- * `--color-amber`), `--gold-lt` (`--sidebar-active`), `--blue` (`--color-info`)
- * and `--surface`.
+ * If a future session needs to park a gap here, it must carry a reason and an
+ * owning session, and must be deleted in the same commit that closes it.
  */
-const EXPECTED_GAPS: ReadonlyMap<string, string> = new Map([
-  ["--olive", "W1-A: the prototype's PRIMARY hue. The app has no olive token; it paints these states amber."],
-  ["--olive-dk", "W1-A: olive family absent — top bar / active states."],
-  ["--olive-lt", "W1-A: olive family absent — selected-tile and hover surfaces."],
-  ["--olive-md", "W1-A: olive family absent — muted olive, 20 uses."],
-  ["--gold-dk", "W1-A: no counterpart. 2,320 uses in the prototype — the darkest gold, not an accent."],
-  ["--navy", "W1-A: drift. App `--color-navy` #1a1a2e vs prototype #1A1E2E."],
-  ["--stone", "W1-A: no counterpart. The prototype's light rule/border, distinct from --stone-dk."],
-  ["--stone-dk", "W1-A: drift. App `--color-divider`/`--line` #d8ddd2 vs prototype #D4D0C8."],
-  ["--offwht", "W1-A: drift. App `--color-offwhite`/`--bg` #f5f7f2 vs prototype #F7F6F2."],
-  ["--text", "W1-A: drift. App `--fg` #1a1a2e vs prototype #1A1E2E (same drift as --navy)."],
-  ["--text-2", "W1-A: no counterpart. The prototype's secondary body colour, 1,550 uses."],
-  ["--text-3", "W1-A: drift. App `--fg-muted` #888888 vs prototype #9A9488 (warm, not neutral grey)."],
-  ["--blue-lt", "W1-A: no counterpart — informational tint."],
-  ["--blue-dk", "W1-A: no counterpart — informational emphasis."],
-  ["--green", "W1-A: drift. App `--color-signal-strong` #4a6644 vs prototype #16A34A. NOTE: #4a6644 is close to the olive family — check this is not an olive/green conflation before repointing."],
-  ["--green-lt", "W1-A: no counterpart — positive tint."],
-  ["--amber", "W1-A: drift. App `--color-signal-weak` #b45309 vs prototype #D97706. Distinct from --gold; the prototype uses both."],
-  ["--amber-lt", "W1-A: no counterpart — warning tint."],
-  ["--red", "W1-A: drift. App `--color-signal-flagged` #c0392b vs prototype #DC2626."],
-  ["--red-lt", "W1-A: no counterpart — danger tint."],
-  ["--purple", "W1-A: no counterpart — the prototype's fifth status hue."],
-  ["--purple-lt", "W1-A: no counterpart — purple tint."],
-  ["--ink", "W1-A: no counterpart. Same value as --navy but a separate token in the prototype."],
-]);
+const EXPECTED_GAPS: ReadonlyMap<string, string> = new Map([]);
 
 // ── Run ──────────────────────────────────────────────────────────────────────
 

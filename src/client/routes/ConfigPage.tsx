@@ -3,6 +3,7 @@ import { Target } from "lucide-react";
 import { Card, Button, Badge, EmptyState } from "../components";
 import {
   getConfig,
+  getConfigSummary,
   updateWeights,
   updateThresholds,
   updateAiPrompt,
@@ -399,7 +400,15 @@ function BrandingSection({ cfg }: { cfg: FullConfig }) {
     setError(null);
     setSaved(false);
     try {
-      await updateBranding({ wordmark, tagline, accent });
+      // PUT /api/config/branding REPLACES branding_json wholesale, so posting
+      // only the three fields this card edits silently wiped `orgName` and
+      // `orgType` — written by the Set up wizard and read back by the account
+      // screen and the founder resubmit email. Re-read and merge, exactly as
+      // SetupWizard.saveOrg() already does.
+      const current = await getConfigSummary()
+        .then((c) => c.branding)
+        .catch(() => cfg.branding);
+      await updateBranding({ ...current, wordmark, tagline, accent });
       setSaved(true);
     } catch {
       setError("Couldn't save branding. Try again.");
