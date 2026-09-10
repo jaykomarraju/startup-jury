@@ -137,7 +137,8 @@ makes the wave safe to parallelise.
 - Four files are **serialisation hazards** because everything touches them. They are owned by exactly
   one session per wave, named explicitly in the entry: `src/shared/nav.ts`, `src/shared/roles.ts`,
   `src/client/App.tsx`, `src/client/index.css`.
-- **`migrations/` is owned by `W1-B` for the whole programme.** Every table the plan needs is created
+- **`migrations/` was `W1-B`'s through Wave 1 (`0025`–`0037`); from Wave 2 each session is
+  allotted its own migration NUMBER in its prompt, so two sessions can never write the same file.** Every table the plan needs is created
   there, in one numbered block, in Wave 1. If a later session finds it needs a column that does not
   exist, it adds a migration with a number above any in flight **and says so loudly in its handoff** —
   a colliding migration number is the one merge conflict that is genuinely painful.
@@ -1131,9 +1132,10 @@ FINISH
 > direct consumers of migrations `0025`–`0037`; `W1-B` wrote them because it knows what those tables
 > hold. If `W1-A` or `W1-C` also drafted Wave 2 prompts, the integration session keeps one copy.
 >
-> All three share one rule: **the schema already exists and is seeded.** Do not add a migration —
-> `migrations/` is `W1-B`'s for the whole programme. If you truly need a column, say so loudly in
-> your handoff and start at `0038`.
+> All three share one rule: **the schema already exists and is seeded** — `W1-B` shipped
+> `0025`–`0037` for exactly this wave, so reach for a migration only if something is genuinely
+> missing. Each of you is allotted **one migration number** so you cannot collide: `W2-A` → `0038`
+> (which it must write — see the §9 fix-ups in its prompt), `W2-B` → `0039`, `W2-C` → `0040`.
 
 > **Server-route ownership for this wave — read before you write a handler.** All three Wave 2
 > drafts originally claimed `src/server/routes/config.ts`. Three sessions cannot own one file; that
@@ -1192,6 +1194,20 @@ BUILD
      (org_settings.threshold_best / .threshold_mediocre — they stay where they are).
   4. Area weights: bars, a live 100 % total, and the per-parameter *Permit configuration* control,
      which is `parameters.config_permitted` (seeded: parameter 1 of each owning role is permitted).
+  5. **Migration 0038 — three fix-ups Wave 1 integration assigned you (see §9).** These are small,
+     but the first one breaks a shipped feature today:
+       a. `0025` rewrote all 18 AI scoring prompts and never bumped
+          `org_settings.criteria_version`. The re-score guard (src/server/routes/decks.ts:918-949)
+          therefore reads every seeded evaluation as current against a rubric that changed
+          underneath it, and **re-score returns 409**. Bump it.
+       b. `0025` left two duplicate `(edition, key)` parameter rows — `0007` created
+          `add_program_fit` / `add_thesis_fit` and `0025` renamed two different rows onto the same
+          keys. Latent, not live (the `0007` pair is `active = 0` and nothing looks a parameter up
+          by key), but delete the retired rows and add
+          `CREATE UNIQUE INDEX … ON parameters(edition, key) WHERE active = 1` so it cannot recur.
+       c. Twelve of eighteen seeded AI comments in `0014` still describe the pre-`0025` parameters,
+          so the demo explains "Founder Resilience & Coachability" under a heading that now reads
+          "Barriers of entry". Re-seed them.
 
 CONSTRAINTS
   - Own only: src/client/routes/admin/ScoringFramework.tsx, AreaWeights.tsx,
@@ -1200,8 +1216,8 @@ CONSTRAINTS
   - §1.2: OMIT "Mentor can adjust composite after all jury complete". The column does not exist
     and must not be added — `mentor` has no pipeline authority (commit 8822db2).
   - Do not touch src/shared/analytics.ts — the four-vs-five band defect is W2-B's.
-  - Add no migration. The table is `org_scoring_settings`; if you need a column, start at 0038 and
-    say so loudly.
+  - You own migration **0038** (and only 0038). W2-B is reserved 0039, W2-C 0040, so the three of
+    you cannot collide. Do not touch any existing migration file.
 
 TEST
   - Unit: each composite formula and each score scale, including the 0 % AI (jury-only) split.
@@ -1261,8 +1277,8 @@ CONSTRAINTS
     src/server/routes/pipeline.ts.
   - Do not touch src/shared/scoring.ts's composite maths; that is W2-A's. Coordinate on the band
     constant only, and say in your handoff which of you moved it.
-  - Add no migration. If you drop the legacy `rubric_anchors` table, that IS a migration — say so
-    loudly and start at 0038.
+  - Add no migration unless you must; **0039 is reserved for you** (W2-A owns 0038, W2-C 0040).
+    Dropping the legacy `rubric_anchors` table IS a migration — say so loudly in your handoff.
 
 TEST
   - Unit: one band table drives both scoring and analytics — the same score gets the same label
@@ -1315,7 +1331,7 @@ BUILD
 CONSTRAINTS
   - Own only: src/client/routes/admin/QuestionBank.tsx, src/shared/queries.ts, and a NEW module
     src/server/routes/questions.ts (see the ownership note above — W2-A owns config.ts).
-  - Add no migration. If you need a column, start at 0038 and say so loudly.
+  - Add no migration unless you must; **0040 is reserved for you** (W2-A owns 0038, W2-B 0039).
 
 TEST
   - Unit: a weak-signal area selects that area's questions, in `seq` order, skipping inactive ones;
