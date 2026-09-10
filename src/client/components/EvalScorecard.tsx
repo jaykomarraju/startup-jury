@@ -5,7 +5,17 @@ import { Badge } from "./Badge";
 import { SignalTag } from "./SignalTag";
 import { DeckPdfViewer } from "./DeckPdfViewer";
 import { ResearchMenu } from "./ResearchMenu";
-import { weightedTotal } from "../../shared/scoring";
+import {
+  DEFAULT_SCORING_SETTINGS,
+  SCORE_SCALE_BOUNDS,
+  blendScore,
+  composite,
+  formatScore,
+  fromDisplayScale,
+  overrideNeedsRationale,
+  snapToScale,
+  type ScoringSettings,
+} from "../../shared/scoring";
 import { rescoreDeck } from "../api";
 import type { DeckView } from "../types";
 import type { RubricParameter } from "../api";
@@ -31,6 +41,22 @@ interface EvalScorecardProps {
   aiScores: Map<string, AiParamScore>;
   /** AI weighted total (from the stored evaluation). */
   aiTotal?: number;
+  /**
+   * The org's scoring framework (admin console → Scoring framework). Governs
+   * the 3-score view, the scale the sliders run on, and whether a score far
+   * from the AI's needs a written rationale. Defaults to the shipped values so
+   * a caller that has not loaded it behaves exactly as the prototype ships.
+   */
+  scoring?: ScoringSettings;
+  /**
+   * True when the server WITHHELD the AI breakdown because blind scoring is on
+   * and this evaluator has not submitted yet — so the workbench says why rather
+   * than showing an unexplained row of dashes.
+   */
+  aiWithheld?: boolean;
+  /** Per-parameter rationale, keyed by parameter key (F0107). */
+  comments?: Record<string, string>;
+  onChangeComment?: (key: string, value: string) => void;
   /** Position in the assigned queue, for the "Deck X of N" affordance. */
   nav?: { index: number; total: number; onPrev: () => void; onNext: () => void };
   /** Called after a successful re-score so the page can reload. */
@@ -64,6 +90,139 @@ const RESCORE_MESSAGES: Record<string, string> = {
   error: "Couldn’t re-score. Try again.",
 };
 
+/** Column headers — the AI and Avg columns vanish with the 3-score view. */
+function ScoreHeader({ threeScore }: { threeScore: boolean }) {
+  return (
+    <div
+      className={`grid items-center gap-x-4 border-b border-line bg-surface-2 px-3 py-2 ${
+        threeScore ? "grid-cols-[1fr_auto_auto_auto]" : "grid-cols-[1fr_auto]"
+      }`}
+    >
+      <span className="u-label">Parameter</span>
+      {threeScore && <span className="u-label w-12 text-center">AI</span>}
+      <span className="u-label w-32 text-center">My</span>
+      {threeScore && <span className="u-label w-14 text-center">Avg</span>}
+    </div>
+  );
+}
+
+/**
+ * One scoreable parameter.
+ *
+ * The slider runs on the org's configured **score scale** (F0167 / F0104): a
+ * 1–5 workspace drags between 1 and 5 in half-steps, while the value this
+ * component reports is always canonical 0–10, which is what every threshold,
+ * band and stored score is expressed in.
+ *
+ * When "Require override rationale" is on and this score sits further than the
+ * configured delta from the AI's, a rationale box appears and the server will
+ * refuse the submit until it is filled (F0107) — the field the prototype's copy
+ * implies but which had no counterpart anywhere in the build.
+ */
+function ScoreRow({
+  param,
+  ai,
+  value,
+  onChangeValue,
+  comment,
+  onChangeComment,
+  scoring,
+  threeScore,
+  showWeight,
+}: {
+  param: RubricParameter;
+  ai?: AiParamScore;
+  value: number;
+  onChangeValue: (key: string, value: number) => void;
+  comment: string;
+  onChangeComment?: (key: string, value: string) => void;
+  scoring: ScoringSettings;
+  threeScore: boolean;
+  showWeight?: boolean;
+}) {
+  const bounds = SCORE_SCALE_BOUNDS[scoring.scoreScale];
+  const shown = snapToScale(value, scoring.scoreScale);
+  const avg = ai != null ? blendScore(ai.value, value, scoring.aiWeightPct) : null;
+  const needsRationale =
+    onChangeComment != null &&
+    !comment.trim() &&
+    overrideNeedsRationale(value, ai?.value, scoring);
+
+  return (
+    <div className="px-3 py-2.5">
+      <div
+        className={`grid items-center gap-x-4 ${
+          threeScore ? "grid-cols-[1fr_auto_auto_auto]" : "grid-cols-[1fr_auto]"
+        }`}
+      >
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 text-sm text-fg">
+            {param.name}
+            {showWeight && <span className="text-[10px] text-fg-muted">·{param.weight}%</span>}
+          </div>
+          {threeScore && ai?.comment && (
+            <div className="mt-0.5 flex items-start gap-1 text-xs text-fg-muted">
+              <Sparkles className="mt-0.5 h-3 w-3 shrink-0 text-accent" aria-hidden="true" />
+              <span className="italic">{ai.comment}</span>
+            </div>
+          )}
+        </div>
+        {threeScore && (
+          <span
+            className="w-12 text-center font-mono text-sm font-semibold"
+            style={{ color: ai != null ? scoreColor(ai.value) : undefined }}
+          >
+            {ai != null ? formatScore(ai.value, scoring.scoreScale) : "–"}
+          </span>
+        )}
+        <div className="flex w-32 items-center gap-2">
+          <input
+            type="range"
+            min={bounds.min}
+            max={bounds.max}
+            step={bounds.step}
+            value={shown}
+            onChange={(e) =>
+              onChangeValue(param.key, fromDisplayScale(Number(e.target.value), scoring.scoreScale))
+            }
+            className="w-24 accent-[var(--color-accent)]"
+            aria-label={`My score for ${param.name}`}
+          />
+          <span className="w-7 text-right font-mono text-sm font-medium text-fg">
+            {fmtScore(shown)}
+          </span>
+        </div>
+        {threeScore && (
+          <span className="w-14 text-center font-mono text-sm font-medium text-fg">
+            {avg != null ? formatScore(avg, scoring.scoreScale) : "–"}
+          </span>
+        )}
+      </div>
+      {onChangeComment && (comment.trim() || needsRationale) && (
+        <label className="mt-2 flex flex-col gap-1">
+          <span className="text-[11px] font-medium text-fg-muted">
+            {needsRationale ? (
+              <span className="text-signal-flagged">
+                Rationale required — your score is more than {scoring.overrideRationaleDelta} points
+                from the AI&apos;s.
+              </span>
+            ) : (
+              "Rationale"
+            )}
+          </span>
+          <textarea
+            className="sj-input min-h-[2.75rem] text-[12.5px]"
+            value={comment}
+            aria-label={`Rationale for ${param.name}`}
+            onChange={(e) => onChangeComment(param.key, e.target.value)}
+            placeholder="Why does your score differ from the AI's?"
+          />
+        </label>
+      )}
+    </div>
+  );
+}
+
 /**
  * The shared evaluator workbench: in-app PDF viewer, per-parameter AI breakdown,
  * AI · My · Average columns (the Average updates live as the juror scores), the
@@ -80,6 +239,10 @@ export function EvalScorecard({
   onChangeRemarks,
   aiScores,
   aiTotal,
+  scoring = DEFAULT_SCORING_SETTINGS,
+  aiWithheld,
+  comments = {},
+  onChangeComment,
   nav,
   onRescored,
   actions,
@@ -90,16 +253,28 @@ export function EvalScorecard({
   const [rescoring, setRescoring] = useState(false);
   const [rescoreMsg, setRescoreMsg] = useState<{ tone: "info" | "success"; text: string } | null>(null);
 
-  const myTotal = weightedTotal(params.map((p) => ({ weight: p.weight, value: values[p.key] ?? 0 })));
-  const avgTotal = weightedTotal(
+  // Composites use the org's configured formula and AI/jury split, so the
+  // numbers on this screen are the numbers the server will compute and the
+  // shortlist floor will judge — not a second, hard-coded arithmetic.
+  const myTotal = composite(
+    params.map((p) => ({ weight: p.weight, value: values[p.key] ?? 0 })),
+    scoring.compositeFormula,
+  );
+  const avgTotal = composite(
     params.map((p) => {
       const ai = aiScores.get(p.key)?.value;
       const my = values[p.key] ?? 0;
-      return { weight: p.weight, value: ai != null ? (ai + my) / 2 : my };
+      return { weight: p.weight, value: ai != null ? blendScore(ai, my, scoring.aiWeightPct) : my };
     }),
+    scoring.compositeFormula,
   );
   const scoredCount = params.filter((p) => values[p.key] != null).length;
   const hasAi = aiScores.size > 0 || aiTotal != null;
+  // "Show 3-score view (AI · Mine · Average)". Off, the workbench shows the
+  // evaluator their own score only.
+  const threeScore = scoring.showThreeScoreView;
+  const bounds = SCORE_SCALE_BOUNDS[scoring.scoreScale];
+  const denom = `/${bounds.max}`;
 
   async function handleRescore() {
     setRescoring(true);
@@ -157,33 +332,54 @@ export function EvalScorecard({
         </div>
       </div>
 
-      {/* AI · My · Average summary tiles */}
-      <div className="grid grid-cols-3 gap-3">
-        <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5">
-          <div className="u-label">AI Score</div>
-          <div className="font-mono text-2xl font-bold" style={{ color: aiTotal != null ? scoreColor(aiTotal) : undefined }}>
-            {aiTotal != null ? fmtScore(aiTotal) : "–"}
-            <span className="text-sm font-normal text-fg-muted">/10</span>
-          </div>
+      {/* Blind scoring: the server withheld the AI breakdown, so say so. */}
+      {aiWithheld && (
+        <div
+          className="rounded-lg border border-line bg-surface-2 px-3 py-2 text-xs text-fg-muted"
+          role="status"
+        >
+          <span className="font-medium text-fg">Blind scoring is on.</span> The AI&apos;s score for
+          this deck is withheld until you submit your own — score it independently, then re-open it
+          to compare.
         </div>
+      )}
+
+      {/* AI · My · Average summary tiles */}
+      <div className={threeScore ? "grid grid-cols-3 gap-3" : "grid grid-cols-1 gap-3"}>
+        {threeScore && (
+          <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5">
+            <div className="u-label">AI Score</div>
+            <div
+              className="font-mono text-2xl font-bold"
+              style={{ color: aiTotal != null ? scoreColor(aiTotal) : undefined }}
+            >
+              {aiTotal != null ? formatScore(aiTotal, scoring.scoreScale) : "–"}
+              <span className="text-sm font-normal text-fg-muted">{denom}</span>
+            </div>
+          </div>
+        )}
         <div className="rounded-lg border border-accent/40 bg-accent/5 px-3 py-2.5">
           <div className="u-label">My Score</div>
           <div className="font-mono text-2xl font-bold text-accent">
-            {fmtScore(myTotal)}
-            <span className="text-sm font-normal text-fg-muted">/10</span>
+            {formatScore(myTotal, scoring.scoreScale)}
+            <span className="text-sm font-normal text-fg-muted">{denom}</span>
           </div>
           <div className="text-[10px] text-fg-muted">
             {scoredCount} of {params.length} parameters scored
           </div>
         </div>
-        <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5">
-          <div className="u-label">Average</div>
-          <div className="font-mono text-2xl font-bold text-fg">
-            {hasAi ? fmtScore(avgTotal) : "–"}
-            <span className="text-sm font-normal text-fg-muted">/10</span>
+        {threeScore && (
+          <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5">
+            <div className="u-label">Average</div>
+            <div className="font-mono text-2xl font-bold text-fg">
+              {hasAi ? formatScore(avgTotal, scoring.scoreScale) : "–"}
+              <span className="text-sm font-normal text-fg-muted">{denom}</span>
+            </div>
+            <div className="text-[10px] text-fg-muted">
+              {scoring.aiWeightPct}% AI · {100 - scoring.aiWeightPct}% jury, live
+            </div>
           </div>
-          <div className="text-[10px] text-fg-muted">AI + jury, live</div>
-        </div>
+        )}
       </div>
 
       {/* In-app deck viewer */}
@@ -209,56 +405,22 @@ export function EvalScorecard({
 
       {/* AI · My · Average parameter table */}
       <div className="overflow-hidden rounded-lg border border-line">
-        <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-4 border-b border-line bg-surface-2 px-3 py-2">
-          <span className="u-label">Parameter</span>
-          <span className="u-label w-12 text-center">AI</span>
-          <span className="u-label w-32 text-center">My</span>
-          <span className="u-label w-14 text-center">Avg</span>
-        </div>
+        <ScoreHeader threeScore={threeScore} />
         <div className="divide-y divide-line">
-          {params.map((p) => {
-            const ai = aiScores.get(p.key);
-            const my = values[p.key] ?? 5;
-            const avg = ai != null ? (ai.value + my) / 2 : null;
-            return (
-              <div key={p.key} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-4 px-3 py-2.5">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5 text-sm text-fg">
-                    {p.name}
-                    <span className="text-[10px] text-fg-muted">·{p.weight}%</span>
-                  </div>
-                  {ai?.comment && (
-                    <div className="mt-0.5 flex items-start gap-1 text-xs text-fg-muted">
-                      <Sparkles className="mt-0.5 h-3 w-3 shrink-0 text-accent" aria-hidden="true" />
-                      <span className="italic">{ai.comment}</span>
-                    </div>
-                  )}
-                </div>
-                <span
-                  className="w-12 text-center font-mono text-sm font-semibold"
-                  style={{ color: ai != null ? scoreColor(ai.value) : undefined }}
-                >
-                  {ai != null ? fmtScore(ai.value) : "–"}
-                </span>
-                <div className="flex w-32 items-center gap-2">
-                  <input
-                    type="range"
-                    min={0}
-                    max={10}
-                    step={1}
-                    value={my}
-                    onChange={(e) => onChangeValue(p.key, Number(e.target.value))}
-                    className="w-24 accent-[var(--color-accent)]"
-                    aria-label={`My score for ${p.name}`}
-                  />
-                  <span className="w-5 text-right font-mono text-sm font-medium text-fg">{my}</span>
-                </div>
-                <span className="w-14 text-center font-mono text-sm font-medium text-fg">
-                  {avg != null ? fmtScore(avg) : "–"}
-                </span>
-              </div>
-            );
-          })}
+          {params.map((p) => (
+            <ScoreRow
+              key={p.key}
+              param={p}
+              showWeight
+              ai={aiScores.get(p.key)}
+              value={values[p.key] ?? 5}
+              onChangeValue={onChangeValue}
+              comment={comments[p.key] ?? ""}
+              onChangeComment={onChangeComment}
+              scoring={scoring}
+              threeScore={threeScore}
+            />
+          ))}
         </div>
       </div>
 
@@ -270,53 +432,21 @@ export function EvalScorecard({
             <span className="u-label">Additional parameters · your lens</span>
             <span className="text-[10px] text-fg-muted">Assistive — not in the composite</span>
           </div>
-          <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-4 border-b border-line bg-surface-2 px-3 py-2">
-            <span className="u-label">Parameter</span>
-            <span className="u-label w-12 text-center">AI</span>
-            <span className="u-label w-32 text-center">My</span>
-            <span className="u-label w-14 text-center">Avg</span>
-          </div>
+          <ScoreHeader threeScore={threeScore} />
           <div className="divide-y divide-line">
-            {additionalParams.map((p) => {
-              const ai = aiScores.get(p.key);
-              const my = values[p.key] ?? 5;
-              const avg = ai != null ? (ai.value + my) / 2 : null;
-              return (
-                <div key={p.key} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-4 px-3 py-2.5">
-                  <div className="min-w-0">
-                    <div className="text-sm text-fg">{p.name}</div>
-                    {ai?.comment && (
-                      <div className="mt-0.5 flex items-start gap-1 text-xs text-fg-muted">
-                        <Sparkles className="mt-0.5 h-3 w-3 shrink-0 text-accent" aria-hidden="true" />
-                        <span className="italic">{ai.comment}</span>
-                      </div>
-                    )}
-                  </div>
-                  <span
-                    className="w-12 text-center font-mono text-sm font-semibold"
-                    style={{ color: ai != null ? scoreColor(ai.value) : undefined }}
-                  >
-                    {ai != null ? fmtScore(ai.value) : "–"}
-                  </span>
-                  <div className="flex w-32 items-center gap-2">
-                    <input
-                      type="range"
-                      min={0}
-                      max={10}
-                      step={1}
-                      value={my}
-                      onChange={(e) => onChangeValue(p.key, Number(e.target.value))}
-                      className="w-24 accent-[var(--color-accent)]"
-                      aria-label={`My score for ${p.name}`}
-                    />
-                    <span className="w-5 text-right font-mono text-sm font-medium text-fg">{my}</span>
-                  </div>
-                  <span className="w-14 text-center font-mono text-sm font-medium text-fg">
-                    {avg != null ? fmtScore(avg) : "–"}
-                  </span>
-                </div>
-              );
-            })}
+            {additionalParams.map((p) => (
+              <ScoreRow
+                key={p.key}
+                param={p}
+                ai={aiScores.get(p.key)}
+                value={values[p.key] ?? 5}
+                onChangeValue={onChangeValue}
+                comment={comments[p.key] ?? ""}
+                onChangeComment={onChangeComment}
+                scoring={scoring}
+                threeScore={threeScore}
+              />
+            ))}
           </div>
         </div>
       )}

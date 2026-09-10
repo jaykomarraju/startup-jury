@@ -4,9 +4,11 @@ import auth from "./routes/auth";
 import decks from "./routes/decks";
 import pipeline from "./routes/pipeline";
 import config from "./routes/config";
+import anchors from "./routes/anchors";
 import programs from "./routes/programs";
 import users from "./routes/users";
 import analytics from "./routes/analytics";
+import questions from "./routes/questions";
 import resubmit from "./routes/resubmit";
 import { tickets, messages, issues } from "./routes/support";
 import { calls } from "./routes/calls";
@@ -36,9 +38,11 @@ app.get("/api/health", (c) =>
 
 app.route("/api/auth", auth);
 app.route("/api/config", config);
+app.route("/api/anchors", anchors);
 app.route("/api/programs", programs);
 app.route("/api/users", users);
 app.route("/api/analytics", analytics);
+app.route("/api/questions", questions);
 app.route("/api/tickets", tickets);
 app.route("/api/issues", issues);
 app.route("/api/messages", messages);

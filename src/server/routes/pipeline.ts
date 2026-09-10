@@ -15,7 +15,16 @@ import {
   isAssignableEvaluator,
   roleLabel,
 } from "../../shared/roles";
-import { weightedTotal, signalTag, decisionScore } from "../../shared/scoring";
+import {
+  composite,
+  signalTag,
+  decisionScore,
+  fromDisplayScale,
+  overrideNeedsRationale,
+  shortlistFloor,
+} from "../../shared/scoring";
+import { RUBRIC_BANDS } from "../../shared/types";
+import { loadScoringSettings } from "../config/scoringSettings";
 import { getStage, performAction, transitionByAction } from "../../pipeline";
 import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
 import { sendEmail, buildQueryEmail, buildSignupEmail } from "../email/outbox";
@@ -168,7 +177,9 @@ interface ShortlistGuard {
   blocked: boolean;
   score: number | null;
   minimum: number;
-  programName: string;
+  /** Whose floor this is — the programme's own, or the organisation's. */
+  source: "program" | "org";
+  programName: string | null;
   message: string;
 }
 
@@ -191,29 +202,51 @@ interface ShortlistGuard {
 async function checkShortlistFloor(
   c: Context<AppEnv>,
   deckId: string,
+  edition: Edition,
 ): Promise<ShortlistGuard | null> {
+  // LEFT JOIN, not JOIN: a deck with no programme still faces the org-wide
+  // shortlist threshold (F0187), which the programme floor merely overrides.
   const row = await c.env.DB.prepare(
     "SELECT d.ai_score AS ai_score, p.name AS program_name, p.shortlist_min AS shortlist_min, " +
       "(SELECT AVG(e.weighted_total) FROM evaluations e WHERE e.deck_id = d.id AND e.evaluator_id IS NOT NULL) AS human_avg " +
-      "FROM decks d JOIN programs p ON p.id = d.program_id WHERE d.id = ?",
+      "FROM decks d LEFT JOIN programs p ON p.id = d.program_id WHERE d.id = ?",
   )
     .bind(deckId)
     .first<{
       ai_score: number | null;
-      program_name: string;
+      program_name: string | null;
       shortlist_min: number | null;
       human_avg: number | null;
     }>();
-  if (!row || row.shortlist_min === null) return null;
+  if (!row) return null;
 
-  const score = decisionScore(row.ai_score, typeof row.human_avg === "number" ? [row.human_avg] : []);
-  const minimum = row.shortlist_min;
-  const blocked = score === null || score < minimum;
+  // F0187 — the prototype puts a single org-wide "Shortlist threshold" on the
+  // Scoring framework; the build only had the per-programme floor, reachable
+  // from a different screen. The programme's own value still wins where one is
+  // set; otherwise every deck is held to the organisation's.
+  const scoring = await loadScoringSettings(c.env.DB, edition);
+  const { minimum, source } = shortlistFloor(row.shortlist_min, scoring.shortlistThreshold);
+
+  const score = decisionScore(
+    row.ai_score,
+    typeof row.human_avg === "number" ? [row.human_avg] : [],
+    scoring.aiWeightPct,
+  );
+  // An unscored deck can never clear a floor a PROGRAMME deliberately set —
+  // that is the shipped guardrail's contract. The org-wide threshold is a bar a
+  // score is measured against; it has nothing to say about a deck that has no
+  // score yet, and applying it there would stop every unscored deck in a fresh
+  // workspace from being shortlisted at all. See §8 — a client that wants the
+  // stricter reading flips this one condition.
+  const blocked = score === null ? source === "program" : score < minimum;
+  const who = source === "program" && row.program_name ? row.program_name : "This workspace";
   const message =
     score === null
-      ? `This deck has no score yet. ${row.program_name} requires at least ${minimum.toFixed(1)} to shortlist.`
-      : `Below the program's shortlist minimum — ${row.program_name} requires at least ${minimum.toFixed(1)}, this deck scores ${score.toFixed(2)}.`;
-  return { blocked, score, minimum, programName: row.program_name, message };
+      ? `This deck has no score yet. ${who} requires at least ${minimum.toFixed(1)} to shortlist.`
+      : source === "program"
+        ? `Below the program's shortlist minimum — ${who} requires at least ${minimum.toFixed(1)}, this deck scores ${score.toFixed(2)}.`
+        : `Below the organisation's shortlist threshold — at least ${minimum.toFixed(1)} is required, this deck scores ${score.toFixed(2)}.`;
+  return { blocked, score, minimum, source, programName: row.program_name, message };
 }
 
 // ── Stage transitions ─────────────────────────────────────────────────────────
@@ -232,9 +265,10 @@ pipeline.post("/decks/:id/transition", async (c) => {
     return c.json({ error: result.error }, code);
   }
 
-  // The action is permitted — now apply the program's shortlist floor.
+  // The action is permitted — now apply the shortlist floor: the programme's
+  // own where it has one, otherwise the org-wide Scoring-framework threshold.
   if (SHORTLIST_ACTIONS.has(action)) {
-    const guard = await checkShortlistFloor(c, deck.id);
+    const guard = await checkShortlistFloor(c, deck.id, deck.edition);
     if (guard?.blocked) {
       return c.json(
         {
@@ -242,6 +276,7 @@ pipeline.post("/decks/:id/transition", async (c) => {
           message: guard.message,
           score: guard.score,
           minimum: guard.minimum,
+          minimumSource: guard.source,
           programName: guard.programName,
         },
         409,
@@ -349,6 +384,11 @@ pipeline.post(
     const body = await readBody<{ scores: ScoreInput[]; remarks: string }>(c);
     const rawScores = Array.isArray(body.scores) ? body.scores : [];
 
+    // The org's scoring framework governs three things here: the scale the
+    // submitted numbers are ON, the formula the roll-up uses, and whether an
+    // override far from the AI needs a written rationale.
+    const scoring = await loadScoringSettings(c.env.DB, deck.edition);
+
     const params = (
       await c.env.DB.prepare(
         "SELECT id, key, weight, informational, role_scope FROM parameters WHERE edition = ? AND active = 1",
@@ -357,6 +397,17 @@ pipeline.post(
         .all<{ id: string; key: string; weight: number; informational: number; role_scope: string | null }>()
     ).results;
     const byKey = new Map(params.map((p) => [p.key, p]));
+
+    // The AI's per-parameter values, for the override-rationale rule below.
+    const aiByParam = new Map(
+      (
+        await c.env.DB.prepare(
+          "SELECT parameter_id, value FROM scores WHERE deck_id = ? AND evaluator_kind = 'ai'",
+        )
+          .bind(deck.id)
+          .all<{ parameter_id: string; value: number }>()
+      ).results.map((r) => [r.parameter_id, r.value]),
+    );
 
     const clean: Array<{ parameterId: string; weight: number; value: number; comment: string | null }> = [];
     const seen = new Set<string>();
@@ -368,16 +419,43 @@ pipeline.post(
       // only presents the caller's own), never reject the whole submission.
       if (p.informational === 1 && p.role_scope !== user.role) continue;
       seen.add(s.key);
-      const value = Math.max(0, Math.min(10, Number.isFinite(s.value) ? s.value : 0));
+      // Scores arrive on the org's configured display scale and are stored
+      // canonically 0–10 (see shared/scoring.ts). On the default 0–10 scale
+      // this is the identity, so nothing moves for an org that never changed it.
+      const raw = Number.isFinite(s.value) ? s.value : 0;
+      const value = fromDisplayScale(raw, scoring.scoreScale);
       clean.push({ parameterId: p.id, weight: p.weight, value, comment: s.comment ?? null });
     }
     if (clean.length === 0) return c.json({ error: "no_scores" }, 400);
 
-    // Weighted total over the FULL rubric weight — a parameter the jury didn't
-    // score counts 0, matching the AI path's gate semantics.
+    // ── Require override rationale (F0107) ────────────────────────────────────
+    // Admin console → Scoring framework → "Jury must explain overrides greater
+    // than N points from AI score". Enforced server-side: the client renders the
+    // rationale field, but the rule lives here so it cannot be skipped by
+    // posting directly. Reports every offending parameter at once rather than
+    // making the evaluator re-submit for each.
+    const needRationale = clean
+      .filter((s) => !s.comment?.trim())
+      .filter((s) => overrideNeedsRationale(s.value, aiByParam.get(s.parameterId), scoring))
+      .map((s) => params.find((p) => p.id === s.parameterId)?.key ?? s.parameterId);
+    if (needRationale.length > 0) {
+      return c.json(
+        {
+          error: "rationale_required",
+          parameters: needRationale,
+          delta: scoring.overrideRationaleDelta,
+          message: `Explain any score more than ${scoring.overrideRationaleDelta} points from the AI's.`,
+        },
+        400,
+      );
+    }
+
+    // Composite over the FULL rubric — a parameter the jury didn't score counts
+    // 0, matching the AI path's gate semantics — using the org's own formula.
     const valueById = new Map(clean.map((s) => [s.parameterId, s.value]));
-    const total = weightedTotal(
+    const total = composite(
       params.map((p) => ({ weight: p.weight, value: valueById.get(p.id) ?? 0 })),
+      scoring.compositeFormula,
     );
     const ts = new Date().toISOString();
 
@@ -773,13 +851,18 @@ pipeline.get("/decks/:id/my-scores", async (c) => {
   if (!deck) return c.json({ error: "not_found" }, 404);
   const rows = (
     await c.env.DB.prepare(
-      "SELECT p.key AS key, s.value AS value FROM scores s JOIN parameters p ON p.id = s.parameter_id " +
+      // W2-A — the per-parameter comment comes back too: it is the override
+      // rationale (F0107), and re-opening a scored deck must show what was
+      // written or the next submit will be refused for a missing one.
+      "SELECT p.key AS key, s.value AS value, s.comment AS comment FROM scores s JOIN parameters p ON p.id = s.parameter_id " +
         "WHERE s.deck_id = ? AND s.evaluator_kind = 'human' AND s.evaluator_id = ? ORDER BY p.sort_order",
     )
       .bind(deck.id, c.var.user.id)
-      .all<{ key: string; value: number }>()
+      .all<{ key: string; value: number; comment: string | null }>()
   ).results;
-  return c.json({ scores: rows });
+  return c.json({
+    scores: rows.map((r) => ({ key: r.key, value: r.value, comment: r.comment ?? undefined })),
+  });
 });
 
 /**
@@ -918,12 +1001,14 @@ pipeline.get("/jury", requireRole("program_associate", "program_manager", "admin
  *  core areas in the weighted composite and the caller's own role-scoped
  *  additional params in a separate section. */
 pipeline.get("/parameters", async (c) => {
-  const rows = (
+  const edition = c.var.user.edition;
+  const paramRows = (
     await c.env.DB.prepare(
-      "SELECT key, name, weight, informational, role_scope, prompt FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
+      "SELECT id, key, name, weight, informational, role_scope, prompt FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
     )
-      .bind(c.var.user.edition)
+      .bind(edition)
       .all<{
+        id: string;
         key: string;
         name: string;
         weight: number;
@@ -931,7 +1016,38 @@ pipeline.get("/parameters", async (c) => {
         role_scope: string | null;
         prompt: string | null;
       }>()
-  ).results.map((p) => ({
+  ).results;
+  // W2-B — the rubric bands the parameter detail panel shows.
+  //
+  // `anchors` is the shared five-band SCALE (specs §7), replacing the global
+  // four-band `rubric_anchors` table this used to read; that table is dropped
+  // in `0039`. The scale is a constant now, so no query is needed for it.
+  const anchors = RUBRIC_BANDS.map((b) => ({
+    band: b.key,
+    min: b.min,
+    max: b.max,
+    label: b.name,
+  }));
+  // Per-parameter anchor TEXT (`parameter_rubric_bands`, 0027) — what "9–10"
+  // actually means for THIS area. `bands` is additive, so the existing client
+  // keeps working; EvaluatePage still renders the generic scale until Wave 7
+  // adopts it (F0102, recorded in §9).
+  const bandRows = (
+    await c.env.DB.prepare(
+      "SELECT b.parameter_id, b.band_index, b.band_label, b.band_name, b.description " +
+        "FROM parameter_rubric_bands b JOIN parameters p ON p.id = b.parameter_id " +
+        "WHERE p.edition = ? AND p.active = 1 ORDER BY b.band_index",
+    )
+      .bind(edition)
+      .all<{
+        parameter_id: string;
+        band_index: number;
+        band_label: string;
+        band_name: string;
+        description: string | null;
+      }>()
+  ).results;
+  const parameters = paramRows.map((p) => ({
     key: p.key,
     name: p.name,
     weight: p.weight,
@@ -940,20 +1056,16 @@ pipeline.get("/parameters", async (c) => {
     // Aug-2026 issue 19 — the Evaluate screen's third panel shows the evaluation
     // prompt for whichever parameter is clicked in the second panel.
     prompt: p.prompt ?? undefined,
+    bands: bandRows
+      .filter((b) => b.parameter_id === p.id)
+      .map((b) => ({
+        index: b.band_index,
+        label: b.band_label,
+        name: b.band_name,
+        description: b.description,
+      })),
   }));
-  // The shared 0–10 rubric bands, so the parameter detail panel can show the
-  // anchors the AI scored against.
-  const anchors = (
-    await c.env.DB.prepare(
-      "SELECT band, min_score, max_score, label FROM rubric_anchors ORDER BY min_score DESC",
-    ).all<{ band: string; min_score: number; max_score: number; label: string }>()
-  ).results.map((a) => ({
-    band: a.band,
-    min: a.min_score,
-    max: a.max_score,
-    label: a.label,
-  }));
-  return c.json({ parameters: rows, anchors });
+  return c.json({ parameters, anchors });
 });
 
 export { pipeline };

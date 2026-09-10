@@ -85,7 +85,13 @@ async function login(page: Page, email: string) {
 async function observe(page: Page, slug: string): Promise<Screen> {
   await page.goto(`/app/${slug}`);
   const h1 = page.locator("h1").first();
-  await expect(h1).toBeVisible();
+  // 30 s, not the 5 s default. `test.setTimeout(180_000)` below governs the WALK;
+  // it cannot reach an individual assertion's budget, so under load a single slow
+  // navigation failed a test that still had minutes left — which is what took down
+  // vc/superuser and vc/admin during Wave 2 integration while five review agents
+  // were saturating the machine. The walk is read-only, so waiting longer here
+  // costs nothing when the page is quick.
+  await expect(h1).toBeVisible({ timeout: 30_000 });
   // Tables render after their fetch resolves; the h1 does not wait for it, so
   // reading straight after it would snapshot a half-drawn screen. Two gates:
   // `networkidle` for the fetch, then the app's own shared "Loading…" marker for

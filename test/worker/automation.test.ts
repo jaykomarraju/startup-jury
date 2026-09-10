@@ -182,7 +182,13 @@ describe("per-program shortlist floor", () => {
 
   it("judges the deck on the AI + jury average, not the AI score alone", async () => {
     // AI 8.0 alone would clear a 7.0 floor; a harsh jury 5.0 drags the decision
-    // score to 6.5 — the number the evaluator sees in the Average column.
+    // score below it — the number the evaluator sees in the Average column.
+    //
+    // W2-A: the blend is the org's `ai_weight_pct`, not a fixed half-and-half.
+    // The prototype's shipped default is 40 % AI · 60 % jury (admin/s-fw.html),
+    // which 0026 seeds, so 0.4·8.0 + 0.6·5.0 = 6.2. The assertion below read 6.5
+    // because the split was hard-coded at 50/50 (F0104); the rule it is testing
+    // — the AVERAGE decides, not the AI score — is unchanged.
     await seedProgram("prog_floor_avg", "Average Program", 7.0);
     await seedDeck("sl_avg", {
       status: "jury_evaluation",
@@ -197,7 +203,7 @@ describe("per-program shortlist floor", () => {
     const cookie = await login(JURY);
     const res = await post("/api/decks/sl_avg/transition", cookie, { action: "shortlist" });
     expect(res.status).toBe(409);
-    expect(((await res.json()) as { score: number }).score).toBe(6.5);
+    expect(((await res.json()) as { score: number }).score).toBe(6.2);
   });
 
   it("blocks an unscored deck when a floor is set", async () => {
@@ -214,7 +220,13 @@ describe("per-program shortlist floor", () => {
     expect(((await res.json()) as { message: string }).message).toContain("no score yet");
   });
 
-  it("does not block when the program has no floor, or the deck has no program", async () => {
+  it("falls back to the org-wide shortlist threshold when the program has no floor", async () => {
+    // W2-A / F0187 — the prototype puts a single org-wide "Shortlist threshold"
+    // on the Scoring framework (seeded 7.0); the build only had the per-program
+    // floor. A program with no floor of its own, and a deck with no program at
+    // all, are both now held to the organisation's bar. This test previously
+    // asserted that neither was blocked, which asserted the ABSENCE of that
+    // field — the two cases it covers are still exactly the two cases here.
     await seedProgram("prog_no_floor", "Open Program", null);
     await seedDeck("sl_nofloor", {
       status: "jury_evaluation",
@@ -229,8 +241,42 @@ describe("per-program shortlist floor", () => {
       assignedTo: "inc_jury",
     });
     const cookie = await login(JURY);
+    for (const id of ["sl_nofloor", "sl_noprogram"]) {
+      const res = await post(`/api/decks/${id}/transition`, cookie, { action: "shortlist" });
+      expect(res.status, id).toBe(409);
+      const body = (await res.json()) as { minimum: number; minimumSource: string; message: string };
+      expect(body.minimum).toBe(7);
+      expect(body.minimumSource).toBe("org");
+      expect(body.message).toContain("organisation's shortlist threshold");
+    }
+
+    // Lowering the org threshold in the admin console unblocks them — the field
+    // is the only thing standing in the way, which is what makes it real.
+    await env.DB.prepare(
+      "UPDATE org_scoring_settings SET shortlist_threshold = 0.5 WHERE edition = 'incubator'",
+    ).run();
     expect((await post("/api/decks/sl_nofloor/transition", cookie, { action: "shortlist" })).status).toBe(200);
     expect((await post("/api/decks/sl_noprogram/transition", cookie, { action: "shortlist" })).status).toBe(200);
+    await env.DB.prepare(
+      "UPDATE org_scoring_settings SET shortlist_threshold = 7.0 WHERE edition = 'incubator'",
+    ).run();
+  });
+
+  it("leaves an UNSCORED deck to the program floor — the org threshold is a score bar", async () => {
+    // A programme that set a floor blocks an unscored deck (the case above).
+    // The org-wide threshold does not: it compares a score, and a deck with no
+    // score has nothing to compare. Without this, no deck in a fresh workspace
+    // could be shortlisted before it had been scored. See plan §8.
+    await seedDeck("sl_org_unscored", {
+      status: "jury_evaluation",
+      programId: null,
+      aiScore: null,
+      assignedTo: "inc_jury",
+    });
+    const cookie = await login(JURY);
+    expect(
+      (await post("/api/decks/sl_org_unscored/transition", cookie, { action: "shortlist" })).status,
+    ).toBe(200);
   });
 
   it("is uniform — a superuser is held to the same floor", async () => {

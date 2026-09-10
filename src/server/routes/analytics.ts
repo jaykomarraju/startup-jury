@@ -15,7 +15,9 @@ import { createMiddleware } from "hono/factory";
 import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { requireAuth } from "../auth/middleware";
+import { loadScoringSettings } from "../config/scoringSettings";
 import { canAccessNav } from "../../shared/nav";
+import { RUBRIC_BANDS } from "../../shared/types";
 import {
   buildFunnel,
   cohortSummary,
@@ -152,6 +154,11 @@ analytics.get("/evaluators", guard("evaluatorscores"), async (c) => {
 
 analytics.get("/drift", guard("scoredrift"), async (c) => {
   const edition = c.var.user.edition;
+  // Admin console → Scoring framework → "Show score drift analysis in reports".
+  // Off means the report carries no drift analysis — enforced here, so turning
+  // it off is not something a client can decline to honour.
+  const scoring = await loadScoringSettings(c.env.DB, edition);
+  if (!scoring.showScoreDrift) return c.json({ ...scoreDrift([]), disabled: true });
   const decks = (
     await c.env.DB.prepare(
       "SELECT id, name, ai_score FROM decks WHERE edition = ? AND ai_score IS NOT NULL",
@@ -262,9 +269,13 @@ analytics.get("/diligence", guard("diligence"), async (c) => {
       .all<{ id: string; name: string; status: string; signal: string | null }>()
   ).results;
   const inDiligence = decks.filter((d) => DILIGENCE_STAGES.includes(d.status));
-  // Red flag = the two lowest signal bands (the deck.signal domain is
-  // strong/moderate/weak/absent — see migrations/0002 signalTag).
-  const isRedFlag = (s: string | null) => s === "weak" || s === "absent";
+  // Red flag = the two lowest signal bands. W2-B — `decks.signal` is now the
+  // specs' five bands (`RUBRIC_BANDS`), so the lowest is `insufficient`, not
+  // the retired `absent`; `0039` rewrote the stored rows. Reading the table
+  // rather than naming the keys means the next scale change cannot silently
+  // empty this list.
+  const LOWEST_BANDS = RUBRIC_BANDS.slice(-2).map((b) => b.key as string);
+  const isRedFlag = (s: string | null) => s !== null && LOWEST_BANDS.includes(s);
   const redFlags = inDiligence.filter((d) => isRedFlag(d.signal));
 
   // Open founder clarifications = unanswered queries on decks *in diligence* only.
@@ -290,7 +301,7 @@ analytics.get("/diligence", guard("diligence"), async (c) => {
     })),
     flags: redFlags.map((d) => ({
       company: d.name,
-      flag: d.signal === "absent" ? "Missing / absent signal" : "Weak overall signal",
+      flag: d.signal === "insufficient" ? "Insufficient signal" : "Weak overall signal",
     })),
   });
 });

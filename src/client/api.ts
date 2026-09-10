@@ -224,6 +224,13 @@ export interface DeckReport {
   versions?: DeckVersionView[];
   weightedTotal?: number;
   verdict?: string;
+  /**
+   * W2-A / F0106 — set when the AI breakdown was WITHHELD server-side because
+   * blind scoring is on and this evaluator has not submitted yet. `scores`,
+   * `weightedTotal` and `verdict` are absent in that case; the workbench says
+   * why rather than rendering an unexplained row of dashes.
+   */
+  aiScoreWithheld?: boolean;
 }
 
 export function getDeck(id: string): Promise<DeckReport> {
@@ -410,6 +417,23 @@ export function submitJuryScores(id: string, scores: HumanScoreInput[], remarks?
   );
 }
 
+/**
+ * The clarification letter for one deck, composed from the curated question bank
+ * (`W2-C`). Falls back to the caller's own `buildQueryMessage` when it throws —
+ * the endpoint is per-deck, so a multi-deck selection has no draft.
+ */
+export interface QueryDraft {
+  message: string;
+  questions: { area: string; text: string }[];
+  areas: string[];
+  autoClarification: boolean;
+  triggered: boolean;
+}
+
+export function fetchQueryDraft(deckId: string): Promise<QueryDraft> {
+  return fetch(`/api/questions/draft/${encodeURIComponent(deckId)}`).then((r) => json(r));
+}
+
 /** Advance a shortlisted/intro deck to Signup and send the (stubbed) invite. */
 export function sendSignup(id: string) {
   return postJson<{ ok: true; status: string }>(`/api/decks/${id}/send-signup`);
@@ -496,8 +520,11 @@ export function listParameters(): Promise<{
   return fetch("/api/parameters").then((r) => json(r));
 }
 
-/** The caller's own saved human scores for a deck (prefills the scoring form). */
-export function getMyScores(id: string): Promise<{ scores: { key: string; value: number }[] }> {
+/** The caller's own saved human scores for a deck (prefills the scoring form).
+ *  `comment` is the per-parameter override rationale (W2-A / F0107). */
+export function getMyScores(
+  id: string,
+): Promise<{ scores: { key: string; value: number; comment?: string }[] }> {
   return fetch(`/api/decks/${id}/my-scores`).then((r) => json(r));
 }
 

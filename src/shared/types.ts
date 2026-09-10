@@ -250,16 +250,33 @@ export interface OrgScoringSettingsRow {
 
 /**
  * The specs' five-band scale (§7), highest band first — `band_index` 0 … 4.
- * The global four-band `rubric_anchors` table from 0001 is the §1.5 defect
- * W2-B reconciles onto this.
+ *
+ * **This is the one band table.** `shared/scoring.ts` (`signalTag`) and
+ * `shared/analytics.ts` (the score distribution) both derive from it, and
+ * `parameter_rubric_bands` (0027) stores the per-parameter anchor text against
+ * the same `band_index`. W2-B added `key` — the machine value persisted in
+ * `decks.signal` — and dropped the global four-band `rubric_anchors` table from
+ * 0001 in `0039`, which was the §1.5 defect: two scales, two sets of labels.
+ *
+ * `min` is the spec's `band(v)` cut-point: the first band whose `min` a score
+ * reaches wins (v≥9 Exceptional, v≥7 Strong, v≥5 Moderate, v≥3 Weak, else
+ * Insufficient). Never test `max` — scores carry half-steps, so 8.5 is Strong.
  */
 export const RUBRIC_BANDS = [
-  { index: 0, label: "9–10", name: "Exceptional", min: 9, max: 10 },
-  { index: 1, label: "7–8", name: "Strong", min: 7, max: 8 },
-  { index: 2, label: "5–6", name: "Moderate", min: 5, max: 6 },
-  { index: 3, label: "3–4", name: "Weak", min: 3, max: 4 },
-  { index: 4, label: "0–2", name: "Insufficient", min: 0, max: 2 },
+  { index: 0, key: "exceptional", label: "9–10", name: "Exceptional", min: 9, max: 10 },
+  { index: 1, key: "strong", label: "7–8", name: "Strong", min: 7, max: 8 },
+  { index: 2, key: "moderate", label: "5–6", name: "Moderate", min: 5, max: 6 },
+  { index: 3, key: "weak", label: "3–4", name: "Weak", min: 3, max: 4 },
+  { index: 4, key: "insufficient", label: "0–2", name: "Insufficient", min: 0, max: 2 },
 ] as const;
+
+/** The persisted band value — `decks.signal`, and `signalTag()`'s return. */
+export type RubricBandKey = (typeof RUBRIC_BANDS)[number]["key"];
+
+/** The band a 0–10 score falls in, per specs §7 `band(v)`. */
+export function rubricBand(value: number): (typeof RUBRIC_BANDS)[number] {
+  return RUBRIC_BANDS.find((b) => value >= b.min) ?? RUBRIC_BANDS[RUBRIC_BANDS.length - 1];
+}
 
 export interface ParameterRubricBandRow {
   id: string;

@@ -23,6 +23,17 @@ async function login(page: Page, email: string) {
   await page.waitForURL("**/app/**");
 }
 
+/**
+ * The placeholder check below was `section.id !== "tm"`, true only while Wave 1
+ * was the whole registry — every Wave 2–5 session that lands a section breaks it.
+ * All three Wave 2 sessions rewrote it independently: W2-A and W2-C branched on
+ * what is on screen, W2-B kept a named `BUILT` set to append to. Wave 2
+ * integration kept the screen-driven form — it needs no per-wave edit, so it
+ * stops being a recurring merge conflict — and folded in W2-B's negative half,
+ * which is the stronger assertion: a section that has been built must no longer
+ * name an owner. **Nothing to add here when you land a section.**
+ */
+
 const ADMINS: { email: string; edition: Edition; role: Role }[] = [
   { email: "priya.sharma@demo.startupjury.ai", edition: "incubator", role: "superuser" },
   { email: "nisha.kapoor@demo.startupjury.ai", edition: "incubator", role: "admin" },
@@ -69,8 +80,17 @@ for (const admin of ADMINS) {
       // Every section renders a body: either its heading (placeholder or the
       // built Team & roles roster) — never a blank pane.
       await expect(page.getByRole("heading", { level: 2, name: section.heading })).toBeVisible();
-      if (section.id !== "tm") {
-        // …and names the session that will fill it.
+      // …and an UNBUILT one names the session that will fill it.
+      //
+      // All three sessions rewrote this; W2-A and W2-C branched on what is on
+      // screen, W2-B kept a `BUILT` set each session appends to. Wave 2 integration keeps W2-A's screen-driven branch — it needs
+      // no editing as Waves 2–5 land — and folds in W2-B's negative assertion, which
+      // is the stronger half: a built section must not still be naming its owner.
+      // (The registry cannot be imported here: it pulls the React component tree,
+      // and `pdfjs-dist/...?url` is not resolvable outside vite.)
+      if (!(await page.getByText("Not built yet").count())) {
+        await expect(page.getByText(section.placeholder.owner, { exact: true })).toHaveCount(0);
+      } else {
         await expect(
           page.getByText(section.placeholder.owner, { exact: true }).first(),
         ).toBeVisible();

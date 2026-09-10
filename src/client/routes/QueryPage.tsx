@@ -18,7 +18,14 @@ import { ArrowLeft, Mail, ListChecks, X } from "lucide-react";
 import { Card, Button, Badge, EmptyState } from "../components";
 import type { DeckView } from "../types";
 import { useAuth } from "../auth/useAuth";
-import { listDecks, listQueries, listAllQueries, createQuery, type QueryView } from "../api";
+import {
+  listDecks,
+  listQueries,
+  listAllQueries,
+  createQuery,
+  fetchQueryDraft,
+  type QueryView,
+} from "../api";
 import {
   areasNeedingResponse,
   buildQueryMessage,
@@ -142,8 +149,25 @@ export function QueryPage() {
       return;
     }
     if (selected.length === 1) {
-      setBody(buildQueryMessage(selected[0].name, areasNeedingResponse(selected[0])));
-      return;
+      // W2-C built the bank and the producer that composes the real letter from
+      // it; this is the last hop between the two. Placed at Wave 2 integration
+      // per the §9 request rather than left until Wave 7, because without it the
+      // wave's headline deliverable never reaches a founder. `buildQueryMessage`
+      // stays as the fallback — the endpoint is per-deck, and its no-bank output
+      // is byte-identical to what this line produced before.
+      const deck = selected[0];
+      let cancelled = false;
+      setBody(buildQueryMessage(deck.name, areasNeedingResponse(deck)));
+      fetchQueryDraft(deck.id)
+        .then((draft) => {
+          if (!cancelled && draft.message) setBody(draft.message);
+        })
+        .catch(() => {
+          /* keep the locally composed fallback */
+        });
+      return () => {
+        cancelled = true;
+      };
     }
     const shared = selected.flatMap((d) => areasNeedingResponse(d));
     setBody(buildQueryMessage("your pitch deck", shared));

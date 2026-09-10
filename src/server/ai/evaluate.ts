@@ -7,7 +7,10 @@
 // takes an injectable `callModel` so tests can supply a mocked response.
 
 import type { Edition } from "../../shared/roles";
-import { weightedTotal, signalTag } from "../../shared/scoring";
+import { composite, signalTag } from "../../shared/scoring";
+import { RUBRIC_BANDS, type CompositeFormula } from "../../shared/types";
+import { scoringSettingsFor } from "../config/scoringSettings";
+import { maybeAutoClarify } from "../config/autoQuery";
 import {
   mergeIntakeDetails,
   missingIntakeFields,
@@ -60,6 +63,18 @@ const FAIL_STAGE: Record<Edition, string> = {
   vc: "archived",
 };
 
+/**
+ * Where a deck lands when the org has turned **AI pre-scoring off** (admin
+ * console → Scoring framework, `ai_pre_scoring_enabled`). No model call, no
+ * scores, no gate — a human picks the deck up instead. The incubator has an
+ * explicit human-triage stage; the VC pipeline's first human stage is analyst
+ * scoring, which is the same idea one step further along.
+ */
+const SKIP_AI_STAGE: Record<Edition, string> = {
+  incubator: "manual_review",
+  vc: "analyst_scoring",
+};
+
 export interface ParameterRow {
   id: string;
   key: string;
@@ -94,11 +109,21 @@ export function substituteVars(text: string, ctx: PromptContext): string {
   });
 }
 
-export interface AnchorRow {
-  band: string;
-  min_score: number;
-  max_score: number;
-  label: string;
+/**
+ * One row of `parameter_rubric_bands` (0027) — the per-parameter anchor text on
+ * the specs' five-band scale.
+ *
+ * W2-B replaced the global four-band `rubric_anchors` table this file used to
+ * read (dropped in `0039`). That table gave every area the same four generic
+ * anchors, which is the opposite of what the rubric is for: "9–10" means
+ * something different for Climate Impact than for Storytelling.
+ */
+export interface ParameterBandRow {
+  parameter_id: string;
+  band_index: number;
+  band_label: string;
+  band_name: string;
+  description: string | null;
 }
 
 /** Raw structured payload the model returns via the `submit_evaluation` tool. */
@@ -166,6 +191,8 @@ export interface EvaluationResult {
   /** Soft duplicate / returning-company alert, or null. Never blocks. */
   intakeFlag: IntakeFlag | null;
   intakeNote: string | null;
+  /** True when the org has AI pre-scoring off — no model call was made. */
+  aiSkipped?: boolean;
 }
 
 export interface AnthropicRequest {
@@ -296,32 +323,58 @@ export function buildSystemPrompt(orgOverride?: string | null): string {
   return orgOverride ? `${base}\n\nOrganisation guidance:\n${orgOverride.trim()}` : base;
 }
 
-/** User prompt: the rubric (parameters + weights) and the anchor bands.
- *  Core areas form the weighted composite; role-scoped additional params are
- *  listed separately as assistive lenses, each with its configurable prompt
- *  (deck-context variables substituted). Both are scored, but only the core
- *  areas count toward the composite (additional params carry weight 0). */
+/**
+ * User prompt: the rubric (parameters + weights + per-area anchors) and the
+ * shared band scale.
+ *
+ * Core areas form the weighted composite; role-scoped additional params are
+ * listed separately as assistive lenses, each with its configurable prompt
+ * (deck-context variables substituted). Both are scored, but only the core
+ * areas count toward the composite (additional params carry weight 0).
+ *
+ * W2-B — every parameter now carries its **own** AI guidance prompt and its
+ * **own** five band anchors, both editable in Admin console → Rubric anchors.
+ * Before this, a core area's `prompt` was silently dropped and every area was
+ * given the same four generic bands, so the admin section would have rendered
+ * without changing a single score.
+ */
 export function buildUserPrompt(
   params: ParameterRow[],
-  anchors: AnchorRow[],
+  bands: ParameterBandRow[],
   ctx: PromptContext = {},
 ): string {
   const core = params.filter((p) => !p.informational);
   const additional = params.filter((p) => p.informational);
 
-  const rubric = core.map((p) => `- ${p.key} — ${p.name} (weight ${p.weight})`).join("\n");
-  const bands = anchors
-    .slice()
-    .sort((a, b) => b.min_score - a.min_score)
-    .map((a) => `- ${a.min_score}–${a.max_score}: ${a.label}`)
+  /** A parameter's five anchors, deepest band last; omitted when none is written. */
+  const anchorsFor = (p: ParameterRow): string => {
+    const written = RUBRIC_BANDS.map((spec) => ({
+      spec,
+      row: bands.find((b) => b.parameter_id === p.id && b.band_index === spec.index),
+    })).filter((b) => b.row?.description);
+    if (written.length === 0) return "";
+    return written
+      .map((b) => `    ${b.row!.band_label} ${b.row!.band_name}: ${b.row!.description}`)
+      .join("\n");
+  };
+
+  const rubric = core
+    .map((p) => {
+      const head = `- ${p.key} — ${p.name} (weight ${p.weight})`;
+      const guidance = p.prompt ? `\n  Guidance: ${substituteVars(p.prompt, ctx)}` : "";
+      const anchors = anchorsFor(p);
+      return `${head}${guidance}${anchors ? `\n  Anchors:\n${anchors}` : ""}`;
+    })
     .join("\n");
+  const bandScale = RUBRIC_BANDS.map((b) => `- ${b.label}: ${b.name}`).join("\n");
 
   let additionalBlock = "";
   if (additional.length > 0) {
     const items = additional
       .map((p) => {
         const guidance = p.prompt ? substituteVars(p.prompt, ctx) : `Score ${p.name} 0–10.`;
-        return `- ${p.key} — ${p.name}\n  Guidance: ${guidance}`;
+        const anchors = anchorsFor(p);
+        return `- ${p.key} — ${p.name}\n  Guidance: ${guidance}${anchors ? `\n  Anchors:\n${anchors}` : ""}`;
       })
       .join("\n");
     additionalBlock =
@@ -334,7 +387,8 @@ export function buildUserPrompt(
     `Score every one of these ${params.length} parameters (use the exact key).\n\n` +
     `Core rubric (weighted — these form the composite):\n${rubric}\n` +
     additionalBlock +
-    `\nAnchor bands (apply consistently):\n${bands}\n\n` +
+    `\nScore bands (apply consistently — where an area lists its own anchors ` +
+    `above, those take precedence):\n${bandScale}\n\n` +
     "Extract the founder's contact details (name, email, phone, city) and the " +
     "startup's sector exactly as stated in the deck — return null for anything the " +
     "deck does not state; do not guess. Extract the key slides, flag any missing " +
@@ -405,13 +459,16 @@ export function computeResult(
   parsed: ParsedEvaluation,
   params: ParameterRow[],
   edition: Edition,
+  formula: CompositeFormula = "weighted_average",
 ): { weightedTotal: number; signal: string; gatePassed: boolean; status: string } {
   const scoreByKey = new Map(parsed.scores.map((s) => [s.key, s.value]));
   // Score every rubric parameter over the FULL weight denominator: a parameter
   // the model didn't return counts as 0, so a partial/truncated response can't
-  // inflate the weighted total past the gate.
-  const total = weightedTotal(
+  // inflate the composite past the gate. W2-A: the aggregation itself is the
+  // org's configured `composite_formula`, not always a weighted average.
+  const total = composite(
     params.map((p) => ({ weight: p.weight, value: scoreByKey.get(p.key) ?? 0 })),
+    formula,
   );
 
   // A deck the model flagged, or one it could not score at all, is Incomplete —
@@ -522,6 +579,66 @@ export interface EvaluateOptions {
 }
 
 /**
+ * The AI-off path. Moves the deck out of the AI queue into the edition's first
+ * human stage, records the reason in `pipeline_events`, and clears any stale
+ * AI-health state so the cron sweep does not keep re-driving it. Deliberately
+ * leaves an existing `ai_score` / `signal` / `scores` alone: turning the engine
+ * off should not erase what it produced while it was on.
+ */
+async function skipAiEvaluation(
+  env: Env,
+  deck: DeckRow,
+  now: () => string,
+): Promise<EvaluationResult> {
+  const ts = now();
+  const status = SKIP_AI_STAGE[deck.edition];
+  if (deck.status !== status) {
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE decks SET status = ?, updated_at = ?, ai_error = NULL, ai_failed_at = NULL, ai_attempts = 0 WHERE id = ?",
+      ).bind(status, ts, deck.id),
+      env.DB.prepare(
+        "INSERT INTO pipeline_events (id, deck_id, actor_id, from_stage, to_stage, action, note, created_at) VALUES (?, ?, NULL, ?, ?, 'ai_skipped', ?, ?)",
+      ).bind(
+        `${deck.id}_evt_${crypto.randomUUID()}`,
+        deck.id,
+        deck.status,
+        status,
+        "AI pre-scoring is switched off for this organisation",
+        ts,
+      ),
+    ]);
+  }
+  return {
+    deckId: deck.id,
+    recognized: { name: deck.name ?? "Untitled deck", stage: deck.stage ?? null },
+    weightedTotal: 0,
+    // `absent` was the retired four-band key. W2-B's 0039 renamed it to
+    // `insufficient` and deleted it from SIGNAL_STYLES; W2-A wrote this AI-off
+    // path while `absent` was still valid. Neither branch was broken alone —
+    // merged, an org with AI pre-scoring OFF got a signal the client cannot
+    // render and SignalTag threw on the Upload screen. `EvaluationResult.signal`
+    // is typed `string` and UploadPage casts it, so typecheck saw nothing.
+    // Fixed at Wave 2 integration.
+    signal: "insufficient",
+    status,
+    gatePassed: false,
+    complete: true,
+    missingFields: [],
+    details: {
+      founder: deck.founder,
+      founderEmail: deck.founder_email,
+      founderPhone: deck.founder_phone,
+      city: deck.city,
+      sector: deck.sector,
+    },
+    intakeFlag: null,
+    intakeNote: null,
+    aiSkipped: true,
+  };
+}
+
+/**
  * Evaluate one deck end-to-end: R2 PDF → Claude → parse → gate → persist.
  * Writes `deck_extractions`, AI `scores`, an `evaluations` roll-up, the deck's
  * ai_score/signal/status/founder, and a `pipeline_events` audit row.
@@ -542,6 +659,17 @@ export async function evaluateDeck(
     .bind(deckId)
     .first<DeckRow>();
   if (!deck) throw new Error(`deck not found: ${deckId}`);
+
+  // ── AI pre-scoring switch (admin console → Scoring framework) ─────────────
+  // "AI reads and scores every deck before jury sees it". Off means OFF: no R2
+  // read, no model call, no scores, no gate. The deck leaves the AI queue for
+  // the edition's first human stage and says so in its audit trail, so nothing
+  // strands at `pending_ai` waiting for a pass that will never run.
+  const settings = await scoringSettingsFor(env, deck.edition);
+  if (!settings.aiPreScoringEnabled) {
+    return skipAiEvaluation(env, deck, now);
+  }
+
   if (!deck.r2_key) throw new Error(`deck has no R2 key: ${deckId}`);
 
   const params = (
@@ -558,8 +686,14 @@ export async function evaluateDeck(
     informational: p.informational === 1,
     prompt: p.prompt,
   }));
-  const anchors = (
-    await env.DB.prepare("SELECT band, min_score, max_score, label FROM rubric_anchors").all<AnchorRow>()
+  const bands = (
+    await env.DB.prepare(
+      "SELECT b.parameter_id, b.band_index, b.band_label, b.band_name, b.description " +
+        "FROM parameter_rubric_bands b JOIN parameters p ON p.id = b.parameter_id " +
+        "WHERE p.edition = ? AND p.active = 1",
+    )
+      .bind(deck.edition)
+      .all<ParameterBandRow>()
   ).results;
   const org = await env.DB.prepare(
     "SELECT ai_system_prompt, criteria_version FROM org_settings WHERE edition = ?",
@@ -576,7 +710,7 @@ export async function evaluateDeck(
     apiKey: env.ANTHROPIC_API_KEY,
     model: env.ANTHROPIC_MODEL ?? DEFAULT_MODEL,
     system: buildSystemPrompt(org?.ai_system_prompt ?? null),
-    userText: buildUserPrompt(params, anchors, {
+    userText: buildUserPrompt(params, bands, {
       startupName: deck.name,
       sector: deck.sector,
       stage: deck.stage,
@@ -621,6 +755,7 @@ export async function evaluateDeck(
     effective,
     params,
     deck.edition,
+    settings.compositeFormula,
   );
 
   // Soft duplicate / returning-company alert, re-run now that the extraction has
@@ -737,6 +872,28 @@ export async function evaluateDeck(
     } catch (err) {
       console.error(`incomplete-deck notification failed for ${deckId}:`, err);
     }
+  }
+
+  // ── Auto-triggered clarification (admin console → Scoring framework) ───────
+  // "Send targeted questions to startup when AI detects weak signal". Runs
+  // after the batch commits for the same reason the Incomplete notification
+  // does, is a no-op when the toggle is off, and never fails the evaluation.
+  try {
+    await maybeAutoClarify(
+      env,
+      {
+        deckId,
+        edition: deck.edition,
+        deckName: effectiveName ?? "your pitch deck",
+        founderName: details.founder ?? null,
+        founderEmail: details.founderEmail ?? null,
+        uploadedBy: deck.uploaded_by,
+        missingFields,
+      },
+      now,
+    );
+  } catch (err) {
+    console.error(`auto-clarification failed for ${deckId}:`, err);
   }
 
   return {
