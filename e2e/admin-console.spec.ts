@@ -82,8 +82,8 @@ for (const admin of ADMINS) {
       await expect(page.getByRole("heading", { level: 2, name: section.heading })).toBeVisible();
       // …and an UNBUILT one names the session that will fill it.
       //
-      // W2-A branched on what is on screen; W2-B kept a `BUILT` set each session
-      // appends to. Wave 2 integration keeps W2-A's screen-driven branch — it needs
+      // All three sessions rewrote this; W2-A and W2-C branched on what is on
+      // screen, W2-B kept a `BUILT` set each session appends to. Wave 2 integration keeps W2-A's screen-driven branch — it needs
       // no editing as Waves 2–5 land — and folds in W2-B's negative assertion, which
       // is the stronger half: a built section must not still be naming its owner.
       // (The registry cannot be imported here: it pulls the React component tree,

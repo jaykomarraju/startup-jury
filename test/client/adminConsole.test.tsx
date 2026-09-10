@@ -295,7 +295,8 @@ describe("AdminConsole shell", () => {
     // only ever true while Wave 1 was the whole registry — every Wave 2–5 session
     // registers a section and breaks it. What the test is about is that Team &
     // roles is still reachable at `tm`; registry COVERAGE is asserted separately,
-    // above. Kept as one assertion at Wave 2 integration.
+    // above. All THREE Wave 2 sessions made this same edit independently; kept as
+    // one assertion at Wave 2 integration.
     expect(SECTION_COMPONENTS).toHaveProperty("tm");
     renderConsole(user("incubator", "admin"), "/app/admin?section=tm");
     expect(screen.getByTestId("admin-section-title")).toHaveTextContent("Team & roles");
