@@ -69,8 +69,13 @@ for (const admin of ADMINS) {
       // Every section renders a body: either its heading (placeholder or the
       // built Team & roles roster) — never a blank pane.
       await expect(page.getByRole("heading", { level: 2, name: section.heading })).toBeVisible();
-      if (section.id !== "tm") {
-        // …and names the session that will fill it.
+      // …and, while it still HAS a placeholder, names the session that will
+      // fill it. W2-C: was `if (section.id !== "tm")`, which pinned Wave 1's
+      // state and would break for every session in Waves 2–5 as each replaces
+      // one placeholder. Read off the page rather than off the registry —
+      // importing `registry.tsx` here drags the whole client component tree
+      // (and pdfjs's `?url` import) into Playwright's Node transform.
+      if ((await page.getByText("Not built yet").count()) > 0) {
         await expect(
           page.getByText(section.placeholder.owner, { exact: true }).first(),
         ).toBeVisible();

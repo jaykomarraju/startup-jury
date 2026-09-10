@@ -834,6 +834,8 @@ One row per session. The integration session fills the wave row.
 
 | **Wave 1 integration** | **done** | — (integration closes no findings) | typecheck ✓ · lint ✓ · **570 passed / 1 skipped** ✓ (453 + 21 + 74 + 22, exact) · build ✓ · **e2e 107** ✓ · `parity:tokens` **0 gaps** ✓ · `parity:nav` 70 known gaps ✓ | Merged `W1-B` → `W1-A` → `W1-C`. **Ownership held**: `docs/plan_parity.md` was the only file two branches both touched. Placed both requests addressed here — `tsconfig.node.json` now includes `scripts/`, and the two `coverage.spec.ts` nav sweeps got a 120 s budget. **Two merge defects found and fixed.** (1) §10 was mangled: `W1-B` and `W1-C` both drafted Wave 2 prompts and the union left a headless fragment — which carried the only copy of the `config.ts` ownership arbitration. All three Wave 2 prompts claimed `src/server/routes/config.ts`; arbitrated in §10 (W2-A sole owner; W2-B/W2-C get their own modules). (2) The console declared `aria-modal` while the whole app shell stayed keyboard-reachable behind it — invisible to `W1-C`, whose client tests mount the console in a bare router and whose e2e never presses Tab. The console is now portalled to `<body>`, the shell is `inert` while it is open, and focus returns to the opener. **One e2e flake diagnosed, not papered over:** `parity.spec.ts › vc/superuser` failed once and passes clean — Playwright runs `fullyParallel` at 2 workers against one D1, so the read-only parity walk races the specs that mutate deals. Recorded as Q17. A five-lane adversarial review of the merge produced the §9 rows above and Q17–Q19. |
 
+| `W2-C` | **done** | **F0002, F0161** closed outright; **F0030, F0096, F0160** closed on the producer side and waiting on two lines in a file this session does not own (§9); **F0041** partial; **F0040, F0042** not this session's | typecheck ✓ · lint ✓ · **610 passed / 1 skipped** ✓ (570 → +40: 12 unit · 19 worker · 9 client) · build ✓ · **e2e 109 / 111** ⚠ (107 + 4 new in `e2e/question-bank.spec.ts`; the two failures are `coverage.spec.ts`'s nav sweeps — see note) · `parity:nav` and `parity:tokens` untouched (no nav slug and no token moved) | **The Clarification question bank is built and it feeds the letter.** `src/client/routes/admin/QuestionBank.tsx` is the prototype's thirteen `.qb-area` accordions — icon · name · `<n> questions` chip · chevron, over `Q1…Qn` · text · Edit rows — with the three actions the sub-title promises and the prototype never wired: **add** (appended, chip follows), **edit** (inline, Enter/Escape), **delete** (soft `active = 0`, so a query already sent still reads back the wording the founder was actually asked) and **reorder** (Move up / Move down, which rewrite the whole area's `seq` densely from 1 because the ordinals are POSITIONAL, `.q-num`). Registered as `qb` in `registry.tsx` — one import, one map line, exactly the slot that file documents. New server module `src/server/routes/questions.ts` at `/api/questions` (the wave's ownership note moved it out of `config.ts`, which F0002's FIX line had guessed): `GET /` `POST /` `PUT /:id` `DELETE /:id` `PUT /reorder`, all `requireRole("admin")` and all edition-scoped — a VC parameter is a 400 and a VC question a 404 to an incubator admin. `/reorder` is declared **before** `/:id` (Hono matches in declaration order) and refuses a partial, padded or foreign id list rather than leaving two rows sharing a `seq`. **`src/shared/queries.ts` now draws the bank**: `selectClarificationQuestions` picks the weak-signal areas' own questions in `seq` order, `buildQueryMessage(deck, areas, {bank})` replaces `• Traction & Validation (weak signal)` with the area's real questions numbered under its name, and `shouldAutoClarify` is the auto-trigger decision. Passing no bank reproduces the pre-W2-C letter byte for byte, which is why nothing that calls it today changed. The producer is `GET /api/questions/draft/:deckId`: it derives weak areas *exactly* as `routes/decks.ts` does (so the draft and the Query screen can never disagree), reads `org_scoring_settings.auto_clarification` directly (W2-A's toggle UI is not merged), and honours it for the **automatic** decision only — a human who opened the Query screen still gets a draft with the toggle off, because the toggle says "when AI detects weak signal". **The one thing left is two lines in `QueryPage.tsx`, which is `W7-C`'s** (§2.2 forbids the edit; the exact diff is in §9 for integration to place). Until then the bank reaches the founder through the draft endpoint, which the e2e exercises after a real UI edit. **One test changed that I do not own, flagged per §4:** `test/client/adminConsole.test.tsx:294` asserted `Object.keys(SECTION_COMPONENTS)).toEqual(["tm"])` — a pin on Wave 1's state in a test whose own subject is that Team & roles is reachable as a *built* section. Now `toContain("tm")`, so no later session has to touch it either. **Not closed, with reasons:** F0040 (per-question `query_questions` round-trip) needs a migration plus `FounderPortal.tsx` and `pipeline.ts` — `0040` is still free; F0041's *firing* from `src/server/ai/evaluate.ts` is not this session's file, though the decision function and the settings read are here and tested; F0042 (weak signal is the cohort threshold, not the rubric's Weak band) is real and depends on `W2-B`'s five-band scale — changing the derivation here alone would make the draft disagree with the screen, so it is recorded in §8 as Q20 instead of guessed at. **E2E: 109 of 111 pass; the two failures are `e2e/coverage.spec.ts`'s nav sweeps, and they are not this branch's.** Run alone against the same server they pass in **18.7 s** and **21.5 s** against the default **30 s** per-test budget — the exact marginality `W1-A` and `W1-B` each measured and wrote up in §9, whose fix was assigned to Wave 1 integration and never placed. Under the full suite's contention they blow the budget; nothing they assert ever disagreed. All 4 question-bank specs, all 19 admin-console specs and all 11 `parity.spec.ts` role walks pass. Two earlier full runs failed `parity.spec.ts` in the same load-shaped way (different role each time, `h1` not visible within 5 s) — evidence added to §8 Q17. |
+
 <!-- Append a row per session. Do not rewrite history; add. -->
 
 ---
@@ -861,9 +863,11 @@ best reading and note it.
 | Q14 | `W1-A` | The prototype **inverts `--navy`** in dark mode (`#1A1E2E` → `#EDEFF5`) because it uses navy as an inverted surface (`.prof-btn{background:var(--navy);color:var(--surface)}`). This application uses navy as fixed ink on a gold chip (`bg-accent text-navy`, in routes W1-A does not own) and as a modal scrim — both must stay dark. | `--navy` is declared at the prototype's light value and deliberately **not** inverted in dark; `index.css` says so at the point of declaration. A later session needing the inverting-surface role should add a token for it rather than flip this one. |
 | Q15 | `W1-A` | The prototype **abandons the fixed frame on mobile**: `@media (max-width:640px){body{overflow:auto} .view{height:auto;min-height:100vh;overflow:visible}}`. The application's shell stays `h-screen` at every width. | Left as-is — it is what the application already did, so it is an unclosed parity detail rather than a regression, and it interacts with `<PanelFrame>`'s `position:absolute` frame, which no screen has adopted yet. Whichever wave adopts `PanelFrame` should close it. |
 | Q16 | `W1-C` (F0038, F0151) | **Who reaches the Admin console, and to do what?** All eleven prototypes ship a console; the seven non-admin ones carry a 12-section variant (`crm`, `nt`, `al` included) that is fully editable — jury and analyst get live CRM Connect/Disconnect buttons and the same ten writable toggles. That is almost certainly a prototype oversight for CRM and billing, but it is clearly deliberate for **Notifications**: `s-nt`'s own sub-line scopes it per person ("…for your account"), so a jury member has no reachable screen on which to switch off their own mail. Two decisions the client must make: (a) does every internal role get a console entry, and (b) is the non-admin console read-only? | Console stays admin + superuser only, as today — `W1-C` built no read-only variant (its §6 note forbids one) and `parity:nav` did not move. The shell is nevertheless ready for a widening: `canSeeAdminGroup()` gates the **Sign-up** group independently of console reachability, so opening `nt`/`al` to every role cannot leak Required documents, Agreements, Signatories or Seats/Fund with it. `W3-A` (permissions) and `W3-B` (notifications) both need the answer; `W3-B` is where it bites. |
-| Q17 | Wave 1 integration | `e2e/parity.spec.ts` is read-only but shares one local D1 with specs that mutate deals, under `fullyParallel` + 2 workers. It failed once on a screen that gained rows it did not have at capture time, and passes on a clean run. Union the capture, or give the walk its own serial project? | Left as-is for now — it passes clean and the harness's own docstring anticipates unioning. `W12-B` decides during the regression pass. |
+| Q17 | Wave 1 integration | `e2e/parity.spec.ts` is read-only but shares one local D1 with specs that mutate deals, under `fullyParallel` + 2 workers. It failed once on a screen that gained rows it did not have at capture time, and passes on a clean run. Union the capture, or give the walk its own serial project? | Left as-is for now — it passes clean and the harness's own docstring anticipates unioning. `W12-B` decides during the regression pass. | **`W2-C` adds evidence that this is a *budget* problem, not a capture problem:** across two full suite runs on a machine with sibling worktrees building, `parity.spec.ts` failed twice — different roles each time (`vc/superuser`, then `incubator/program_manager`) and always the same shape, `locator('h1').first()` not visible within the 5 s expect timeout, i.e. the page had not finished loading. No assertion ever disagreed. That is the same family as the `coverage.spec.ts` rows in §9, and the same remedy applies: give the walk a budget matched to what it does. `W2-C` did not touch the file.
 | Q18 | Wave 1 integration | `W1-A`'s §7 disposition does not reconcile: **F0370, F0371 and F0383 are dispositioned nowhere**, and F0380 is listed PARTIAL but received no work. | `W12-A`'s sweep picks up anything unclaimed; no finding is lost, but the wave's closure count is 3 lower than it reads. |
 | Q19 | Wave 1 integration | Six of `W1-A`'s closed findings have **no test that fails if the change is reverted** — they are closed by inspection, not by assertion, which is what §4 warns against. | Acceptable for token-level changes that `parity:tokens` now pins wholesale; `W12-B` to confirm coverage during the regression pass. |
+| Q20 | `W2-C` (F0042) | **The "weak signal" that picks the areas a founder is questioned about is the wrong scale.** `routes/decks.ts:63-65` derives `weak_areas` from `org_settings.threshold_mediocre` — the All-Decks *cohort rating* band an admin tunes to re-bucket a cohort — while `s-qb`'s own sub-title scopes the trigger to "weak, missing, or contradictory signal in a given area", which both specs define only on the BRD five-band rubric scale. So raising *Poor — below* from 5.0 to 6.5 to re-colour a cohort overview silently widens who gets asked questions, and an area scored 5.5 is never asked about even though the BRD calls 3–4 Weak. | Not fixed here, deliberately. The producer (`GET /api/questions/draft/:deckId`) mirrors `decks.ts`'s derivation **exactly**, so the draft and the Query screen can never disagree about what is weak. Moving one without the other is the worst of the three states. The five-band scale it needs is `W2-B`'s (`parameter_rubric_bands`, `0027`) and is not merged; the session that lands it should re-point **both** call sites in one commit, or introduce an explicit clarification threshold. |
+| Q21 | `W2-C` (F0040) | **There is no per-question round trip.** `queries.questions` is one text blob out and `queries.founder_response` one blob back, so once the bank is wired there is still nowhere to record *which* bank question was asked on a deck, who asked it, whether the founder answered *that* question, or when — and "which areas did the founder actually address" stays uncomputable. Both specs sketch the schema (`founder_clarifications(id, deck_id, asked_by, question, answer, answered_at)`). | The bank is keyed by `parameters.id` and the producer already returns the questions grouped by area, so the shape is ready for it. Building the table needs a migration plus `FounderPortal.tsx` (`W10-B`) and `pipeline.ts`, none of which is `W2-C`'s — **migration `0040` is still unused** and reserved. Prompt drafted in §10. |
 
 ---
 
@@ -893,6 +897,12 @@ session places it.
 | Wave 1 integration | `test/worker/migrations-w1b.test.ts` *(`W2-A` or `W12-B`)* | **The idempotence test proves nothing.** `applyD1Migrations` skips migrations already recorded as applied, so the second call executes zero SQL and the assertion passes regardless. Re-point it at re-running the migration *bodies* against a populated database, or drop the claim. | `W12-B` |
 | Wave 1 integration | `src/client/routes/admin/AdminConsole.tsx:181` *(Waves 2–5)* | **The console overlay is `z-50`, tied with every other app modal** (`EvaluationDrawer`, `EvaluationReport`, `CallsPage`, `EvaluatePage`) and *below* `DeckPdfViewer`'s `z-[60]`. Harmless today because every section body is a placeholder, but the first section that opens a deck preview or an evaluation report inside the console will paint it over the console chrome. Give the console its own tier — `z-[2000]`, between the app modals and the toast viewport's `z-[3000]`. | first Wave 2–5 session to open a modal inside a section |
 | Wave 1 integration | `src/client/routes/admin/sections.ts:122` *(`W2-B`)* | The Rubric anchors placeholder tells `W2-B` there are **16 areas**; the specs and `0027` have **22** (13 core + 9 role), and the "16 × 5 = 65" arithmetic in the same string is wrong either way. Correct the copy when you build the section. | `W2-B` |
+| `W2-C` | `src/server/index.ts` | **Already placed — the one import and one `app.route` line the Wave 2 ownership note allots me, and nothing else.** `import questions from "./routes/questions";` after the `analytics` import, and `app.route("/api/questions", questions);` after the `/api/analytics` mount. Declared here so integration can verify it is exactly two lines. | placed by `W2-C` |
+| `W2-C` | `src/client/routes/admin/registry.tsx` | **Already placed — the two lines that file's own docblock reserves for a session that builds a section:** `import { QuestionBankSection } from "./QuestionBank";` and `qb: QuestionBankSection,` in `secs` order. Also one line in `src/client/routes/admin/index.ts` re-exporting it beside `TeamRolesSection`. `W2-A` and `W2-B` will each add their own; the three land in different places and merge cleanly. | placed by `W2-C` |
+| `W2-C` | `src/client/routes/QueryPage.tsx` *(`W7-C`)* | **The last two lines of the bank's wiring, and the only thing between the bank and the founder.** The Query screen still prefills its textarea with `buildQueryMessage(name, areasNeedingResponse(deck))` — no bank, so the pre-W2-C letter. The producer that composes the real one ships and is tested: `GET /api/questions/draft/:deckId` returns `{message, questions, areas, autoClarification, triggered}`. The change is to fetch that draft for the selected deck and `setBody(draft.message)` in the `useEffect` at `QueryPage.tsx:137-149`, keeping `buildQueryMessage(...)` as the fallback when the fetch fails or more than one deck is selected (the endpoint is per-deck). Nothing else moves: the textarea stays editable, `createQuery` is unchanged, and `buildQueryMessage`'s no-bank behaviour is byte-identical to today's, so the existing assertions still hold. **I did not make it — `QueryPage.tsx` is `W7-C`'s and §2.2 is unambiguous** — but it is a two-line change and Wave 2 integration can place it now rather than leaving the headline deliverable unreachable until Wave 7. | Wave 2 integration, else `W7-C` |
+| `W2-C` | `test/client/adminConsole.test.tsx:294`, `e2e/admin-console.spec.ts:72` | **Already placed, flagged per §4 — two assertions that pinned Wave 1's state and would have broken for `W2-A` and `W2-B` too.** The client test asserted `Object.keys(SECTION_COMPONENTS)).toEqual(["tm"])`; the e2e walk asserted every section but `tm` renders a placeholder owner badge. Both are now read off the registry (`toContain("tm")`, `if (!SECTION_COMPONENTS[section.id])`), which is order-independent, keeps each test's actual subject intact, and means no session in Waves 3–5 has to touch either line. Neither assertion was weakened: a section with a placeholder is still asserted to name its owner. | placed by `W2-C` |
+| `W2-C` | `src/server/ai/evaluate.ts` / `src/server/queue.ts` *(unowned)* | **F0041 — nothing fires a clarification automatically.** The decision is implemented and tested (`shouldAutoClarify` in `src/shared/queries.ts`, and `GET /api/questions/draft/:deckId` returns `triggered`), and `org_scoring_settings.auto_clarification` is honoured — but the post-evaluation path never asks. What is missing is one call from the end of the evaluation path: if `triggered`, raise the query with `draft.message` through the same insert `pipeline.ts:487-499` uses. Neither file is `W2-C`'s. See the §10 prompt. | a Wave 3+ session; prompt drafted in §10 |
+| `W2-C` | `e2e/coverage.spec.ts:48,69` (or `playwright.config.ts`) | **Re-raising `W1-B`'s and `W1-A`'s row: it was assigned to *Wave 1 integration*, which has completed without placing it, so every session from here on inherits a red e2e leg it did not cause.** Measured again on `parity/W2-C`: run alone against the same server, the two nav sweeps pass in **18.7 s** and **21.5 s** against the default **30 s** budget; run inside the full suite at 2 workers they time out on `getByRole('heading', {level: 1})`. The fix is one line each — `test.setTimeout(120_000)` — exactly what `W0` gave `e2e/parity.spec.ts:113` for the same reason. I did not touch the file: it is not mine, and §4 says raise a timeout change rather than make it. | **Wave 2 integration** — do not defer again |
 
 ---
 
@@ -1344,6 +1354,307 @@ FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
   Commit to parity/W2-C. Do not merge to main.
+```
+
+### Wave 3 — drafted by `W2-C`
+
+> These five branch from `main` **after Wave 2 integration**. `W2-A`/`W2-B` may have drafted the
+> first four too; integration keeps one copy (the same rule Wave 2 used).
+>
+> **Migration numbers.** Wave 2 was allotted `0038`–`0040`; `W2-C` did not need `0040`, so if it is
+> still unused when this wave starts, `W3-E` takes it and `W3-A`–`W3-D` start at `0041`. Check
+> `ls migrations/` before writing one — a colliding number is the one merge conflict §2.2 calls
+> genuinely painful.
+>
+> **File ownership.** `W3-A` owns all four §2.2 serialisation hazards this wave; nobody else may
+> touch `src/shared/nav.ts`, `src/shared/roles.ts`, `src/client/App.tsx` or
+> `src/client/index.css`. Each of `W3-B`, `W3-C`, `W3-D` adds its section to
+> `src/client/routes/admin/registry.tsx` as **one import and one map line**, in `secs` order — that
+> file's docblock reserves exactly that, and three such appends merge cleanly. `W3-C` and `W3-D`
+> each add **one import and one `app.route(...)` line** to `src/server/index.ts` and nothing else.
+> Declare both in §9.
+
+### `W3-A` — runtime permission engine
+
+```
+You are running session W3-A — the runtime permission engine — of the ai.STARTUPJURY parity
+programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  nvm use
+  git worktree add ../sj-W3-A -b parity/W3-A main
+  cd ../sj-W3-A && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §4 Testing, §8 Q4/Q5/Q6/Q7/Q8/Q9
+     (six open questions are yours to settle), then ONLY your entry for W3-A in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Roles" --sev P0,P1 --full
+  3. migrations/0029_role_permissions.sql and the PERMISSION_TASKS export in src/shared/types.ts —
+     W1-B seeded the matrix as a GATE, not a grant (§8 Q8). Read that entry before you design.
+  4. The repo files you own, plus scripts/role-matrix.ts so you know what 526/526 asserts.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. A runtime permission set read from `role_permissions`, carried on the session, with a `can(task)`
+     helper. Every compile-time role literal in nav.ts, guards.tsx and each requireRole call site
+     resolves through it.
+  2. GET / PUT /api/permissions, admin-gated, driving the Team & roles task matrix.
+  3. The task vocabulary the prototype names and the product lacks: Out of office delegation, Remind,
+     Reassign / Resubmit, Activate / Deactivate / Delete user, Access to admin console, Permit to add
+     team members.
+  4. Settle §8 Q4, Q5, Q6, Q7, Q8, Q9 — each is a permission question and this is the session that
+     owns the answer. Record what you decided and why.
+
+CONSTRAINTS
+  - Own only: src/shared/nav.ts, src/shared/roles.ts, src/server/auth/middleware.ts,
+    src/client/routes/guards.tsx, scripts/role-matrix.ts. You are the sole owner of all four §2.2
+    hazard files this wave.
+  - §8 Q7: where the prototype's matrix disagrees with the shipped app for `admin`, today's app wins.
+  - §8 Q8: a permission is a gate. AND it with the existing rules; never let `granted = 1` widen
+    what a role can do beyond what it can do today.
+  - Defaults must reproduce today's matrix EXACTLY before any permission is flipped.
+
+TEST
+  - `npm run roles` 526/526 with default permissions — start `npm run e2e:serve` on port 5231 and
+    pass ROLES_BASE. A bare `npm run roles` exits 0 with no server; a neighbour's server on another
+    port is the same false pass (§2.3). Prove you own the port with lsof before you believe it.
+  - Unit: flipping one permission changes exactly one capability and nothing else.
+  - Worker: the 403 path on every newly gated route.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  && npm run roles && npm run parity:nav
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions (mark Q4–Q9 settled) and
+  §9 Cross-session requests in docs/plan_parity.md, then write the next prompt(s) into §10 using
+  the §5 template. Commit to parity/W3-A. Do not merge to main.
+```
+
+### `W3-B` — notifications
+
+```
+You are running session W3-B — the Notifications admin section and its producers — of the
+ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W3-B -b parity/W3-B main
+  cd ../sj-W3-B && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules (§1.4's email note especially), §2, §4, §8 Q11, then
+     ONLY your entry for W3-B in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "notification|s-nt" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-nt.html — the event × channel grid.
+  4. migrations/0031_notification_preferences.sql, src/server/email/outbox.ts, src/server/scheduled.ts,
+     and src/client/routes/admin/registry.tsx (the one line you add).
+  Do NOT read docs/PARITY-FINDINGS.md whole. Do NOT read a prototype HTML whole.
+
+BUILD
+  1. The preference model over event × channel × recipient, as the prototype's grid draws it, saved
+     through the console's global Save changes button (useAdminSave in ./saveContext).
+  2. **Producers for the nine of ten events that have none.** An event that renders a toggle and
+     emits nothing is not closed.
+  3. The top bar's notification bell and notification centre, with an unread state.
+  4. §8 Q11: the seeded label "All jury complete — ready for mentor review" names a step §1.2 says
+     does not exist. Reword the label (the event_key is already the neutral
+     all_evaluations_complete) and say so.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/Notifications.tsx, src/server/email/outbox.ts,
+    src/server/scheduled.ts, src/client/components/NotificationBell.tsx (new).
+  - <ToastProvider>/useToast already ship from W1-A — use them, do not write a second toast.
+  - §1.4: sending is gated on vars.EMAIL_FROM and every message is recorded with status='recorded'.
+    That is correct behaviour, not a defect. Do not add a vendor SDK.
+  - registry.tsx: one import, one map line, in secs order. Declare it in §9.
+
+TEST
+  - Worker: each event writes exactly ONE outbox row when enabled and NONE when disabled — the
+    negative is the half that proves the toggle.
+  - Client: the bell's unread state, and the grid's saved/dirty states.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W3-B. Do not merge to main.
+```
+
+### `W3-C` — audit log
+
+```
+You are running session W3-C — the Audit log admin section and a real audit trail — of the
+ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W3-C -b parity/W3-C main
+  cd ../sj-W3-C && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, the Wave 3 ownership note in §10, then ONLY your entry for
+     W3-C in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "audit|s-al" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-al.html — rows, category badges,
+     filters.
+  4. migrations/0030_audit_log.sql and the AUDIT_CATEGORIES / AuditLogRow exports in
+     src/shared/types.ts. The table is seeded; you are building the writer and the screen.
+  Do NOT read docs/PARITY-FINDINGS.md whole. Do NOT read a prototype HTML whole.
+
+BUILD
+  1. src/server/routes/audit.ts (NEW) at /api/audit — list with the prototype's filters and
+     retention, admin-gated.
+  2. An audit-writer helper, and calls to it on config, scoring, team, billing, pipeline and
+     security events — not deck transitions only. A category badge that no writer ever emits is
+     not closed.
+  3. The section itself, with the prototype's badge colours and filter row.
+  4. Keep the All-decks Activity card working; it becomes a filtered view over the same store.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/AuditLog.tsx, src/server/routes/audit.ts (new), the audit
+    writer helper. Config writes live in files other sessions own — if you cannot place a writer
+    call, record it in §9 rather than editing.
+  - src/server/index.ts: exactly one import and one app.route line. Declare it in §9.
+  - registry.tsx: one import, one map line, in secs order.
+
+TEST
+  - Worker: a config change, a permission change and a credit grant each write one row with the
+    right category and actor; a non-admin 403s on /api/audit.
+  - Client: the filter row narrows to one category.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W3-C. Do not merge to main.
+```
+
+### `W3-D` — CRM sync
+
+```
+You are running session W3-D — the CRM sync admin section — of the ai.STARTUPJURY parity
+programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W3-D -b parity/W3-D main
+  cd ../sj-W3-D && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 (§1.3 especially — this is a vendor-dependent session), §2, §4,
+     §8 Q16, then ONLY your entry for W3-D in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "crm" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-crm.html — provider cards,
+     Connect/Disconnect, field mapping.
+  4. migrations/0037_crm_connections.sql and src/server/email/outbox.ts — the outbox is the pattern
+     for a provider-stubbed integration; copy its shape.
+  Do NOT read docs/PARITY-FINDINGS.md whole. Do NOT read a prototype HTML whole.
+
+BUILD
+  1. Provider selection, connection settings, field mapping, sync direction and schedule — the full
+     UI and its persistence.
+  2. src/server/crm/** (NEW): the provider call behind an interface, with a recording stub that
+     writes the attempt instead of making it (§1.3). No vendor SDK, no credential on the critical
+     path.
+  3. Replace the Upload screen's "raise a support ticket" CRM placeholder with a link to this
+     section.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/CrmSync.tsx, src/server/crm/** (new). The Upload-screen link
+    is one line in a file you do not own — record it in §9 unless it lands in your own component.
+  - §8 Q16: the seven non-admin prototypes show live Connect/Disconnect buttons on this section.
+    That is almost certainly a prototype oversight — keep CRM admin+superuser only and say so.
+  - src/server/index.ts: at most one import and one app.route line, if you add a route module.
+  - registry.tsx: one import, one map line, in secs order.
+
+TEST
+  - Worker: mapping validation rejects an unmapped required field; the stub records a sync attempt
+    and makes no outbound call; a non-admin 403s.
+  - Client: connected and disconnected states both render.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W3-D. Do not merge to main.
+```
+
+### `W3-E` — the clarification round trip *(new; §6 Wave 3 becomes five)*
+
+> **Why this session exists.** `W2-C` built the question bank and the producer that composes a
+> founder's clarification letter from it, but two halves of the loop it feeds belong to files
+> `W2-C` did not own and no session currently claims: **F0041** — nothing fires a clarification
+> automatically, so the `s-fw` toggle governs a mechanism with no trigger — and **F0040 / §8 Q21** —
+> questions and answers are each one text blob, so no bank question can be tracked, answered or
+> reported individually. Both are on the critical path for the Query screen (`W7-C`) and the
+> founder portal (`W10-B`), which is why this runs before them rather than inside them. Its files
+> are disjoint from `W3-A`–`W3-D`.
+
+```
+You are running session W3-E — the clarification round trip: auto-trigger and per-question Q&A —
+of the ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W3-E -b parity/W3-E main
+  cd ../sj-W3-E && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, §8 Q20 and Q21, the `W2-C` rows in §9, then the `W2-C`
+     entry in §6 for what already exists.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --id F0040,F0041,F0160 --full
+  3. src/shared/queries.ts and src/server/routes/questions.ts — W2-C's producer. `shouldAutoClarify`
+     is the decision; `GET /api/questions/draft/:deckId` returns `{message, questions, triggered}`.
+     Do not rebuild either.
+  4. src/server/routes/pipeline.ts:487-540 (the only code path that creates a query) and
+     migrations/0001_init.sql:122-131 (the `queries` blob).
+  Do NOT read docs/PARITY-FINDINGS.md whole. Do NOT read a prototype HTML whole.
+
+BUILD
+  1. **Fire it.** At the end of the post-evaluation path, when the draft says `triggered`, raise the
+     query and send it — the same insert + outbox call `pipeline.ts` already makes. The manual
+     Query screen stays the override. Honour `org_scoring_settings.auto_clarification`; W2-C's
+     `shouldAutoClarify` is that decision and is already tested — call it, do not re-derive it.
+  2. **Make it addressable.** `query_questions(id, query_id, bank_question_id NULL,
+     area_parameter_id, ordinal, question, answer, answered_at)`, written when a query is raised,
+     from the producer's per-area questions. `bank_question_id` is nullable and never cascades: a
+     soft-deleted bank row must still resolve for a query already sent, which is exactly why
+     W2-C's delete is `active = 0`.
+  3. Roll answered/unanswered up to the Query screen's resolution state, so "which areas did the
+     founder actually address" becomes computable. Rendering one answer field per question in the
+     founder portal is `W10-B`'s; leave the existing blob path working until then.
+
+CONSTRAINTS
+  - Own only: migrations/0040 (if still unused — check `ls migrations/`; otherwise take the next
+    free number and SAY SO LOUDLY in your handoff), src/server/ai/evaluate.ts, src/server/queue.ts,
+    and the query-creation block in src/server/routes/pipeline.ts.
+  - Do NOT touch src/shared/queries.ts or src/server/routes/questions.ts — W2-C's, and W7-C's from
+    Wave 7. If the producer needs a field, record it in §9.
+  - Do NOT touch src/client/routes/FounderPortal.tsx (`W10-B`) or QueryPage.tsx (`W7-C`).
+  - §8 Q20 is NOT yours unless W2-B's five-band scale has merged. If it has, re-point BOTH
+    `routes/decks.ts` and `routes/questions.ts` in one commit or neither.
+
+TEST
+  - Worker: an evaluation that leaves a weak area raises exactly one query with the bank's text and
+    one query_questions row per question; with auto_clarification = 0 it raises none; a deck with
+    no weak area raises none.
+  - Worker: a soft-deleted bank question still reads back on the query it was sent on.
+  - E2E: a founder answers one question and the Query screen shows partial resolution.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions (Q21 is yours to close)
+  and §9 Cross-session requests in docs/plan_parity.md, then write the next prompt(s) into §10
+  using the §5 template. Commit to parity/W3-E. Do not merge to main.
 ```
 
 ## 11. Reference

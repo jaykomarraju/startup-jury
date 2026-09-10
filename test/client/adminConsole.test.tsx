@@ -291,7 +291,11 @@ describe("AdminConsole shell", () => {
         },
       ],
     });
-    expect(Object.keys(SECTION_COMPONENTS)).toEqual(["tm"]);
+    // W2-C: was `toEqual(["tm"])`. That pinned Wave 1's state — `registry.tsx`
+    // exists so Waves 2–5 each add an entry, and this test's own subject is
+    // that Team & roles is reachable as a BUILT section, not that it is the
+    // only one. Now order-independent, so no later session has to touch it.
+    expect(Object.keys(SECTION_COMPONENTS)).toContain("tm");
     renderConsole(user("incubator", "admin"), "/app/admin?section=tm");
     expect(screen.getByTestId("admin-section-title")).toHaveTextContent("Team & roles");
     expect(await screen.findByText("Tara Nair")).toBeInTheDocument();
