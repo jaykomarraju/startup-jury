@@ -950,482 +950,27 @@ session places it.
 
 ## 10. Next prompts
 
-The prompts to paste into the next wave's sessions. Each session appends here; each integration
-session replaces this list with the following wave's.
+The prompts to paste into the next wave's sessions. Each integration session **replaces** this list
+with the following wave's — it is a worklist, not an archive. Earlier waves' prompts are in git.
 
-> **Wave 1 — three sessions, run in parallel, all branching from `main`.** `W0` is merged
-> (`a761703`), so `npm run parity:nav`, `npm run parity:tokens` and `e2e/parity.spec.ts` are all on
-> `main` and every worktree cut from it inherits them. Nothing gates this wave.
+> **Wave 3 — four sessions, run in parallel, all branching from `main` @ `8d0edc9`.** Waves 1 and 2
+> are merged. `W3-A` owns the four authZ files nothing else may touch; `W3-B`, `W3-C` and `W3-D` go
+> nowhere near them, which is what makes this wave safe to run at once.
 
-### `W1-A` — design system & chrome
-
-```
-You are running session W1-A — the design system and app chrome — of the ai.STARTUPJURY parity
-programme. You have no prior context. Everything you need is in the repo.
-
-SETUP
-  nvm use
-  git worktree add ../sj-W1-A -b parity/W1-A main
-  cd ../sj-W1-A && npm ci
-  python3 docs/prototype/tools/split-prototypes.py
-
-READ FIRST (in this order, and nothing else)
-  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol (§2.5 is the harness you will
-     live in), §4 Testing, then ONLY your entry for W1-A in §6.
-  2. Your worklist:
-     python3 docs/prototype/tools/findings.py --area "Design system" --full
-  3. The prototype chrome, from ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/:
-     _style.css (the :root block and the .tb / .si / .sgrp / toast rules), _sidebar.html,
-     _topnav.html. Cross-check one VC build (AISJ_VC_Superuser_V8) — the palette is identical
-     across all eleven, so read it once.
-  4. The repo files your entry says you own.
-  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
-
-BUILD
-  1. Add the OLIVE family and re-point the chrome at it. The prototype's primary hue is olive,
-     not gold: --olive #6B8454, --olive-dk #4A5E3A, --olive-lt #EBF0E4, --olive-md #8FA67A. The
-     application has no olive token and paints every one of those states amber. Re-point the top
-     bar, sidebar active state, primary button, progress fills, selected-tile outline and tab
-     underline; gold stays for the logo and sparse accents. Add dark-mode counterparts.
-  2. Close the other 22 token gaps `npm run parity:tokens` lists — the drifted values
-     (--navy → #1A1E2E, --offwht → #F7F6F2, --text-3 → #9A9488, --stone-dk → #D4D0C8) and the
-     tokens with no counterpart at all (--gold-dk, --stone, --text-2, the four *-lt tints,
-     --purple, --ink). Read each EXPECTED_GAPS reason in scripts/parity-tokens.ts before you
-     move a value — two carry warnings. In particular --green: the app's #4a6644 is close to the
-     olive family, so check you are not looking at an olive/green conflation before repointing it
-     at the prototype's #16A34A.
-  3. Move to the prototype's 9–13.5 px density, with a fixed-height shell and independently
-     scrolling panes.
-  4. Add the `.tb` surface-toolbar primitive that replaces the in-flow `h1` on every screen, plus
-     sidebar item badges/counts and section dividers.
-  5. Add the toast primitive — the prototype has 36 `showToast` call sites.
-  6. Fix the branding-wipe defect (§1.5): `BrandingSection.save()` in
-     src/client/routes/ConfigPage.tsx:402 posts only {wordmark, tagline, accent} while
-     PUT /api/config/branding replaces branding_json wholesale, silently wiping orgName/orgType.
-     SetupWizard.tsx:106-114 already re-reads and merges — do the same here. Client-side only:
-     the server route is not yours.
-
-CONSTRAINTS
-  - Own only: src/client/index.css, src/client/components/**, src/client/theme/**,
-    src/client/routes/ConfigPage.tsx (the branding save fix ONLY). src/client/index.css is a
-    serialisation hazard and you are its sole owner this wave. Need something else changed?
-    Record it in §9; do not edit it.
-  - Do not touch src/shared/nav.ts (W3-A owns it) or src/server/** (nobody this wave).
-  - If a screen's markup must change to adopt `.tb`, and that file is not yours, add the
-    primitive and record the adoption as a cross-session request — the screen sessions
-    (Waves 7–9) apply it.
-
-TEST
-  - `npm run parity:tokens` must reach 27/27. Delete each EXPECTED_GAPS entry as you close it —
-    the check FAILS on a gap that passes while still listed. When the map is empty, `--strict`
-    and the default run are the same thing.
-  - Client tests for the toolbar and the toast primitives, covering the states the prototype
-    draws (a toast appears, auto-dismisses, and stacks).
-  - A worker test proving a branding save preserves orgName. (Read-only on the route; assert
-    through the API.)
-  - `e2e/parity.spec.ts`: chrome changes must not move any page title or table header. If one
-    moves deliberately, re-capture that row and say why in your handoff.
-  Green gate: npm run typecheck && npm run lint && npm test && npm run build
-  Plus: npm run test:e2e (let Playwright start its own server — see §2.3) and
-        npm run parity:tokens
-
-FINISH
-  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
-  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
-  Commit to parity/W1-A. Do not merge to main.
-```
-
-### `W1-B` — schema
-
-```
-You are running session W1-B — every migration the programme needs — of the ai.STARTUPJURY parity
-programme. You have no prior context. Everything you need is in the repo.
-
-SETUP
-  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
-  git worktree add ../sj-W1-B -b parity/W1-B main
-  cd ../sj-W1-B && npm ci
-  python3 docs/prototype/tools/split-prototypes.py
-
-READ FIRST (in this order, and nothing else)
-  1. docs/plan_parity.md — §1 Ground rules (§1.2 and §1.3 both bind you), §2 Session protocol,
-     §4 Testing, then ONLY your entry for W1-B in §6.
-  2. The written specs are your primary source, not the prototypes:
-     docs/prototype/source/specs/incubator.html and vc.html — §6.2 (role parameters) and §12
-     (sign-up, agreements, signatures). §1.1: where seed data disagrees with these, these win.
-  3. For the defaults each table seeds, the admin console sections, from
-     ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/ and
-     .../AISJ_VC_Superuser_V8/admin/ — read the s-*.html for the areas you are modelling, not
-     the whole _ADMIN-CONSOLE.html.
-  4. migrations/, src/server/db.ts, src/shared/types.ts.
-  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
-
-BUILD
-  One numbered block of migrations creating everything Waves 2–6 need, with NO UI and NO routes:
-  1. Org scoring settings — the ~15 Scoring-framework controls.
-  2. Per-area rubric anchors across five bands, plus a per-area AI guidance prompt.
-  3. A question bank: 13 areas × 5 questions, Climate Impact 8.
-  4. role_permissions(edition, role, task_id, granted), seeded to reproduce TODAY'S matrix
-     exactly — W3-A depends on `npm run roles` staying 526/526 when it reads this table.
-  5. A real audit_log with a NULLABLE deck_id and a category, so config/team/billing events are
-     storable, not just deck events.
-  6. Notification preferences per event × channel × recipient.
-  7. A credit ledger and price configuration.
-  8. signups, signup_documents, agreements, signatures — per spec §12.
-  9. Seat capacity on cohorts, and the `seatless` flag.
- 10. CRM connection settings.
- 11. Correct the nine role-parameter names to the spec §6.2 canonical set.
-
-CONSTRAINTS
-  - Own only: migrations/** (yours for the WHOLE programme), src/server/db.ts,
-    src/shared/types.ts. Ship types and seeds only — no routes, no UI. Those belong to the
-    sessions that own them.
-  - Number your migrations in one contiguous block above anything already in the tree, and state
-    the range loudly in your handoff. A colliding migration number is the one merge conflict that
-    is genuinely painful.
-  - §1.2 binds the schema: store NO password reveal field (PBKDF2 hashes only, reset-only flow),
-    and NO card number / CVV columns anywhere — payment goes through a provider-hosted surface.
-    Omit any "mentor adjusts composite" flag; `mentor` is a directory record with no pipeline
-    authority (commit 8822db2).
-  - §1.3: payments, e-signature and CRM are interface-complete, provider-stubbed. Model the
-    tables; add no vendor SDK and no credential.
-
-TEST
-  - A worker test per table: it exists, its constraints reject a bad row, and its seed matches
-    the prototype default.
-  - Migrations apply cleanly to a fresh local D1 AND are idempotent on re-run — prove both.
-  - `npm run roles` stays 526/526 with the seeded role_permissions (start `npm run e2e:serve` on
-    a port unique to this session and pass ROLES_BASE — a bare `npm run roles` exits 0 with no
-    server and is a false pass; §2.3).
-  Green gate: npm run typecheck && npm run lint && npm test && npm run build
-
-FINISH
-  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
-  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
-  Commit to parity/W1-B. Do not merge to main.
-```
-
-### `W1-C` — admin console shell
-
-```
-You are running session W1-C — the admin console shell — of the ai.STARTUPJURY parity programme.
-You have no prior context. Everything you need is in the repo.
-
-SETUP
-  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
-  git worktree add ../sj-W1-C -b parity/W1-C main
-  cd ../sj-W1-C && npm ci
-  python3 docs/prototype/tools/split-prototypes.py
-
-READ FIRST (in this order, and nothing else)
-  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §3 Prototypes (read the callout
-     about openAdmin() and ADMIN_B64 — it is why this console does not exist yet), §4 Testing,
-     then ONLY your entry for W1-C in §6.
-  2. Your worklist:
-     python3 docs/prototype/tools/findings.py --area "Admin console" \
-       --screen "shell|chrome|whole|title.bar|overlay|nav|section" --full
-  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/_ADMIN-CONSOLE.html for the shell —
-     the header, the section rail and the title bar. Do NOT read the 16 admin/s-*.html section
-     bodies; they belong to Waves 2–5. Cross-check AISJ_VC_Superuser_V8/_ADMIN-CONSOLE.html,
-     which also carries 16 sections.
-  4. src/client/App.tsx (the `admin` branch only) and the existing user-CRUD page.
-  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
-
-BUILD
-  1. The full-screen overlay: a 46 px header, Escape closes it.
-  2. The 210 px olive section rail — four groups (Evaluation · Organisation · Sign-up · System)
-     and all 16 items.
-  3. The section title bar: the program/cohort context chip and the global Save changes button.
-  4. The pending-invite badge.
-  5. The off-canvas drawer below 760 px.
-  6. Every section renders a placeholder that NAMES what will fill it, so Waves 2–5 have a slot
-     to land in. Keep the existing user-CRUD page reachable as the Team & roles placeholder until
-     W4-A replaces it.
-  7. The Sign-up group is visible to admin/superuser only.
-
-CONSTRAINTS
-  - Own only: src/client/routes/admin/** (new) and the `admin` branch of src/client/App.tsx.
-    App.tsx is a serialisation hazard and you are its sole owner this wave — touch only the admin
-    branch. Need something else changed? Record it in §9; do not edit it.
-  - Do NOT touch src/shared/nav.ts (W3-A owns it) or src/client/index.css (W1-A owns it). If you
-    need an olive token, W1-A is adding the family this wave — coordinate through §9 rather than
-    declaring your own.
-  - Do NOT build a read-only console for non-admin roles. The 12-section payload inside the seven
-    non-admin prototypes is dead code carrying a stale role taxonomy; only the Admin and Super
-    User sidebars call openAdmin().
-  - §1.2: the User access section must never display a stored password. Reset only — issue a
-    temporary credential and force a change at next sign-in. If your placeholder names the
-    section, name it that way.
-
-TEST
-  - E2E: an admin walks all 16 sections; a non-admin cannot reach the console at all; the Sign-up
-    group is absent for the non-admin roles that could otherwise reach it (test the negative, §4).
-  - `npm run roles` green at 526/526 — start `npm run e2e:serve` on a port unique to this session
-    and pass ROLES_BASE. A bare `npm run roles` exits 0 with no server and is a false pass (§2.3).
-  - `npm run parity:nav` stays green. The `admin` slug already resolves for admin and superuser in
-    both editions, so it should not move; if it does, you changed reachability and must say so.
-  - `e2e/parity.spec.ts` records `/app/admin` as titled "Admin console" with the current
-    user-CRUD table. If your shell changes either, re-capture those four rows
-    (`PARITY_CAPTURE=1 npx playwright test e2e/parity.spec.ts`) and union them in — see §2.5.
-  Green gate: npm run typecheck && npm run lint && npm test && npm run build
-  Plus: npm run test:e2e · npm run roles · npm run parity:nav
-
-FINISH
-  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
-  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
-  Commit to parity/W1-C. Do not merge to main.
-```
-
----
-
-### Wave 2 — written by `W1-B` (the schema these three consume)
-
-> These three branch from `main` **after Wave 1 integration**, not from `parity/W1-B`. They are the
-> direct consumers of migrations `0025`–`0037`; `W1-B` wrote them because it knows what those tables
-> hold. If `W1-A` or `W1-C` also drafted Wave 2 prompts, the integration session keeps one copy.
+> **Server-route ownership — the Wave 2 lesson, applied up front.** All three Wave 2 drafts claimed
+> `src/server/routes/config.ts` and integration had to arbitrate mid-merge. Settled here instead:
 >
-> All three share one rule: **the schema already exists and is seeded** — `W1-B` shipped
-> `0025`–`0037` for exactly this wave, so reach for a migration only if something is genuinely
-> missing. Each of you is allotted **one migration number** so you cannot collide: `W2-A` → `0038`
-> (which it must write — see the §9 fix-ups in its prompt), `W2-B` → `0039`, `W2-C` → `0040`.
-
-> **Server-route ownership for this wave — read before you write a handler.** All three Wave 2
-> drafts originally claimed `src/server/routes/config.ts`. Three sessions cannot own one file; that
-> is the collision §2.2 exists to prevent, and in application code it is far more expensive to
-> unpick than in this document. Arbitrated at Wave 1 integration:
+> | Session | Server routes | Migration | Admin section id |
+> |---|---|---|---|
+> | `W3-A` | `src/server/routes/permissions.ts` *(new)* | `0040` | — (it owns `nav.ts`) |
+> | `W3-B` | `src/server/routes/notifications.ts` *(new)* | `0041` | `nt` |
+> | `W3-C` | `src/server/routes/audit.ts` *(new)* | `0042` | `al` |
+> | `W3-D` | `src/server/routes/crm.ts` *(new)* | `0043` | `crm` |
 >
-> | Session | Server routes live in | Mount |
-> |---|---|---|
-> | `W2-A` | `src/server/routes/config.ts` *(sole owner this wave)* | already mounted at `/api/config` |
-> | `W2-B` | **new** `src/server/routes/anchors.ts` | add `app.route("/api/anchors", anchors)` |
-> | `W2-C` | **new** `src/server/routes/questions.ts` | add `app.route("/api/questions", questions)` |
->
-> `src/server/index.ts` is the one shared file: `W2-B` and `W2-C` each add **one import and one
-> `app.route(...)` line**, and nothing else, so the two appends land in different places and merge
-> cleanly. Declare the line you added in §9 so integration can verify it. If you find yourself
-> wanting a second line in `index.ts`, stop and record it instead.
-
-### `W2-A` — scoring framework & area weights
-
-```
-You are running session W2-A — the Scoring framework and Area weights admin sections — of the
-ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
-
-SETUP
-  nvm use
-  git worktree add ../sj-W2-A -b parity/W2-A main
-  cd ../sj-W2-A && npm ci
-  python3 docs/prototype/tools/split-prototypes.py
-
-READ FIRST (in this order, and nothing else)
-  1. docs/plan_parity.md — §1 Ground rules (§1.2 binds you), §2 Session protocol, §4 Testing,
-     then ONLY your entry for W2-A in §6, and §7 row `W1-B` for what the schema already holds.
-  2. Your worklist:
-       python3 docs/prototype/tools/findings.py --area "Admin console" \
-         --screen "s-fw|s-wt|Scoring framework|Area weights" --full
-  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-fw.html and s-wt.html, and
-     `updWt` / `permitTog` in that directory's _scripts.js. The VC build's s-fw is byte-identical.
-  4. migrations/0026_org_scoring_settings.sql and the `OrgScoringSettingsRow` /
-     `ScoreScale` / `CompositeFormula` / `AI_WEIGHT_CHOICES` exports in src/shared/types.ts.
-  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
-
-BUILD
-  The schema is done and seeded — `org_scoring_settings` holds one row per edition at the
-  prototype's exact defaults. Your job is the UI, the API and, above all, the BEHAVIOUR:
-  1. The five AI-engine toggles and the four transparency toggles, each actually honoured by the
-     evaluation path. A toggle that renders but changes nothing is not closed.
-       - ai_pre_scoring_enabled     — no AI pass at all when off
-       - auto_clarification         — no auto-triggered query when off
-       - show_ai_score_to_jury      — WITHHELD SERVER-SIDE, not hidden in CSS
-       - require_override_rationale — enforce at `override_rationale_delta` (default 2.0)
-       - jury_sees_peer_scores      — off by default; respect EVALUATION_RANK either way
-       - show_three_score_view · show_score_drift · include_ai_evidence · intro_call_ai_prompts
-  2. Score composition: `score_scale`, `composite_formula` and `ai_weight_pct` re-cut
-     src/shared/scoring.ts. Not cosmetic — a median composite must actually compute a median.
-  3. `shortlist_threshold` (org_scoring_settings) and the Best/Poor cohort bands
-     (org_settings.threshold_best / .threshold_mediocre — they stay where they are).
-  4. Area weights: bars, a live 100 % total, and the per-parameter *Permit configuration* control,
-     which is `parameters.config_permitted` (seeded: parameter 1 of each owning role is permitted).
-  5. **Migration 0038 — three fix-ups Wave 1 integration assigned you (see §9).** These are small,
-     but the first one breaks a shipped feature today:
-       a. `0025` rewrote all 18 AI scoring prompts and never bumped
-          `org_settings.criteria_version`. The re-score guard (src/server/routes/decks.ts:918-949)
-          therefore reads every seeded evaluation as current against a rubric that changed
-          underneath it, and **re-score returns 409**. Bump it.
-       b. `0025` left two duplicate `(edition, key)` parameter rows — `0007` created
-          `add_program_fit` / `add_thesis_fit` and `0025` renamed two different rows onto the same
-          keys. Latent, not live (the `0007` pair is `active = 0` and nothing looks a parameter up
-          by key), but delete the retired rows and add
-          `CREATE UNIQUE INDEX … ON parameters(edition, key) WHERE active = 1` so it cannot recur.
-       c. Twelve of eighteen seeded AI comments in `0014` still describe the pre-`0025` parameters,
-          so the demo explains "Founder Resilience & Coachability" under a heading that now reads
-          "Barriers of entry". Re-seed them.
-
-CONSTRAINTS
-  - Own only: src/client/routes/admin/ScoringFramework.tsx, AreaWeights.tsx,
-    src/server/routes/config.ts, src/shared/scoring.ts. You are the sole owner of config.ts this
-    wave (see the ownership note above).
-  - §1.2: OMIT "Mentor can adjust composite after all jury complete". The column does not exist
-    and must not be added — `mentor` has no pipeline authority (commit 8822db2).
-  - Do not touch src/shared/analytics.ts — the four-vs-five band defect is W2-B's.
-  - You own migration **0038** (and only 0038). W2-B is reserved 0039, W2-C 0040, so the three of
-    you cannot collide. Do not touch any existing migration file.
-
-TEST
-  - Unit: each composite formula and each score scale, including the 0 % AI (jury-only) split.
-  - Worker: the AI path reads the settings; authZ (admin/superuser allowed, a non-admin 403s).
-  - E2E: blind scoring genuinely withholds the AI score — assert the API response, not the DOM.
-  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
-  Plus `npm run roles` (start `npm run e2e:serve` on a port unique to this session and pass
-  ROLES_BASE — a bare `npm run roles` exits 0 with no server and is a false pass; §2.3).
-
-FINISH
-  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
-  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
-  Commit to parity/W2-A. Do not merge to main.
-```
-
-### `W2-B` — rubric anchors
-
-```
-You are running session W2-B — the Rubric anchors admin section, and the four-vs-five band defect —
-of the ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
-
-SETUP
-  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
-  git worktree add ../sj-W2-B -b parity/W2-B main
-  cd ../sj-W2-B && npm ci
-  python3 docs/prototype/tools/split-prototypes.py
-
-READ FIRST (in this order, and nothing else)
-  1. docs/plan_parity.md — §1 Ground rules, §1.5 (your defect), §2, §4, then ONLY your entry for
-     W2-B in §6, plus §8 Q10 and the §9 row addressed to you.
-  2. Your worklist:
-       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "rubric|s-rb" --full
-  3. The specs' §7 "Scoring & Aggregation" band mapping in
-     docs/prototype/source/specs/incubator.html — it is the authority over both prototypes.
-  4. migrations/0027_rubric_anchors.sql and the `RUBRIC_BANDS` / `ParameterRubricBandRow` exports
-     in src/shared/types.ts.
-  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
-
-BUILD
-  The schema is done and seeded: `parameter_rubric_bands` holds five rows for EVERY active
-  parameter in both editions — 65 anchor strings per edition already written from the prototype's
-  RUBRICS literal, and the nine role parameters scaffolded with NULL text. `parameters.prompt` now
-  carries the per-area AI guidance prompt for all 13 core areas as well as the nine role ones.
-  1. The section: an area picker (13 core + 9 role parameters — NOT the prototype's stale P1/P2/P3
-     trio, see §8 Q10), the AI guidance prompt textarea, five band textareas, Save and Revert.
-  2. **Reconcile the bands.** src/shared/analytics.ts:181-187 uses five bands, src/shared/scoring.ts
-     :21-26 uses four, and `src/server/ai/evaluate.ts:562` + `src/server/routes/pipeline.ts:948`
-     still read the global four-band `rubric_anchors` table from 0001. Drive all of it onto the
-     spec's five bands, which `parameter_rubric_bands.band_name` already carries (Exceptional ·
-     Strong · Moderate · Weak · Insufficient, band_index 0…4). One source, one set of labels.
-
-CONSTRAINTS
-  - Own only: src/client/routes/admin/RubricAnchors.tsx, a NEW module
-    src/server/routes/anchors.ts (see the ownership note above — W2-A owns config.ts),
-    src/shared/analytics.ts (band constant only), and — for the
-    reconciliation, agreed in §9 — the anchor reads in src/server/ai/evaluate.ts and
-    src/server/routes/pipeline.ts.
-  - Do not touch src/shared/scoring.ts's composite maths; that is W2-A's. Coordinate on the band
-    constant only, and say in your handoff which of you moved it.
-  - Add no migration unless you must; **0039 is reserved for you** (W2-A owns 0038, W2-C 0040).
-    Dropping the legacy `rubric_anchors` table IS a migration — say so loudly in your handoff.
-
-TEST
-  - Unit: one band table drives both scoring and analytics — the same score gets the same label
-    from both, which is the defect.
-  - Worker: save, revert and authZ (a non-admin 403s), and an anchor edit surviving a round trip.
-  - Client: the picker renders 22 parameters per edition, and a scaffolded role parameter shows
-    five empty bands rather than nothing.
-  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
-
-FINISH
-  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
-  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
-  Commit to parity/W2-B. Do not merge to main.
-```
-
-### `W2-C` — question bank
-
-```
-You are running session W2-C — the clarification question bank — of the ai.STARTUPJURY parity
-programme. You have no prior context. Everything you need is in the repo.
-
-SETUP
-  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
-  git worktree add ../sj-W2-C -b parity/W2-C main
-  cd ../sj-W2-C && npm ci
-  python3 docs/prototype/tools/split-prototypes.py
-
-READ FIRST (in this order, and nothing else)
-  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §4 Testing, then ONLY your entry
-     for W2-C in §6.
-  2. Your worklist:
-       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "question|s-qb" --full
-  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-qb.html — the accordion's shape.
-     The question TEXT is already in the database; you do not need to transcribe it.
-  4. migrations/0028_question_bank.sql, src/shared/queries.ts, and the `QuestionBankRow` export in
-     src/shared/types.ts.
-  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
-
-BUILD
-  The schema is done and seeded: `question_bank` holds 68 questions per edition, keyed to
-  `parameters.id` — five per area, eight for Climate Impact & Integrity, in the prototype's own
-  words and order.
-  1. The per-area accordion with the question count chip, and add / edit / delete / reorder.
-     Reorder writes `seq`; delete is a soft `active = 0` so a query already sent still reads back.
-  2. **Wire the bank into clarification generation.** src/shared/queries.ts today emits a bullet
-     list of area LABELS; a triggered query must draw the real questions for the weak-signal areas.
-     Respect `org_scoring_settings.auto_clarification` (W2-A owns that toggle's UI; you own the
-     producer honouring it — if it is not merged yet, read the column directly).
-
-CONSTRAINTS
-  - Own only: src/client/routes/admin/QuestionBank.tsx, src/shared/queries.ts, and a NEW module
-    src/server/routes/questions.ts (see the ownership note above — W2-A owns config.ts).
-  - Add no migration unless you must; **0040 is reserved for you** (W2-A owns 0038, W2-B 0039).
-
-TEST
-  - Unit: a weak-signal area selects that area's questions, in `seq` order, skipping inactive ones;
-    Climate Impact returns eight.
-  - Worker: add / edit / delete / reorder, plus authZ (a non-admin 403s).
-  - E2E: an admin edits a question and the edited text appears in a generated query.
-  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
-
-FINISH
-  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
-  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
-  Commit to parity/W2-C. Do not merge to main.
-```
-
-### Wave 3 — `W3-A` written by `W2-A`
-
-> **Who writes which Wave 3 prompt.** Wave 1 lost time to two sessions independently drafting the
-> same wave's prompts and the union leaving a headless fragment (§7). To avoid the repeat: **`W2-A`
-> writes `W3-A` only** — the permissions engine is the session that inherits W2-A's open questions
-> (Q6 on the default editor set, Q16 on console reachability) and the `config_permitted` grant it
-> shipped. `W2-B` should write `W3-B` and `W3-C`; `W2-C` should write `W3-D`. If two copies of a
-> prompt still turn up, integration keeps one.
->
-> All four branch from `main` **after Wave 2 integration**. Migration numbers `0038`–`0040` are spent
-> (`W2-A`/`W2-B`/`W2-C`); Wave 3 starts at `0041`, one number per session, allotted in each prompt.
-### Wave 3 — drafted by `W2-C`
-
-> These five branch from `main` **after Wave 2 integration**. `W2-A`/`W2-B` may have drafted the
-> first four too; integration keeps one copy (the same rule Wave 2 used).
->
-> **Migration numbers.** Wave 2 was allotted `0038`–`0040`; `W2-C` did not need `0040`, so if it is
-> still unused when this wave starts, `W3-E` takes it and `W3-A`–`W3-D` start at `0041`. Check
-> `ls migrations/` before writing one — a colliding number is the one merge conflict §2.2 calls
-> genuinely painful.
->
-> **File ownership.** `W3-A` owns all four §2.2 serialisation hazards this wave; nobody else may
-> touch `src/shared/nav.ts`, `src/shared/roles.ts`, `src/client/App.tsx` or
-> `src/client/index.css`. Each of `W3-B`, `W3-C`, `W3-D` adds its section to
-> `src/client/routes/admin/registry.tsx` as **one import and one map line**, in `secs` order — that
-> file's docblock reserves exactly that, and three such appends merge cleanly. `W3-C` and `W3-D`
-> each add **one import and one `app.route(...)` line** to `src/server/index.ts` and nothing else.
-> Declare both in §9.
+> Three shared files, one line each, declared in §9: `src/server/index.ts` (import + `app.route`),
+> `src/client/routes/admin/registry.tsx` (import + map entry). They merged cleanly as a union in
+> Wave 2 and will again. **Do not comment out another session's registry line** — three Wave 2
+> sessions each did, which turned a union into a conflict.
 
 ### `W3-A` — runtime permission engine
 
@@ -1489,7 +1034,7 @@ CONSTRAINTS
     src/client/routes/guards.tsx, scripts/role-matrix.ts, plus the ~40 `requireRole` call sites you
     must re-point (name every file you touched in your handoff — this is the one session whose
     ownership cannot be a disjoint path list).
-  - You own migration 0041 and only 0041.
+  - You own migration **0040** and only 0040 (W3-B 0041, W3-C 0042, W3-D 0043).
   - §1.2 stands: `mentor` gains nothing. `denyMentor` must survive the refactor intact.
   - Do not weaken `npm run roles` to make a change pass (§4). If a probe's `allow` list is genuinely
     wrong, change it in the same commit and say which finding says so.
@@ -1513,7 +1058,189 @@ FINISH
   prompt(s) into §10 using the §5 template. Commit to parity/W3-A. Do not merge to main.
 ```
 
----
+### `W3-B` — notifications
+
+```
+You are running session W3-B — the Notifications admin section, and the nine events that have no
+producer — of the ai.STARTUPJURY parity programme. You have no prior context.
+
+SETUP
+  nvm use
+  git worktree add ../sj-W3-B -b parity/W3-B main
+  cd ../sj-W3-B && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §4 Testing, the Wave 3 ownership
+     note in §10, then ONLY your entry for W3-B in §6, plus §8 Q16 (whether every role reaches the
+     console — it bites hardest here, because s-nt is scoped "for your account").
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "notification|s-nt" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-nt.html and its renderer in that
+     directory's admin/_scripts.js. The VC copy differs in ONE label ("Jury member submitted scores"
+     → "IC member submitted scores") — read it too, it is cheap.
+  4. migrations/0031_notification_preferences.sql, src/server/email/outbox.ts (six hard-coded
+     EmailKinds), src/server/scheduled.ts (the cron reminders) and src/shared/ics.ts.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  The send machinery is real — Cloudflare Email Sending, an `email_outbox` audit table, cron
+  reminders, .ics invites. What is missing is that an admin cannot configure any of it, and that
+  **only one of the prototype's ten toggled events has any producing code.**
+  1. The section: the preference model over event × channel × recipient, reading and writing
+     `notification_preferences`.
+  2. **Producers for the nine events that have none.** This is the bulk of the session — each needs a
+     real trigger in the pipeline, not a stub. Respect `vars.EMAIL_FROM` gating: with no verified
+     sending domain every message is still recorded with `status='recorded'` and dispatched to
+     nobody, which is correct and must stay true (§1.4).
+  3. The in-app notification bell the prototype's top bar carries (`.nb` in `_topnav.html`), and a
+     notification centre behind it. `src/client/components/Topbar.tsx` has no bell today.
+  4. Register the section as `nt` in `src/client/routes/admin/registry.tsx` — one import, one map
+     entry, nothing else in that file.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/Notifications.tsx, a NEW src/server/routes/notifications.ts,
+    src/server/email/outbox.ts, src/server/scheduled.ts, a new NotificationBell component, and one
+    line each in src/server/index.ts and src/client/routes/admin/registry.tsx.
+  - `src/client/components/Topbar.tsx` is shared chrome — if the bell needs more than a mount point,
+    record it in §9 rather than reworking the ribbon.
+  - You own migration 0041 and only 0041.
+
+TEST
+  - Worker: each event produces exactly ONE outbox row when enabled and NONE when disabled — that is
+    the assertion that proves a producer exists rather than a checkbox.
+  - Worker: authZ on every route (a non-admin 403s), and preferences round-trip per edition.
+  - Client: the bell's unread state, and the section's toggle grid.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  Plus `npm run roles` if you touch nav or authZ. It is a runtime probe that exits 0 with NO server
+  and will happily score against a NEIGHBOUR's server — start `E2E_PORT=<yours> npm run e2e:serve`,
+  confirm with `lsof -nP -iTCP:<yours> -sTCP:LISTEN` that the process holding it is yours, then pass
+  ROLES_BASE. W1-C scored a confident 526/526 against another worktree's server (§2.3).
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W3-B. Do not merge to main.
+```
+
+### `W3-C` — audit log
+
+```
+You are running session W3-C — the Audit log admin section, and a real org-wide audit trail — of the
+ai.STARTUPJURY parity programme. You have no prior context.
+
+SETUP
+  nvm use
+  git worktree add ../sj-W3-C -b parity/W3-C main
+  cd ../sj-W3-C && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §4 Testing, the Wave 3 ownership
+     note in §10, then ONLY your entry for W3-C in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "audit|s-al" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-al.html and its renderer.
+     Role variants differ only in seeded actor names — read one.
+  4. migrations/0030_audit_log.sql (the table W1-B seeded for you), and
+     migrations/0001_init.sql's `pipeline_events` — the trail that exists today.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  `pipeline_events` is a DECK-STAGE trail, not an audit trail: `deck_id` is NOT NULL, so a config,
+  team or billing event is structurally unstorable. `0030` created `audit_log` with a nullable
+  `deck_id` and a category. Nothing writes to it yet.
+  1. The section: columns, category badges, filters and retention, per `s-al`.
+  2. **Writers.** Every config change (`W2-A`'s scoring framework, `W2-B`'s anchors, `W2-C`'s bank),
+     every permission change (`W3-A`'s, if it has landed — code against the table, not its branch),
+     every team change, every credit grant. An audit log nobody writes to is a table, not a feature.
+  3. Keep the All-decks Activity card working — `src/client/routes/DashboardPage.tsx:519-542`. It
+     becomes a filtered view over the same store rather than a second source of truth.
+  4. Register as `al` in registry.tsx — one import, one map entry.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/AuditLog.tsx, a NEW src/server/routes/audit.ts, a shared
+    audit-writer helper under src/server/, and one line each in src/server/index.ts and
+    src/client/routes/admin/registry.tsx.
+  - Writing an audit row from another session's route file is a ONE-LINE call to your helper. That is
+    allowed and expected — name every file you touched in your handoff.
+  - You own migration 0042 and only 0042.
+
+TEST
+  - Worker: a config change, a permission change and a credit grant each write exactly one row with
+    the right category and actor — assert the ROW, not the call.
+  - Worker: authZ, filters, and that a deck-scoped event still reaches the Activity card.
+  - Client: category badges and the filter behaviour.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  Plus `npm run roles` if you touch nav or authZ. It is a runtime probe that exits 0 with NO server
+  and will happily score against a NEIGHBOUR's server — start `E2E_PORT=<yours> npm run e2e:serve`,
+  confirm with `lsof -nP -iTCP:<yours> -sTCP:LISTEN` that the process holding it is yours, then pass
+  ROLES_BASE. W1-C scored a confident 526/526 against another worktree's server (§2.3).
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W3-C. Do not merge to main.
+```
+
+### `W3-D` — CRM sync
+
+```
+You are running session W3-D — the CRM sync admin section — of the ai.STARTUPJURY parity programme.
+You have no prior context.
+
+SETUP
+  nvm use
+  git worktree add ../sj-W3-D -b parity/W3-D main
+  cd ../sj-W3-D && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, **§1.3 (vendor-dependent work — it governs this whole
+     session)**, §2, §4, the Wave 3 ownership note in §10, then ONLY your entry for W3-D in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "crm" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-crm.html — byte-identical across
+     all eleven role files, so read it once.
+  4. migrations/0037_crm_connections.sql, and src/server/email/outbox.ts as the pattern to copy:
+     a real interface with a stub that RECORDS instead of sending.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  CRM sync is the emptiest section in the console — zero code today. The only trace is a card on the
+  Upload screen (`src/client/routes/UploadPage.tsx:530-600`) that names Salesforce/HubSpot/Pipedrive
+  and raises a SUPPORT TICKET instead of connecting anything.
+  1. The section: provider selection, connection settings, field mapping, sync direction and
+     schedule, connect/disconnect — full UI and persistence over `crm_connections`.
+  2. **The provider call sits behind an interface with a recording stub (§1.3).** Do not add a vendor
+     SDK, a credential or a network call to the critical path. A sync attempt records what it WOULD
+     have sent, exactly as the email outbox does.
+  3. Replace the Upload screen's ticket-raising placeholder with a link to this section. That file is
+     `W7-B`'s — if it is more than swapping the card's action, record it in §9 instead.
+  4. Register as `crm` in registry.tsx — one import, one map entry.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/CrmSync.tsx, a NEW src/server/routes/crm.ts, a new
+    src/server/crm/** module, and one line each in src/server/index.ts and registry.tsx.
+  - You own migration 0043 and only 0043.
+  - Credentials are write-only: never return a stored secret from a GET, and never log one.
+
+TEST
+  - Worker: field-mapping validation, connect/disconnect, authZ (a non-admin 403s), and the stub
+    recording a sync attempt without performing one.
+  - Worker: a GET never returns a credential.
+  - Client: the mapping editor and the disconnected/connected states.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  Plus `npm run roles` if you touch nav or authZ. It is a runtime probe that exits 0 with NO server
+  and will happily score against a NEIGHBOUR's server — start `E2E_PORT=<yours> npm run e2e:serve`,
+  confirm with `lsof -nP -iTCP:<yours> -sTCP:LISTEN` that the process holding it is yours, then pass
+  ROLES_BASE. W1-C scored a confident 526/526 against another worktree's server (§2.3).
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W3-D. Do not merge to main.
+```
 
 ## 11. Reference
 
