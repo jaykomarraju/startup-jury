@@ -1,6 +1,7 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
 import { DEFAULT_SCORING_SETTINGS, type ScoringSettings } from "../../src/shared/scoring";
+import { RUBRIC_BANDS } from "../../src/shared/types";
 import { evaluateDeck, type RawEvaluation } from "../../src/server/ai/evaluate";
 import type { Env } from "../../src/server/types";
 
@@ -258,6 +259,25 @@ describe("ai_pre_scoring_enabled", () => {
     expect(evt!.action).toBe("ai_skipped");
   });
 
+  // Wave 2 integration. This path returned `signal: "absent"` — the retired
+  // four-band key W2-B's 0039 renamed to `insufficient` and deleted from
+  // SIGNAL_STYLES. `EvaluationResult.signal` is typed `string` and UploadPage
+  // casts it, so typecheck saw nothing and the assertions above never read the
+  // field; the Upload screen threw for any org with the toggle off. Neither
+  // branch was wrong alone, which is why only the merged tree shows it.
+  it("off → the signal it reports is a band the client can actually render", async () => {
+    await setScoring({ ai_pre_scoring_enabled: 0 });
+    const id = "fw_no_ai_signal";
+    await seedDeck(id);
+    const result = (await evaluateDeck(env as unknown as Env, id, {
+      callModel: async () => {
+        throw new Error("the model must not be called with pre-scoring off");
+      },
+    })) as { signal: string };
+    expect(RUBRIC_BANDS.map((b) => b.key)).toContain(result.signal);
+    expect(result.signal).toBe("insufficient");
+  });
+
   it("off → re-score says so rather than pretending", async () => {
     await setScoring({ ai_pre_scoring_enabled: 0 });
     const res = await req(
@@ -373,6 +393,41 @@ describe("show_ai_score_to_jury — blind scoring is server-side", () => {
     expect(body.verdict).toBeUndefined();
     expect(body.deck.aiScore).toBeUndefined();
     expect(body.aiScoreWithheld).toBe(true);
+  });
+
+  // Wave 2 integration. `withholdsAiScore` was applied only on GET /api/decks/:id,
+  // so the LIST still returned aiScore, decisionScore and signal — and All decks is
+  // the screen a juror passes through on the way to scoring. Withholding on the
+  // detail route alone does not make scoring independent.
+  it("withholds it on the deck LIST too, not only on the detail route", async () => {
+    await setScoring({ show_ai_score_to_jury: 0 });
+    const jury = await login(JURY);
+    const id = "fw_blind_list";
+    await seedDeck(id, "jury_evaluation");
+    await env.DB.prepare("UPDATE decks SET assigned_to = 'inc_jury' WHERE id = ?").bind(id).run();
+    await aiEvaluate(id, 8);
+
+    const list = (await (await get("/api/decks", jury)).json()) as {
+      decks: {
+        id: string;
+        aiScore?: number;
+        decisionScore?: number;
+        signal?: string;
+        aiScoreWithheld?: boolean;
+      }[];
+    };
+    const row = list.decks.find((d) => d.id === id);
+    expect(row).toBeDefined();
+    expect(row!.aiScore).toBeUndefined();
+    expect(row!.decisionScore).toBeUndefined();
+    expect(row!.signal).toBeUndefined();
+    expect(row!.aiScoreWithheld).toBe(true);
+
+    // An admin oversees rather than scores, so the list is unchanged for them.
+    const adminList = (await (await get("/api/decks", await login(ADMIN))).json()) as {
+      decks: { id: string; aiScore?: number }[];
+    };
+    expect(adminList.decks.find((d) => d.id === id)!.aiScore).toBeDefined();
   });
 
   it("reveals it to the same juror once they have submitted", async () => {

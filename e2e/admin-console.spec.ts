@@ -24,14 +24,14 @@ async function login(page: Page, email: string) {
 }
 
 /**
- *
- * W2-B — this was the inline `section.id !== "tm"` below, true only while Wave 1
- * was the whole registry: every Wave 2–5 session that lands a section breaks it.
- * A named set keeps the assertion strong in BOTH directions (a placeholder must
- * still name its owner; a built section must no longer show one) and makes each
- * session's edit a one-token diff instead of a merge conflict. **Add your id
- * here in the same commit as your `registry.tsx` line** — `W2-A` adds `fw` and
- * `wt`, `W2-C` adds `qb`.
+ * The placeholder check below was `section.id !== "tm"`, true only while Wave 1
+ * was the whole registry — every Wave 2–5 session that lands a section breaks it.
+ * All three Wave 2 sessions rewrote it independently: W2-A and W2-C branched on
+ * what is on screen, W2-B kept a named `BUILT` set to append to. Wave 2
+ * integration kept the screen-driven form — it needs no per-wave edit, so it
+ * stops being a recurring merge conflict — and folded in W2-B's negative half,
+ * which is the stronger assertion: a section that has been built must no longer
+ * name an owner. **Nothing to add here when you land a section.**
  */
 
 const ADMINS: { email: string; edition: Edition; role: Role }[] = [

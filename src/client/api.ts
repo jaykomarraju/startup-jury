@@ -417,6 +417,23 @@ export function submitJuryScores(id: string, scores: HumanScoreInput[], remarks?
   );
 }
 
+/**
+ * The clarification letter for one deck, composed from the curated question bank
+ * (`W2-C`). Falls back to the caller's own `buildQueryMessage` when it throws —
+ * the endpoint is per-deck, so a multi-deck selection has no draft.
+ */
+export interface QueryDraft {
+  message: string;
+  questions: { area: string; text: string }[];
+  areas: string[];
+  autoClarification: boolean;
+  triggered: boolean;
+}
+
+export function fetchQueryDraft(deckId: string): Promise<QueryDraft> {
+  return fetch(`/api/questions/draft/${encodeURIComponent(deckId)}`).then((r) => json(r));
+}
+
 /** Advance a shortlisted/intro deck to Signup and send the (stubbed) invite. */
 export function sendSignup(id: string) {
   return postJson<{ ok: true; status: string }>(`/api/decks/${id}/send-signup`);

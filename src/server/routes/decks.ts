@@ -311,7 +311,41 @@ decks.get("/", async (c) => {
     clauses.join(" AND ") +
     " ORDER BY d.created_at DESC";
   const rows = (await c.env.DB.prepare(sql).bind(...params).all<DeckRow>()).results;
-  return c.json({ decks: rows.map((r) => toDeckView(edition, r, role)) });
+
+  // Blind scoring has to hold HERE too. `withholdsAiScore` was applied only on
+  // GET /api/decks/:id, so with `show_ai_score_to_jury` off a juror still saw the
+  // AI score, decision score and signal on All decks — the screen they pass
+  // through on the way to scoring. Withholding on the detail route alone does not
+  // make scoring independent. Found at Wave 2 integration.
+  //
+  // Blindness is per (deck, evaluator) and lifts once they have submitted for
+  // that deck, so fetch the set they have submitted for rather than blanking the
+  // whole list. One extra query, and only when the toggle is actually off.
+  const scoring = await loadScoringSettings(c.env.DB, edition);
+  if (!withholdsAiScore(scoring, { isEvaluator: isAssignableEvaluator(edition, role), hasSubmitted: false })) {
+    return c.json({ decks: rows.map((r) => toDeckView(edition, r, role)) });
+  }
+  const submitted = new Set(
+    (
+      await c.env.DB.prepare("SELECT deck_id FROM evaluations WHERE evaluator_id = ?")
+        .bind(id)
+        .all<{ deck_id: string }>()
+    ).results.map((r) => r.deck_id),
+  );
+  return c.json({
+    decks: rows.map((r) => {
+      const view = toDeckView(edition, r, role);
+      if (submitted.has(r.id)) return view;
+      return {
+        ...view,
+        aiScore: undefined,
+        decisionScore: undefined,
+        signal: undefined,
+        shortlistBlocked: false,
+        aiScoreWithheld: true as const,
+      };
+    }),
+  });
 });
 
 // ── Tags (Aug-2026 issue 2 — search & tag deck facility) ─────────────────────

@@ -17,7 +17,6 @@ import {
 } from "../../shared/roles";
 import {
   composite,
-  weightedTotal,
   signalTag,
   decisionScore,
   fromDisplayScale,

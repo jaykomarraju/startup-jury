@@ -7,7 +7,7 @@
 // takes an injectable `callModel` so tests can supply a mocked response.
 
 import type { Edition } from "../../shared/roles";
-import { composite, weightedTotal, signalTag } from "../../shared/scoring";
+import { composite, signalTag } from "../../shared/scoring";
 import { RUBRIC_BANDS, type CompositeFormula } from "../../shared/types";
 import { scoringSettingsFor } from "../config/scoringSettings";
 import { maybeAutoClarify } from "../config/autoQuery";
@@ -613,7 +613,14 @@ async function skipAiEvaluation(
     deckId: deck.id,
     recognized: { name: deck.name ?? "Untitled deck", stage: deck.stage ?? null },
     weightedTotal: 0,
-    signal: "absent",
+    // `absent` was the retired four-band key. W2-B's 0039 renamed it to
+    // `insufficient` and deleted it from SIGNAL_STYLES; W2-A wrote this AI-off
+    // path while `absent` was still valid. Neither branch was broken alone —
+    // merged, an org with AI pre-scoring OFF got a signal the client cannot
+    // render and SignalTag threw on the Upload screen. `EvaluationResult.signal`
+    // is typed `string` and UploadPage casts it, so typecheck saw nothing.
+    // Fixed at Wave 2 integration.
+    signal: "insufficient",
     status,
     gatePassed: false,
     complete: true,

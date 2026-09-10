@@ -18,7 +18,12 @@
  * curated question bank and replaces `questionsFor` with a bank read; the
  * trigger, the gating and the de-duplication stay here.
  */
-import { areasNeedingResponse, buildQueryMessage, type ResponseArea } from "../../shared/queries";
+import {
+  areasNeedingResponse,
+  buildQueryMessage,
+  type BankArea,
+  type ResponseArea,
+} from "../../shared/queries";
 import type { IntakeField } from "../../shared/intake";
 import { isWeakSignal } from "../../shared/scoring";
 import { buildQueryEmail, sendEmail } from "../email/outbox";
@@ -72,9 +77,43 @@ async function weakAreasFor(env: Env, deckId: string): Promise<{ weak: string[];
   return { weak: scored.filter((s) => isWeakSignal(s.value)).map((s) => s.name), sections };
 }
 
-/** The clarification text. `W2-C` swaps this for the curated question bank. */
-function questionsFor(deckName: string, areas: ResponseArea[]): string {
-  return buildQueryMessage(deckName, areas);
+/**
+ * The clarification text, drawn from the curated question bank.
+ *
+ * `W2-C` landed the bank and `buildQueryMessage`'s `{ bank }` option, but this
+ * producer — the AUTOMATIC path — was never switched over, so an auto-triggered
+ * letter still went out as bare area labels while the manual one drew real
+ * questions. Wired at Wave 2 integration. Passing no bank reproduces the old
+ * wording exactly, which is the fallback when the query returns nothing.
+ */
+async function questionsFor(
+  db: D1Database,
+  edition: string,
+  deckName: string,
+  areas: ResponseArea[],
+): Promise<string> {
+  const rows = (
+    await db
+      .prepare(
+        `SELECT q.parameter_id AS parameterId, p.name AS name, q.text AS text
+           FROM question_bank q JOIN parameters p ON p.id = q.parameter_id
+          WHERE q.active = 1 AND p.edition = ?
+          ORDER BY p.sort_order, q.seq`,
+      )
+      .bind(edition)
+      .all<{ parameterId: string; name: string; text: string }>()
+  ).results;
+  const byArea = new Map<string, BankArea>();
+  for (const r of rows) {
+    const entry = byArea.get(r.parameterId) ?? {
+      parameterId: r.parameterId,
+      name: r.name,
+      questions: [],
+    };
+    entry.questions.push(r.text);
+    byArea.set(r.parameterId, entry);
+  }
+  return buildQueryMessage(deckName, areas, { bank: [...byArea.values()] });
 }
 
 /**
@@ -111,7 +150,7 @@ export async function maybeAutoClarify(
 
   const ts = now();
   const queryId = `qry_${crypto.randomUUID()}`;
-  const questions = questionsFor(input.deckName, areas);
+  const questions = await questionsFor(env.DB, input.edition, input.deckName, areas);
   await env.DB.prepare(
     "INSERT INTO queries (id, deck_id, questions, email_status, created_at) VALUES (?, ?, ?, 'sent', ?)",
   )
