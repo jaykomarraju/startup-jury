@@ -23,6 +23,17 @@ async function login(page: Page, email: string) {
   await page.waitForURL("**/app/**");
 }
 
+/**
+ *
+ * W2-B — this was the inline `section.id !== "tm"` below, true only while Wave 1
+ * was the whole registry: every Wave 2–5 session that lands a section breaks it.
+ * A named set keeps the assertion strong in BOTH directions (a placeholder must
+ * still name its owner; a built section must no longer show one) and makes each
+ * session's edit a one-token diff instead of a merge conflict. **Add your id
+ * here in the same commit as your `registry.tsx` line** — `W2-A` adds `fw` and
+ * `wt`, `W2-C` adds `qb`.
+ */
+
 const ADMINS: { email: string; edition: Edition; role: Role }[] = [
   { email: "priya.sharma@demo.startupjury.ai", edition: "incubator", role: "superuser" },
   { email: "nisha.kapoor@demo.startupjury.ai", edition: "incubator", role: "admin" },
@@ -69,12 +80,17 @@ for (const admin of ADMINS) {
       // Every section renders a body: either its heading (placeholder or the
       // built Team & roles roster) — never a blank pane.
       await expect(page.getByRole("heading", { level: 2, name: section.heading })).toBeVisible();
-      // …and an UNBUILT one names the session that will fill it. The set of
-      // built sections grows as Waves 2–5 land, so this branches on what is on
-      // screen rather than on a list that would need editing every wave. (The
-      // registry itself cannot be imported here: it pulls the React component
-      // tree, and `pdfjs-dist/...?url` is not resolvable outside vite.)
-      if (await page.getByText("Not built yet").count()) {
+      // …and an UNBUILT one names the session that will fill it.
+      //
+      // W2-A branched on what is on screen; W2-B kept a `BUILT` set each session
+      // appends to. Wave 2 integration keeps W2-A's screen-driven branch — it needs
+      // no editing as Waves 2–5 land — and folds in W2-B's negative assertion, which
+      // is the stronger half: a built section must not still be naming its owner.
+      // (The registry cannot be imported here: it pulls the React component tree,
+      // and `pdfjs-dist/...?url` is not resolvable outside vite.)
+      if (!(await page.getByText("Not built yet").count())) {
+        await expect(page.getByText(section.placeholder.owner, { exact: true })).toHaveCount(0);
+      } else {
         await expect(
           page.getByText(section.placeholder.owner, { exact: true }).first(),
         ).toBeVisible();

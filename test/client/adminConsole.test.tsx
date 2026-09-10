@@ -291,8 +291,11 @@ describe("AdminConsole shell", () => {
         },
       ],
     });
-    // The registry grows as Waves 2–5 land their sections; what this test pins
-    // is that the roster is still reachable at `tm`, not that it is alone.
+    // W2-A and W2-B independently loosened this from `toEqual(["tm"])`, which was
+    // only ever true while Wave 1 was the whole registry — every Wave 2–5 session
+    // registers a section and breaks it. What the test is about is that Team &
+    // roles is still reachable at `tm`; registry COVERAGE is asserted separately,
+    // above. Kept as one assertion at Wave 2 integration.
     expect(SECTION_COMPONENTS).toHaveProperty("tm");
     renderConsole(user("incubator", "admin"), "/app/admin?section=tm");
     expect(screen.getByTestId("admin-section-title")).toHaveTextContent("Team & roles");

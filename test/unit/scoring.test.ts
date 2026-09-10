@@ -52,10 +52,15 @@ describe("weightedTotal", () => {
 
 describe("signalTag", () => {
   it("maps scores to rubric bands", () => {
-    expect(signalTag(9)).toBe("strong");
+    // W2-B — the specs' five bands replaced this file's four (§1.5). The old
+    // expectations encoded the four-band scale the spec contradicts, so per
+    // plan §4 they are restated, not weakened: 9 is now its own top band, and
+    // 3 sits at the floor of Weak rather than inside it.
+    expect(signalTag(9)).toBe("exceptional");
+    expect(signalTag(7.5)).toBe("strong");
     expect(signalTag(6)).toBe("moderate");
     expect(signalTag(3)).toBe("weak");
-    expect(signalTag(1)).toBe("absent");
+    expect(signalTag(1)).toBe("insufficient");
   });
 });
 

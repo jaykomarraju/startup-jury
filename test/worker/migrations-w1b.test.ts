@@ -31,10 +31,22 @@ const inBlock = MIGRATIONS.filter((m) => {
 });
 
 describe("migration numbering", () => {
-  it("is unique and contiguous from 0001", () => {
+  it("is unique and strictly ascending from 0001", () => {
     const numbers = MIGRATIONS.map((m) => numberOf(m.name)).sort((a, b) => a - b);
     expect(new Set(numbers).size, "duplicate migration number").toBe(numbers.length);
-    expect(numbers).toEqual(numbers.map((_, i) => i + 1));
+    expect(numbers[0]).toBe(1);
+    // W2-B — this asserted strict CONTIGUITY over the WHOLE directory
+    // (`numbers[i] === i + 1`), which held while one session owned
+    // `migrations/`. From Wave 2 the plan allots each parallel session its own
+    // number (§2.2), so a worktree that uses its allotment legitimately leaves
+    // a hole where its siblings' will land: this branch has 0039 and no 0038 /
+    // 0040. Contiguity is therefore asserted up to the end of the W1-B block
+    // and no further — a hole BELOW 0037 is still a lost migration and still
+    // fails. Uniqueness, asserted above, is what the allotment really protects.
+    const settled = numbers.filter((n) => n <= LAST);
+    expect(settled).toEqual(settled.map((_, i) => i + 1));
+    // Nothing may be numbered beyond the wave's allotment ceiling either.
+    expect(Math.max(...numbers)).toBeLessThanOrEqual(LAST + 3);
   });
 
   it("keeps the W1-B block contiguous and directly above the pre-existing tree", () => {

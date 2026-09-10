@@ -64,7 +64,10 @@ describe("evaluateDeck (mocked Anthropic)", () => {
     expect(result).toMatchObject({
       deckId: id,
       weightedTotal: 9,
-      signal: "strong",
+      // W2-B — 9.0 is the top band on the specs' five-band scale, which
+      // replaced this file's four (§1.5). "strong" here encoded the retired
+      // ≥8 cut-point; per plan §4 the assertion is restated, not weakened.
+      signal: "exceptional",
       status: "ai_evaluated",
       gatePassed: true,
     });
@@ -74,7 +77,12 @@ describe("evaluateDeck (mocked Anthropic)", () => {
     )
       .bind(id)
       .first<{ ai_score: number; signal: string; status: string; founder: string; complete: number }>();
-    expect(deck).toMatchObject({ signal: "strong", status: "ai_evaluated", founder: "Ada Lovelace", complete: 1 });
+    expect(deck).toMatchObject({
+      signal: "exceptional",
+      status: "ai_evaluated",
+      founder: "Ada Lovelace",
+      complete: 1,
+    });
     expect(deck!.ai_score).toBe(9);
 
     const scoreCount = await env.DB.prepare(
