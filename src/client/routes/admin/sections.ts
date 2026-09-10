@@ -119,7 +119,7 @@ const EVALUATION: AdminSection[] = [
     placeholder: {
       owner: "W2-B",
       contents: [
-        "16 areas × 5 band anchors, editable, 65 pre-seeded",
+        "22 areas (13 core + 9 role) × 5 band anchors, editable, 65 pre-seeded",
         "A per-area AI guidance prompt, with save and revert",
       ],
     },

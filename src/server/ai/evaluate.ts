@@ -8,6 +8,7 @@
 
 import type { Edition } from "../../shared/roles";
 import { weightedTotal, signalTag } from "../../shared/scoring";
+import { RUBRIC_BANDS } from "../../shared/types";
 import {
   mergeIntakeDetails,
   missingIntakeFields,
@@ -94,11 +95,21 @@ export function substituteVars(text: string, ctx: PromptContext): string {
   });
 }
 
-export interface AnchorRow {
-  band: string;
-  min_score: number;
-  max_score: number;
-  label: string;
+/**
+ * One row of `parameter_rubric_bands` (0027) — the per-parameter anchor text on
+ * the specs' five-band scale.
+ *
+ * W2-B replaced the global four-band `rubric_anchors` table this file used to
+ * read (dropped in `0039`). That table gave every area the same four generic
+ * anchors, which is the opposite of what the rubric is for: "9–10" means
+ * something different for Climate Impact than for Storytelling.
+ */
+export interface ParameterBandRow {
+  parameter_id: string;
+  band_index: number;
+  band_label: string;
+  band_name: string;
+  description: string | null;
 }
 
 /** Raw structured payload the model returns via the `submit_evaluation` tool. */
@@ -296,32 +307,58 @@ export function buildSystemPrompt(orgOverride?: string | null): string {
   return orgOverride ? `${base}\n\nOrganisation guidance:\n${orgOverride.trim()}` : base;
 }
 
-/** User prompt: the rubric (parameters + weights) and the anchor bands.
- *  Core areas form the weighted composite; role-scoped additional params are
- *  listed separately as assistive lenses, each with its configurable prompt
- *  (deck-context variables substituted). Both are scored, but only the core
- *  areas count toward the composite (additional params carry weight 0). */
+/**
+ * User prompt: the rubric (parameters + weights + per-area anchors) and the
+ * shared band scale.
+ *
+ * Core areas form the weighted composite; role-scoped additional params are
+ * listed separately as assistive lenses, each with its configurable prompt
+ * (deck-context variables substituted). Both are scored, but only the core
+ * areas count toward the composite (additional params carry weight 0).
+ *
+ * W2-B — every parameter now carries its **own** AI guidance prompt and its
+ * **own** five band anchors, both editable in Admin console → Rubric anchors.
+ * Before this, a core area's `prompt` was silently dropped and every area was
+ * given the same four generic bands, so the admin section would have rendered
+ * without changing a single score.
+ */
 export function buildUserPrompt(
   params: ParameterRow[],
-  anchors: AnchorRow[],
+  bands: ParameterBandRow[],
   ctx: PromptContext = {},
 ): string {
   const core = params.filter((p) => !p.informational);
   const additional = params.filter((p) => p.informational);
 
-  const rubric = core.map((p) => `- ${p.key} — ${p.name} (weight ${p.weight})`).join("\n");
-  const bands = anchors
-    .slice()
-    .sort((a, b) => b.min_score - a.min_score)
-    .map((a) => `- ${a.min_score}–${a.max_score}: ${a.label}`)
+  /** A parameter's five anchors, deepest band last; omitted when none is written. */
+  const anchorsFor = (p: ParameterRow): string => {
+    const written = RUBRIC_BANDS.map((spec) => ({
+      spec,
+      row: bands.find((b) => b.parameter_id === p.id && b.band_index === spec.index),
+    })).filter((b) => b.row?.description);
+    if (written.length === 0) return "";
+    return written
+      .map((b) => `    ${b.row!.band_label} ${b.row!.band_name}: ${b.row!.description}`)
+      .join("\n");
+  };
+
+  const rubric = core
+    .map((p) => {
+      const head = `- ${p.key} — ${p.name} (weight ${p.weight})`;
+      const guidance = p.prompt ? `\n  Guidance: ${substituteVars(p.prompt, ctx)}` : "";
+      const anchors = anchorsFor(p);
+      return `${head}${guidance}${anchors ? `\n  Anchors:\n${anchors}` : ""}`;
+    })
     .join("\n");
+  const bandScale = RUBRIC_BANDS.map((b) => `- ${b.label}: ${b.name}`).join("\n");
 
   let additionalBlock = "";
   if (additional.length > 0) {
     const items = additional
       .map((p) => {
         const guidance = p.prompt ? substituteVars(p.prompt, ctx) : `Score ${p.name} 0–10.`;
-        return `- ${p.key} — ${p.name}\n  Guidance: ${guidance}`;
+        const anchors = anchorsFor(p);
+        return `- ${p.key} — ${p.name}\n  Guidance: ${guidance}${anchors ? `\n  Anchors:\n${anchors}` : ""}`;
       })
       .join("\n");
     additionalBlock =
@@ -334,7 +371,8 @@ export function buildUserPrompt(
     `Score every one of these ${params.length} parameters (use the exact key).\n\n` +
     `Core rubric (weighted — these form the composite):\n${rubric}\n` +
     additionalBlock +
-    `\nAnchor bands (apply consistently):\n${bands}\n\n` +
+    `\nScore bands (apply consistently — where an area lists its own anchors ` +
+    `above, those take precedence):\n${bandScale}\n\n` +
     "Extract the founder's contact details (name, email, phone, city) and the " +
     "startup's sector exactly as stated in the deck — return null for anything the " +
     "deck does not state; do not guess. Extract the key slides, flag any missing " +
@@ -558,8 +596,14 @@ export async function evaluateDeck(
     informational: p.informational === 1,
     prompt: p.prompt,
   }));
-  const anchors = (
-    await env.DB.prepare("SELECT band, min_score, max_score, label FROM rubric_anchors").all<AnchorRow>()
+  const bands = (
+    await env.DB.prepare(
+      "SELECT b.parameter_id, b.band_index, b.band_label, b.band_name, b.description " +
+        "FROM parameter_rubric_bands b JOIN parameters p ON p.id = b.parameter_id " +
+        "WHERE p.edition = ? AND p.active = 1",
+    )
+      .bind(deck.edition)
+      .all<ParameterBandRow>()
   ).results;
   const org = await env.DB.prepare(
     "SELECT ai_system_prompt, criteria_version FROM org_settings WHERE edition = ?",
@@ -576,7 +620,7 @@ export async function evaluateDeck(
     apiKey: env.ANTHROPIC_API_KEY,
     model: env.ANTHROPIC_MODEL ?? DEFAULT_MODEL,
     system: buildSystemPrompt(org?.ai_system_prompt ?? null),
-    userText: buildUserPrompt(params, anchors, {
+    userText: buildUserPrompt(params, bands, {
       startupName: deck.name,
       sector: deck.sector,
       stage: deck.stage,

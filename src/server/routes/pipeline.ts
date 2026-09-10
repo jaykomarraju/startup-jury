@@ -16,6 +16,7 @@ import {
   roleLabel,
 } from "../../shared/roles";
 import { weightedTotal, signalTag, decisionScore } from "../../shared/scoring";
+import { RUBRIC_BANDS } from "../../shared/types";
 import { getStage, performAction, transitionByAction } from "../../pipeline";
 import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
 import { sendEmail, buildQueryEmail, buildSignupEmail } from "../email/outbox";
@@ -918,12 +919,14 @@ pipeline.get("/jury", requireRole("program_associate", "program_manager", "admin
  *  core areas in the weighted composite and the caller's own role-scoped
  *  additional params in a separate section. */
 pipeline.get("/parameters", async (c) => {
-  const rows = (
+  const edition = c.var.user.edition;
+  const paramRows = (
     await c.env.DB.prepare(
-      "SELECT key, name, weight, informational, role_scope, prompt FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
+      "SELECT id, key, name, weight, informational, role_scope, prompt FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
     )
-      .bind(c.var.user.edition)
+      .bind(edition)
       .all<{
+        id: string;
         key: string;
         name: string;
         weight: number;
@@ -931,7 +934,38 @@ pipeline.get("/parameters", async (c) => {
         role_scope: string | null;
         prompt: string | null;
       }>()
-  ).results.map((p) => ({
+  ).results;
+  // W2-B — the rubric bands the parameter detail panel shows.
+  //
+  // `anchors` is the shared five-band SCALE (specs §7), replacing the global
+  // four-band `rubric_anchors` table this used to read; that table is dropped
+  // in `0039`. The scale is a constant now, so no query is needed for it.
+  const anchors = RUBRIC_BANDS.map((b) => ({
+    band: b.key,
+    min: b.min,
+    max: b.max,
+    label: b.name,
+  }));
+  // Per-parameter anchor TEXT (`parameter_rubric_bands`, 0027) — what "9–10"
+  // actually means for THIS area. `bands` is additive, so the existing client
+  // keeps working; EvaluatePage still renders the generic scale until Wave 7
+  // adopts it (F0102, recorded in §9).
+  const bandRows = (
+    await c.env.DB.prepare(
+      "SELECT b.parameter_id, b.band_index, b.band_label, b.band_name, b.description " +
+        "FROM parameter_rubric_bands b JOIN parameters p ON p.id = b.parameter_id " +
+        "WHERE p.edition = ? AND p.active = 1 ORDER BY b.band_index",
+    )
+      .bind(edition)
+      .all<{
+        parameter_id: string;
+        band_index: number;
+        band_label: string;
+        band_name: string;
+        description: string | null;
+      }>()
+  ).results;
+  const parameters = paramRows.map((p) => ({
     key: p.key,
     name: p.name,
     weight: p.weight,
@@ -940,20 +974,16 @@ pipeline.get("/parameters", async (c) => {
     // Aug-2026 issue 19 — the Evaluate screen's third panel shows the evaluation
     // prompt for whichever parameter is clicked in the second panel.
     prompt: p.prompt ?? undefined,
+    bands: bandRows
+      .filter((b) => b.parameter_id === p.id)
+      .map((b) => ({
+        index: b.band_index,
+        label: b.band_label,
+        name: b.band_name,
+        description: b.description,
+      })),
   }));
-  // The shared 0–10 rubric bands, so the parameter detail panel can show the
-  // anchors the AI scored against.
-  const anchors = (
-    await c.env.DB.prepare(
-      "SELECT band, min_score, max_score, label FROM rubric_anchors ORDER BY min_score DESC",
-    ).all<{ band: string; min_score: number; max_score: number; label: string }>()
-  ).results.map((a) => ({
-    band: a.band,
-    min: a.min_score,
-    max: a.max_score,
-    label: a.label,
-  }));
-  return c.json({ parameters: rows, anchors });
+  return c.json({ parameters, anchors });
 });
 
 export { pipeline };

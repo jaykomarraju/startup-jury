@@ -23,6 +23,19 @@ async function login(page: Page, email: string) {
   await page.waitForURL("**/app/**");
 }
 
+/**
+ * Sections whose body has been BUILT — the rest still render `SectionPlaceholder`.
+ *
+ * W2-B — this was the inline `section.id !== "tm"` below, true only while Wave 1
+ * was the whole registry: every Wave 2–5 session that lands a section breaks it.
+ * A named set keeps the assertion strong in BOTH directions (a placeholder must
+ * still name its owner; a built section must no longer show one) and makes each
+ * session's edit a one-token diff instead of a merge conflict. **Add your id
+ * here in the same commit as your `registry.tsx` line** — `W2-A` adds `fw` and
+ * `wt`, `W2-C` adds `qb`.
+ */
+const BUILT = new Set(["tm", "rb"]);
+
 const ADMINS: { email: string; edition: Edition; role: Role }[] = [
   { email: "priya.sharma@demo.startupjury.ai", edition: "incubator", role: "superuser" },
   { email: "nisha.kapoor@demo.startupjury.ai", edition: "incubator", role: "admin" },
@@ -69,8 +82,11 @@ for (const admin of ADMINS) {
       // Every section renders a body: either its heading (placeholder or the
       // built Team & roles roster) — never a blank pane.
       await expect(page.getByRole("heading", { level: 2, name: section.heading })).toBeVisible();
-      if (section.id !== "tm") {
-        // …and names the session that will fill it.
+      // A section that is still a placeholder names the session that will fill
+      // it; a section that has been BUILT renders its own body instead.
+      if (BUILT.has(section.id)) {
+        await expect(page.getByText(section.placeholder.owner, { exact: true })).toHaveCount(0);
+      } else {
         await expect(
           page.getByText(section.placeholder.owner, { exact: true }).first(),
         ).toBeVisible();

@@ -7,7 +7,7 @@ import {
   parseEvaluation,
   computeResult,
   type ParameterRow,
-  type AnchorRow,
+  type ParameterBandRow,
   type RawEvaluation,
 } from "../../src/server/ai/evaluate";
 
@@ -30,11 +30,36 @@ const WITH_ADDITIONAL: ParameterRow[] = [
   },
 ];
 
-const ANCHORS: AnchorRow[] = [
-  { band: "strong", min_score: 8, max_score: 10, label: "Strong" },
-  { band: "moderate", min_score: 5, max_score: 7, label: "Moderate" },
-  { band: "weak", min_score: 2, max_score: 4, label: "Weak" },
-  { band: "absent", min_score: 0, max_score: 1, label: "Absent" },
+// W2-B — anchors are now PER PARAMETER on the specs' five-band scale
+// (`parameter_rubric_bands`, 0027), not four global rows. The old fixture and
+// the assertion that read "8–10: Strong" before "0–1: Absent" both encoded the
+// four-band `rubric_anchors` table that `0039` drops; per plan §4 they are
+// replaced rather than weakened — the assertion below is strictly stronger,
+// checking the shared five-band scale AND that a parameter's own anchor text
+// reaches the prompt.
+const BANDS: ParameterBandRow[] = [
+  {
+    parameter_id: "inc_a",
+    band_index: 0,
+    band_label: "9–10",
+    band_name: "Exceptional",
+    description: "Mission-critical problem with regulatory pressure.",
+  },
+  {
+    parameter_id: "inc_a",
+    band_index: 4,
+    band_label: "0–2",
+    band_name: "Insufficient",
+    description: "Vague problem, generic framing.",
+  },
+  // A scaffolded role parameter: rows exist, text does not.
+  {
+    parameter_id: "inc_add",
+    band_index: 0,
+    band_label: "9–10",
+    band_name: "Exceptional",
+    description: null,
+  },
 ];
 
 describe("buildTool", () => {
@@ -58,15 +83,38 @@ describe("prompt building", () => {
     expect(buildSystemPrompt(null)).not.toContain("Organisation guidance");
   });
 
-  it("lists every parameter key and the anchor bands, high band first", () => {
-    const prompt = buildUserPrompt(PARAMS, ANCHORS);
+  it("lists every parameter key and the five-band scale, high band first", () => {
+    const prompt = buildUserPrompt(PARAMS, BANDS);
     expect(prompt).toContain("problem — Problem (weight 8)");
     expect(prompt).toContain("traction — Traction (weight 10)");
-    expect(prompt.indexOf("8–10: Strong")).toBeLessThan(prompt.indexOf("0–1: Absent"));
+    expect(prompt.indexOf("9–10: Exceptional")).toBeLessThan(prompt.indexOf("0–2: Insufficient"));
+    // …and the middle band the four-band scale had no room for.
+    expect(prompt).toContain("7–8: Strong");
+  });
+
+  it("gives each area its OWN anchor text, and omits bands with none written", () => {
+    const prompt = buildUserPrompt(PARAMS, BANDS);
+    expect(prompt).toContain("9–10 Exceptional: Mission-critical problem with regulatory pressure.");
+    expect(prompt).toContain("0–2 Insufficient: Vague problem, generic framing.");
+    // `traction` has no rows at all — it must not gain an empty Anchors block.
+    const traction = prompt.slice(prompt.indexOf("traction — Traction"));
+    expect(traction.slice(0, traction.indexOf("\n- "))).not.toContain("Anchors:");
+  });
+
+  it("includes a core area's own AI guidance prompt, with vars substituted", () => {
+    const withPrompt: ParameterRow[] = [
+      { ...PARAMS[0], prompt: "Look for a specific problem at {{startup_name}}." },
+      PARAMS[1],
+    ];
+    const prompt = buildUserPrompt(withPrompt, BANDS, { startupName: "Acme" });
+    expect(prompt).toContain("Guidance: Look for a specific problem at Acme.");
   });
 
   it("lists additional params in a separate assistive section with substituted guidance", () => {
-    const prompt = buildUserPrompt(WITH_ADDITIONAL, ANCHORS, { startupName: "Acme", sector: "fintech" });
+    const prompt = buildUserPrompt(WITH_ADDITIONAL, BANDS, {
+      startupName: "Acme",
+      sector: "fintech",
+    });
     // Core areas still appear in the weighted rubric.
     expect(prompt).toContain("problem — Problem (weight 8)");
     // The additional param is called out separately, not weighted.

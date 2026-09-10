@@ -8,7 +8,7 @@ import {
   parseEvaluation,
   computeResult,
   type ParameterRow,
-  type AnchorRow,
+  type ParameterBandRow,
 } from "../../src/server/ai/evaluate";
 
 // Live smoke test — hits the real Anthropic API. Skipped unless BOTH
@@ -52,11 +52,23 @@ const PARAMS: ParameterRow[] = [
   { id: "p2", key: "traction", name: "Traction & Validation", weight: 10 },
   { id: "p3", key: "team", name: "Team & Execution", weight: 10 },
 ];
-const ANCHORS: AnchorRow[] = [
-  { band: "strong", min_score: 8, max_score: 10, label: "Strong" },
-  { band: "moderate", min_score: 5, max_score: 7, label: "Moderate" },
-  { band: "weak", min_score: 2, max_score: 4, label: "Weak" },
-  { band: "absent", min_score: 0, max_score: 1, label: "Absent" },
+// W2-B — per-parameter anchors on the specs' five-band scale, replacing the
+// four global `rubric_anchors` rows this fixture carried.
+const BANDS: ParameterBandRow[] = [
+  {
+    parameter_id: "p1",
+    band_index: 0,
+    band_label: "9–10",
+    band_name: "Exceptional",
+    description: "Mission-critical problem with regulatory or economic pressure.",
+  },
+  {
+    parameter_id: "p1",
+    band_index: 4,
+    band_label: "0–2",
+    band_name: "Insufficient",
+    description: "Vague problem, generic framing.",
+  },
 ];
 
 describe.skipIf(!LIVE)("live Anthropic evaluation", () => {
@@ -68,7 +80,7 @@ describe.skipIf(!LIVE)("live Anthropic evaluation", () => {
       apiKey: env.LIVE_ANTHROPIC_KEY,
       model: env.ANTHROPIC_MODEL ?? "claude-sonnet-5",
       system: buildSystemPrompt(null),
-      userText: buildUserPrompt(PARAMS, ANCHORS),
+      userText: buildUserPrompt(PARAMS, BANDS),
       tool: buildTool(PARAMS),
       pdfBase64,
     });

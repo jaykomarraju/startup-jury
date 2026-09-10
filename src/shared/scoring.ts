@@ -3,6 +3,8 @@
  * 0–10 value; the weighted total is the weight-average, rounded to 2 decimals.
  * This is the seed of the rubric scoring logic expanded in later phases.
  */
+import { rubricBand, type RubricBandKey } from "./types";
+
 export interface ParameterScore {
   weight: number;
   value: number;
@@ -15,14 +17,19 @@ export function weightedTotal(scores: ParameterScore[]): number {
   return Math.round((weighted / totalWeight) * 100) / 100;
 }
 
-export type SignalTag = "strong" | "moderate" | "weak" | "absent";
+/**
+ * The rubric band a score falls in — the specs' **five** bands, not the four
+ * this file carried until W2-B. Derived from `RUBRIC_BANDS`, the single band
+ * table `shared/analytics.ts` also derives from, so a score can no longer be
+ * "Moderate" on a deck row and "Strong" in the distribution chart (§1.5).
+ *
+ * Only the band mapping lives here. The composite maths below is untouched.
+ */
+export type SignalTag = RubricBandKey;
 
-/** Maps a 0–10 score to the rubric anchor band from the brand spec. */
+/** Maps a 0–10 score to its rubric band (specs §7 `band(v)`). */
 export function signalTag(value: number): SignalTag {
-  if (value >= 8) return "strong";
-  if (value >= 5) return "moderate";
-  if (value >= 2) return "weak";
-  return "absent";
+  return rubricBand(value).key;
 }
 
 /**

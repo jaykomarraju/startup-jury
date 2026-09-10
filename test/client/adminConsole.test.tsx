@@ -291,7 +291,11 @@ describe("AdminConsole shell", () => {
         },
       ],
     });
-    expect(Object.keys(SECTION_COMPONENTS)).toEqual(["tm"]);
+    // W2-B — this was `toEqual(["tm"])`, true only while Wave 1 was the whole
+    // registry. Every Wave 2–5 session registers a section and breaks it, so it
+    // now asserts what the test is actually about: Team & roles is still the
+    // component behind `tm`. Registry COVERAGE is asserted separately, above.
+    expect(Object.keys(SECTION_COMPONENTS)).toContain("tm");
     renderConsole(user("incubator", "admin"), "/app/admin?section=tm");
     expect(screen.getByTestId("admin-section-title")).toHaveTextContent("Team & roles");
     expect(await screen.findByText("Tara Nair")).toBeInTheDocument();

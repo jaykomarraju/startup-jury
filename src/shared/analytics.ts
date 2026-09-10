@@ -10,6 +10,7 @@
  * summary / Diligence & risk / Decision history.
  */
 import type { Edition } from "./roles";
+import { RUBRIC_BANDS } from "./types";
 
 // ── Small stat helpers ───────────────────────────────────────────────────────
 
@@ -178,13 +179,15 @@ function recommendationFor(score: number, status: string): "Recommend" | "Hold �
 
 export function cohortSummary(decks: CohortDeck[]): CohortSummary {
   const scored = decks.filter((d) => d.aiScore !== null) as Array<CohortDeck & { aiScore: number }>;
-  const bands: DistributionBand[] = [
-    { label: "9–10 Exceptional", min: 9, count: 0 },
-    { label: "7–8 Strong", min: 7, count: 0 },
-    { label: "5–6 Moderate", min: 5, count: 0 },
-    { label: "3–4 Weak", min: 3, count: 0 },
-    { label: "0–2 Absent", min: 0, count: 0 },
-  ];
+  // W2-B — built from `RUBRIC_BANDS`, the one band table `shared/scoring.ts`
+  // also derives from. It was hand-written here with a fifth label ("0–2
+  // Absent") that matched neither the spec nor `signalTag`; that divergence was
+  // the §1.5 defect. Do not re-inline these five rows.
+  const bands: DistributionBand[] = RUBRIC_BANDS.map((b) => ({
+    label: `${b.label} ${b.name}`,
+    min: b.min,
+    count: 0,
+  }));
   for (const d of scored) {
     const band = bands.find((b) => d.aiScore >= b.min);
     if (band) band.count += 1;
