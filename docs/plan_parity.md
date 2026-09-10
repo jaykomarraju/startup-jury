@@ -833,6 +833,7 @@ One row per session. The integration session fills the wave row.
 | `W1-C` | **done** | **F0039, F0131, F0133, F0152** closed outright; **F0001, F0006, F0176** closed for the shell they name, with their section bodies handed to Waves 2–5; **F0038, F0151** deferred to §8 Q7 (a client decision, not a build) | typecheck ✓ · lint ✓ · **475 passed / 1 skipped** ✓ (453 → +22 client) · build ✓ · **e2e 103** ✓ (84 → +19, `e2e/admin-console.spec.ts`) · **roles 526/526** ✓ · `parity:nav` 208/278 ✓ **unchanged** · `parity:tokens` 4/27 ✓ unchanged | Built `src/client/routes/admin/**`: the full-screen overlay (46 px `#4A6644` header, Close, body scroll lock, Escape), the 210 px olive rail with four groups and sixteen sections, the title bar (section label + program/cohort chip + global **Save changes**), the pending-invite badge, and the off-canvas drawer below 760 px. Sections switch through `?section=`, so `nav.ts` is untouched and the `admin` slug did not move — `parity:nav` is byte-identical. **Section bodies are placeholders that name their contents and their owning session**, so Waves 2–5 land in a slot rather than inventing one; `saveContext.tsx` is the wire from a section to the title-bar button (disabled today, since nothing owns state yet). **Edition split:** the VC console's fourth Sign-up section is `sufund` *Fund Deployment*, not `suseat` *Seat capacity* — the registry resolves per edition and both e2e walks assert it. **§1.2:** *User access* is titled and described reset-only; a client test asserts its copy never says reveal/show/stored password. **Two files nobody owned this wave were touched, deliberately:** `src/client/routes/AdminConsolePage.tsx` was `git mv`d to `src/client/routes/admin/TeamRoles.tsx` (the path `W4-A`'s entry already names) and kept working verbatim as the Team & roles section; and `e2e/roles.spec.ts` had two `goto("/app/admin")` calls re-pointed at `?section=tm` — **route only, no assertion weakened** (§4). **`e2e/parity.spec.ts` unchanged:** the four `/admin` rows were re-captured (`PARITY_CAPTURE=1`); the title is still `Admin console` and the union of the old header set with the new `tables: []` is the old row, so there was nothing to write. The console now opens on Scoring framework, so the walk no longer *sees* the roster — its exact header set is pinned in `e2e/admin-console.spec.ts` instead, at `?section=tm`. **Trap hit, for the record:** the first `npm run roles` scored 526/526 against port 5183 — which turned out to be **`sj-W1-B`'s** dev server, not this worktree's. §2.3's warning is about a *missing* server; a *neighbour's* server is the same false pass wearing a better disguise. Re-run on 5193 and verified by `ps` before believing it. Pick a port and check who owns it. |
 
 | **Wave 1 integration** | **done** | — (integration closes no findings) | typecheck ✓ · lint ✓ · **570 passed / 1 skipped** ✓ (453 + 21 + 74 + 22, exact) · build ✓ · **e2e 107** ✓ · `parity:tokens` **0 gaps** ✓ · `parity:nav` 70 known gaps ✓ | Merged `W1-B` → `W1-A` → `W1-C`. **Ownership held**: `docs/plan_parity.md` was the only file two branches both touched. Placed both requests addressed here — `tsconfig.node.json` now includes `scripts/`, and the two `coverage.spec.ts` nav sweeps got a 120 s budget. **Two merge defects found and fixed.** (1) §10 was mangled: `W1-B` and `W1-C` both drafted Wave 2 prompts and the union left a headless fragment — which carried the only copy of the `config.ts` ownership arbitration. All three Wave 2 prompts claimed `src/server/routes/config.ts`; arbitrated in §10 (W2-A sole owner; W2-B/W2-C get their own modules). (2) The console declared `aria-modal` while the whole app shell stayed keyboard-reachable behind it — invisible to `W1-C`, whose client tests mount the console in a bare router and whose e2e never presses Tab. The console is now portalled to `<body>`, the shell is `inert` while it is open, and focus returns to the opener. **One e2e flake diagnosed, not papered over:** `parity.spec.ts › vc/superuser` failed once and passes clean — Playwright runs `fullyParallel` at 2 workers against one D1, so the read-only parity walk races the specs that mutate deals. Recorded as Q17. A five-lane adversarial review of the merge produced the §9 rows above and Q17–Q19. |
+| `W2-A` | **done** | **F0027, F0041, F0042, F0044, F0077, F0079, F0103, F0104, F0105, F0106, F0107, F0108, F0109, F0153, F0154, F0155, F0165, F0166, F0167, F0168, F0187** closed (21); **F0078, F0110** PARTIAL (see notes); **F0080, F0081, F0156, F0169** deferred with reasons in §8; **F0082** was already closed by `W1-B`'s `0025` | typecheck ✓ · lint ✓ · **654 passed / 1 skipped** ✓ (570 → +84) · build ✓ · **e2e 110** ✓ (107 → +3) · **roles 526/526** ✓ (own server, port 5211, `ps`-verified) · `parity:nav` 208/278 ✓ unchanged · `parity:tokens` 27/27 ✓ unchanged | **The two Evaluation sections, and the behaviour behind them.** `ScoringFramework.tsx` renders all thirteen `s-fw` controls plus the override delta; `AreaWeights.tsx` renders the `s-wt` table (five columns, Core pill, mono zero-padded index, ×3.3 bar, the three footer strings verbatim from `_scripts.js:256-259`) with the role cards, `/ 10` column, `Set total: max 30` footer and the *Permit configuration* pill in the same section. **Every toggle is honoured in the evaluation path, and each has a test that fails if the wiring is removed:** `ai_pre_scoring_enabled` off skips the model call entirely and lands the deck at the edition's first human stage with an `ai_skipped` audit row; `auto_clarification` fires (or does not fire) a real query + outbox mail from `evaluateDeck`; `show_ai_score_to_jury` off **withholds the AI scores, composite, verdict and signal from `GET /api/decks/:id`** — asserted on the API response in `e2e/scoring-framework.spec.ts`, not on the DOM; `require_override_rationale` refuses a submit at `override_rationale_delta` and names every offending parameter; `jury_sees_peer_scores` (off by default) restricts the report matrix to AI + own, with `EVALUATION_RANK` still applied on top when it is on; `show_three_score_view` drops the AI and Average columns; `show_score_drift` empties the drift report; `include_ai_evidence` strips the AI justification from report cells; `intro_call_ai_prompts` drives a new `GET /api/calls/:id/prompts` derived from the deck's own evaluation. **`shared/scoring.ts` re-cut, not decorated:** `composite()` implements all three formulas (the two unweighted ones count only `weight > 0`, so a weight-0 informational parameter cannot drag a median), `decisionScore()` blends at `ai_weight_pct`, and `score_scale` is a display/input scale over canonical 0–10 storage — a 1–5 org's `4` is stored as `7.5`, which is what keeps a 7.0 threshold meaningful. **F0153 is enforced server-side** (`invalid_total`, computed over the resulting full core set), which made three existing fixtures illegal payloads — see §9. **Migration `0038`** does the three §9 fix-ups: the `criteria_version` bump that unblocks re-score, the duplicate-`(edition, key)` delete plus a partial unique index, and all eighteen `0014` AI comments re-seeded against the post-`0025` parameters. **Four new modules, all new files so nothing collides:** `server/config/scoringSettings.ts`, `server/config/autoQuery.ts`, `server/config/callPrompts.ts`, `client/routes/admin/scoringApi.ts`. **Partial:** F0078's AI+/AI++/AI+++ badges ship on the role cards but the *dropdown beside every AI score chip* does not — it is a deck-table change across Waves 7–9 (§9). F0110's intro-call prompts ship; the *verbatim deck excerpt* per parameter does not — it needs a tool-schema field and a `scores` column (§9). **Two readings recorded in §8:** how far the org-wide shortlist threshold reaches (Q20) and whether a role parameter may be promoted to a 5 %/10 % weight against the shipped core-13 = 100 % invariant (Q21). |
 
 <!-- Append a row per session. Do not rewrite history; add. -->
 
@@ -864,6 +865,9 @@ best reading and note it.
 | Q17 | Wave 1 integration | `e2e/parity.spec.ts` is read-only but shares one local D1 with specs that mutate deals, under `fullyParallel` + 2 workers. It failed once on a screen that gained rows it did not have at capture time, and passes on a clean run. Union the capture, or give the walk its own serial project? | Left as-is for now — it passes clean and the harness's own docstring anticipates unioning. `W12-B` decides during the regression pass. |
 | Q18 | Wave 1 integration | `W1-A`'s §7 disposition does not reconcile: **F0370, F0371 and F0383 are dispositioned nowhere**, and F0380 is listed PARTIAL but received no work. | `W12-A`'s sweep picks up anything unclaimed; no finding is lost, but the wave's closure count is 3 lower than it reads. |
 | Q19 | Wave 1 integration | Six of `W1-A`'s closed findings have **no test that fails if the change is reverted** — they are closed by inspection, not by assertion, which is what §4 warns against. | Acceptable for token-level changes that `parity:tokens` now pins wholesale; `W12-B` to confirm coverage during the regression pass. |
+| Q20 | `W2-A` (F0187) | **How far does the org-wide `Shortlist threshold` reach?** The prototype puts one on the Scoring framework (default 7.0) and F0187's fix says `checkShortlistFloor` should fall back to it when `programs.shortlist_min` is null. Applied literally that also means an **unscored** deck can never be shortlisted anywhere, because the shipped per-programme guardrail blocks unscored decks — and on a fresh workspace that stops the pipeline before anyone has scored anything. | Implemented as the fallback floor for decks that HAVE a score, and left silent about decks that have none: the org value is a bar a score is measured against, while a programme floor is an explicit opt-in guardrail whose "no score can clear it" rule an admin chose. One condition in `checkShortlistFloor` (`score === null ? source === "program" : …`) is the whole difference; a client who wants the stricter reading flips it. Two `automation.test.ts` fixtures moved with this — see §9. |
+| Q21 | `W2-A` (F0081) | **Both specs say a role parameter may be promoted to a 5 % or 10 % weight; the build's stated invariant is "composite stays core-13 = 100 %".** W2-A has now made that invariant enforceable (`PUT /api/config/parameters` refuses a rubric that does not total 100, F0153), which makes the conflict concrete rather than latent: promoting an informational parameter to 5 % either takes that 5 % from the core areas or produces a documented 105 % denominator. | **Not built.** The finding itself says the denominator question has to be decided explicitly, and it is a client decision about what a composite means, not an implementation detail. Nothing about the 100 % enforcement forecloses either answer. Whoever settles it needs `config.ts` (the weight route already refuses `informational = 1`), `MyParamsPage` and a line in `shared/scoring.ts`. |
+| Q22 | `W2-A` | **`score_scale` is implemented as a display/input scale over canonical 0–10 storage**, not as a change of what is stored: a 1–5 organisation types a `4` and `7.5` is persisted. The alternative — storing on the chosen scale — would re-base every seeded score, both cohort thresholds, the shortlist threshold and the five rubric bands the moment an admin changed the select. | Canonical 0–10, converted at the edges (`toDisplayScale` / `fromDisplayScale`). It is the only reading under which a threshold of 7.0 keeps meaning the same thing across a scale change, and it leaves the AI tool schema on 0–10 so scoring granularity is never lost. Recorded because it is a decision, not an obvious consequence of the prototype. |
 
 ---
 
@@ -893,6 +897,14 @@ session places it.
 | Wave 1 integration | `test/worker/migrations-w1b.test.ts` *(`W2-A` or `W12-B`)* | **The idempotence test proves nothing.** `applyD1Migrations` skips migrations already recorded as applied, so the second call executes zero SQL and the assertion passes regardless. Re-point it at re-running the migration *bodies* against a populated database, or drop the claim. | `W12-B` |
 | Wave 1 integration | `src/client/routes/admin/AdminConsole.tsx:181` *(Waves 2–5)* | **The console overlay is `z-50`, tied with every other app modal** (`EvaluationDrawer`, `EvaluationReport`, `CallsPage`, `EvaluatePage`) and *below* `DeckPdfViewer`'s `z-[60]`. Harmless today because every section body is a placeholder, but the first section that opens a deck preview or an evaluation report inside the console will paint it over the console chrome. Give the console its own tier — `z-[2000]`, between the app modals and the toast viewport's `z-[3000]`. | first Wave 2–5 session to open a modal inside a section |
 | Wave 1 integration | `src/client/routes/admin/sections.ts:122` *(`W2-B`)* | The Rubric anchors placeholder tells `W2-B` there are **16 areas**; the specs and `0027` have **22** (13 core + 9 role), and the "16 × 5 = 65" arithmetic in the same string is wrong either way. Correct the copy when you build the section. | `W2-B` |
+| `W2-A` | `test/worker/automation.test.ts`, `test/worker/config.test.ts`, `test/worker/issuelog-aug2026.test.ts`, `test/client/workbench.test.tsx`, `test/client/adminConsole.test.tsx`, `e2e/config.spec.ts`, `e2e/evaluate-workbench.spec.ts`, `e2e/admin-console.spec.ts` | **Already placed, flagged per §4 — eight files, and in every one the assertion was preserved and only what it asserted the ABSENCE of moved.** (1) `automation.test.ts` — the decision score is now blended at the org's `ai_weight_pct`, whose shipped default is 40/60, so `6.5` became `6.2`; and "does not block when the program has no floor" asserted the absence of F0187's org threshold, so it now asserts the fallback, plus a new test pinning the unscored-deck reading (§8 Q20). (2) `config.test.ts` — two fixtures were single-parameter weight payloads that no longer total 100 % (F0153); both now send a legal whole-rubric save and test exactly what they did before, and a new test pins the refusal. (3) `issuelog-aug2026.test.ts` — issue 21's hierarchy walk now switches peer visibility ON explicitly (it is seeded OFF, F0109), and a new test pins the OFF behaviour, so **both contracts are asserted** rather than one silently replacing the other. (4) `workbench.test.tsx` — the Average tile's `6` became `5.6` for the same 40/60 reason, with new tests for the split, the 3-score view, the score scale, blind scoring and the rationale field. (5) `adminConsole.test.tsx` and (6) `admin-console.spec.ts` — both pinned the registry to the sections built at the time (`toEqual(["tm"])`, `if (section.id !== "tm")`); they now assert that the roster is reachable and that an *unbuilt* section names its owner, which is what they meant and needs no edit next wave. (7) `config.spec.ts` — the weights walk filled one input and left the rubric at 101 %; it now moves two and additionally asserts Save is disabled off-100. (8) `evaluate-workbench.spec.ts` — asserted `Already scored`, which is the **bug** `0038` fixes; it now asserts the guard lets the request past its version check and refuses for the seeded deck's missing PDF instead. | placed by `W2-A` |
+| `W2-A` | `src/client/routes/ConfigPage.tsx` (unowned this wave) | **Already placed, three lines.** The standalone `coreparams` screen's Save button was gated only on `busy \|\| locked`, so with F0153 enforced server-side it offered a save that could only 400, under an error line that said the wrong thing. It is now disabled off-100 with the prototype's own remaining/over-by copy in the footer and the tooltip. F0168 keeps that screen's per-card saves, so nothing else there moved. | placed by `W2-A` |
+| `W2-A` | `src/client/routes/admin/registry.tsx` (the slot W1-C built for exactly this) | **Already placed, three lines** — one import and the `fw:` / `wt:` entries, in `secs` order, as that file's own docstring instructs. Nothing else in the console shell was touched. | placed by `W2-A` |
+| `W2-A` | `src/server/ai/evaluate.ts`, `src/server/routes/pipeline.ts` — **overlaps `W2-B`** | **Read this before merging Wave 2.** `W2-B` was assigned the rubric-band reconciliation in these two files (`evaluate.ts:562`, `pipeline.ts:948` in the pre-wave numbering) and `W2-A` had to touch both as well, in different places: in `evaluate.ts` the pre-scoring switch and the `skipAiEvaluation` helper near the top of `evaluateDeck`, the `composite_formula` argument to `computeResult`, and the `maybeAutoClarify` call after the persist batch; in `pipeline.ts` the jury-submit handler (scale conversion, the override-rationale rule, the composite formula) and `checkShortlistFloor`. Neither session touches the anchor rows or `buildUserPrompt`. The merge should be clean but it is the one place in Wave 2 where two sessions edited the same file, so diff it rather than trusting it. | Wave 2 integration |
+| `W2-A` | `src/client/api.ts` (owner `W4-A` for the invite field) | **Already placed, two additive type changes**, needed because the feature spans server → client: `DeckReport` gains an optional `aiScoreWithheld`, and `getMyScores` returns the per-parameter `comment` (the override rationale, which must round-trip or the next submit is refused for a rationale the evaluator already wrote). No existing field changed shape. The four W2-A routes deliberately live in `src/client/routes/admin/scoringApi.ts` instead, so three parallel Wave 2 sessions could not collide in `api.ts`; folding that module back in is a tidy-up for `W12-A`, not a behaviour change. | placed by `W2-A` |
+| `W2-A` | `src/client/components/DeckCard.tsx` / the deck tables *(Waves 7–9)* | **F0078 is half closed.** The AI+ / AI++ / AI+++ tier badges now label the role cards in Area weights, and the section's copy names which role owns which tier. The other half — *"viewable from the dropdown beside any AI score"* — is a control on every `ScoreChip` across All decks, the pipelines and the report, which is a Waves 7–9 change to screens W2-A does not own. The score itself is already derivable: each owning role's three parameters are scored out of 10 for a set total of 30. | Waves 7–9 |
+| `W2-A` | `src/server/ai/evaluate.ts` (tool schema) + a `scores` column *(whoever closes F0110 in full)* | **F0110 is half closed.** *Intro call AI question prompts* now exist (`GET /api/calls/:id/prompts`, derived from the deck's own weakest areas, missing slides and absent intake fields, and gated on `intro_call_ai_prompts`). *AI evidence quotes* are only half there: the toggle gates the AI's per-parameter **justification** in the report, which is what this build stores, but the prototype's copy — "Show which deck text drove each area's AI score" — asks for a **verbatim deck excerpt**, which needs an `evidence_quote` field in the AI tool schema, a column to hold it and a render in `EvaluationReport.tsx`. Not attempted here: it is an AI-contract change, and W2-B is already in that file this wave. | `W12-A` (or whichever wave re-opens the AI tool schema) |
+| `W2-A` | `src/client/routes/CallsPage.tsx` *(Wave 7 / `W3-B`)* | **`GET /api/calls/:id/prompts` has no screen yet.** The route returns `{enabled, prompts:[{topic, because, question}]}` for anyone who can see the call, and `enabled: false` with an empty list when the admin has the toggle off — so the call screen can drop the block rather than render an unexplained blank. Rendering it is a few lines in whichever session owns the call detail. | Wave 7 |
 
 ---
 
@@ -1345,6 +1357,105 @@ FINISH
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
   Commit to parity/W2-C. Do not merge to main.
 ```
+
+### Wave 3 — `W3-A` written by `W2-A`
+
+> **Who writes which Wave 3 prompt.** Wave 1 lost time to two sessions independently drafting the
+> same wave's prompts and the union leaving a headless fragment (§7). To avoid the repeat: **`W2-A`
+> writes `W3-A` only** — the permissions engine is the session that inherits W2-A's open questions
+> (Q6 on the default editor set, Q16 on console reachability) and the `config_permitted` grant it
+> shipped. `W2-B` should write `W3-B` and `W3-C`; `W2-C` should write `W3-D`. If two copies of a
+> prompt still turn up, integration keeps one.
+>
+> All four branch from `main` **after Wave 2 integration**. Migration numbers `0038`–`0040` are spent
+> (`W2-A`/`W2-B`/`W2-C`); Wave 3 starts at `0041`, one number per session, allotted in each prompt.
+
+### `W3-A` — runtime permission engine
+
+```
+You are running session W3-A — the runtime permission engine — of the ai.STARTUPJURY parity
+programme. You have no prior context. Everything you need is in the repo.
+
+This is the single highest-risk session in the programme: you own the four files every other
+session has been told not to touch, and `npm run roles` (526 checks) is the contract you must not
+break. Nothing else in Wave 3 goes near them.
+
+SETUP
+  nvm use
+  git worktree add ../sj-W3-A -b parity/W3-A main
+  cd ../sj-W3-A && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol (§2.3 twice: the roles harness is
+     the one check that lies when it is run wrong), §4 Testing, then ONLY your entry for W3-A in
+     §6, and §8 questions Q4, Q5, Q6, Q7, Q8, Q9 and Q16 — seven of the plan's open questions are
+     yours to settle.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Roles" --sev P0,P1 --full
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "permission" --full
+  3. migrations/0029_role_permissions.sql and the `PERMISSION_TASKS` / `RolePermissionRow`
+     exports in src/shared/types.ts — the seeded matrix you are making live.
+  4. The files you own, and scripts/role-matrix.ts's PROBES list, which is what 526 means.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  The table is seeded and the vocabulary exists; what is missing is that nothing reads it. Roles are
+  compile-time literals in ~40 `requireRole(...)` call sites and in `nav.ts`.
+  1. A `can(edition, role, task)` helper over `role_permissions`, resolved once per request and
+     carried on the session, with `GET`/`PUT /api/permissions` behind it.
+  2. Re-point `nav.ts` and every `requireRole` call site at it. §8 Q8 is binding: a permission is a
+     GATE, not a grant — AND it with the existing rule (pipeline transition role lists, stage
+     gating, `requireRole`) rather than replacing it, or the default seed stops reproducing today's
+     matrix and 526/526 goes red for the wrong reason.
+  3. The six tasks the prototype names and the product lacks: Out of office delegation, Remind,
+     Reassign / Resubmit, Activate / Deactivate / Delete user, Access to admin console, Permit to
+     add team members.
+  4. Settle Q4, Q5 and Q6 — the sidebar items the prototypes show to roles the app withholds them
+     from (Collaborate, Sign up Pipeline / Onboard ready for the PM, Core Parameters / Set up).
+     §1.4 gives the Program Manager decision authority, which points at Q5 being a real gap.
+  5. Q16 is the one that bites two other sessions: **does every internal role get an Admin console
+     entry, and is the non-admin console read-only?** `W1-C` built `canSeeAdminGroup()` so the
+     Sign-up group can be withheld independently of console reachability, and `W2-A` already
+     serves `GET /api/config/scoring` to any authed non-founder with an `editable` flag and renders
+     its section read-only when it is false — so widening reachability is a permission decision,
+     not a rebuild. Decide it, or record the client's answer.
+  6. `parameters.config_permitted` is live: `W2-A` made `PUT /api/config/additional-params/:id`
+     accept the OWNING role for a permitted row while `PUT /api/config/parameters` stayed
+     admin-only (which is what kept 526/526). Q6 / F0080 — whether Program Managers and Partners
+     are default config editors — is yours; if you widen it, the probe `config.params` in
+     role-matrix.ts moves and you must say so.
+
+CONSTRAINTS
+  - Own only: src/shared/nav.ts, src/shared/roles.ts, src/server/auth/middleware.ts,
+    src/client/routes/guards.tsx, scripts/role-matrix.ts, plus the ~40 `requireRole` call sites you
+    must re-point (name every file you touched in your handoff — this is the one session whose
+    ownership cannot be a disjoint path list).
+  - You own migration 0041 and only 0041.
+  - §1.2 stands: `mentor` gains nothing. `denyMentor` must survive the refactor intact.
+  - Do not weaken `npm run roles` to make a change pass (§4). If a probe's `allow` list is genuinely
+    wrong, change it in the same commit and say which finding says so.
+
+TEST
+  - Roles: 526/526 with the default seed, BEFORE and AFTER the refactor. Run it against your own
+    server on a port you have proved you own (§2.3) — a bare `npm run roles` exits 0 with no server
+    and a neighbour's server is the same false pass wearing a better disguise.
+  - Unit: `can()` over the seeded matrix, including the AND-with-existing-rule case from Q8.
+  - Worker: flipping ONE permission changes exactly one capability and nothing else; a 403 path for
+    every newly gated route.
+  - E2E: a role that loses a permission stops seeing its nav item and gets 403 on the route.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  Plus `npm run roles` and `npm run parity:nav` — you are the session most likely to move the
+  nav baseline, and if you close one of its 70 known gaps you must delete that EXPECTED_GAPS entry
+  in the same commit (§2.5).
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions (settle or re-state Q4,
+  Q5, Q6, Q8, Q9, Q16) and §9 Cross-session requests in docs/plan_parity.md, then write the next
+  prompt(s) into §10 using the §5 template. Commit to parity/W3-A. Do not merge to main.
+```
+
+---
 
 ## 11. Reference
 

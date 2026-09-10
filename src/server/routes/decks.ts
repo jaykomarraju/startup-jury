@@ -6,9 +6,10 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition, Role } from "../../shared/roles";
-import { canSeeEvaluatorScores, evaluationRank, roleLabel } from "../../shared/roles";
+import { canSeeEvaluatorScores, evaluationRank, isAssignableEvaluator, roleLabel } from "../../shared/roles";
 import { getStage, allowedTransitions } from "../../pipeline";
-import { decisionScore } from "../../shared/scoring";
+import { decisionScore, withholdsAiScore, WEAK_SIGNAL_MAX } from "../../shared/scoring";
+import { loadScoringSettings } from "../config/scoringSettings";
 import { missingIntakeFields, parseMissingFields, type IntakeMatch } from "../../shared/intake";
 import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
 import { detectIntakeFlags, intakeFlagStatement } from "../intake";
@@ -57,12 +58,18 @@ const DECK_DERIVED =
   "pr.name AS program_name, co.name AS cohort_name, " +
   "(SELECT AVG(e.weighted_total) FROM evaluations e WHERE e.deck_id = d.id AND e.evaluator_id IS NOT NULL) AS human_avg, " +
   // Aug-2026 issues 16/17 — the Query screen's "Parameters needing response" /
-  // "Areas requiring response". Core areas the AI scored below the workspace's
-  // own "mediocre" threshold, plus the deck sections the extraction found
-  // absent. No extra binds: the threshold is read from org_settings inline.
-  "(SELECT GROUP_CONCAT(p.name, '||') FROM scores s JOIN parameters p ON p.id = s.parameter_id " +
+  // "Areas requiring response". Core areas the AI scored in the rubric's Weak
+  // or Insufficient band, plus the deck sections the extraction found absent.
+  //
+  // W2-A / F0042 — this used to read `org_settings.threshold_mediocre`, the
+  // admin-tunable COHORT rating threshold, so raising "Poor — below" to
+  // re-bucket the All Decks overview silently widened which parameters a
+  // founder was questioned about. Two unrelated scales; this is the rubric one
+  // (`WEAK_SIGNAL_MAX` in shared/scoring.ts, specs §7: 3–4 Weak, 0–2
+  // Insufficient). The cohort thresholds keep doing cohort rating only.
+  `(SELECT GROUP_CONCAT(p.name, '||') FROM scores s JOIN parameters p ON p.id = s.parameter_id ` +
   "  WHERE s.deck_id = d.id AND s.evaluator_kind = 'ai' AND p.informational = 0 " +
-  "    AND s.value < (SELECT o.threshold_mediocre FROM org_settings o WHERE o.edition = d.edition)) AS weak_areas, " +
+  `    AND s.value < ${WEAK_SIGNAL_MAX}) AS weak_areas, ` +
   "(SELECT GROUP_CONCAT(e.label, '||') FROM deck_extractions e WHERE e.deck_id = d.id AND e.missing = 1) AS missing_sections, " +
   // Aug-2026 issue 25 — the Jury Pipeline's "Assigned date" and whether the
   // assignee has actually submitted their evaluation yet.
@@ -396,13 +403,38 @@ decks.get("/:id", async (c) => {
     .bind(id)
     .first<{ weighted_total: number | null; verdict: string | null }>();
 
+  // ── Blind scoring (F0106) ──────────────────────────────────────────────────
+  // Admin console → Scoring framework → "Show AI score to jury before they
+  // score" · "Turn off for blind independent jury evaluation".
+  //
+  // Withheld HERE, in the payload, not hidden in the client: an evaluator who
+  // has not yet submitted for this deck receives no AI per-parameter scores, no
+  // AI composite and no AI verdict, and `aiScoreWithheld` tells the workbench to
+  // say so. Submitting reveals it — the point is independence before scoring,
+  // not secrecy afterwards. Staff who oversee rather than score are unaffected.
+  const scoring = await loadScoringSettings(c.env.DB, edition);
+  const submitted = await c.env.DB.prepare(
+    "SELECT 1 AS n FROM evaluations WHERE deck_id = ? AND evaluator_id = ?",
+  )
+    .bind(id, userId)
+    .first<{ n: number }>();
+  const blind = withholdsAiScore(scoring, {
+    isEvaluator: isAssignableEvaluator(edition, role),
+    hasSubmitted: Boolean(submitted),
+  });
+
+  const view = toDeckView(edition, row, role);
   return c.json({
-    deck: toDeckView(edition, row, role),
+    deck: blind ? { ...view, aiScore: undefined, signal: undefined } : view,
     extraction,
-    scores,
+    scores: blind ? [] : scores,
     versions: await loadVersions(c, id),
-    weightedTotal: evaluation?.weighted_total ?? row.ai_score ?? undefined,
-    verdict: evaluation?.verdict ? VERDICT_LABELS[evaluation.verdict] ?? evaluation.verdict : undefined,
+    weightedTotal: blind ? undefined : evaluation?.weighted_total ?? row.ai_score ?? undefined,
+    verdict:
+      blind || !evaluation?.verdict
+        ? undefined
+        : VERDICT_LABELS[evaluation.verdict] ?? evaluation.verdict,
+    ...(blind ? { aiScoreWithheld: true } : {}),
   });
 });
 
@@ -706,6 +738,20 @@ decks.get("/:id/report", async (c) => {
   const seenEvaluators = new Map<string, Column>();
   let hidden = 0;
 
+  // ── Peer visibility (F0109) ───────────────────────────────────────────────
+  // Admin console → Scoring framework → "Jury can see each other's scores" ·
+  // "Turn off for fully independent scoring rounds". It ships **OFF** — the
+  // only default-off toggle in the section — while the build behaved as if it
+  // were always on.
+  //
+  // Off, an evaluator sees the AI column and their own, and nothing else. On,
+  // the Aug-2026 issue-21 hierarchy still applies on top: peers at or below
+  // your rank, never above. The two are a conjunction, not a replacement, which
+  // is what "respect EVALUATION_RANK either way" means. Roles that oversee
+  // rather than score — admin, superuser — are outside the toggle entirely.
+  const scoring = await loadScoringSettings(c.env.DB, edition);
+  const peerRestricted = !scoring.jurySeesPeerScores && isAssignableEvaluator(edition, role);
+
   const addEvaluator = (person: {
     evaluator_id: string | null;
     evaluator_name: string | null;
@@ -717,7 +763,8 @@ decks.get("/:id/report", async (c) => {
     const evaluatorRole = (person.evaluator_role ?? "") as Role;
     // Issue 21 — your own column is always visible; anyone above you is not.
     const visible =
-      person.evaluator_id === viewerId || canSeeEvaluatorScores(edition, role, evaluatorRole);
+      person.evaluator_id === viewerId ||
+      (!peerRestricted && canSeeEvaluatorScores(edition, role, evaluatorRole));
     if (!visible) {
       hidden += 1;
       seenEvaluators.set(person.evaluator_id, {
@@ -775,13 +822,25 @@ decks.get("/:id/report", async (c) => {
     byParam.set(r.parameter_id, cells);
   }
 
-  const toRow = (p: ReportParamRow) => ({
-    key: p.key,
-    name: p.name,
-    weight: p.weight,
-    roleScope: p.role_scope ?? undefined,
-    cells: byParam.get(p.id) ?? {},
-  });
+  // "Include AI evidence quotes in reports" · "Show which deck text drove each
+  // area's AI score". The AI's per-parameter justification is what this build
+  // has as evidence; with the toggle off the report carries the numbers only.
+  // (A verbatim deck excerpt alongside it is the other half of F0110 and is not
+  // built — see §9.)
+  const stripAiEvidence = !scoring.includeAiEvidence;
+  const toRow = (p: ReportParamRow) => {
+    const cells = byParam.get(p.id) ?? {};
+    return {
+      key: p.key,
+      name: p.name,
+      weight: p.weight,
+      roleScope: p.role_scope ?? undefined,
+      cells:
+        stripAiEvidence && cells.ai
+          ? { ...cells, ai: { value: cells.ai.value } }
+          : cells,
+    };
+  };
 
   const core = params.filter((p) => p.informational === 0).map(toRow);
 
@@ -805,6 +864,15 @@ decks.get("/:id/report", async (c) => {
     // How many evaluators exist above the viewer in the hierarchy. The screen
     // says so plainly rather than pretending nobody has scored.
     hiddenEvaluators: hidden,
+    // Why they are hidden: an independent scoring round rather than rank.
+    peerScoresHidden: peerRestricted,
+    scoring: {
+      showThreeScoreView: scoring.showThreeScoreView,
+      showScoreDrift: scoring.showScoreDrift,
+      includeAiEvidence: scoring.includeAiEvidence,
+      scoreScale: scoring.scoreScale,
+      aiWeightPct: scoring.aiWeightPct,
+    },
   });
 });
 
@@ -921,6 +989,10 @@ const RETRY_AI_ROLES = [
 decks.post("/:id/rescore", requireRole(...RESCORE_ROLES), async (c) => {
   const { edition } = c.var.user;
   const id = c.req.param("id");
+  // With AI pre-scoring switched off there is no pass to re-run — say so
+  // rather than quietly moving the deck's stage from a "re-score" button.
+  const scoring = await loadScoringSettings(c.env.DB, edition);
+  if (!scoring.aiPreScoringEnabled) return c.json({ error: "ai_disabled" }, 409);
   const deck = await c.env.DB.prepare(
     "SELECT id, r2_key, content_version FROM decks WHERE id = ? AND edition = ?",
   )

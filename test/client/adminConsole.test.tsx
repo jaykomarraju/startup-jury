@@ -291,7 +291,9 @@ describe("AdminConsole shell", () => {
         },
       ],
     });
-    expect(Object.keys(SECTION_COMPONENTS)).toEqual(["tm"]);
+    // The registry grows as Waves 2–5 land their sections; what this test pins
+    // is that the roster is still reachable at `tm`, not that it is alone.
+    expect(SECTION_COMPONENTS).toHaveProperty("tm");
     renderConsole(user("incubator", "admin"), "/app/admin?section=tm");
     expect(screen.getByTestId("admin-section-title")).toHaveTextContent("Team & roles");
     expect(await screen.findByText("Tara Nair")).toBeInTheDocument();

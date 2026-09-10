@@ -69,8 +69,12 @@ for (const admin of ADMINS) {
       // Every section renders a body: either its heading (placeholder or the
       // built Team & roles roster) — never a blank pane.
       await expect(page.getByRole("heading", { level: 2, name: section.heading })).toBeVisible();
-      if (section.id !== "tm") {
-        // …and names the session that will fill it.
+      // …and an UNBUILT one names the session that will fill it. The set of
+      // built sections grows as Waves 2–5 land, so this branches on what is on
+      // screen rather than on a list that would need editing every wave. (The
+      // registry itself cannot be imported here: it pulls the React component
+      // tree, and `pdfjs-dist/...?url` is not resolvable outside vite.)
+      if (await page.getByText("Not built yet").count()) {
         await expect(
           page.getByText(section.placeholder.owner, { exact: true }).first(),
         ).toBeVisible();

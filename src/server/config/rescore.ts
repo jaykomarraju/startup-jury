@@ -10,7 +10,8 @@
 // the AI flagged as incomplete keep their `flagged` signal.
 
 import type { Edition } from "../../shared/roles";
-import { weightedTotal, signalTag } from "../../shared/scoring";
+import { composite, signalTag } from "../../shared/scoring";
+import { scoringSettingsFor } from "./scoringSettings";
 import type { Env } from "../types";
 
 interface ScoreJoinRow {
@@ -37,6 +38,9 @@ export interface RescoreResult {
 
 /** Recompute every stored weighted total in an edition against current weights. */
 export async function rescoreEdition(env: Env, edition: Edition): Promise<RescoreResult> {
+  // W2-A — the org's composite formula, so a re-score reproduces exactly what
+  // the evaluation path would compute today (a median org gets medians back).
+  const { compositeFormula } = await scoringSettingsFor(env, edition);
   const params = (
     await env.DB.prepare("SELECT id, weight FROM parameters WHERE edition = ? AND active = 1")
       .bind(edition)
@@ -75,7 +79,10 @@ export async function rescoreEdition(env: Env, edition: Edition): Promise<Rescor
   let decks = 0;
   let evaluations = 0;
   for (const g of groups.values()) {
-    const total = weightedTotal(params.map((p) => ({ weight: p.weight, value: g.values.get(p.id) ?? 0 })));
+    const total = composite(
+      params.map((p) => ({ weight: p.weight, value: g.values.get(p.id) ?? 0 })),
+      compositeFormula,
+    );
     if (g.kind === "ai" && g.evaluatorId === null) {
       // Preserve a flagged (incomplete) deck's signal; otherwise re-band it.
       const signal = g.deckSignal === "flagged" ? "flagged" : signalTag(total);

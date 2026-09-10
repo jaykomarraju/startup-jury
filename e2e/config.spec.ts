@@ -17,9 +17,18 @@ test("admin edits a core weight and the cohort thresholds", async ({ page }) => 
 
   await expect(page.getByRole("heading", { name: "Configuration" })).toBeVisible();
 
-  // Edit the first area weight and save — "Save changes" is unique to the
-  // weights section, which then shows a Saved badge.
-  await page.getByLabel(/ weight$/).first().fill("9");
+  // Edit two area weights and save — "Save changes" is unique to the weights
+  // section, which then shows a Saved badge.
+  //
+  // W2-A / F0153 — the rubric must still total 100 % ("Total must equal 100%"
+  // in the prototype's own footer), which the server now enforces and the Save
+  // button now respects, so moving one weight up means moving another down.
+  // The behaviour under test — an admin edits a weight and it persists — is
+  // unchanged; only the payload had to become a legal one.
+  const weightInputs = page.getByLabel(/ weight$/);
+  await weightInputs.first().fill("9");
+  await expect(page.getByRole("button", { name: "Save changes" })).toBeDisabled();
+  await weightInputs.last().fill("3");
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.getByText("Saved").first()).toBeVisible();
 

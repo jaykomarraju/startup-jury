@@ -224,6 +224,13 @@ export interface DeckReport {
   versions?: DeckVersionView[];
   weightedTotal?: number;
   verdict?: string;
+  /**
+   * W2-A / F0106 — set when the AI breakdown was WITHHELD server-side because
+   * blind scoring is on and this evaluator has not submitted yet. `scores`,
+   * `weightedTotal` and `verdict` are absent in that case; the workbench says
+   * why rather than rendering an unexplained row of dashes.
+   */
+  aiScoreWithheld?: boolean;
 }
 
 export function getDeck(id: string): Promise<DeckReport> {
@@ -496,8 +503,11 @@ export function listParameters(): Promise<{
   return fetch("/api/parameters").then((r) => json(r));
 }
 
-/** The caller's own saved human scores for a deck (prefills the scoring form). */
-export function getMyScores(id: string): Promise<{ scores: { key: string; value: number }[] }> {
+/** The caller's own saved human scores for a deck (prefills the scoring form).
+ *  `comment` is the per-parameter override rationale (W2-A / F0107). */
+export function getMyScores(
+  id: string,
+): Promise<{ scores: { key: string; value: number; comment?: string }[] }> {
   return fetch(`/api/decks/${id}/my-scores`).then((r) => json(r));
 }
 

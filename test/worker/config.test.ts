@@ -117,9 +117,21 @@ describe("weight change re-scores stored totals", () => {
       .bind(`${deckId}_ai_eval`, deckId)
       .run();
 
-    // Bump Traction's weight 10 → 50. New denominator 140, numerator 500 → 3.57.
+    // Bump Traction's weight 10 → 40, holding the rubric at 100 % by putting the
+    // other twelve areas at 5 each. Numerator 400, denominator 100 → 4.00.
+    //
+    // W2-A / F0153 — the prototype's Area weights footer says "Total must equal
+    // 100%" and the server now enforces it, so the old single-parameter payload
+    // (Traction → 50, total 140) is no longer a legal save. The assertion being
+    // made here is unchanged: a weight edit recomputes the stored ai_score, the
+    // signal band and the evaluation roll-up.
+    const core = (
+      await env.DB.prepare(
+        "SELECT id FROM parameters WHERE edition = 'incubator' AND active = 1 AND informational = 0",
+      ).all<{ id: string }>()
+    ).results;
     const res = await req("PUT", "/api/config/parameters", admin, {
-      params: [{ id: tractionId, weight: 50 }],
+      params: core.map((p) => ({ id: p.id, weight: p.id === tractionId ? 40 : 5 })),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { rescored: { decks: number } };
@@ -128,15 +140,34 @@ describe("weight change re-scores stored totals", () => {
     const deck = await env.DB.prepare("SELECT ai_score, signal FROM decks WHERE id = ?")
       .bind(deckId)
       .first<{ ai_score: number; signal: string }>();
-    expect(deck!.ai_score).toBeCloseTo(3.57, 2);
-    expect(deck!.signal).toBe("weak"); // 3.57 → weak band
+    expect(deck!.ai_score).toBeCloseTo(4.0, 2);
+    expect(deck!.signal).toBe("weak"); // 4.00 → weak band
 
     const evalRow = await env.DB.prepare(
       "SELECT weighted_total FROM evaluations WHERE deck_id = ? AND evaluator_id IS NULL",
     )
       .bind(deckId)
       .first<{ weighted_total: number }>();
-    expect(evalRow!.weighted_total).toBeCloseTo(3.57, 2);
+    expect(evalRow!.weighted_total).toBeCloseTo(4.0, 2);
+  });
+
+  it("refuses a save whose area weights do not total 100 %", async () => {
+    // F0153 — the total was displayed but never enforced at either layer, so an
+    // admin could persist 87 % or 140 % and every composite silently
+    // renormalised over whatever denominator resulted.
+    const admin = await login(ADMIN);
+    const core = (
+      await env.DB.prepare(
+        "SELECT id, weight FROM parameters WHERE edition = 'incubator' AND active = 1 AND informational = 0",
+      ).all<{ id: string; weight: number }>()
+    ).results;
+    const over = core.map((p, i) => ({ id: p.id, weight: i === 0 ? p.weight + 4 : p.weight }));
+    const res = await req("PUT", "/api/config/parameters", admin, { params: over });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; total: number; message: string };
+    expect(body.error).toBe("invalid_total");
+    expect(body.total).toBe(104);
+    expect(body.message).toBe("Total: 104% — over by 4%");
   });
 
   it("rejects an out-of-range weight and a non-core param id", async () => {
@@ -150,8 +181,14 @@ describe("weight change re-scores stored totals", () => {
 describe("plan tier gates parameter config", () => {
   it("Standard = no config · Pro = core 13 · Premium = additional too", async () => {
     const admin = await login(ADMIN);
-    const tractionId = await paramId("traction_validation");
-    const core = { params: [{ id: tractionId, weight: 10 }] };
+    // A legal whole-rubric save: every core area at the weight it already has,
+    // so the payload totals 100 % (F0153) and only the PLAN gate is under test.
+    const current = (
+      await env.DB.prepare(
+        "SELECT id, weight FROM parameters WHERE edition = 'incubator' AND active = 1 AND informational = 0",
+      ).all<{ id: string; weight: number }>()
+    ).results;
+    const core = { params: current.map((p) => ({ id: p.id, weight: p.weight })) };
     const add = { name: "Thesis fit", roleScope: "jury" };
 
     // Standard → neither core nor additional config allowed.

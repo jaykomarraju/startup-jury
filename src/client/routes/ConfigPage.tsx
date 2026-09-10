@@ -16,6 +16,7 @@ import {
   type ProgramView,
 } from "../api";
 import { PLANS, PLAN_LABELS, PLAN_PRIVILEGES, planAllowsCore, type Plan } from "../../shared/plans";
+import { REQUIRED_WEIGHT_TOTAL, weightTotalMessage } from "../../shared/scoring";
 import { useAuth } from "../auth/useAuth";
 import { useActiveContext } from "../activeContext";
 import { editionLabel } from "../../shared/roles";
@@ -149,6 +150,7 @@ function WeightsSection({ cfg, onChange }: { cfg: FullConfig; onChange: (c: Full
   const [error, setError] = useState<string | null>(null);
 
   const total = useMemo(() => Object.values(weights).reduce((s, w) => s + (Number(w) || 0), 0), [weights]);
+  const balanced = total === REQUIRED_WEIGHT_TOTAL;
   const locked = !cfg.coreConfigEnabled; // Standard plan — read-only.
 
   async function save() {
@@ -161,7 +163,7 @@ function WeightsSection({ cfg, onChange }: { cfg: FullConfig; onChange: (c: Full
       onChange({ ...cfg, coreParams: res.coreParams });
       setSaved(true);
     } catch {
-      setError("Couldn't save weights. Check each is between 0 and 100.");
+      setError("Couldn't save weights. Each must be 0–100 and the total exactly 100 %.");
     } finally {
       setBusy(false);
     }
@@ -179,7 +181,15 @@ function WeightsSection({ cfg, onChange }: { cfg: FullConfig; onChange: (c: Full
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <SavedBadge show={saved} />
-          <Button size="sm" variant="primary" disabled={busy || locked} onClick={save}>
+          <Button
+            size="sm"
+            variant="primary"
+            // W2-A / F0153 — the server now refuses a rubric that does not total
+            // 100 %, so the button must not offer a save that cannot succeed.
+            disabled={busy || locked || !balanced}
+            title={balanced ? undefined : weightTotalMessage(total).text}
+            onClick={save}
+          >
             {busy ? "Saving…" : "Save changes"}
           </Button>
         </div>
@@ -240,7 +250,9 @@ function WeightsSection({ cfg, onChange }: { cfg: FullConfig; onChange: (c: Full
                   {total}%
                 </span>
               </td>
-              <td className="py-2.5 text-xs text-fg-muted">{total === 100 ? "Balanced" : "Should total 100%"}</td>
+              <td className="py-2.5 text-xs text-fg-muted">
+                {balanced ? "Balanced" : weightTotalMessage(total).text}
+              </td>
             </tr>
           </tfoot>
         </table>

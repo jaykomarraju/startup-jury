@@ -16,6 +16,12 @@ import {
   type RubricAnchor,
   type HumanScoreInput,
 } from "../api";
+import {
+  DEFAULT_SCORING_SETTINGS,
+  toDisplayScale,
+  type ScoringSettings,
+} from "../../shared/scoring";
+import { scoringSettings } from "./admin/scoringApi";
 
 /**
  * Evaluate screen (Evaluation → Evaluate).
@@ -37,6 +43,12 @@ export function EvaluatePage() {
   const [values, setValues] = useState<Record<string, number>>({});
   const [aiScores, setAiScores] = useState<Map<string, AiParamScore>>(new Map());
   const [aiTotal, setAiTotal] = useState<number | undefined>(undefined);
+  /** Set when blind scoring withheld the AI breakdown server-side (F0106). */
+  const [aiWithheld, setAiWithheld] = useState(false);
+  /** Per-parameter override rationale (F0107). */
+  const [comments, setComments] = useState<Record<string, string>>({});
+  /** The org's scoring framework — the 3-score view, the scale, the rules. */
+  const [scoringCfg, setScoringCfg] = useState<ScoringSettings>(DEFAULT_SCORING_SETTINGS);
   const [remarks, setRemarks] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,6 +62,14 @@ export function EvaluatePage() {
     return listDecks()
       .then((r) => setDecks(r.decks))
       .catch(() => setDecks([]));
+  }, []);
+
+  useEffect(() => {
+    // Cached per session — the workbench must honour the admin console's
+    // Scoring framework, not a hard-coded copy of its defaults.
+    scoringSettings()
+      .then(setScoringCfg)
+      .catch(() => setScoringCfg(DEFAULT_SCORING_SETTINGS));
   }, []);
 
   useEffect(() => {
@@ -90,15 +110,21 @@ export function EvaluatePage() {
           new Map(r.scores.filter((s) => s.key).map((s) => [s.key as string, { value: s.value, comment: s.comment }])),
         );
         setAiTotal(r.weightedTotal);
+        setAiWithheld(r.aiScoreWithheld === true);
       })
       .catch(() => {
         setAiScores(new Map());
         setAiTotal(undefined);
+        setAiWithheld(false);
       });
     getMyScores(deck.id)
       .then((r) => {
         if (r.scores.length > 0) {
           setValues((v) => ({ ...v, ...Object.fromEntries(r.scores.map((s) => [s.key, s.value])) }));
+          setComments((cs) => ({
+            ...cs,
+            ...Object.fromEntries(r.scores.filter((s) => s.comment).map((s) => [s.key, s.comment!])),
+          }));
         }
       })
       .catch(() => {});
@@ -109,6 +135,8 @@ export function EvaluatePage() {
     setValues(Object.fromEntries(allScored.map((p) => [p.key, 5])));
     setAiScores(new Map());
     setAiTotal(undefined);
+    setAiWithheld(false);
+    setComments({});
     setRemarks("");
     setSaved(false);
     setError(null);
@@ -117,17 +145,40 @@ export function EvaluatePage() {
 
   const selectedIndex = scoring ? rows.findIndex((d) => d.id === scoring.id) : -1;
 
+  /**
+   * The submit payload. Values travel on the org's configured **score scale**
+   * (the server converts back to the canonical 0–10 it stores), and each score
+   * carries its rationale so the override rule can be enforced server-side.
+   */
+  const buildScores = useCallback(
+    (): HumanScoreInput[] =>
+      allScored.map((p) => ({
+        key: p.key,
+        value: toDisplayScale(values[p.key] ?? 0, scoringCfg.scoreScale),
+        comment: comments[p.key]?.trim() || undefined,
+      })),
+    [allScored, values, comments, scoringCfg],
+  );
+
+  /** The server refuses a submit whose big overrides carry no rationale. */
+  function reportScoreError(err: unknown, fallback: string) {
+    if (err instanceof ApiError && err.code === "rationale_required") {
+      setError(err.message);
+      return;
+    }
+    setError(fallback);
+  }
+
   async function submit() {
     if (!selected) return;
     setBusy(true);
     setError(null);
     try {
-      const scores: HumanScoreInput[] = allScored.map((p) => ({ key: p.key, value: values[p.key] ?? 0 }));
-      await submitJuryScores(selected.id, scores, remarks || undefined);
+      await submitJuryScores(selected.id, buildScores(), remarks || undefined);
       setSaved(true);
       await load();
-    } catch {
-      setError("Couldn't save scores. Try again.");
+    } catch (err) {
+      reportScoreError(err, "Couldn't save scores. Try again.");
     } finally {
       setBusy(false);
     }
@@ -140,8 +191,7 @@ export function EvaluatePage() {
     try {
       // Ensure the deck is in jury_evaluation (records scores + advances) first.
       if (selected.statusId === "assigned") {
-        const scores: HumanScoreInput[] = allScored.map((p) => ({ key: p.key, value: values[p.key] ?? 0 }));
-        await submitJuryScores(selected.id, scores, remarks || undefined);
+        await submitJuryScores(selected.id, buildScores(), remarks || undefined);
       }
       await transitionDeck(selected.id, action);
       setSelected(null);
@@ -150,7 +200,10 @@ export function EvaluatePage() {
     } catch (err) {
       // The per-program shortlist floor refuses with a message written for the
       // evaluator ("below the program's shortlist minimum…") — show it verbatim.
-      if (err instanceof ApiError && err.code === "below_shortlist_minimum") {
+      if (
+        err instanceof ApiError &&
+        (err.code === "below_shortlist_minimum" || err.code === "rationale_required")
+      ) {
         setError(err.message);
         await load();
       } else {
@@ -319,6 +372,10 @@ export function EvaluatePage() {
               onChangeRemarks={setRemarks}
               aiScores={aiScores}
               aiTotal={aiTotal}
+              scoring={scoringCfg}
+              aiWithheld={aiWithheld}
+              comments={comments}
+              onChangeComment={(key, value) => setComments((cs) => ({ ...cs, [key]: value }))}
               nav={
                 selectedIndex >= 0
                   ? {

@@ -9,10 +9,22 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition, Role } from "../../shared/roles";
-import { ADDITIONAL_PARAM_OWNERS, MAX_ADDITIONAL_PER_ROLE } from "../../shared/roles";
+import {
+  ADDITIONAL_PARAM_OWNERS,
+  MAX_ADDITIONAL_PER_ROLE,
+  isAdditionalParamOwner,
+} from "../../shared/roles";
 import { planAllowsAdditional, planAllowsCore, isPlan, type Plan } from "../../shared/plans";
+import {
+  REQUIRED_WEIGHT_TOTAL,
+  weightTotal,
+  weightTotalMessage,
+  type ScoringSettings,
+} from "../../shared/scoring";
+import { AI_WEIGHT_CHOICES, COMPOSITE_FORMULAS, SCORE_SCALES } from "../../shared/types";
 import { requireAuth, requireRole } from "../auth/middleware";
 import { rescoreEdition } from "../config/rescore";
+import { loadScoringSettings } from "../config/scoringSettings";
 
 const config = new Hono<AppEnv>();
 config.use("*", requireAuth);
@@ -34,6 +46,10 @@ interface ParamRow {
   informational: number;
   role_scope: string | null;
   prompt: string | null;
+  /** Shown to the scorer beside the parameter (specs §6.2, migration 0025). */
+  description: string | null;
+  /** Admin console → Area weights → "Permit configuration" (migration 0025). */
+  config_permitted: number;
   sort_order: number;
 }
 
@@ -63,7 +79,8 @@ function loadSettings(c: Context<AppEnv>, edition: Edition): Promise<SettingsRow
 async function loadParams(c: Context<AppEnv>, edition: Edition): Promise<ParamRow[]> {
   return (
     await c.env.DB.prepare(
-      "SELECT id, key, name, weight, informational, role_scope, prompt, sort_order FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
+      "SELECT id, key, name, weight, informational, role_scope, prompt, description, config_permitted, sort_order " +
+        "FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
     )
       .bind(edition)
       .all<ParamRow>()
@@ -79,6 +96,10 @@ function toParamView(p: ParamRow) {
     informational: p.informational === 1,
     roleScope: p.role_scope ?? undefined,
     prompt: p.prompt ?? undefined,
+    description: p.description ?? undefined,
+    // Area weights → "Permit configuration": the owning role may edit this one
+    // parameter even though config is otherwise admin-only.
+    configPermitted: p.config_permitted === 1,
   };
 }
 
@@ -163,6 +184,9 @@ config.put("/parameters", requireRole("admin"), async (c) => {
   const byId = new Map(existing.map((p) => [p.id, p]));
 
   const stmts: D1PreparedStatement[] = [];
+  const nextWeights = new Map(
+    existing.filter((p) => p.informational === 0).map((p) => [p.id, p.weight]),
+  );
   for (const u of updates) {
     const p = byId.get(u.id);
     // Only weighted (core) params are edited here; informational ones are
@@ -172,11 +196,26 @@ config.put("/parameters", requireRole("admin"), async (c) => {
     if (!Number.isFinite(weight) || weight < 0 || weight > 100) {
       return c.json({ error: "invalid_weight" }, 400);
     }
+    nextWeights.set(u.id, weight);
     const name = typeof u.name === "string" && u.name.trim() ? u.name.trim() : p.name;
     stmts.push(
       c.env.DB.prepare("UPDATE parameters SET weight = ?, name = ? WHERE id = ?").bind(weight, name, u.id),
     );
   }
+
+  // F0153 — the prototype's Area weights footer says "Total must equal 100%",
+  // and until now nothing enforced it at either layer: an admin could persist
+  // 87 % or 140 % and every composite silently renormalised over whatever
+  // denominator resulted. The check runs over the RESULTING full core set, not
+  // just the submitted subset, so a partial update cannot sneak past it.
+  const total = weightTotal([...nextWeights.values()]);
+  if (Math.abs(total - REQUIRED_WEIGHT_TOTAL) > 1e-9) {
+    return c.json(
+      { error: "invalid_total", total, message: weightTotalMessage(total).text },
+      400,
+    );
+  }
+
   stmts.push(bumpCriteriaVersion(c, edition));
   await c.env.DB.batch(stmts);
 
@@ -255,21 +294,55 @@ config.post("/additional-params", requireRole("admin"), async (c) => {
   });
 });
 
-/** PUT /api/config/additional-params/:id — rename an additional param and/or
- *  edit its configurable AI prompt (Premium only). Bumps criteria_version so an
- *  admin prompt change is a valid AI re-score reason. */
-config.put("/additional-params/:id", requireRole("admin"), async (c) => {
-  const edition = c.var.user.edition;
+/** Admin / superuser — the roles that may configure anything. */
+function isConfigAdmin(role: Role): boolean {
+  return role === "admin" || role === "superuser";
+}
+
+/**
+ * PUT /api/config/additional-params/:id — rename an additional param and/or
+ * edit its configurable AI prompt (Premium only). Bumps criteria_version so an
+ * admin prompt change is a valid AI re-score reason.
+ *
+ * F0077 — *Permit configuration*. Admins and superusers may always edit. The
+ * **owning role** may edit one of its own parameters when an admin has flipped
+ * `config_permitted` for that row in Area weights; that per-parameter grant is
+ * the whole point of the control, and it is enforced here rather than in the
+ * client. The route's blanket `requireRole("admin")` is gone, so the guards are
+ * explicit: a founder, or a role that does not own this parameter, gets 403.
+ *
+ * The *default* editor set is deliberately unchanged (§8 Q6 / F0080 — whether
+ * program managers and partners edit config by default is `W3-A`'s call, and
+ * `PUT /api/config/parameters` stays admin-only, which is what keeps the roles
+ * harness at 526/526).
+ */
+config.put("/additional-params/:id", async (c) => {
+  const { edition, role } = c.var.user;
+  // Only an admin/superuser or one of the roles that can OWN an additional
+  // parameter can possibly pass; everyone else (founder, mentor, …) is out
+  // before the plan or the row is read.
+  if (!isConfigAdmin(role) && !isAdditionalParamOwner(edition, role)) {
+    return c.json({ error: "forbidden" }, 403);
+  }
   const s = await requirePremium(c, edition);
   if (!s) return c.json({ error: "plan_required" }, 402);
   const id = c.req.param("id");
   const p = await c.env.DB.prepare(
-    "SELECT informational, name, prompt FROM parameters WHERE id = ? AND edition = ? AND active = 1",
+    "SELECT informational, name, prompt, role_scope, config_permitted FROM parameters WHERE id = ? AND edition = ? AND active = 1",
   )
     .bind(id, edition)
-    .first<{ informational: number; name: string; prompt: string | null }>();
+    .first<{
+      informational: number;
+      name: string;
+      prompt: string | null;
+      role_scope: string | null;
+      config_permitted: number;
+    }>();
   if (!p) return c.json({ error: "not_found" }, 404);
   if (p.informational !== 1) return c.json({ error: "core_param" }, 400);
+
+  const permitted = p.config_permitted === 1 && p.role_scope === role;
+  if (!isConfigAdmin(role) && !permitted) return c.json({ error: "forbidden" }, 403);
 
   const body = await readBody<{ name?: string; prompt?: string | null }>(c);
   const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : p.name;
@@ -305,6 +378,177 @@ config.delete("/additional-params/:id", requireRole("admin"), async (c) => {
     bumpCriteriaVersion(c, edition),
   ]);
   return c.json({ ok: true });
+});
+
+/**
+ * PUT /api/config/additional-params/:id/permit — the *Permit configuration*
+ * pill on Area weights (`admin/s-wt.html`, `permitTog` in `admin/_scripts.js`).
+ *
+ * Granting the delegation is itself an admin act, so this stays admin-only even
+ * though the grant it writes lets a non-admin edit. Body: `{ permitted: bool }`.
+ */
+config.put("/additional-params/:id/permit", requireRole("admin"), async (c) => {
+  const edition = c.var.user.edition;
+  const id = c.req.param("id");
+  const body = await readBody<{ permitted: boolean }>(c);
+  if (typeof body.permitted !== "boolean") return c.json({ error: "invalid_permitted" }, 400);
+  const p = await c.env.DB.prepare(
+    "SELECT informational FROM parameters WHERE id = ? AND edition = ? AND active = 1",
+  )
+    .bind(id, edition)
+    .first<{ informational: number }>();
+  if (!p) return c.json({ error: "not_found" }, 404);
+  // Only the role-scoped additional parameters carry the delegation — the core
+  // 13 are the org's rubric and are never delegated to one role.
+  if (p.informational !== 1) return c.json({ error: "core_param" }, 400);
+  await c.env.DB.prepare("UPDATE parameters SET config_permitted = ? WHERE id = ?")
+    .bind(body.permitted ? 1 : 0, id)
+    .run();
+  return c.json({ ok: true, id, permitted: body.permitted });
+});
+
+// ── Scoring framework (admin console → Evaluation → Scoring framework) ───────
+//
+// The thirteen controls of `admin/s-fw.html`, stored on `org_scoring_settings`
+// (0026). Reading them is not a secret — every honouring path in the client
+// (the three-score view, the workbench's input scale) needs them — so the read
+// is open to any authed non-founder. Writing is admin-only.
+
+/** The composition controls: changing one invalidates every stored AI run. */
+function compositionChanged(before: ScoringSettings, after: ScoringSettings): boolean {
+  return (
+    before.scoreScale !== after.scoreScale ||
+    before.compositeFormula !== after.compositeFormula ||
+    before.aiWeightPct !== after.aiWeightPct
+  );
+}
+
+/** GET /api/config/scoring — the org's scoring framework (any authed staff). */
+config.get("/scoring", async (c) => {
+  const { edition, role } = c.var.user;
+  // A founder never scores and never reads a report; the framework tells them
+  // nothing they should know about how their deck is judged internally.
+  if (role === "founder") return c.json({ error: "forbidden" }, 403);
+  const settings = await loadScoringSettings(c.env.DB, edition);
+  const s = await loadSettings(c, edition);
+  return c.json({
+    scoring: settings,
+    // The two cohort-rating thresholds live on org_settings and are rendered in
+    // the same card (0026's header explains why they stay there).
+    thresholdBest: s?.threshold_best ?? 7,
+    thresholdMediocre: s?.threshold_mediocre ?? 5,
+    editable: isConfigAdmin(role),
+  });
+});
+
+interface ScoringFrameworkBody {
+  aiPreScoringEnabled: boolean;
+  autoClarification: boolean;
+  showAiScoreToJury: boolean;
+  requireOverrideRationale: boolean;
+  overrideRationaleDelta: number;
+  jurySeesPeerScores: boolean;
+  scoreScale: string;
+  compositeFormula: string;
+  aiWeightPct: number;
+  shortlistThreshold: number;
+  showThreeScoreView: boolean;
+  showScoreDrift: boolean;
+  includeAiEvidence: boolean;
+  introCallAiPrompts: boolean;
+}
+
+/**
+ * PUT /api/config/scoring-framework — save the whole section in one write,
+ * which is the prototype's model: `s-fw` carries no save control of its own and
+ * the console's title bar has a single **Save changes** (F0168).
+ *
+ * A change to the score scale, the composite formula or the AI/jury split
+ * changes what every stored composite MEANS, so it bumps `criteria_version`
+ * (unblocking re-score) and re-computes the edition's stored totals — the same
+ * contract a weight edit already has.
+ */
+config.put("/scoring-framework", requireRole("admin"), async (c) => {
+  const { edition, id: userId } = c.var.user;
+  const before = await loadScoringSettings(c.env.DB, edition);
+  const body = await readBody<ScoringFrameworkBody>(c);
+
+  const flag = (v: unknown, fallback: boolean): boolean =>
+    typeof v === "boolean" ? v : fallback;
+
+  const delta = Number(body.overrideRationaleDelta ?? before.overrideRationaleDelta);
+  if (!Number.isFinite(delta) || delta < 0 || delta > 10) {
+    return c.json({ error: "invalid_delta" }, 400);
+  }
+  const shortlistThreshold = Number(body.shortlistThreshold ?? before.shortlistThreshold);
+  if (!Number.isFinite(shortlistThreshold) || shortlistThreshold < 0 || shortlistThreshold > 10) {
+    return c.json({ error: "invalid_shortlist_threshold" }, 400);
+  }
+  const scoreScale = body.scoreScale ?? before.scoreScale;
+  if (!(SCORE_SCALES as readonly string[]).includes(scoreScale)) {
+    return c.json({ error: "invalid_score_scale" }, 400);
+  }
+  const compositeFormula = body.compositeFormula ?? before.compositeFormula;
+  if (!(COMPOSITE_FORMULAS as readonly string[]).includes(compositeFormula)) {
+    return c.json({ error: "invalid_composite_formula" }, 400);
+  }
+  const aiWeightPct = Number(body.aiWeightPct ?? before.aiWeightPct);
+  // The prototype's select offers exactly four splits; anything else would make
+  // the saved value unrepresentable in the UI that has to render it back.
+  if (!(AI_WEIGHT_CHOICES as readonly number[]).includes(aiWeightPct)) {
+    return c.json({ error: "invalid_ai_weight" }, 400);
+  }
+
+  const after: ScoringSettings = {
+    aiPreScoringEnabled: flag(body.aiPreScoringEnabled, before.aiPreScoringEnabled),
+    autoClarification: flag(body.autoClarification, before.autoClarification),
+    showAiScoreToJury: flag(body.showAiScoreToJury, before.showAiScoreToJury),
+    requireOverrideRationale: flag(body.requireOverrideRationale, before.requireOverrideRationale),
+    overrideRationaleDelta: delta,
+    jurySeesPeerScores: flag(body.jurySeesPeerScores, before.jurySeesPeerScores),
+    scoreScale: scoreScale as ScoringSettings["scoreScale"],
+    compositeFormula: compositeFormula as ScoringSettings["compositeFormula"],
+    aiWeightPct,
+    shortlistThreshold,
+    showThreeScoreView: flag(body.showThreeScoreView, before.showThreeScoreView),
+    showScoreDrift: flag(body.showScoreDrift, before.showScoreDrift),
+    includeAiEvidence: flag(body.includeAiEvidence, before.includeAiEvidence),
+    introCallAiPrompts: flag(body.introCallAiPrompts, before.introCallAiPrompts),
+  };
+
+  const recompute = compositionChanged(before, after);
+  const stmts: D1PreparedStatement[] = [
+    c.env.DB.prepare(
+      "UPDATE org_scoring_settings SET ai_pre_scoring_enabled = ?, auto_clarification = ?, " +
+        "show_ai_score_to_jury = ?, require_override_rationale = ?, override_rationale_delta = ?, " +
+        "jury_sees_peer_scores = ?, score_scale = ?, composite_formula = ?, ai_weight_pct = ?, " +
+        "shortlist_threshold = ?, show_three_score_view = ?, show_score_drift = ?, " +
+        "include_ai_evidence = ?, intro_call_ai_prompts = ?, updated_at = datetime('now'), " +
+        "updated_by = ? WHERE edition = ?",
+    ).bind(
+      after.aiPreScoringEnabled ? 1 : 0,
+      after.autoClarification ? 1 : 0,
+      after.showAiScoreToJury ? 1 : 0,
+      after.requireOverrideRationale ? 1 : 0,
+      after.overrideRationaleDelta,
+      after.jurySeesPeerScores ? 1 : 0,
+      after.scoreScale,
+      after.compositeFormula,
+      after.aiWeightPct,
+      after.shortlistThreshold,
+      after.showThreeScoreView ? 1 : 0,
+      after.showScoreDrift ? 1 : 0,
+      after.includeAiEvidence ? 1 : 0,
+      after.introCallAiPrompts ? 1 : 0,
+      userId,
+      edition,
+    ),
+  ];
+  if (recompute) stmts.push(bumpCriteriaVersion(c, edition));
+  await c.env.DB.batch(stmts);
+
+  const rescored = recompute ? await rescoreEdition(c.env, edition) : { decks: 0, evaluations: 0 };
+  return c.json({ ok: true, scoring: after, rescored });
 });
 
 // ── Cohort thresholds ────────────────────────────────────────────────────────

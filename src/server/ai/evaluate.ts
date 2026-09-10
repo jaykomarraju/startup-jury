@@ -7,7 +7,10 @@
 // takes an injectable `callModel` so tests can supply a mocked response.
 
 import type { Edition } from "../../shared/roles";
-import { weightedTotal, signalTag } from "../../shared/scoring";
+import { composite, signalTag } from "../../shared/scoring";
+import type { CompositeFormula } from "../../shared/types";
+import { scoringSettingsFor } from "../config/scoringSettings";
+import { maybeAutoClarify } from "../config/autoQuery";
 import {
   mergeIntakeDetails,
   missingIntakeFields,
@@ -58,6 +61,18 @@ const PASS_STAGE: Record<Edition, string> = {
 const FAIL_STAGE: Record<Edition, string> = {
   incubator: "rejected",
   vc: "archived",
+};
+
+/**
+ * Where a deck lands when the org has turned **AI pre-scoring off** (admin
+ * console → Scoring framework, `ai_pre_scoring_enabled`). No model call, no
+ * scores, no gate — a human picks the deck up instead. The incubator has an
+ * explicit human-triage stage; the VC pipeline's first human stage is analyst
+ * scoring, which is the same idea one step further along.
+ */
+const SKIP_AI_STAGE: Record<Edition, string> = {
+  incubator: "manual_review",
+  vc: "analyst_scoring",
 };
 
 export interface ParameterRow {
@@ -166,6 +181,8 @@ export interface EvaluationResult {
   /** Soft duplicate / returning-company alert, or null. Never blocks. */
   intakeFlag: IntakeFlag | null;
   intakeNote: string | null;
+  /** True when the org has AI pre-scoring off — no model call was made. */
+  aiSkipped?: boolean;
 }
 
 export interface AnthropicRequest {
@@ -405,13 +422,16 @@ export function computeResult(
   parsed: ParsedEvaluation,
   params: ParameterRow[],
   edition: Edition,
+  formula: CompositeFormula = "weighted_average",
 ): { weightedTotal: number; signal: string; gatePassed: boolean; status: string } {
   const scoreByKey = new Map(parsed.scores.map((s) => [s.key, s.value]));
   // Score every rubric parameter over the FULL weight denominator: a parameter
   // the model didn't return counts as 0, so a partial/truncated response can't
-  // inflate the weighted total past the gate.
-  const total = weightedTotal(
+  // inflate the composite past the gate. W2-A: the aggregation itself is the
+  // org's configured `composite_formula`, not always a weighted average.
+  const total = composite(
     params.map((p) => ({ weight: p.weight, value: scoreByKey.get(p.key) ?? 0 })),
+    formula,
   );
 
   // A deck the model flagged, or one it could not score at all, is Incomplete —
@@ -522,6 +542,59 @@ export interface EvaluateOptions {
 }
 
 /**
+ * The AI-off path. Moves the deck out of the AI queue into the edition's first
+ * human stage, records the reason in `pipeline_events`, and clears any stale
+ * AI-health state so the cron sweep does not keep re-driving it. Deliberately
+ * leaves an existing `ai_score` / `signal` / `scores` alone: turning the engine
+ * off should not erase what it produced while it was on.
+ */
+async function skipAiEvaluation(
+  env: Env,
+  deck: DeckRow,
+  now: () => string,
+): Promise<EvaluationResult> {
+  const ts = now();
+  const status = SKIP_AI_STAGE[deck.edition];
+  if (deck.status !== status) {
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE decks SET status = ?, updated_at = ?, ai_error = NULL, ai_failed_at = NULL, ai_attempts = 0 WHERE id = ?",
+      ).bind(status, ts, deck.id),
+      env.DB.prepare(
+        "INSERT INTO pipeline_events (id, deck_id, actor_id, from_stage, to_stage, action, note, created_at) VALUES (?, ?, NULL, ?, ?, 'ai_skipped', ?, ?)",
+      ).bind(
+        `${deck.id}_evt_${crypto.randomUUID()}`,
+        deck.id,
+        deck.status,
+        status,
+        "AI pre-scoring is switched off for this organisation",
+        ts,
+      ),
+    ]);
+  }
+  return {
+    deckId: deck.id,
+    recognized: { name: deck.name ?? "Untitled deck", stage: deck.stage ?? null },
+    weightedTotal: 0,
+    signal: "absent",
+    status,
+    gatePassed: false,
+    complete: true,
+    missingFields: [],
+    details: {
+      founder: deck.founder,
+      founderEmail: deck.founder_email,
+      founderPhone: deck.founder_phone,
+      city: deck.city,
+      sector: deck.sector,
+    },
+    intakeFlag: null,
+    intakeNote: null,
+    aiSkipped: true,
+  };
+}
+
+/**
  * Evaluate one deck end-to-end: R2 PDF → Claude → parse → gate → persist.
  * Writes `deck_extractions`, AI `scores`, an `evaluations` roll-up, the deck's
  * ai_score/signal/status/founder, and a `pipeline_events` audit row.
@@ -542,6 +615,17 @@ export async function evaluateDeck(
     .bind(deckId)
     .first<DeckRow>();
   if (!deck) throw new Error(`deck not found: ${deckId}`);
+
+  // ── AI pre-scoring switch (admin console → Scoring framework) ─────────────
+  // "AI reads and scores every deck before jury sees it". Off means OFF: no R2
+  // read, no model call, no scores, no gate. The deck leaves the AI queue for
+  // the edition's first human stage and says so in its audit trail, so nothing
+  // strands at `pending_ai` waiting for a pass that will never run.
+  const settings = await scoringSettingsFor(env, deck.edition);
+  if (!settings.aiPreScoringEnabled) {
+    return skipAiEvaluation(env, deck, now);
+  }
+
   if (!deck.r2_key) throw new Error(`deck has no R2 key: ${deckId}`);
 
   const params = (
@@ -621,6 +705,7 @@ export async function evaluateDeck(
     effective,
     params,
     deck.edition,
+    settings.compositeFormula,
   );
 
   // Soft duplicate / returning-company alert, re-run now that the extraction has
@@ -737,6 +822,28 @@ export async function evaluateDeck(
     } catch (err) {
       console.error(`incomplete-deck notification failed for ${deckId}:`, err);
     }
+  }
+
+  // ── Auto-triggered clarification (admin console → Scoring framework) ───────
+  // "Send targeted questions to startup when AI detects weak signal". Runs
+  // after the batch commits for the same reason the Incomplete notification
+  // does, is a no-op when the toggle is off, and never fails the evaluation.
+  try {
+    await maybeAutoClarify(
+      env,
+      {
+        deckId,
+        edition: deck.edition,
+        deckName: effectiveName ?? "your pitch deck",
+        founderName: details.founder ?? null,
+        founderEmail: details.founderEmail ?? null,
+        uploadedBy: deck.uploaded_by,
+        missingFields,
+      },
+      now,
+    );
+  } catch (err) {
+    console.error(`auto-clarification failed for ${deckId}:`, err);
   }
 
   return {

@@ -15,6 +15,7 @@ import { createMiddleware } from "hono/factory";
 import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { requireAuth } from "../auth/middleware";
+import { loadScoringSettings } from "../config/scoringSettings";
 import { canAccessNav } from "../../shared/nav";
 import {
   buildFunnel,
@@ -152,6 +153,11 @@ analytics.get("/evaluators", guard("evaluatorscores"), async (c) => {
 
 analytics.get("/drift", guard("scoredrift"), async (c) => {
   const edition = c.var.user.edition;
+  // Admin console → Scoring framework → "Show score drift analysis in reports".
+  // Off means the report carries no drift analysis — enforced here, so turning
+  // it off is not something a client can decline to honour.
+  const scoring = await loadScoringSettings(c.env.DB, edition);
+  if (!scoring.showScoreDrift) return c.json({ ...scoreDrift([]), disabled: true });
   const decks = (
     await c.env.DB.prepare(
       "SELECT id, name, ai_score FROM decks WHERE edition = ? AND ai_score IS NOT NULL",

@@ -28,6 +28,7 @@ import {
   type Edition,
 } from "../../shared/roles";
 import { buildIcs, icsFilename, ICS_CONTENT_TYPE, type IcsAttendee } from "../../shared/ics";
+import { introCallPrompts } from "../config/callPrompts";
 import { buildCallInviteEmail, sendEmail } from "../email/outbox";
 import { performAction } from "../../pipeline";
 
@@ -588,6 +589,23 @@ function icsFor(row: CallRow, participants: ParticipantRow[], fallbackFrom: stri
 }
 
 const FALLBACK_ORGANIZER = "no-reply@startup-jury.invalid";
+
+/**
+ * GET /api/calls/:id/prompts — the AI's suggested questions for this call.
+ *
+ * Admin console → Scoring framework → "Intro call AI question prompts enabled"
+ * (F0110). Derived from the deck's own AI evaluation: its weakest areas, the
+ * slides the extraction found missing, and the intake details still absent.
+ * With the toggle off the list is empty and `enabled` says why, so the call
+ * screen can drop the block rather than render an unexplained blank.
+ *
+ * Visible to anyone who can see the call — the prompts are for whoever is on it.
+ */
+calls.get("/:id/prompts", async (c) => {
+  const row = await loadVisibleCall(c, c.req.param("id"));
+  if (!row) return c.json({ error: "not_found" }, 404);
+  return c.json(await introCallPrompts(c.env, c.var.user.edition as Edition, row.deck_id));
+});
 
 /**
  * GET /api/calls/:id/ics — download the invite. Available to anyone who can see

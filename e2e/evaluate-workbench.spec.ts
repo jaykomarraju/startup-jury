@@ -68,6 +68,16 @@ test("VC evaluator sees the workbench and the rescore guard", async ({ page }) =
   // AI breakdown rationale from the seed.
   await expect(page.getByText("Repeat fintech operators with regulatory experience.")).toBeVisible();
 
+  // W2-A / plan §9 — the guard used to answer "Already scored" for every seeded
+  // deck, because `0025` rewrote all eighteen AI prompts and never bumped
+  // `org_settings.criteria_version`, so a rubric that HAD changed still read as
+  // current. Migration `0038` bumps it, and the guard now lets the request past
+  // its version check — where the seeded deck's missing PDF stops it, which is
+  // the honest answer for a fixture that was never uploaded.
+  //
+  // This is still the rescore guard being exercised: it refuses for a reason
+  // the operator can act on rather than for a stale version comparison.
   await page.getByRole("button", { name: /Re-run AI score/ }).click();
-  await expect(page.getByText(/Already scored/)).toBeVisible();
+  await expect(page.getByText("No stored PDF to re-score.")).toBeVisible();
+  await expect(page.getByText(/Already scored/)).toHaveCount(0);
 });

@@ -1,4 +1,4 @@
-import { SELF } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 
 // The Aug-2026 issue-log work, end to end against the seeded workspace:
@@ -234,11 +234,22 @@ interface Report {
   core: { key: string; cells: Record<string, { value: number }> }[];
   additional: { role: string; rows: unknown[] }[];
   hiddenEvaluators: number;
+  /** W2-A — set when the columns were trimmed by peer visibility, not by rank. */
+  peerScoresHidden: boolean;
 }
 
 async function report(cookie: string, deckId = "inc_deck_insureflow"): Promise<Report> {
   const r = await get(`/api/decks/${deckId}/report`, cookie);
   return (await r.json()) as Report;
+}
+
+/** Admin console → Scoring framework → "Jury can see each other's scores". */
+async function setPeerVisibility(on: boolean): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE org_scoring_settings SET jury_sees_peer_scores = ? WHERE edition = 'incubator'",
+  )
+    .bind(on ? 1 : 0)
+    .run();
 }
 
 describe("evaluation report (issues 20, 21, 23, 24)", () => {
@@ -267,22 +278,48 @@ describe("evaluation report (issues 20, 21, 23, 24)", () => {
   });
 
   it("hides evaluators above the caller and says how many were withheld", async () => {
-    const pa = await report(await login(PA));
-    expect(pa.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "program_associate"]);
-    expect(pa.hiddenEvaluators).toBe(3);
+    // Issue 21's hierarchy rule, asserted with peer visibility ON — see the
+    // test below for why that is now something the test has to switch on.
+    await setPeerVisibility(true);
+    try {
+      const pa = await report(await login(PA));
+      expect(pa.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "program_associate"]);
+      expect(pa.hiddenEvaluators).toBe(3);
 
+      const jury = await report(await login(JURY));
+      expect(jury.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "program_associate", "jury"]);
+      expect(jury.hiddenEvaluators).toBe(2);
+
+      const pm = await report(await login(PM));
+      expect(pm.columns.map((c) => c.role ?? "ai")).toEqual([
+        "ai",
+        "program_associate",
+        "jury",
+        "program_manager",
+      ]);
+      expect(pm.hiddenEvaluators).toBe(1);
+    } finally {
+      await setPeerVisibility(false);
+    }
+  });
+
+  it("shows an evaluator only their own column while peer visibility is off", async () => {
+    // W2-A / F0109 — admin console → Scoring framework → "Jury can see each
+    // other's scores" · "Turn off for fully independent scoring rounds". It is
+    // the one toggle the prototype ships OFF, and 0026 seeds it off, while the
+    // build behaved as though it were permanently on.
+    //
+    // Off, an evaluator sees the AI column and their own and nothing else. The
+    // issue-21 hierarchy above is not replaced by this — it applies on top when
+    // the toggle is on, which is what the previous test now asserts explicitly.
     const jury = await report(await login(JURY));
-    expect(jury.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "program_associate", "jury"]);
-    expect(jury.hiddenEvaluators).toBe(2);
+    expect(jury.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "jury"]);
+    expect(jury.peerScoresHidden).toBe(true);
 
-    const pm = await report(await login(PM));
-    expect(pm.columns.map((c) => c.role ?? "ai")).toEqual([
-      "ai",
-      "program_associate",
-      "jury",
-      "program_manager",
-    ]);
-    expect(pm.hiddenEvaluators).toBe(1);
+    // Oversight roles are outside the toggle: they do not score, they review.
+    const admin = await report(await login(SUPER));
+    expect(admin.peerScoresHidden).toBe(false);
+    expect(admin.columns.length).toBeGreaterThan(2);
   });
 
   it("withholds the CELLS, not just the column headers", async () => {
