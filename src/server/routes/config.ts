@@ -22,7 +22,7 @@ import {
   type ScoringSettings,
 } from "../../shared/scoring";
 import { AI_WEIGHT_CHOICES, COMPOSITE_FORMULAS, SCORE_SCALES } from "../../shared/types";
-import { requireAuth, requireRole } from "../auth/middleware";
+import { requireAuth, requireRole, requireTask } from "../auth/middleware";
 import { rescoreEdition } from "../config/rescore";
 import { loadScoringSettings } from "../config/scoringSettings";
 
@@ -140,7 +140,7 @@ config.get("/summary", async (c) => {
 
 /** GET /api/config — the full settings (admin only): adds the AI system prompt
  *  and the credits balance to the summary payload. */
-config.get("/", requireRole("admin"), async (c) => {
+config.get("/", requireTask("adminconsole", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const s = await loadSettings(c, edition);
   if (!s) return c.json({ error: "not_found" }, 404);
@@ -251,7 +251,7 @@ function validOwner(edition: Edition, role: unknown): Role | null {
 
 /** POST /api/config/additional-params — add a role-scoped additional param
  *  (Premium only). Body: { name, roleScope, prompt? }. Enforces ≤3 per role. */
-config.post("/additional-params", requireRole("admin"), async (c) => {
+config.post("/additional-params", requireTask("configparams", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const s = await loadSettings(c, edition);
   if (!s) return c.json({ error: "not_found" }, 404);
@@ -294,7 +294,13 @@ config.post("/additional-params", requireRole("admin"), async (c) => {
   });
 });
 
-/** Admin / superuser — the roles that may configure anything. */
+/**
+ * Admin / superuser — the roles that may configure anything.
+ *
+ * W3-A: this is no longer the whole answer. It is the floor that survives even
+ * an empty permissions table; the *editor set* is now the `configparams` cell
+ * (see the route below).
+ */
 function isConfigAdmin(role: Role): boolean {
   return role === "admin" || role === "superuser";
 }
@@ -311,17 +317,25 @@ function isConfigAdmin(role: Role): boolean {
  * client. The route's blanket `requireRole("admin")` is gone, so the guards are
  * explicit: a founder, or a role that does not own this parameter, gets 403.
  *
- * The *default* editor set is deliberately unchanged (§8 Q6 / F0080 — whether
- * program managers and partners edit config by default is `W3-A`'s call, and
- * `PUT /api/config/parameters` stays admin-only, which is what keeps the roles
- * harness at 526/526).
+ * §8 Q6 / F0063 / F0080 / F0071 — **settled by W3-A.** The editor set is the
+ * `configparams` cell ("Configure 3 additional parameters"), which both written
+ * specs §10 seed to Super Users, Client Admins and the Program Manager
+ * (incubator) / Partner (VC); §1.1 ranks that spec above the live console,
+ * which grants it to the Super User alone (F0150 — one cell to reverse). Any
+ * other role still needs the per-parameter `config_permitted` grant, exactly as
+ * the spec's "read-only unless granted" sentence describes.
+ *
+ * The core-13 area weights are NOT this task: `PUT /api/config/parameters` is
+ * still admin-only, which is what keeps the roles harness's `config.params`
+ * probe where it was.
  */
 config.put("/additional-params/:id", async (c) => {
   const { edition, role } = c.var.user;
-  // Only an admin/superuser or one of the roles that can OWN an additional
+  // Only a `configparams` holder or one of the roles that can OWN an additional
   // parameter can possibly pass; everyone else (founder, mentor, …) is out
   // before the plan or the row is read.
-  if (!isConfigAdmin(role) && !isAdditionalParamOwner(edition, role)) {
+  const mayConfigure = await c.var.perms.can("configparams");
+  if (!mayConfigure && !isAdditionalParamOwner(edition, role)) {
     return c.json({ error: "forbidden" }, 403);
   }
   const s = await requirePremium(c, edition);
@@ -342,7 +356,7 @@ config.put("/additional-params/:id", async (c) => {
   if (p.informational !== 1) return c.json({ error: "core_param" }, 400);
 
   const permitted = p.config_permitted === 1 && p.role_scope === role;
-  if (!isConfigAdmin(role) && !permitted) return c.json({ error: "forbidden" }, 403);
+  if (!mayConfigure && !permitted) return c.json({ error: "forbidden" }, 403);
 
   const body = await readBody<{ name?: string; prompt?: string | null }>(c);
   const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : p.name;
@@ -361,7 +375,7 @@ config.put("/additional-params/:id", async (c) => {
 
 /** DELETE /api/config/additional-params/:id — retire an additional param
  *  (Premium only; soft delete active=0, so historical scores stay referenced). */
-config.delete("/additional-params/:id", requireRole("admin"), async (c) => {
+config.delete("/additional-params/:id", requireTask("configparams", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const s = await requirePremium(c, edition);
   if (!s) return c.json({ error: "plan_required" }, 402);
@@ -387,7 +401,7 @@ config.delete("/additional-params/:id", requireRole("admin"), async (c) => {
  * Granting the delegation is itself an admin act, so this stays admin-only even
  * though the grant it writes lets a non-admin edit. Body: `{ permitted: bool }`.
  */
-config.put("/additional-params/:id/permit", requireRole("admin"), async (c) => {
+config.put("/additional-params/:id/permit", requireTask("configparams", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const id = c.req.param("id");
   const body = await readBody<{ permitted: boolean }>(c);
@@ -468,7 +482,7 @@ interface ScoringFrameworkBody {
  * (unblocking re-score) and re-computes the edition's stored totals — the same
  * contract a weight edit already has.
  */
-config.put("/scoring-framework", requireRole("admin"), async (c) => {
+config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c) => {
   const { edition, id: userId } = c.var.user;
   const before = await loadScoringSettings(c.env.DB, edition);
   const body = await readBody<ScoringFrameworkBody>(c);
@@ -553,7 +567,7 @@ config.put("/scoring-framework", requireRole("admin"), async (c) => {
 
 // ── Cohort thresholds ────────────────────────────────────────────────────────
 
-config.put("/thresholds", requireRole("admin"), async (c) => {
+config.put("/thresholds", requireTask("adminconsole", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const body = await readBody<{ best: number; mediocre: number }>(c);
   const best = Number(body.best);
@@ -572,7 +586,7 @@ config.put("/thresholds", requireRole("admin"), async (c) => {
 
 // ── AI system prompt ─────────────────────────────────────────────────────────
 
-config.put("/ai-prompt", requireRole("admin"), async (c) => {
+config.put("/ai-prompt", requireTask("adminconsole", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const body = await readBody<{ prompt: string }>(c);
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
@@ -589,7 +603,7 @@ config.put("/ai-prompt", requireRole("admin"), async (c) => {
 
 // ── Branding ─────────────────────────────────────────────────────────────────
 
-config.put("/branding", requireRole("admin"), async (c) => {
+config.put("/branding", requireTask("adminconsole", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const body = await readBody<{ branding: Record<string, unknown> }>(c);
   const branding = body.branding && typeof body.branding === "object" ? body.branding : {};
@@ -601,7 +615,7 @@ config.put("/branding", requireRole("admin"), async (c) => {
 
 // ── Plan tier ────────────────────────────────────────────────────────────────
 
-config.put("/plan", requireRole("admin"), async (c) => {
+config.put("/plan", requireTask("upgrade", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const body = await readBody<{ plan: string }>(c);
   if (!isPlan(body.plan)) return c.json({ error: "invalid_plan" }, 400);
@@ -613,7 +627,7 @@ config.put("/plan", requireRole("admin"), async (c) => {
 
 // ── Admin-granted credits ────────────────────────────────────────────────────
 
-config.post("/credits", requireRole("admin"), async (c) => {
+config.post("/credits", requireTask("upgrade", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const body = await readBody<{ credits: number }>(c);
   const credits = Number(body.credits);
@@ -631,7 +645,7 @@ config.post("/credits", requireRole("admin"), async (c) => {
 // the balance and records NO payment details. There is no real payment
 // integration — collecting card / UPI / bank credentials is deliberately out of
 // scope. The client labels it clearly as a simulated purchase.
-config.post("/credits/purchase", requireRole("admin"), async (c) => {
+config.post("/credits/purchase", requireTask("upgrade", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const body = await readBody<{ credits: number }>(c);
   const credits = Number(body.credits);

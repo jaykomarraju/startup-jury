@@ -57,6 +57,8 @@ import {
 } from "../src/shared/roles";
 import { NAV_BY_EDITION, canSeeNav, navForUser, type NavItem } from "../src/shared/nav";
 import { getPipeline, performAction } from "../src/pipeline";
+import { DEFAULT_ROLE_PERMISSIONS, PERMISSION_ROLES, permissionTasksFor } from "../src/shared/types";
+import { can as canTask, isMatrixTask, permissionLookup } from "../src/shared/permissions";
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -175,6 +177,20 @@ function reportDeclaredMatrix() {
         .map((r) => `${SHORT[r] ?? r}=${pipelineActionsFor(edition, r).length}`)
         .join("  ")}   (of ${pipe.transitions.length} transitions)`,
     );
+
+    h2(`${edition.toUpperCase()} — task permissions (role_permissions, default seed)`);
+    const permRoles = PERMISSION_ROLES[edition];
+    matrix(
+      "task",
+      permissionTasksFor(edition).map((t) => ({
+        label: `${t.group}/${t.id}`,
+        cells: permRoles.map((r) => canTask(edition, r, t.id)),
+      })),
+      permRoles.map((r) => SHORT[r] ?? r),
+    );
+    say("  the Admin console's Task permissions grid, as SHIPPED. It is a GATE:");
+    say("  every cell above is ANDed onto the role rule that was already there,");
+    say("  so unticking one removes a capability and ticking one adds nothing.");
 
     h2(`${edition.toUpperCase()} — feature capabilities`);
     const features: { label: string; test: (r: Role) => boolean }[] = [
@@ -369,6 +385,68 @@ function reportInvariants() {
       !canScheduleCalls("incubator", MENTOR),
   );
 
+  // ── The runtime permission engine (W3-A) ─────────────────────────────────
+  //
+  // The engine is only safe because the default seed makes every gate a no-op.
+  // These are the four properties that guarantee it, checked here rather than
+  // trusted: break any one and a role silently loses a screen or a route.
+  for (const edition of EDITIONS) {
+    const tasks = permissionTasksFor(edition).map((t) => t.id);
+
+    check(
+      `[${edition}] every nav task is a cell in this edition's grid`,
+      NAV_BY_EDITION[edition]
+        .filter((i) => i.task)
+        .every((i) => isMatrixTask(edition, i.task!)),
+      NAV_BY_EDITION[edition]
+        .filter((i) => i.task && !isMatrixTask(edition, i.task!))
+        .map((i) => `${i.id}→${i.task}`)
+        .join(","),
+    );
+
+    // GATE, NOT GRANT: a nav item's task must be granted to every role the
+    // item's own `roles` list admits, or the default seed would take the
+    // screen away from someone who has it today.
+    const shrunk = NAV_BY_EDITION[edition].flatMap((item) =>
+      !item.task
+        ? []
+        : item.roles
+            .filter((r) => (PERMISSION_ROLES[edition] as readonly Role[]).includes(r))
+            .filter((r) => !canTask(edition, r, item.task!))
+            .map((r) => `${item.id}/${r}`),
+    );
+    check(`[${edition}] the default seed takes no nav item away from anyone`, shrunk.length === 0, shrunk.join(","));
+
+    // The same statement, made through the predicate the app actually calls.
+    const withPerms = (role: Role) => navForUser(edition, role, permissionLookup(edition, role)).length;
+    const drift = ROLES_BY_EDITION[edition]
+      .filter((r) => withPerms(r) !== navForUser(edition, r).length)
+      .map((r) => `${r}:${navForUser(edition, r).length}→${withPerms(r)}`);
+    check(`[${edition}] navForUser is unchanged when the default lookup is applied`, drift.length === 0, drift.join(","));
+
+    check(
+      `[${edition}] the superuser holds every task (it bypasses the role list, not the grid)`,
+      tasks.every((t) => canTask(edition, "superuser", t)),
+    );
+    check(
+      `[${edition}] the founder is outside the matrix entirely (isolation is not a toggle)`,
+      tasks.every((t) => canTask(edition, "founder" as Role, t)) &&
+        !(PERMISSION_ROLES[edition] as readonly string[]).includes("founder"),
+    );
+    check(
+      `[${edition}] the "mentor" user-type is granted nothing, on any cell`,
+      tasks.every((t) => !canTask(edition, MENTOR, t)),
+    );
+    check(
+      `[${edition}] every task the grid names has a seeded row for every role`,
+      tasks.every((t) =>
+        (PERMISSION_ROLES[edition] as readonly Role[]).every(
+          () => DEFAULT_ROLE_PERMISSIONS[edition][t] !== undefined,
+        ),
+      ),
+    );
+  }
+
   say(`  ${checksRun} invariants evaluated, ${checksFailed - before} failed.`);
   if (checksFailed === before) say("  ✓ all invariants hold.");
 }
@@ -474,6 +552,11 @@ const PROBES: Probe[] = [
     allow: ["admin", "program_manager", "program_associate", "associate", "analyst"] },
   { id: "ic.vote", label: "POST /api/decks/:id/ic-vote", kind: "write", method: "POST", path: `/api/decks/${GHOST_DECK}/ic-vote`, body: {},
     editions: ["vc"], allow: ["admin", "ic_member", "partner"] },
+
+  { id: "permissions.read", label: "GET /api/permissions (task matrix)", kind: "read", method: "GET", path: "/api/permissions",
+    allow: ["admin"] },
+  { id: "permissions.write", label: "PUT /api/permissions (toggle a cell)", kind: "write", method: "PUT", path: "/api/permissions", body: {},
+    allow: ["admin"] },
 
   // ── Contract: analytics delegate to the nav manifest by design ────────────
   ...analyticsProbes(),

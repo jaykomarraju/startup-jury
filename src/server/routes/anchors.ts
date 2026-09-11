@@ -20,7 +20,7 @@ import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { RUBRIC_BANDS } from "../../shared/types";
-import { requireAuth, requireRole } from "../auth/middleware";
+import { requireAuth, requireTask } from "../auth/middleware";
 
 const anchors = new Hono<AppEnv>();
 anchors.use("*", requireAuth);
@@ -125,7 +125,7 @@ async function loadEdition(c: Context<AppEnv>, edition: Edition): Promise<Anchor
  * is what the section's area picker lists — NOT the prototype's stale P1/P2/P3
  * trio (plan §8 Q10).
  */
-anchors.get("/", requireRole("admin"), async (c) => {
+anchors.get("/", requireTask("adminconsole", "admin"), async (c) => {
   const edition = c.var.user.edition;
   return c.json({ edition, parameters: await loadEdition(c, edition) });
 });
@@ -142,7 +142,7 @@ interface AnchorWriteBody {
  * alone. An empty string is stored as NULL: a blank anchor means "not written"
  * and must fall back to the band label, not to an empty line in the AI prompt.
  */
-anchors.put("/:parameterId", requireRole("admin"), async (c) => {
+anchors.put("/:parameterId", requireTask("adminconsole", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const parameterId = c.req.param("parameterId");
   const body = (await c.req.json().catch(() => ({}))) as Partial<AnchorWriteBody>;

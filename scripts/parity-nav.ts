@@ -149,7 +149,7 @@ const EXPECTED_GAPS: ReadonlyMap<string, string> = new Map([
     "vc/admin · extra billing",
   ),
   ...gap(
-    "Q4 — the IC Admin prototype alone drops both Collaborate items, while Super User, PM, PA and Jury all keep them. Prototype inconsistency or a deliberate admin trim? §8.",
+    "SETTLED (W3-A, §8 Q4) — prototype inconsistency, not a deliberate trim. The IC Admin file is the only one of eleven that drops them, no Aug-2026 issue asked for the removal, and an admin who cannot reach Contact team loses the only route to the people they administer. Both items stay.",
     "incubator/admin · extra contactadmin",
     "incubator/admin · extra contactteam",
   ),
@@ -164,13 +164,13 @@ const EXPECTED_GAPS: ReadonlyMap<string, string> = new Map([
 
   // ── label ──────────────────────────────────────────────────────────────────
   ...gap(
-    'W3-A — casing. Prototype "Prog manager pipeline"; app "Prog Manager Pipeline".',
+    'REASSIGNED (W3-A) → the Prog Manager Pipeline lane. Casing: prototype "Prog manager pipeline", app "Prog Manager Pipeline". W3-A owns the sidebar label but not the matching page heading (StagePage.tsx:690 hardcodes the same string); changing one without the other makes the sidebar and the heading disagree. Change both in one commit.',
     "incubator/superuser · label pmpipeline",
     "incubator/admin · label pmpipeline",
     "incubator/program_manager · label pmpipeline",
   ),
   ...gap(
-    'W3-A — casing. Prototype "My Scores"; app "My scores".',
+    'REASSIGNED (W3-A) → the jury Reports lane. Casing: prototype "My Scores", app "My scores". Same reason as pmpipeline — the report screen carries its own heading.',
     "incubator/jury · label repscores",
   ),
   ...gap(
@@ -180,17 +180,12 @@ const EXPECTED_GAPS: ReadonlyMap<string, string> = new Map([
 
   // ── role-gap: candidate REAL gaps ─────────────────────────────────────────
   ...gap(
-    "W3-A — likely REAL. §1.4 gives the Program Manager decision authority, and the PM prototype offers both screens; the app reserves them for admin + associate.",
-    "incubator/program_manager · role-gap incuration",
-    "incubator/program_manager · role-gap curation",
-  ),
-  ...gap(
     "W3-A — needs adjudication. The PA prototype offers both, but Aug-2026 issue 26 added pmpipeline specifically as the PM's decision surface, and jurypipeline is jury oversight.",
     "incubator/program_associate · role-gap jurypipeline",
     "incubator/program_associate · role-gap pmpipeline",
   ),
   ...gap(
-    "W3-A — Core Parameters is admin-only in the app (PUT /api/config/parameters is admin+superuser, roles 526/526), yet every non-admin prototype sidebar lists it. Decide read-only visibility vs edit when `can(task)` lands.",
+    "PART-SETTLED (W3-A, §8 Q6) → the remaining half belongs to the Core Parameters lane. The AUTHORITY half is done: `configparams` (Configure 3 additional parameters) is a runtime permission, seeded per spec §10 to Super User + Client Admin + PM (incubator) / Partner (VC), enforced on the additional-param routes and read by MyParamsPage. The VISIBILITY half is blocked on the SCREEN, not on permissions: `coreparams` renders the whole admin config surface (AI prompt, branding, plan, credits), so widening it would hand four panels the prototype does not put there to every role. Split the screen to the prototype panel, then widen `roles` in nav.ts and seed the cell.",
     "incubator/program_manager · role-gap coreparams",
     "incubator/program_associate · role-gap coreparams",
     "vc/partner · role-gap coreparams",
@@ -199,7 +194,7 @@ const EXPECTED_GAPS: ReadonlyMap<string, string> = new Map([
     "vc/analyst · role-gap coreparams",
   ),
   ...gap(
-    "W3-A — Set up is admin-only in the VC build, while the incubator build already grants PM and PA a trimmed one. Same decision as coreparams; settle both together.",
+    "DEFERRED (W3-A, §8 Q6) → the Set up lane. Same shape as coreparams and blocked the same way: the VC wizard has no read-only mode and `GET /api/config` is console-gated. There is no `setup` task in the prototype grid either, so this is a nav + screen decision, not a matrix one.",
     "vc/partner · role-gap setup",
     "vc/associate · role-gap setup",
     "vc/analyst · role-gap setup",
@@ -216,7 +211,6 @@ const EXPECTED_GAPS: ReadonlyMap<string, string> = new Map([
     "vc/partner · role-gap query",
     "vc/partner · role-gap assign",
     "vc/partner · role-gap jurypipeline",
-    "vc/partner · role-gap icpipeline",
     "vc/associate · role-gap partnerpipeline",
     "vc/associate · role-gap partnercall",
     "vc/associate · role-gap investmentdd",

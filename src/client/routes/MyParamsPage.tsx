@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../auth/useAuth";
+import { usePermissions } from "../auth/usePermissions";
 import { Card, Button, Badge, EmptyState } from "../components";
 import {
   getConfigSummary,
@@ -22,14 +23,22 @@ import {
  *  areas — each with a renameable label and a configurable AI prompt. They are
  *  assistive (AI scores them) but never fold into the core-13 composite.
  *  Plan-gated: hidden on Standard/Pro (Premium unlocks configuration); on Premium
- *  the list is visible to all roles but only admins/superusers can edit. */
+ *  the list is visible to all roles and the `configparams` permission decides who
+ *  can edit (W3-A — see `canEdit` below). */
 export function MyParamsPage() {
   const { user } = useAuth();
+  const can = usePermissions();
   const edition: Edition = user?.edition ?? "incubator";
   const [cfg, setCfg] = useState<ConfigSummary | null>(null);
   const [loadError, setLoadError] = useState(false);
 
-  const canEdit = user?.role === "admin" || user?.role === "superuser";
+  // §8 Q6 / F0071 / F0080 / F0924 — settled by W3-A. The editor set is the
+  // `configparams` cell ("Configure 3 additional parameters"), not a role
+  // literal: both specs §10 seed it to Super Users, Client Admins and the
+  // Program Manager (incubator) / Partner (VC), and an administrator can grant
+  // it to any other role from Admin → Team & roles. `PUT /api/config/
+  // additional-params/:id` enforces the same thing server-side.
+  const canEdit = can("configparams");
 
   const load = useCallback(
     () =>

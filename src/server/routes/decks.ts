@@ -11,7 +11,7 @@ import { getStage, allowedTransitions } from "../../pipeline";
 import { decisionScore, withholdsAiScore, WEAK_SIGNAL_MAX } from "../../shared/scoring";
 import { loadScoringSettings } from "../config/scoringSettings";
 import { missingIntakeFields, parseMissingFields, type IntakeMatch } from "../../shared/intake";
-import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
+import { denyMentor, requireAuth, requireTask } from "../auth/middleware";
 import { detectIntakeFlags, intakeFlagStatement } from "../intake";
 import { evaluateDeck } from "../ai/evaluate";
 import {
@@ -487,7 +487,7 @@ const ONBOARDING_ROLES = ["program_associate", "program_manager", "admin", "part
  * issue 30 wants Curation stage, a jury-member lead and Progress on Onboard
  * ready. One row per deck, created on first write.
  */
-decks.put("/:id/onboarding", requireRole(...ONBOARDING_ROLES), async (c) => {
+decks.put("/:id/onboarding", requireTask("onboard", ...ONBOARDING_ROLES), async (c) => {
   const { edition, id: actorId } = c.var.user;
   const id = c.req.param("id");
   const deck = await c.env.DB.prepare("SELECT id FROM decks WHERE id = ? AND edition = ?")
@@ -584,7 +584,7 @@ const EDIT_DECK_ROLES = [
  * are touched, and writing a name clears `name_auto` so a later re-score can't
  * quietly undo the correction.
  */
-decks.patch("/:id", requireRole(...EDIT_DECK_ROLES), async (c) => {
+decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
   const { edition } = c.var.user;
   const id = c.req.param("id");
   const existing = await c.env.DB.prepare("SELECT id FROM decks WHERE id = ? AND edition = ?")
@@ -1020,7 +1020,7 @@ const RETRY_AI_ROLES = [
  * additional params → org_settings.criteria_version bumps) or a content change
  * (a new PDF version → decks.content_version bumps) unblocks it.
  */
-decks.post("/:id/rescore", requireRole(...RESCORE_ROLES), async (c) => {
+decks.post("/:id/rescore", requireTask("evaluate", ...RESCORE_ROLES), async (c) => {
   const { edition } = c.var.user;
   const id = c.req.param("id");
   // With AI pre-scoring switched off there is no pass to re-run — say so
@@ -1262,7 +1262,7 @@ decks.post("/upload", async (c) => {
  * No credit is charged — the original upload already paid for this evaluation,
  * and if it was refunded on a terminal failure the re-drive re-reserves it.
  */
-decks.post("/:id/retry-ai", requireRole(...RETRY_AI_ROLES), async (c) => {
+decks.post("/:id/retry-ai", requireTask("upload", ...RETRY_AI_ROLES), async (c) => {
   const user = c.var.user;
   const deck = await c.env.DB.prepare(
     "SELECT id, status, ai_credit_refunded FROM decks WHERE id = ? AND edition = ?",
@@ -1385,7 +1385,7 @@ const REUPLOAD_ROLES = [
  * (Session 1) waits for, so the deck is re-scored automatically. This is the
  * mechanism Session 6's incomplete-resubmit loop drives.
  */
-decks.post("/:id/version", requireRole(...REUPLOAD_ROLES), async (c) => {
+decks.post("/:id/version", requireTask("upload", ...REUPLOAD_ROLES), async (c) => {
   const { id: userId, edition, role } = c.var.user;
   const id = c.req.param("id");
 

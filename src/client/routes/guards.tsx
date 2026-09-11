@@ -1,6 +1,7 @@
 import { Navigate, useParams } from "react-router-dom";
 import type { ReactNode } from "react";
 import { useAuth } from "../auth/useAuth";
+import { usePermissions } from "../auth/usePermissions";
 import { canAccessNav, landingNavId } from "../../shared/nav";
 import { EmptyState } from "../components";
 
@@ -22,16 +23,18 @@ export function RequireAuth({ children }: { children: ReactNode }) {
 }
 
 /**
- * Gate for a nav-slug route (`/app/:navId`). Mirrors the server-side requireRole:
- * a user may only open a slug their role can see; unknown/forbidden slugs render a
- * 403 empty state (client-side; the API enforces authZ independently in later phases).
+ * Gate for a nav-slug route (`/app/:navId`). Mirrors the server-side
+ * `requireTask`: a user may only open a slug their role can see AND whose task
+ * permission they hold; unknown/forbidden slugs render a 403 empty state
+ * (client-side — the API enforces authZ independently).
  */
 export function RequireNav({ children }: { children: ReactNode }) {
   const { user } = useAuth();
+  const can = usePermissions();
   const { navId } = useParams();
   if (!user) return <Navigate to="/login" replace />;
-  if (!navId) return <Navigate to={`/app/${landingNavId(user.edition, user.role)}`} replace />;
-  if (!canAccessNav(user.edition, user.role, navId)) {
+  if (!navId) return <Navigate to={`/app/${landingNavId(user.edition, user.role, can)}`} replace />;
+  if (!canAccessNav(user.edition, user.role, navId, can)) {
     return (
       <EmptyState
         icon="ShieldAlert"

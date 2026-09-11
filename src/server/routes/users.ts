@@ -21,7 +21,7 @@ import type { Context } from "hono";
 import type { AppEnv, Env } from "../types";
 import type { Edition, Role } from "../../shared/roles";
 import { creatableStaffRoles, roleLabel } from "../../shared/roles";
-import { requireAuth, requireRole } from "../auth/middleware";
+import { requireAuth, requireTask } from "../auth/middleware";
 import { hashPassword } from "../auth/password";
 import { getUserByEmail } from "../db";
 import {
@@ -170,7 +170,7 @@ function normaliseTitle(value: unknown): string | null | undefined {
 // ── Roster ───────────────────────────────────────────────────────────────────
 
 /** GET /api/users — the edition's roster (Super User / Admin). */
-users.get("/", requireRole("admin"), async (c) => {
+users.get("/", requireTask("adminconsole", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const rows = (
     await c.env.DB.prepare(
@@ -219,7 +219,7 @@ interface CreateUserBody {
  *  Body: { name, email, role, userType? }. The one-time temporary password is
  *  EMAILED to the new user; it is returned in the response only when the mail
  *  could not actually be delivered (see `deliverInvite`). */
-users.post("/", requireRole("admin"), async (c) => {
+users.post("/", requireTask("addmembers", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const body = await readBody<CreateUserBody>(c);
 
@@ -299,7 +299,7 @@ interface UpdateUserBody {
 /** PATCH /api/users/:id — update a user's active flag, name, or role (Super
  *  User / Admin, same edition). You cannot deactivate or re-role yourself, and a
  *  superuser row is immutable here (protects the account's single owner). */
-users.patch("/:id", requireRole("admin"), async (c) => {
+users.patch("/:id", requireTask("adminconsole", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const id = c.req.param("id");
   const target = await c.env.DB.prepare(
@@ -324,6 +324,17 @@ users.patch("/:id", requireRole("admin"), async (c) => {
   }
 
   const active = typeof body.active === "boolean" ? (body.active ? 1 : 0) : target.active;
+
+  // W3-A — *Activate user* / *Deactivate user* are two separate cells in the
+  // console's Task permissions grid, and this is the only route that performs
+  // either. Checked per DIRECTION, not per route: an administrator can be left
+  // able to deactivate a leaver without being able to switch them back on.
+  // Seeded to admin + superuser (+ PM / partner-associate), so this refuses
+  // nobody until someone unticks a cell.
+  if (active !== target.active) {
+    const task = active === 1 ? "activateuser" : "deactivateuser";
+    if (!(await c.var.perms.can(task))) return c.json({ error: "forbidden" }, 403);
+  }
 
   // undefined = field absent, keep what's there; null = explicitly cleared.
   const titleUpdate = normaliseTitle(body.title);

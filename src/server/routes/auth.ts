@@ -9,8 +9,15 @@ import {
   SESSION_COOKIE,
 } from "../auth/session";
 import { requireAuth } from "../auth/middleware";
+import { loadPermissionOverrides } from "../auth/permissions";
+import { grantedTasks } from "../../shared/permissions";
 
 const auth = new Hono<AppEnv>();
+
+/** The task ids this principal holds — see the note on `GET /me` below. */
+async function permissionsFor(db: D1Database, user: SessionUser): Promise<string[]> {
+  return grantedTasks(user.edition, user.role, await loadPermissionOverrides(db, user.edition, user.role));
+}
 
 function toSessionUser(row: {
   id: string;
@@ -52,7 +59,7 @@ auth.post("/login", async (c) => {
     path: "/",
     maxAge: 60 * 60 * 24 * 7,
   });
-  return c.json({ user: sessionUser });
+  return c.json({ user: { ...sessionUser, permissions: await permissionsFor(c.env.DB, sessionUser) } });
 });
 
 auth.post("/logout", async (c) => {
@@ -68,16 +75,22 @@ auth.post("/logout", async (c) => {
  *  it) then shows up on the next load rather than after a re-login. */
 auth.get("/me", requireAuth, async (c) => {
   const session = c.var.user;
+  // W3-A — the granted task ids ride along here rather than in the KV session
+  // value, which is written once at login and lives seven days. An
+  // administrator's edit to the Task permissions grid therefore takes effect on
+  // this user's next page load, not on their next sign-in.
+  const permissions = await c.var.perms.granted();
   const row = await c.env.DB.prepare("SELECT title, name, initials FROM users WHERE id = ?")
     .bind(session.id)
     .first<{ title: string | null; name: string; initials: string }>();
-  if (!row) return c.json({ user: session });
+  if (!row) return c.json({ user: { ...session, permissions } });
   return c.json({
     user: {
       ...session,
       name: row.name,
       initials: row.initials,
       ...(row.title ? { title: row.title } : { title: undefined }),
+      permissions,
     },
   });
 });

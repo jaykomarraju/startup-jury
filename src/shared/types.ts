@@ -105,7 +105,12 @@ export const PERMISSION_TASKS: readonly PermissionTask[] = [
   { id: "deleteuser", label: "Delete user", group: "User management", editions: BOTH, source: "none",
     note: "Named by the prototype matrix; no verb in the product yet (W4-A)." },
   { id: "configparams", label: "Configure 3 additional parameters", group: "General tasks", editions: BOTH,
-    source: "nav", navSlugs: ["coreparams"] },
+    source: "route",
+    note: "W3-A reclassified this from `nav`/`coreparams`. The task is named for the ADDITIONAL "
+      + "parameters, which have no sidebar item of their own — they are configured on `myparams` "
+      + "(visible to every internal role already) and permitted per row from the console's Area "
+      + "weights. `coreparams` is the core-13 rubric screen, a different surface that stays "
+      + "admin-only. Enforced on POST/PUT/DELETE /api/config/additional-params*." },
   { id: "adminconsole", label: "Access to admin console", group: "General tasks", editions: BOTH,
     source: "nav", navSlugs: ["admin"] },
   { id: "addmembers", label: "Permit to add team members", group: "General tasks", editions: BOTH,
@@ -158,13 +163,16 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Edition, Record<string, readonly R
     introcall: ["superuser", "admin", "program_manager", "program_associate", "jury"],
     jurypipeline: ["superuser", "admin", "program_manager", "jury"],
     shortlistsignup: ["superuser", "admin", "program_manager"],
-    signuppipeline: ["superuser", "admin", "program_associate"],
-    onboard: ["superuser", "admin", "program_associate"],
+    // §8 Q5 / F0919 / F0926 — the PM reaches both post-intro-call stages (0040).
+    signuppipeline: ["superuser", "admin", "program_manager", "program_associate"],
+    onboard: ["superuser", "admin", "program_manager", "program_associate"],
     archive: ["superuser", "admin", "program_manager", "program_associate", "jury"],
     activateuser: ["superuser", "admin", "program_manager"],
     deactivateuser: ["superuser", "admin", "program_manager"],
     deleteuser: ["superuser", "admin"],
-    configparams: ["superuser", "admin"],
+    // §8 Q6 / F0063 / F0080 — spec §10's default editor set, not the live
+    // console's narrower one (§1.1 ranks the spec higher). 0040.
+    configparams: ["superuser", "admin", "program_manager"],
     adminconsole: ["superuser", "admin"],
     addmembers: ["superuser", "admin"],
     outofofficedelegation: ["superuser", "admin", "program_manager"],
@@ -181,7 +189,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Edition, Record<string, readonly R
     introcall: ["superuser", "admin", "partner", "ic_member", "associate", "analyst"],
     assocpipeline: ["superuser", "admin", "associate"],
     partnerpipeline: ["superuser", "admin", "partner", "ic_member"],
-    icpipeline: ["superuser", "admin", "ic_member"],
+    // F0917 — the partner votes, so the partner reaches IC Pipeline (0040).
+    icpipeline: ["superuser", "admin", "partner", "ic_member"],
     mpapproval: ["superuser", "partner"],
     openchecklist: ["superuser", "admin", "partner", "ic_member"],
     signup: ["superuser", "admin", "partner"],
@@ -190,7 +199,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Edition, Record<string, readonly R
     activateuser: ["superuser", "admin", "partner", "associate"],
     deactivateuser: ["superuser", "admin", "partner", "associate"],
     deleteuser: ["superuser", "admin"],
-    configparams: ["superuser", "admin"],
+    // §8 Q6 / F0080 — vc spec §10: "Super Users, Partners and Fund Admins". 0040.
+    configparams: ["superuser", "admin", "partner"],
     adminconsole: ["superuser", "admin"],
     addmembers: ["superuser", "admin"],
     outofofficedelegation: ["superuser", "admin", "partner", "associate"],
