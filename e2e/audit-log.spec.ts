@@ -47,14 +47,24 @@ test("the section renders the prototype's row: time, actor, sentence, badge", as
 
   await expect(page.getByText(/Full timestamped trail of all configuration changes/)).toBeVisible();
 
-  // `0030` seeds the prototype's own ten rows, so each of the four badges the
-  // prototype draws is on screen without this spec having to create one.
-  for (const label of ["Config", "Score", "Team", "Billing"]) {
-    await expect(page.getByText(label, { exact: true }).first()).toBeVisible();
+  // `0030` seeds the prototype's own ten rows — but this section is now written
+  // to on nearly every mutation in the product, so by the time a full suite run
+  // reaches here the seed is several pages down. Every assertion below therefore
+  // reaches its row through a filter rather than assuming the first page.
+  for (const category of ["config", "score", "team", "billing"]) {
+    await page.getByTestId(`al-filter-${category}`).click();
+    await expect(page.getByTestId(`al-badge-${category}`).first()).toBeVisible();
+    await page.getByTestId(`al-filter-${category}`).click();
   }
+
   // Two of the prototype's sentences, verbatim from its seed.
+  const search = page.getByTestId("al-search");
+  await search.fill("Shortlist threshold changed from 6.5 to 7.0");
   await expect(page.getByText("Shortlist threshold changed from 6.5 to 7.0")).toBeVisible();
+  await search.fill("Purchased 50-credit pack");
   await expect(page.getByText(/Purchased 50-credit pack · ₹20,000 · Transaction ID:/)).toBeVisible();
+  await search.fill("");
+  await expect(page.getByTestId("al-row").first()).toBeVisible();
 
   const first = page.getByTestId("al-row").first();
   // The `.log-t` column: a clock time, "Yesterday", or a date — never an ISO
@@ -68,7 +78,15 @@ test("a config change made in the console appears in the trail", async ({ page }
   test.setTimeout(120_000);
   await login(page, ADMIN);
 
-  // The All-decks rail owns the cohort rating thresholds. Nudge one…
+  // The All-decks rail owns the cohort rating thresholds. Read what they are
+  // first — `e2e/config.spec.ts` writes them too, so neither the before value
+  // nor the restore value can be a literal here.
+  const summary = await page.request.get("/api/config/summary");
+  const { thresholdBest, thresholdMediocre } = (await summary.json()) as {
+    thresholdBest: number;
+    thresholdMediocre: number;
+  };
+
   const res = await page.request.put("/api/config/thresholds", {
     data: { best: 7.4, mediocre: 5.2 },
   });
@@ -76,14 +94,21 @@ test("a config change made in the console appears in the trail", async ({ page }
 
   try {
     await openAuditLog(page);
+    // Found by search rather than by position: other specs share this database
+    // and a newer row can land between the write and the read.
+    await page.getByTestId("al-search").fill("Cohort rating thresholds changed");
     const row = page.getByTestId("al-row").first();
     await expect(row).toContainText("Cohort rating thresholds changed");
-    await expect(row).toContainText("Best ≥ 7 → 7.4");
+    // Both new values, and the arrow that says a value moved — the prototype's
+    // own before → after shape.
+    await expect(row).toContainText("→ 7.4");
+    await expect(row).toContainText("→ 5.2");
     await expect(row).toContainText("Nisha K.");
     await expect(row.getByTestId("al-badge-config")).toBeVisible();
   } finally {
-    // Restore: `e2e/parity.spec.ts` and the dashboard specs read these.
-    await page.request.put("/api/config/thresholds", { data: { best: 7.0, mediocre: 5.0 } });
+    await page.request.put("/api/config/thresholds", {
+      data: { best: thresholdBest, mediocre: thresholdMediocre },
+    });
   }
 });
 
@@ -97,11 +122,13 @@ test("the category badges filter the trail, and All puts it back", async ({ page
 
   await page.getByTestId("al-filter-billing").click();
   await expect(page.getByTestId("al-badge-billing").first()).toBeVisible();
+  // The property, not a row count: nothing but Billing survives the filter.
   await expect(page.getByTestId("al-badge-config")).toHaveCount(0);
-  expect(await rows.count()).toBeLessThan(before);
+  await expect(page.getByTestId("al-badge-team")).toHaveCount(0);
 
   await page.getByTestId("al-filter-all").click();
-  await expect(rows).toHaveCount(before);
+  await expect(page.getByTestId("al-badge-config").first()).toBeVisible();
+  expect(await rows.count()).toBeGreaterThanOrEqual(before);
 });
 
 test("the trail is admin-only — a jury member reaches neither screen nor API", async ({ page }) => {
@@ -119,11 +146,14 @@ test("the trail is admin-only — a jury member reaches neither screen nor API",
 test("the All-decks Activity card still renders — one store, two views", async ({ page }) => {
   test.setTimeout(120_000);
   await login(page, ADMIN);
-  await page.goto("/app/decks");
+  // The All-decks screen; its nav id is `alldecks` (src/shared/nav.ts).
+  await page.goto("/app/alldecks");
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
 
-  const card = page.locator("aside").getByText("Activity log", { exact: true });
-  await expect(card).toBeVisible();
+  // Two asides on this screen — the nav rail and the dashboard's right rail.
+  const rail = page.locator("aside").filter({ hasText: "Activity log" });
+  await expect(rail.getByText("Activity log", { exact: true })).toBeVisible();
   // The rail's sentence shape is unchanged: "<actor> (<title>) moved <deck> to
   // <stage>". It now comes from `listAudit()`, filtered to `pipeline`.
-  await expect(page.locator("aside")).toContainText(/moved .+ to /);
+  await expect(rail).toContainText(/moved .+ to /);
 });

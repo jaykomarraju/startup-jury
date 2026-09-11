@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Card, Button, EmptyState } from "../../components";
 import { toCsv, downloadCsv, csvFilename } from "../../exportCsv";
 import {
@@ -155,8 +155,18 @@ export function AuditLogSection() {
   // never disagree about whether "today" has rolled over.
   const now = useMemo(() => new Date(), [events]);
 
+  /**
+   * Request sequence. Six controls on this section each re-read the trail, and
+   * a filter is easy to change faster than a read comes back — without this the
+   * LAST RESPONSE wins rather than the last request, and the list settles on a
+   * filter the user has already moved off. Nothing here aborts the stale
+   * request; it just refuses to render it.
+   */
+  const seqRef = useRef(0);
+
   const load = useCallback(
     async (next: string | null) => {
+      const seq = ++seqRef.current;
       setBusy(true);
       try {
         const qs = auditQueryString({
@@ -171,15 +181,16 @@ export function AuditLogSection() {
         const res = await fetch(`/api/audit${qs ? `?${qs}` : ""}`);
         if (!res.ok) throw new Error(String(res.status));
         const body = (await res.json()) as AuditPage;
+        if (seq !== seqRef.current) return; // superseded — drop it
         setPage(body);
         // A cursor appends; a filter change replaces.
         setEvents((cur) => (next ? [...cur, ...body.events] : body.events));
         setCursor(body.nextCursor);
         setLoadError(false);
       } catch {
-        setLoadError(true);
+        if (seq === seqRef.current) setLoadError(true);
       } finally {
-        setBusy(false);
+        if (seq === seqRef.current) setBusy(false);
       }
     },
     [categories, actorId, from, to, q],

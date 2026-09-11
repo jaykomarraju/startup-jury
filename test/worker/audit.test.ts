@@ -384,10 +384,13 @@ describe("writers — the rest of the prototype's four badges", () => {
 
   it("a save that changes nothing writes no row — a trail of no-ops is noise", async () => {
     const cookie = await login(ADMIN);
-    const res = await req("PUT", "/api/crm/salesforce", cookie, {
-      triggerField: "Stage",
-      triggerValue: "Submitted for evaluation",
-    });
+    const settings = { triggerField: "Stage", triggerValue: "Submitted for evaluation" };
+    // The pool does NOT roll D1 back between tests in a file, so this asserts
+    // against a state it establishes itself rather than against the seed.
+    await req("PUT", "/api/crm/salesforce", cookie, settings);
+    await clearWritten();
+
+    const res = await req("PUT", "/api/crm/salesforce", cookie, settings);
     expect(res.status).toBe(200);
     expect(await rowsFor("crm_settings_updated")).toHaveLength(0);
   });
