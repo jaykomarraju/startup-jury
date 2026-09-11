@@ -1086,6 +1086,22 @@ FINISH
   prompt(s) into §10 using the §5 template. Commit to parity/W3-A. Do not merge to main.
 ```
 
+> **Wave 3, second pair — `W3-B` and `W3-C`, from `main` @ `faa3e09`.** `W3-A` and `W3-D` are merged.
+> The wave was deliberately split: these two write into the route files `W3-A` rewrote, so running
+> them alongside it would have contested every one. They do not collide with each other — `W3-B`
+> writes producers into `pipeline.ts` / `decks.ts`, `W3-C` writes audit calls into `config.ts` /
+> `users.ts` / `anchors.ts` / `questions.ts` / `permissions.ts`.
+>
+> **You are both inserting code around `requireTask(...)` guards that landed last week.** Do not
+> change a guard's task or its role list — if one looks wrong, record it in §9. Wave 3 integration
+> fixed four authorization defects that arose exactly where the seed, `nav.ts`, the route guards and
+> the client disagreed (§7); adding a fifth disagreement is the easiest mistake available to you.
+>
+> **The suite is known non-deterministic (§8 Q32).** Three runs of identical code gave 4, 21 and 2
+> failures with no test failing twice, and a control on `main` failed 5/17. Before you attribute a
+> red run to your own work, re-run the failing file ALONE and check `uptime`. Before you attribute
+> it to load, confirm no test fails twice.
+
 ### `W3-B` — notifications
 
 ```
@@ -1094,14 +1110,17 @@ producer — of the ai.STARTUPJURY parity programme. You have no prior context.
 
 SETUP
   nvm use
-  git worktree add ../sj-W3-B -b parity/W3-B main
+  # Your worktree already exists at ../sj-W3-B on main @ faa3e09 (Wave 3 A+D merged).
+  # If you need to recreate it:  git worktree add ../sj-W3-B -b parity/W3-B main
   cd ../sj-W3-B && npm ci
   python3 docs/prototype/tools/split-prototypes.py
 
 READ FIRST (in this order, and nothing else)
   1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §4 Testing, the Wave 3 ownership
-     note in §10, then ONLY your entry for W3-B in §6, plus §8 Q16 (whether every role reaches the
-     console — it bites hardest here, because s-nt is scoped "for your account").
+     note in §10, then ONLY your entry for W3-B in §6, plus §8 Q16 — **`W3-A` SETTLED it; read the
+     answer, do not re-decide it.** It bites hardest here, because `s-nt` is scoped "for your
+     account", so whether a jury member has any screen on which to mute their own mail follows
+     directly from that ruling.
   2. Your worklist:
        python3 docs/prototype/tools/findings.py --area "Admin console" --screen "notification|s-nt" --full
   3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-nt.html and its renderer in that
@@ -1159,7 +1178,8 @@ ai.STARTUPJURY parity programme. You have no prior context.
 
 SETUP
   nvm use
-  git worktree add ../sj-W3-C -b parity/W3-C main
+  # Your worktree already exists at ../sj-W3-C on main @ faa3e09 (Wave 3 A+D merged).
+  # If you need to recreate it:  git worktree add ../sj-W3-C -b parity/W3-C main
   cd ../sj-W3-C && npm ci
   python3 docs/prototype/tools/split-prototypes.py
 
@@ -1180,8 +1200,13 @@ BUILD
   `deck_id` and a category. Nothing writes to it yet.
   1. The section: columns, category badges, filters and retention, per `s-al`.
   2. **Writers.** Every config change (`W2-A`'s scoring framework, `W2-B`'s anchors, `W2-C`'s bank),
-     every permission change (`W3-A`'s, if it has landed — code against the table, not its branch),
-     every team change, every credit grant. An audit log nobody writes to is a table, not a feature.
+     **every permission change** — `W3-A` has LANDED, so `PUT /api/permissions` in
+     src/server/routes/permissions.ts is a real route you can call and audit, not a table to code
+     defensively against — every team change, every credit grant. An audit log nobody writes to is a
+     table, not a feature.
+     A permission change is the single highest-value row in this log: Wave 3 integration found that
+     a console checkbox could silently widen access (§7), and nothing would have recorded who ticked
+     it. Capture actor, edition, role, task and before/after.
   3. Keep the All-decks Activity card working — `src/client/routes/DashboardPage.tsx:519-542`. It
      becomes a filtered view over the same store rather than a second source of truth.
   4. Register as `al` in registry.tsx — one import, one map entry.
