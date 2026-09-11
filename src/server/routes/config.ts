@@ -21,7 +21,12 @@ import {
   weightTotalMessage,
   type ScoringSettings,
 } from "../../shared/scoring";
-import { AI_WEIGHT_CHOICES, COMPOSITE_FORMULAS, SCORE_SCALES } from "../../shared/types";
+import {
+  AI_WEIGHT_CHOICES,
+  COMPOSITE_FORMULAS,
+  DEFAULT_ROLE_PERMISSIONS,
+  SCORE_SCALES,
+} from "../../shared/types";
 import { requireAuth, requireRole, requireTask } from "../auth/middleware";
 import { rescoreEdition } from "../config/rescore";
 import { loadScoringSettings } from "../config/scoringSettings";
@@ -251,7 +256,13 @@ function validOwner(edition: Edition, role: unknown): Role | null {
 
 /** POST /api/config/additional-params — add a role-scoped additional param
  *  (Premium only). Body: { name, roleScope, prompt? }. Enforces ≤3 per role. */
-config.post("/additional-params", requireTask("configparams", "admin"), async (c) => {
+// Wave 3 integration. The role list must match the `configparams` seed that
+// migration 0040 widened to spec §10's editor set (superuser, admin,
+// program_manager / partner) — W3-A widened the SEED and the client, which shows
+// Add / Remove from `can("configparams")`, but left these three routes on an
+// admin-only list. A Program Manager therefore saw controls that 403'd. The task
+// is still ANDed on, so revoking the cell still closes them.
+config.post("/additional-params", requireTask("configparams", "admin", "program_manager", "partner"), async (c) => {
   const edition = c.var.user.edition;
   const s = await loadSettings(c, edition);
   if (!s) return c.json({ error: "not_found" }, 404);
@@ -331,10 +342,21 @@ function isConfigAdmin(role: Role): boolean {
  */
 config.put("/additional-params/:id", async (c) => {
   const { edition, role } = c.var.user;
-  // Only a `configparams` holder or one of the roles that can OWN an additional
-  // parameter can possibly pass; everyone else (founder, mentor, …) is out
-  // before the plan or the row is read.
-  const mayConfigure = await c.var.perms.can("configparams");
+  // The permission is a GATE, not a grant (plan §8 Q8): AND it onto the role
+  // floor rather than replacing the floor with it.
+  //
+  // Wave 3 integration. This read `await c.var.perms.can("configparams")` alone,
+  // and `can()` returns TRUE for any role outside the matrix
+  // (shared/permissions.ts — the rule that keeps a founder on their own upload
+  // route). `founder` is deliberately absent from PERMISSION_ROLES, so a founder
+  // passed a check that 403'd them on main, and ticking one console checkbox
+  // would have handed a jury member edit rights the role list never gave. The
+  // floor is the same default editor set migration 0040 seeds — spec §10's, per
+  // §8 Q6 — so the widening to program_manager / partner is preserved.
+  const configEditors = DEFAULT_ROLE_PERMISSIONS[edition].configparams ?? [];
+  const mayConfigure =
+    (isConfigAdmin(role) || configEditors.includes(role)) &&
+    (await c.var.perms.can("configparams"));
   if (!mayConfigure && !isAdditionalParamOwner(edition, role)) {
     return c.json({ error: "forbidden" }, 403);
   }
@@ -375,7 +397,7 @@ config.put("/additional-params/:id", async (c) => {
 
 /** DELETE /api/config/additional-params/:id — retire an additional param
  *  (Premium only; soft delete active=0, so historical scores stay referenced). */
-config.delete("/additional-params/:id", requireTask("configparams", "admin"), async (c) => {
+config.delete("/additional-params/:id", requireTask("configparams", "admin", "program_manager", "partner"), async (c) => {
   const edition = c.var.user.edition;
   const s = await requirePremium(c, edition);
   if (!s) return c.json({ error: "plan_required" }, 402);
@@ -401,7 +423,7 @@ config.delete("/additional-params/:id", requireTask("configparams", "admin"), as
  * Granting the delegation is itself an admin act, so this stays admin-only even
  * though the grant it writes lets a non-admin edit. Body: `{ permitted: bool }`.
  */
-config.put("/additional-params/:id/permit", requireTask("configparams", "admin"), async (c) => {
+config.put("/additional-params/:id/permit", requireTask("configparams", "admin", "program_manager", "partner"), async (c) => {
   const edition = c.var.user.edition;
   const id = c.req.param("id");
   const body = await readBody<{ permitted: boolean }>(c);

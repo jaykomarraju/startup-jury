@@ -247,6 +247,45 @@ describe("flipping one cell changes exactly one capability", () => {
     expect((await req("POST", "/api/decks/deck_ghost/queries", juryCookie, { questions: "x" })).status).toBe(403);
     await setCell("incubator", "jury", "query", false);
   });
+
+  // Wave 3 integration. The two tests above cover call sites where a role list
+  // is ANDed on, where gate-not-grant holds by construction. This one covers the
+  // site that had no role list: PUT /api/config/additional-params/:id read
+  // `can("configparams")` ALONE, so ticking the cell was a real grant — a jury
+  // member could rename and re-prompt parameters scoped to other roles, past the
+  // per-row `config_permitted` control that exists to make delegation explicit.
+  it("cannot GRANT config rights the role list withholds — the configparams site", async () => {
+    const adminCookie = await login(INC_ADMIN);
+    const juryCookie = await login(INC_JURY);
+    const param = await env.DB.prepare(
+      "SELECT id FROM parameters WHERE edition = 'incubator' AND informational = 1 AND role_scope = 'program_manager' LIMIT 1",
+    ).first<{ id: string }>();
+    expect(param).toBeTruthy();
+    const body = { name: "Renamed by a juror" };
+
+    expect((await req("PUT", `/api/config/additional-params/${param!.id}`, juryCookie, body)).status).toBe(403);
+    await req("PUT", "/api/permissions", adminCookie, {
+      cells: [{ role: "jury", taskId: "configparams", granted: true }],
+    });
+    expect((await req("PUT", `/api/config/additional-params/${param!.id}`, juryCookie, body)).status).toBe(403);
+    await setCell("incubator", "jury", "configparams", false);
+  });
+
+  // `can()` returns TRUE for any role outside the permission matrix — the rule
+  // that keeps a founder on their own upload route. That made every bare `can()`
+  // check fail OPEN for founders. The harness pins `can(founder, task) === true`,
+  // so nothing in the suite could have caught this; it needs asserting at the
+  // route.
+  it("a founder is refused at every bare-can() config route", async () => {
+    const founderCookie = await login(INC_FOUNDER);
+    const param = await env.DB.prepare(
+      "SELECT id FROM parameters WHERE edition = 'incubator' AND informational = 1 LIMIT 1",
+    ).first<{ id: string }>();
+    const res = await req("PUT", `/api/config/additional-params/${param!.id}`, founderCookie, {
+      name: "Renamed by a founder",
+    });
+    expect(res.status).toBe(403);
+  });
 });
 
 // ── A 403 path for every newly gated route ──────────────────────────────────

@@ -81,9 +81,24 @@ export interface CrmClient {
  * field. A live deployment adds `wrangler secret put CRM_SALESFORCE_TOKEN`; the
  * value never reaches D1, a response body or a log line.
  */
+/**
+ * A connection's `credential_ref` is chosen by an administrator, so it must not
+ * be able to name an arbitrary Worker binding. Without this it could read
+ * ANTHROPIC_API_KEY — or any other secret in `env` — and a future adapter would
+ * carry it off the platform. Inert on the shipped build (the adapter table is
+ * empty, so `resolveCrmClient` returns null and nothing calls this), which is
+ * exactly why it is worth closing now rather than when an adapter lands.
+ * Constrained at Wave 3 integration.
+ */
+const CREDENTIAL_REF = /^CRM_[A-Z0-9_]{1,48}$/;
+
+export function isCredentialRef(ref: string | null | undefined): boolean {
+  return typeof ref === "string" && CREDENTIAL_REF.test(ref);
+}
+
 export function secretFor(env: Env, ref: string | null | undefined): string | undefined {
-  if (!ref) return undefined;
-  const v = (env as unknown as Record<string, unknown>)[ref];
+  if (!isCredentialRef(ref)) return undefined;
+  const v = (env as unknown as Record<string, unknown>)[ref as string];
   return typeof v === "string" && v.trim() ? v : undefined;
 }
 

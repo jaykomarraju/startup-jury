@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import { useAuth } from "./auth/useAuth";
+import { usePermissions } from "./auth/usePermissions";
 import { AppShell } from "./components";
 import { RequireAuth, RequireNav } from "./routes/guards";
 import { LoginPage } from "./routes/LoginPage";
@@ -50,8 +51,14 @@ function LoginRoute() {
 /** /app index — send the user to their role's landing nav item. */
 function LandingRedirect() {
   const { user } = useAuth();
+  // The permission lookup matters here: without it a role whose FIRST nav item
+  // has been switched off in the console is redirected to a slug `RequireNav`
+  // then refuses, which reads as a broken app rather than a revoked permission.
+  // `guards.tsx` already passes it; placed at Wave 3 integration per W3-A's §9
+  // request (App.tsx is a hazard file no Wave 3 session owned).
+  const can = usePermissions();
   if (!user) return null;
-  return <Navigate to={`/app/${landingNavId(user.edition, user.role)}`} replace />;
+  return <Navigate to={`/app/${landingNavId(user.edition, user.role, can)}`} replace />;
 }
 
 /** Maps a nav slug to its live screen; unbuilt slugs fall through to StubPage. */

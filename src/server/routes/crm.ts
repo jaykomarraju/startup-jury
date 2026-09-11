@@ -23,7 +23,8 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
-import { requireAuth, requireRole } from "../auth/middleware";
+import { requireAuth, requireTask } from "../auth/middleware";
+import { isCredentialRef } from "../crm/provider";
 import {
   listConnections,
   listSyncLog,
@@ -47,7 +48,13 @@ crm.use("*", requireAuth);
 // The whole section is admin + superuser. F0038 proposes opening `nt` and `al`
 // to every internal role; CRM stays admin-only in that proposal, and giving a
 // jury member a Connect button would be the prototype oversight §1.2 warns of.
-crm.use("*", requireRole("admin"));
+// Wave 3 integration: `requireTask`, not `requireRole`. W3-A converted every
+// other console surface (config, users, anchors, questions, permissions) so that
+// revoking the `adminconsole` cell closes the console AND its API in one place —
+// §8 Q16 states that as a property. W3-D landed in the same wave and kept the
+// old shape, so CRM's API stayed open to an admin whose console cell had been
+// revoked. The role list is unchanged; the task is ANDed onto it.
+crm.use("*", requireTask("adminconsole", "admin"));
 
 /** Resolve `:provider` against the caller's edition. 400 unknown, 404 missing. */
 async function resolve(
@@ -126,6 +133,14 @@ crm.post("/:provider/connect", async (c) => {
   const credentialRef = credential
     ? (trimmed(body.credentialRef) ?? `CRM_${row.provider.toUpperCase()}_TOKEN`)
     : row.credential_ref;
+  // The ref names a Worker binding, so an unconstrained value would let an
+  // administrator point this at ANTHROPIC_API_KEY or any other secret in `env`.
+  // `secretFor` refuses anything outside the CRM_* namespace; refuse it here too
+  // so the connection cannot be stored in a state that silently never resolves.
+  // Wave 3 integration.
+  if (credential && !isCredentialRef(credentialRef)) {
+    return c.json({ error: "invalid_credential_ref" }, 400);
+  }
 
   await c.env.DB.prepare(
     "UPDATE crm_connections SET status = 'live', base_url = ?, webhook_path = ?, " +
