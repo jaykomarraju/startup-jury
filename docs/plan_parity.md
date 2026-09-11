@@ -888,6 +888,10 @@ best reading and note it.
 | Q30 | `W3-D` (F0179) | **"Auto-approve if within monthly cap" approves *what*?** The prototype's sub-line — "No manual approval needed if submission count is below the monthly limit" — implies that a pulled deck otherwise waits in an approval queue. **This product has no such queue**: a deck is uploaded, evaluated and enters the pipeline. So the toggle either (a) gates whether a CRM-pulled deck is evaluated immediately or parked for a human, which is a new pipeline state, or (b) is redundant once the cap itself is enforced. | Persisted and enforced as the **cap**, which is the half that is unambiguous and is the only spend guard on auto-pulled decks: `runPull` refuses once the month's pulled count reaches `monthly_deck_cap`, and records a `'skipped'` row saying so. The toggle is stored and carried on the recorded attempt payload (`autoApproveWithinCap`) so whichever reading wins costs one branch in the pull, not a schema change. The approval queue is **not** built. |
 | Q31 | `W3-D` | **Is a CRM connection per workspace, or per programme / cohort?** `0037` keys `crm_connections` on `(edition, provider)` — one Salesforce for the whole incubator side — and `s-crm` draws no programme selector. But the console title bar carries a programme/cohort chip on *every* section, which reads as though each section is scoped by it, and a multi-programme incubator plausibly wants one CRM pipeline per programme. | Edition-wide, per `0037`'s UNIQUE key, which is also what the prototype's four flat rows depict. Changing it later means a `program_id` column and widening that UNIQUE — contained, because every read goes through `src/server/crm/store.ts`. |
 | Q32 | Wave 3 integration | **The test suite is non-deterministic, it predates Wave 3, and it is getting worse as the suite grows (862 tests now).** It has cost four waves: W3-A ran its suite three times to get a clean number, W3-D ran e2e three times and got three different failure sets, Wave 2 produced two false e2e failures, and W2-C reached a documented wrong conclusion from one. The risk is not the flakiness — it is habituation: every wave that ends with "that red run was just load" makes the next genuine regression easier to wave through. Should a dedicated session fix it now, before Wave 4? | Integration recommends **yes** — one session owning `vitest.worker.config.ts`, `playwright.config.ts` and the two specs that mutate shared state, with the acceptance test being *ten consecutive green full-suite runs*, not one. Deferring it to `W12-B` means discovering it a fifth time. Awaiting the user's call. |
+| Q33 | `W3-C` | **The prototype's Audit log has no filter, no search, no export and no retention control — and two precedence-4 sources read that fact in opposite directions.** `s-al.html` is one card of ten `.log-row`s and nothing else; **F0136 says so explicitly** ("The prototype exposes no filter/search/export/retention control either, so only the unbounded list and the date grouping are in scope"), while **plan §6/§10 asks for "category badges, filters and retention"** and **F0059 (P1)** argues the section is *unbuildable* without them — its own rows span three days, so without paging and a date range the section can never reach the "3 Jun" rows the prototype draws. §1.1 ranks the prototype above both, but only as the **visual** contract, and a ten-row static mock cannot draw a control it has no data to need. | **Built both, and kept the card untouched.** The API carries the full surface F0059 asks for (category, actor, date range, free text, keyset paging, retention). The UI spends as little as possible on it: the filter **is the prototype's four badges, made clickable**, so no new control family enters a console that has none; actor, dates, search, retention and export are one quiet 11 px line above and below. The `.log-row` itself is reproduced to the pixel — 76 px mono time, 72 px semibold actor, the four `_style.css:126-129` colour pairs, and the relative-then-absolute time rule. If the client wants the bare card, deleting the two chrome rows leaves a conforming section. |
+| Q34 | `W3-C` | **Which badge does a permission change wear?** The Task-permission grid lives on the **Team & roles** screen, which argues for `team`; but it is an authorisation decision, which argues for the `security` category `0030` added and never explained. The prototype draws neither — it has no permission row at all. | **`security`.** An auditor hunting "who widened access, and when" should not have to read past every invite and title change to find it, and `security` exists for exactly one thing. Roster events (invite, role change, activate/deactivate, alias title) stay `team`. Both are in the filter row, so neither is hidden. |
+| Q35 | `W3-C` | **Should an audit write be able to fail the mutation it records?** `recordAudit` swallows its own errors: a threshold change that saves but whose trail row does not is reported to the user as a success. The alternative — fail closed — makes the trail authoritative but lets a trail defect 500 a correct save. | **Swallow, and cover every writer with a test that asserts the ROW.** For a configuration trail the worse failure is the mutation that 500s. If this workspace ever needs a *compliance* trail (an auditor relying on completeness rather than an admin reviewing changes), the decision flips and the write belongs in the same `DB.batch()` as the mutation — which is a per-route change, not a rewrite. Worth putting to the client alongside retention. |
+| Q36 | `W3-C` | **Retention deletes on demand, not on a schedule.** `PUT /api/audit/retention` purges in the same request, so setting a window applies it immediately — but nothing re-applies it as time passes, so a workspace that sets 90 days and never revisits the screen keeps everything past day 90 until someone saves the control again. The Worker already has two cron branches. | A third cron branch calling `purgeExpiredAudit` for each edition closes it; `src/server/scheduled.ts` is `W3-B`'s this wave, so it is raised in §9 rather than placed. Harmless until then — the window over-retains, which is the safe direction. |
 
 ---
 
@@ -973,6 +977,16 @@ session places it.
 | Wave 3 integration | deploy ordering *(`W14`)* | **Until `0040` runs, the VC partner loses the IC vote they have today, and no gate can see it** — `nav.ts` and the route guards ship in the bundle, the seed widening ships in the migration. Migrations must be applied `--remote` BEFORE the Worker deploy, which `docs/FINISH-PLAN.md` already prescribes; Wave 14 must not reverse it. | `W14` |
 | Wave 3 integration | `src/client/auth/AuthProvider.tsx` + `src/shared/permissions.ts` *(`W4-A`)* | `AuthProvider` documents a **fail-open** client permission lookup; the code fails **closed** for every matrix role. One of them is wrong. Also two client-side role literals now duplicate the `adminconsole` task and will drift from it. | `W4-A` |
 | Wave 3 integration | `test/unit/permission-engine.test.ts` *(`W12-B`)* | The parse-based guard **fails open**: an unresolvable spread silently reduces coverage and the count assertion is a floor, so the test can pass while covering fewer call sites than it claims. It is the main evidence for "the refactor is invisible on the default seed" — it should fail loudly when it cannot resolve a site. | `W12-B` |
+| `W3-C` | `src/server/index.ts` | **Already placed — the one import and one `app.route` line the §10 Wave 3 ownership table allots me, and nothing else.** `import audit from "./routes/audit";` after the `questions` import, and `app.route("/api/audit", audit);` after the `/api/questions` mount. | placed by `W3-C` |
+| `W3-C` | `src/client/routes/admin/registry.tsx` | **Already placed — the two lines that file's docblock reserves for a session that builds a section:** `import { AuditLogSection } from "./AuditLog";` and `al: AuditLogSection,` in `secs` order, replacing the commented `// al:` marker. Nothing else in the shell was touched, and no other session's entry was commented out. | placed by `W3-C` |
+| `W3-C` | **`src/server/routes/pipeline.ts`** *(unowned this wave — **read this before merging**)* | **`GET /api/activity` no longer queries `pipeline_events` directly.** It now calls `listAudit(db, { categories: ["pipeline"], … })` — the same reader the console's Audit log section uses — and maps the result to the rail's existing shape. This is the plan's own BUILD item 3 ("it becomes a filtered view over the same store rather than a second source of truth") and it cannot be done in one line: the query, not just a write, had to move. **The response shape, the 12-row default, the 1–50 clamp, the `programId`/`cohortId` filters and the founder isolation are all unchanged**, and `test/worker/audit.test.ts` pins each. The file's other edit *is* one line — `recordScoreOverrides(c, …)` after the evaluate batch (F0052) — plus `toDisplayScale` added to an existing import. | no action; recorded so integration is not surprised |
+| `W3-C` | `src/server/routes/config.ts` *(unowned this wave)* | **Thirteen writer sites** — area weights, the three additional-parameter mutations and the permit toggle, the scoring framework, cohort thresholds, the AI prompt, branding, plan, and the two credit routes. Twelve are a single `await audit…(c, …)` call before the existing `return`. Three needed **one extra line each** to have a *before* to diff against (`loadSettings` in `/thresholds`, `/plan` and `/credits`), and two widened an existing `SELECT` by one column (`name`, `role_scope`) so the sentence can name what changed rather than only that something did. No control flow moved. | no action |
+| `W3-C` | `src/server/routes/users.ts`, `anchors.ts`, `questions.ts` *(unowned)*; `permissions.ts` *(`W3-A`)*; `crm.ts` *(`W3-D`)* | **One-line writer calls only, as the brief allows** — 2, 1, 4, 1 and 3 respectively, each immediately before an existing `return`, plus one import line per file. `anchors.ts` also widened a `SELECT id` to `SELECT id, name`. **Nothing in any of these files' authZ, validation or control flow was touched**, which is what should make each a trivial three-way merge. | no action |
+| `W3-C` | **`src/shared/audit.ts`** *(new file, outside this session's stated ownership)* | **Declaring a deviation, exactly as `W3-D` did for `src/shared/crm.ts`.** The prompt allotted "a shared audit-writer helper under `src/server/`", and that is where the writer lives (`src/server/audit/{log,events}.ts`). But the badge palette, the `.log-u` actor abbreviation and the `.log-t` time rule are needed by **both** the server (which stores `actor_label`) and the console section, and having the client import from `src/server/` would be the wrong architecture for a convenience. They live in a new `src/shared/audit.ts`, which re-exports `AUDIT_CATEGORIES` from `src/shared/types.ts` rather than redeclaring it. New and uniquely named, so it cannot collide; neither §2.2 hazard file is touched. | no action |
+| `W3-C` | **`credit_ledger` is now written** — `src/server/routes/config.ts` *(`W4-C` owns the Credits & billing screen)* | **Read this before building `bl`.** F0054 says the Billing badge has nothing to show because credits are a single mutable integer; `0032` created the ledger and nothing wrote to it. `recordCreditMovement()` now writes the ledger row **and** its Billing audit row together, because the prototype's sentence ("Purchased 50-unit pack · ₹20,000 · Transaction ID: …") is *made of* ledger columns — without the row there is no amount and no reference to render. Both credit routes go through it: `/credits` records a signed `adjustment` for the delta an admin's SET actually performed, `/credits/purchase` records a `purchase` priced from the `0033` master catalogue (`plan_group='credit_pack' AND units = ?`, INR) with a generated `SIM…` reference. **`W4-C` inherits a live ledger, not an empty table** — and should own the ledger's own read surface, the `deck_evaluated` debit in `decks/versions.ts` (still unrecorded), and whether the simulated reference stays once a provider lands. | `W4-C` |
+| `W3-C` | `src/server/scheduled.ts` *(`W3-B` this wave; else Wave 13)* | **Retention is applied on demand and never re-applied.** `purgeExpiredAudit(db, edition)` is exported from `src/server/audit/log.ts` and is called by `PUT /api/audit/retention`, so setting a window prunes immediately — but nothing re-runs it, so a workspace that sets 90 days and walks away over-retains from day 91. The Worker already branches on `controller.cron` for reminders and the stuck sweep (`src/server/index.ts`); a daily call for each edition closes it. §8 Q36. | `W3-B`, or Wave 13 |
+| `W3-C` | `scripts/role-matrix.ts` *(`W3-A`)* | **`GET /api/audit` is a new gated surface the roles harness does not probe.** It carries `requireTask("adminconsole", "admin")` — the same gate as `/api/permissions` and `/api/crm`, so it inherits §8 Q16's property — but the harness only asserts what its route list names, and this session must not edit `W3-A`'s file. Adding `/api/audit` (expect: admin + superuser, 403 for everyone else) and `PUT /api/audit/retention` would be **+26 probe cells** on the same arithmetic W3-A used. `test/worker/audit.test.ts` asserts the 403 for `jury` and `program_associate` and the 401 unauthenticated in the meantime, so the behaviour is covered — only the harness's count is not. | `W4-A` (it already owns the grid) or Wave 13 |
+| `W3-C` | `test/worker/migrations-w1b.test.ts` *(unowned)* | **No edit needed, and that is worth saying.** `W3-D` already raised `ALLOTMENT_CEILING` to 43 for this wave, so `0042` passes the numbering guard untouched. This is the one place the four Wave 3 sessions were told to expect a conflict; from here it is a three-way merge of one identical line. | no action |
 
 ---
 
@@ -1434,6 +1448,119 @@ FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
   Commit to parity/W4-A. Do not merge to main.
+```
+
+### `W4-B` — branding, applied *(written by `W3-C`)*
+
+> The last unwritten Wave 4 prompt. `W3-A` wrote `W4-A`; `W3-D` wrote `W4-C` and `W4-D`.
+
+```
+You are running session W4-B — the Branding admin section, and the applier that makes it visible —
+of the ai.STARTUPJURY parity programme. You have no prior context.
+
+SETUP
+  nvm use
+  git worktree add ../sj-W4-B -b parity/W4-B main
+  cd ../sj-W4-B && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules (§1.5's third bullet is YOUR defect), §2 Session
+     protocol, §4 Testing, the Wave 4 ownership note in §10, then ONLY your entry for W4-B in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "brand|s-br" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-br.html and its `_style.css`.
+     Do NOT build `panel-branding.html` — it is a stale richer draft unreachable in all 11
+     prototypes, and your §6 entry says `s-br` is the contract.
+  4. src/client/index.css (the token layer you will write into at runtime),
+     src/client/components/Logo.tsx, and `PUT /api/config/branding` in src/server/routes/config.ts.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  Branding round-trips through the API today and is then thrown away: nothing reads `branding_json`
+  and `Logo.tsx` hardcodes the wordmark (§1.5). The section is half the work; the applier is the
+  half that makes any of it true.
+  1. The section per `s-br`: 10 brand + 4 status colour tokens, logo image, the two-part wordmark,
+     tagline, and reset-to-defaults.
+  2. The applier: a provider that writes the saved values as CSS custom properties on `:root` at
+     load and on save, so a change is visible without a reload. `W1-A` established the token names
+     — write THOSE, never new ones, or the app and the branding drift.
+  3. `Logo.tsx` renders the saved two-part wordmark, falling back to today's literal.
+  4. Dark mode: `index.css` defines every token twice (§2.2 hazard file — you may not edit it).
+     Decide, and say in your handoff, whether a branded accent overrides the dark value too.
+  5. Register as `br` in registry.tsx — one import, one map entry.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/Branding.tsx, src/client/components/Logo.tsx, the applier
+    (a new file under src/client/theme/), and one line each in src/client/routes/admin/registry.tsx
+    and, if you need one, src/server/index.ts.
+  - `src/client/index.css` is a §2.2 serialisation-hazard file and is NOT yours. Apply at runtime.
+  - `PUT /api/config/branding` REPLACES `branding_json` wholesale. §1.5's first bullet is the same
+    defect on the other screen — `W1-A` fixed `ConfigPage`; check it is fixed here too before you
+    add fields, or saving a colour will wipe `orgName`/`orgType` and the account screen with it.
+  - You own migration 0044 and only 0044 — and you probably need none.
+
+TEST
+  - Client: a saved accent changes the COMPUTED custom property, not just the stored value.
+  - Client: the wordmark renders in two parts, and reset-to-defaults restores the literal.
+  - Worker: a branding save that omits `orgName` does not destroy it.
+  - E2E: a branded wordmark survives reload and appears in the top bar.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  Plus `npm run parity:tokens` — it compares index.css against the prototype palette and is at
+  0 known gaps; a runtime applier must not move it.
+  Read §8 Q28 / Q32 before you believe a red run: with several worktrees busy the suite fails
+  differently every time. `uptime` first; re-run the failures in isolation before concluding
+  anything.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W4-B. Do not merge to main.
+```
+
+### Wave 3 integration (B + C) *(written by `W3-C`)*
+
+> `W3-A` and `W3-D` are already merged to `main` (`faa3e09`). `W3-B` and `W3-C` branched from
+> different points, so this is the second half of the Wave 3 integration, not a re-run of the first.
+
+```
+You are running Wave 3 integration (B + C) of the ai.STARTUPJURY parity programme. You have no
+prior context.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-int-w3bc -b parity/integration-w3bc main
+  cd ../sj-int-w3bc && npm ci
+
+READ FIRST
+  docs/plan_parity.md — §1, §2, §4, then §7's `W3-B` and `W3-C` rows, §8 Q33–Q36, and EVERY §9 row
+  whose From column is `W3-B` or `W3-C`. Those §9 rows are the merge plan.
+
+MERGE
+  git merge parity/W3-B, then git merge parity/W3-C. Resolve in favour of the owning session.
+  Expect conflicts in exactly three places, and nowhere else:
+    • docs/plan_parity.md — both sessions append to §7/§8/§9/§10. Keep both.
+    • src/server/index.ts and src/client/routes/admin/registry.tsx — one import + one entry each,
+      `nt` and `al`. They merge as a union. Do NOT comment out either session's line.
+    • test/worker/migrations-w1b.test.ts — `ALLOTMENT_CEILING`; take the highest value.
+  `W3-C` touched eight route files it does not own, each with one-line writer calls — those are
+  additive and should not conflict, but `src/server/routes/pipeline.ts` is the exception worth
+  reading: `GET /api/activity` was repointed at `listAudit()`, so if `W3-B` also touched that route,
+  reconcile by hand rather than by taking a side.
+
+THEN
+  1. Full green gate on the merged result: typecheck, lint, test, build, test:e2e, roles (with a
+     server on a port you have PROVEN you own, §2.3), parity:nav, parity:tokens.
+  2. Look for the seam W3-A's integration found: an authorization decision split across seed,
+     nav, route guard and client that each session got right alone. `W3-B`'s notification
+     preferences and `W3-C`'s `requireTask("adminconsole", "admin")` on /api/audit are the two
+     new surfaces; check each against §8 Q16's property (closing the cell closes the API).
+  3. Place the §9 requests that are one-liners and belong to no later wave — in particular
+     `W3-C`'s retention cron, if `W3-B` has already opened `src/server/scheduled.ts`.
+  4. Merge to `main`, remove both worktrees, delete both branches.
+  5. Write Wave 4's prompts into §10. `W4-A`, `W4-B`, `W4-C` and `W4-D` are all drafted already
+     (by W3-A, W3-C and W3-D) — your job is to re-check each against what actually landed and
+     REPLACE §10 with the four of them, not to write new ones.
 ```
 
 ### `Wx-OOO` — Out of office delegation *(written by `W3-A`; no wave owns this yet)*
