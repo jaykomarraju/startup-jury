@@ -22,6 +22,9 @@ import type { AppEnv, Env } from "../types";
 import type { Edition, Role } from "../../shared/roles";
 import { creatableStaffRoles, roleLabel } from "../../shared/roles";
 import { requireAuth, requireTask } from "../auth/middleware";
+// W3-C — F0053. Invites, deactivations and role changes left no reviewable
+// record outside `email_outbox`, which has no read route and no screen.
+import { auditUserInvited, auditUserUpdated } from "../audit/events";
 import { hashPassword } from "../auth/password";
 import { getUserByEmail } from "../db";
 import {
@@ -267,6 +270,8 @@ users.post("/", requireTask("addmembers", "admin"), async (c) => {
     invitedByName: c.var.user.name,
   });
 
+  await auditUserInvited(c, { id, name, email, roleLabel: displayRole(edition, role, userType) });
+
   return c.json({
     ok: true,
     // Withheld once the invite is genuinely on its way — the credential then
@@ -345,6 +350,13 @@ users.patch("/:id", requireTask("adminconsole", "admin"), async (c) => {
   )
     .bind(name, role, initialsFrom(name), active, title, id, edition)
     .run();
+
+  await auditUserUpdated(
+    c,
+    id,
+    { name: target.name, role: target.role, active: target.active, title: target.title ?? null },
+    { name, role, active, title },
+  );
 
   return c.json({
     ok: true,

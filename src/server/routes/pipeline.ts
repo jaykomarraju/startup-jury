@@ -20,6 +20,7 @@ import {
   signalTag,
   decisionScore,
   fromDisplayScale,
+  toDisplayScale,
   overrideNeedsRationale,
   shortlistFloor,
 } from "../../shared/scoring";
@@ -28,6 +29,10 @@ import { loadScoringSettings } from "../config/scoringSettings";
 import { getStage, performAction, transitionByAction } from "../../pipeline";
 import { denyMentor, requireAuth, requireRole, requireTask } from "../auth/middleware";
 import { sendEmail, buildQueryEmail, buildSignupEmail } from "../email/outbox";
+// W3-C — the audit store. `listAudit` is what makes the Activity card below
+// and the console's Audit log section ONE store rather than two; F0052 is
+// the score-override half.
+import { listAudit, recordScoreOverrides, toAuditView } from "../audit/log";
 
 const pipeline = new Hono<AppEnv>();
 // Scope auth to this router's own prefixes (not "*"): mounted at /api, a "*"
@@ -496,6 +501,16 @@ pipeline.post(
     }
 
     await c.env.DB.batch(stmts);
+    // F0052 — a human value more than `delta` from the AI's is an override, and
+    // the prototype's Score rows carry both numbers and the stated reason.
+    await recordScoreOverrides(c, {
+      deckId: deck.id,
+      deckName: deck.name,
+      scores: clean,
+      aiByParam,
+      delta: scoring.overrideRationaleDelta,
+      toDisplay: (v) => toDisplayScale(v, scoring.scoreScale),
+    });
     return c.json({ ok: true, weightedTotal: total, signal: signalTag(total), status });
   },
 );
@@ -869,67 +884,40 @@ pipeline.get("/decks/:id/my-scores", async (c) => {
 /**
  * GET /activity — the workspace ACTIVITY LOG (Aug-2026 issue 8).
  *
- * The All-decks right rail shows this under the cohort rating thresholds. It is
- * the same `pipeline_events` audit trail as `/decks/:id/events`, but across the
- * whole edition and capped, optionally narrowed to a program / cohort so it
- * matches the toolbar filter the user is looking at.
+ * The All-decks right rail shows this under the cohort rating thresholds: the
+ * most recent stage transitions across the edition, optionally narrowed to the
+ * program / cohort the toolbar filter is on.
+ *
+ * **W3-C — this is now a FILTERED VIEW, not a second source of truth.** It goes
+ * through `listAudit()` — the same reader the console's Audit log section uses —
+ * with `categories: ["pipeline"]`, so the card and the section can never
+ * disagree about what happened. The response shape, the 12-row default, the
+ * 1–50 clamp and the founder isolation are all unchanged; only the query moved.
  */
 pipeline.get("/activity", async (c) => {
   const { id: userId, edition, role } = c.var.user;
   const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 12) || 12, 1), 50);
-  const programId = c.req.query("programId");
-  const cohortId = c.req.query("cohortId");
 
-  const clauses = ["d.edition = ?"];
-  const params: unknown[] = [edition];
-  // Founders only ever see their own submissions' history.
-  if (role === "founder") {
-    clauses.push("d.uploaded_by = ?");
-    params.push(userId);
-  }
-  if (programId) {
-    clauses.push("d.program_id = ?");
-    params.push(programId);
-  }
-  if (cohortId) {
-    clauses.push("d.cohort_id = ?");
-    params.push(cohortId);
-  }
-  params.push(limit);
-
-  const rows = (
-    await c.env.DB.prepare(
-      "SELECT e.id, e.deck_id, e.from_stage, e.to_stage, e.action, e.note, e.created_at, " +
-        "d.name AS deck_name, u.name AS actor_name, u.title AS actor_title " +
-        "FROM pipeline_events e JOIN decks d ON d.id = e.deck_id " +
-        "LEFT JOIN users u ON u.id = e.actor_id WHERE " +
-        clauses.join(" AND ") +
-        " ORDER BY e.created_at DESC, e.rowid DESC LIMIT ?",
-    )
-      .bind(...params)
-      .all<{
-        id: string;
-        deck_id: string;
-        from_stage: string | null;
-        to_stage: string;
-        action: string;
-        note: string | null;
-        created_at: string;
-        deck_name: string;
-        actor_name: string | null;
-        actor_title: string | null;
-      }>()
-  ).results;
+  const { rows } = await listAudit(c.env.DB, {
+    edition,
+    categories: ["pipeline"],
+    programId: c.req.query("programId") || undefined,
+    cohortId: c.req.query("cohortId") || undefined,
+    // Founders only ever see their own submissions' history.
+    founderId: role === "founder" ? userId : undefined,
+    limit,
+  });
 
   return c.json({
     events: rows.map((r) => ({
-      id: r.id,
+      ...toAuditView(edition, r),
+      // The card renders the transition itself, so the two stage labels stay on
+      // the wire beside the composed sentence every other reader uses.
       deckId: r.deck_id,
       deckName: r.deck_name,
       toStage: r.to_stage,
-      toLabel: getStage(edition, r.to_stage)?.label ?? r.to_stage,
-      fromLabel: r.from_stage ? getStage(edition, r.from_stage)?.label ?? r.from_stage : null,
-      action: r.action,
+      toLabel: r.to_stage ? (getStage(edition, r.to_stage)?.label ?? r.to_stage) : null,
+      fromLabel: r.from_stage ? (getStage(edition, r.from_stage)?.label ?? r.from_stage) : null,
       note: r.note,
       actorName: r.actor_name ?? "AI",
       actorTitle: r.actor_title ?? undefined,
