@@ -5,6 +5,7 @@ import decks from "./routes/decks";
 import pipeline from "./routes/pipeline";
 import config from "./routes/config";
 import anchors from "./routes/anchors";
+import crm from "./routes/crm";
 import programs from "./routes/programs";
 import users from "./routes/users";
 import permissions from "./routes/permissions";
@@ -40,6 +41,7 @@ app.get("/api/health", (c) =>
 app.route("/api/auth", auth);
 app.route("/api/config", config);
 app.route("/api/anchors", anchors);
+app.route("/api/crm", crm);
 app.route("/api/programs", programs);
 app.route("/api/users", users);
 app.route("/api/permissions", permissions);

@@ -25,6 +25,7 @@
  */
 import type { ComponentType } from "react";
 import { AreaWeightsSection } from "./AreaWeights";
+import { CrmSyncSection } from "./CrmSync";
 import { QuestionBankSection } from "./QuestionBank";
 import { RubricAnchorsSection } from "./RubricAnchors";
 import { ScoringFrameworkSection } from "./ScoringFramework";
@@ -38,7 +39,7 @@ export const SECTION_COMPONENTS: Record<string, ComponentType> = {
   qb: QuestionBankSection, //       W2-C · Question bank
   // Organisation
   tm: TeamRolesSection, //   W4-A replaces this with the full roster
-  // crm:     W3-D · CRM sync
+  crm: CrmSyncSection, //  W3-D · CRM sync
   // bl:      W4-C · Credits & billing
   // pc:      W4-D · Price configuration
   // Sign-up
