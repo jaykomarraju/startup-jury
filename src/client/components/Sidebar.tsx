@@ -3,6 +3,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import { ChevronDown } from "lucide-react";
 import type { Edition, Role } from "../../shared/roles";
 import { navForUser, navLabel, NAV_SECTIONS, type NavItem } from "../../shared/nav";
+import { usePermissions } from "../auth/usePermissions";
 import { NavIcon } from "./icons";
 
 /** A `.bx` count pill on a nav item. Tones mirror the prototype's badge family. */
@@ -82,6 +83,7 @@ export function Sidebar({ edition, role, onNavigate, badges }: SidebarProps) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set<string>());
   const { pathname } = useLocation();
   const iconRail = useIconRail();
+  const can = usePermissions();
 
   useEffect(() => {
     setCollapsed(loadCollapsed());
@@ -101,7 +103,10 @@ export function Sidebar({ edition, role, onNavigate, badges }: SidebarProps) {
     });
   }, []);
 
-  const items = navForUser(edition, role);
+  // W3-A — the manifest is a DEFAULT; the Admin console's Task permissions grid
+  // can take an item away at runtime. `RequireNav` applies the same lookup, so a
+  // hidden item is also an unreachable URL.
+  const items = navForUser(edition, role, can);
   const bySection = new Map<string, NavItem[]>();
   for (const item of items) {
     const list = bySection.get(item.section) ?? [];

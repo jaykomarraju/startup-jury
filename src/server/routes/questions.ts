@@ -32,7 +32,7 @@ import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { parseMissingFields } from "../../shared/intake";
-import { requireAuth, requireRole } from "../auth/middleware";
+import { requireAuth, requireTask } from "../auth/middleware";
 import {
   areasNeedingResponse,
   buildQueryMessage,
@@ -45,14 +45,15 @@ const questions = new Hono<AppEnv>();
 questions.use("*", requireAuth);
 
 /** Editing the bank is a rubric change — the same gate `config.ts` uses. */
-const requireAdmin = requireRole("admin");
+const requireAdmin = requireTask("adminconsole", "admin");
 
 /**
  * Reading a draft is for whoever can raise the query it drafts, which is the
  * role list on `POST /api/decks/:id/queries` (`routes/pipeline.ts`). Both
  * editions raise the same loop; only the roles differ.
  */
-const requireQuerier = requireRole(
+const requireQuerier = requireTask(
+  "query",
   "program_associate",
   "program_manager",
   "admin",

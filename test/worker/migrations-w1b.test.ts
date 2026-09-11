@@ -17,6 +17,15 @@ const FIRST = 25;
 const LAST = 37;
 const BLOCK_SIZE = LAST - FIRST + 1;
 
+/**
+ * The highest number the wave in flight has allotted, from the plan's §10
+ * ownership table. Wave 2 was 0038–0040; **Wave 3 is 0040–0043** (W3-A 0040,
+ * W3-B 0041, W3-C 0042, W3-D 0043). Each wave raises this line, and every
+ * parallel session in the wave hits it — expect a one-line merge conflict here
+ * and take the highest value.
+ */
+const ALLOTMENT_CEILING = 43;
+
 const MIGRATIONS = env.TEST_MIGRATIONS;
 
 function numberOf(name: string): number {
@@ -46,7 +55,7 @@ describe("migration numbering", () => {
     const settled = numbers.filter((n) => n <= LAST);
     expect(settled).toEqual(settled.map((_, i) => i + 1));
     // Nothing may be numbered beyond the wave's allotment ceiling either.
-    expect(Math.max(...numbers)).toBeLessThanOrEqual(LAST + 3);
+    expect(Math.max(...numbers)).toBeLessThanOrEqual(ALLOTMENT_CEILING);
   });
 
   it("keeps the W1-B block contiguous and directly above the pre-existing tree", () => {

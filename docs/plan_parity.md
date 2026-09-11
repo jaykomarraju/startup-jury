@@ -840,6 +840,11 @@ One row per session. The integration session fills the wave row.
 
 | **Wave 2 integration** | **done** | — (integration closes no findings; it reopened F0042, see §9) | typecheck ✓ · lint ✓ · **731 passed / 1 skipped** ✓ (729 + 2 new pinning the fixes) · build ✓ · e2e re-run after the parity timeout fix · `parity:tokens` 0 gaps ✓ · `parity:nav` 70 known gaps ✓ | Merged `W2-A` → `W2-B` → `W2-C`. **Eleven overlapping files, against Wave 1's one** — W2-A and W2-B both edited `scoring.ts`, `evaluate.ts`, `pipeline.ts` and `analytics.ts`. Git flagged only the import blocks; the real collision was that W2-A had re-cut `weightedTotal` into a settings-aware `composite()` while W2-B's bodies still called the old name, which surfaced only as an unused-import error. The settings-aware version won. **Three blockers, two of them created by the merge and invisible to both branches.** (1) W2-A's AI-pre-scoring-off path returns `signal: "absent"` — the band W2-B's `0039` renamed to `insufficient` and deleted from `SIGNAL_STYLES` — so an org with the toggle off crashed the Upload screen. `EvaluationResult.signal` is typed `string` and `UploadPage` casts it, so typecheck was silent and the existing worker test never read the field. (2) **Blind scoring leaked**: `withholdsAiScore` guarded only `GET /api/decks/:id`, so the deck LIST still returned `aiScore`, `decisionScore` and `signal` — All decks being the screen a juror passes through on the way to scoring. Both fixed, each now pinned by a test that fails if reverted. (3) The integration tip itself did not typecheck — the import fix was uncommitted; caught by the review, not by me. **Also placed the §9 item that made the wave's headline deliverable real:** the question bank reached no founder at all — `QueryPage` still sent the pre-W2-C letter and `autoQuery.ts` was a stub commented "W2-C swaps this". Both now draw the bank, with `buildQueryMessage`'s no-bank output as the fallback. **The e2e failure was diagnosed, not suppressed:** `parity.spec.ts:88` asserts at Playwright's 5 s default, which `test.setTimeout(180_000)` cannot reach, so under load one slow navigation fails a test with minutes left — raised to 30 s. This also settles W2-C's §7 claim that the coverage timeout "was never placed": it was placed at Wave 1 integration and was present in W2-C's own worktree at `e2e/coverage.spec.ts:49` and `:70`. Ten further findings recorded in §9 with owners. |
 
+| `W3-A` | **done** | **F0019, F0018 (engine + API half), F0149, F0917, F0919, F0926 (PM half), F0071, F0063 / F0080 (authority half)** closed; **F0903** closed server-side (the grid's UI is `W4-A`'s); **F0904, F0905, F0906, F0913, F0914, F0924** not closed — see the Q6 note | typecheck ✓ · lint ✓ · **788 passed / 1 skipped** ✓ (731 → +57: 16 unit · 41 worker) · build ✓ · **e2e 124 / 124** ✓ (120 + 4 new in `e2e/permissions.spec.ts`) · **`npm run roles` 566 / 566** ✓ (was 526 — the delta is exactly +14 static invariants and +26 probe cells, arithmetic below) · **`parity:nav` 67 known gaps** (was 70 — three closed) · `parity:tokens` 0 gaps ✓ | **Authorization is no longer compile-time.** `role_permissions` (seeded, inert since `0029`) is now read at runtime and ANDed onto every gate. Three new modules: `src/shared/permissions.ts` (the pure `can(edition, role, task, overrides?)` and its resolution order), `src/server/auth/permissions.ts` (the per-request resolver, memoised on `c.var.perms`, read at most once and only if a gate asks), `src/server/routes/permissions.ts` (`GET`/`PUT /api/permissions` — the console's grid and its cell toggle). `requireTask(taskId, ...roles)` joins `requireRole` in `middleware.ts` and replaces it at **27 call sites across 6 route files**; `nav.ts` items carry a `task`, and `canSeeNav` / `navForUser` / `canAccessNav` / `landingNavId` take an **optional** lookup, so every pure caller (the parity harness, `nav.test.ts`, the role matrix's §A) still works untouched. The client half is `usePermissions()` over the task-id list `/api/auth/me` now returns — deliberately NOT baked into the KV session value, which is written once at login and lives seven days, so an administrator's edit lands on the next page load rather than the next sign-in. **`denyMentor` is untouched and `mentor` gains nothing**: `can()` is false for it unconditionally, override or not, and the harness asserts that on every cell. `founder` is outside the matrix entirely — `can()` returns true and founder isolation stays decided by the rule the permission ANDs with, which is the only reading under which `POST /api/decks/:id/version` (a founder route gated on `upload`) does not 403 the founder. **The refactor is provably invisible on the default seed**, which is the whole safety argument and is asserted three ways: `navForUser` is identical with and without the default lookup for all 11 roles (unit + harness); every nav item's task is granted to every role the item's own `roles` list admits; and `test/unit/permission-engine.test.ts` **parses `src/server/**` for every `requireTask(...)` call** (resolving `...ROLES` spreads) and fails if any one of them would deny a role today — mutation-tested by mis-pointing one guard, which turned it red. **526 → 566 accounts exactly**: +14 static invariants (7 new × 2 editions) and +26 probe cells (2 new routes × 13 seed sessions); `main` measured at 143 static / 383 probe, this branch at 157 / 409. Every pre-existing check still passes. **Migration `0040` moves four seed cells**, each paired with a `nav.ts` widening so the gate is not left closing what nav opens — that pairing is what `test/unit/permissions.test.ts` (W1-B's drift guard, which re-derives the matrix from `nav.ts`) enforces, and it went red until `types.ts` moved with it. **Seven §8 questions settled — Q4, Q5, Q6 (split), Q8, Q9, Q16 and the F0917 contradiction** — see §8 for each. The one I want read: **Q6's visibility half is blocked on a screen, not on permissions.** `coreparams` renders the whole admin config surface (AI prompt, branding, plan, credits), not the prototype's Core Parameters panel, so widening it would hand four panels the prototype does not put there to every role; the authority half (`configparams` as a real grant, spec §10's default editor set) shipped and is reachable today on `myparams`. **Flagged per §4:** `configparams`'s `source` in `shared/types.ts` moved from `nav`/`coreparams` to `route`. That is a derivation reclassification, not a weakened assertion — the task is named "Configure 3 additional parameters", the additional parameters have no sidebar item of their own, and `coreparams` is the core-13 rubric screen. Every genuinely nav-backed task keeps the exact-equality check. **E2E — read this before you believe a red run (§8 Q28).** Three full-suite runs on this branch: 45/124 and 117/124 with **every** failure a `page.goto` / `toBeVisible` timeout, then **124/124 clean**. Nothing about the code changed between the second and the third; what changed is that I killed two orphaned `workerd` servers that `sj-W1-C` left running **since 9 Sep** for a worktree `git worktree remove` had already deleted, while `sj-W3-D`'s Playwright run was also live (load average 64, then 30, then quiet). Before concluding it was the environment I isolated all seven failures from run two — 18/18 pass alone, in 2–4 s each against the same 30 s budget they had blown — and the `parity.spec.ts` walk failed on a **different role each time**, including roles this branch never touched. No assertion ever disagreed in any run. This is §2.3's neighbour problem in its other form: not a false pass, a false **fail**, and it costs half an hour a session to diagnose. |
+| `W3-D` | **done** | **F0026, F0142, F0178, F0179** closed; **F0180** closed on the module side, waiting on one call in `src/server/ai/evaluate.ts` (§9); **F0038** is not this session's — it is a console-reachability decision that belongs with `nav.ts` (`W3-A`), and this session reaffirms CRM stays admin-only (see §8 Q26) | typecheck ✓ · lint ✓ · **802 passed / 1 skipped** ✓ (731 inherited + **71 new**: 18 unit, 34 worker, 19 client) · build ✓ · **e2e 127** (120 inherited + **7 new** `e2e/crm-sync.spec.ts`) — **124 pass, 3 fail, none CRM and none reproducible**, see the note · roles **526/526** ✓ (probed against this worktree's own server on port 5234, PID and cwd confirmed per §2.3) · `parity:nav` 208/278 ✓ · `parity:tokens` **27/27, 0 known gaps** ✓ | **CRM sync was the emptiest section in the console; it is now the most complete example of §1.3.** Four provider rows with live status, a Configure pane (connection, direction + schedule, the prototype's filter-rules card field for field, a field-mapping editor), connect/disconnect, Sync now, and a sync log. Migration **0043** only (sync direction/schedule, credential *reference* columns, `crm_field_mappings`, `crm_sync_log`). The provider call sits behind `CrmClient` with an empty adapter table, so `resolveCrmClient` returns `null` even when the secret is set and every attempt lands as `status='recorded'` — never `'sent'`. **Credentials are write-only and are never stored**: the Connect body is consumed and discarded, and what persists is a masked tail plus the NAME of the Worker secret a live deployment would read (§8 Q26). Two tests hold that line — a worker test asserting the posted secret appears in no response body and in no `crm_connections` row, and a client test asserting it is cleared from component state the moment it is posted. The Upload screen's CRM ticket card now links here (§9). **On e2e, read this before trusting a number.** The suite was run three times on this branch and failed a *different* set each time — 4, then 13, then 3 — while `e2e/crm-sync.spec.ts` passed 7/7 in every run and `e2e/admin-console.spec.ts` (which now walks the built CRM section) never failed. Every failure was a login or `h1` render timeout, or a seed-mutation race in `programs` / `scoring-framework`; one attempt could not even start its web server inside the 180 s budget. The cause is the machine, not the branch: with four Wave 3 worktrees running at once the load average reached **82** with 58 node processes, and the 13-failure run was the most contended. **§2.3 warns that a neighbour's server can fake a pass; this is the mirror image — a neighbour's CPU load fakes a failure.** The last run (124/127, at 1 worker) is the cleanest measurement and its three failures are `scoring-framework.spec.ts:48` and both `vc.spec.ts` specs, all of which touch no file this session changed — and **re-run in isolation on this same branch, those two files pass 5/5 in 3.1 minutes.** Integration should re-run e2e on a quiet machine before attributing anything here to `W3-D`; `uptime` is the first thing to check on a red e2e leg. |
+
+| **Wave 3 integration (A+D)** | **done** | — (integration closes no findings; it reopened F0063/F0080/F0071, see below) | typecheck ✓ · lint ✓ · **858 passed / 3 flaky / 1 skipped** (862; the 3 pass in isolation — see §8 Q32) · build ✓ · **roles 566/566** ✓ (port verified owned) · `parity:tokens` 0 gaps ✓ · `parity:nav` 67 known gaps ✓ | Merged `W3-A` → `W3-D`. **The split worked**: two overlapping files (`plan_parity.md`, one auto-merged mount line) against Wave 2's eleven, and W3-A's 29-file authZ refactor merged with ZERO conflicts. Had W3-B/W3-C run alongside, every route file W3-A rewrote would have been contested. **Four defects fixed, two of them blockers, none visible to either session.** (1) `PUT /api/config/additional-params/:id` dropped its role floor for a bare `can("configparams")` — and `can()` returns TRUE for roles outside the matrix, which is the rule that keeps founders on their own upload route. A **founder** passed a check that 403'd them on `main`; ticking one console cell was a **grant**, not a gate, violating §8 Q8 — the property `W4-A` is about to build checkboxes on. Mutation-tested: both new tests go red without the fix. (2) The mirror image: `POST`/`DELETE`/`permit` kept an admin-only role list while the seed and the client had widened to spec §10's editor set, so **PM and Partner saw Add/Remove controls that 403'd** — F0063/F0080/F0071 were half-built, authority in the seed and the UI and nothing in between. (3) W3-D's CRM router was still `requireRole("admin")`, so revoking the `adminconsole` cell did not close CRM's API — §8 Q16 states the opposite as a property. (4) `credential_ref` named an arbitrary Worker binding, so an admin could point it at `ANTHROPIC_API_KEY`; inert only because the adapter table is empty, which is exactly why it was worth closing before an adapter lands. Also placed W3-A's §9 request (the landing redirect now passes the permission lookup). **The through-line:** W3-A split one authorization decision across four places — seed, `nav.ts`, route guards, client — and they drifted at every seam. Each file was defensible alone; no test reads across all four. |
+
 <!-- Append a row per session. Do not rewrite history; add. -->
 
 ---
@@ -854,19 +859,19 @@ best reading and note it.
 | Q1 | audit | Pricing contradicts itself: three per-deck base rates (₹500 / ₹999 / ₹500–700), two pay-as-you-go catalogues (20/35/50 vs 10/50/100) and four enterprise vocabularies. | `W4-D` implements one canonical model and records the alternatives here. |
 | Q2 | audit | Does the workspace **launcher** belong in the product, or is it only a prototype navigation device? | Not a product feature. `W10-B` to confirm. |
 | Q3 | audit | VC has **four** additional-parameter owner roles (12 params) in the prototype; the app has three (9). | Follow spec §6.2. `W8-B` to reconcile. |
-| Q4 | `W0` (`parity:nav`) | `AISJ_ICAdmin_V6` is the only incubator prototype whose sidebar drops **both** Collaborate items (Contact Admin, Contact team); Super User, PM, PA and Jury all keep them. Prototype inconsistency, or a deliberate "the admin *is* who you contact" trim? | Keep both for admin (the app's current behaviour). `W3-A` confirms when it owns `nav.ts`. |
-| Q5 | `W0` (`parity:nav`) | The PM prototype offers **Sign up Pipeline** and **Onboard ready**; the app reserves both for admin + program associate. §1.4 gives the PM decision authority, which points the other way. | Likely a real gap. `W3-A` settles it with the runtime permission set. |
-| Q6 | `W0` (`parity:nav`) | **Core Parameters** (6 roles) and **Set up** (3 VC roles) appear in non-admin prototype sidebars but are admin-only in the app, and `PUT /api/config/parameters` is admin+superuser at 526/526. Read-only visibility, or no visibility? | No visibility, as today. `W3-A` decides; read-only is the likelier prototype intent. |
+| Q4 | `W0` (`parity:nav`) | `AISJ_ICAdmin_V6` is the only incubator prototype whose sidebar drops **both** Collaborate items (Contact Admin, Contact team); Super User, PM, PA and Jury all keep them. Prototype inconsistency, or a deliberate "the admin *is* who you contact" trim? | **SETTLED — `W3-A`. Prototype inconsistency; both items stay for the admin, which is the app's current behaviour.** Three reasons, none of them a preference: one file of eleven drops them and the other ten (including the incubator Super User, whose sidebar is the superset the admin's is trimmed from) keep them; no Aug-2026 issue asked for the removal, and §1.1 ranks the issue log above the prototype precisely for this kind of silent trim; and *Contact team* is the only route an admin has to the people they administer, so the trim removes a capability rather than tidying a menu. Zero code changed. The two `parity:nav` rows stay as permanent DELIBERATE entries with this reasoning attached. |
+| Q5 | `W0` (`parity:nav`) | The PM prototype offers **Sign up Pipeline** and **Onboard ready**; the app reserves both for admin + program associate. §1.4 gives the PM decision authority, which points the other way. | **SETTLED — `W3-A`. A real gap; the PM now reaches both** (`nav.ts`, seed `0040`, `parity:nav` 70 → 68, e2e in `permissions.spec.ts`). Every source agrees: the PM prototype's own Workflows list carries both, §1.4 makes the PM the decision maker for the programmes they lead, and F0919 / F0926 both report it. The consequence the findings name is the decisive one — the PM could not see their own programme past the intro call at all, because `guards.tsx` hard-refused the route rather than showing a read-only view. **The associate is still the executor:** `send_signup` remains `requireTask("signuppipeline", "program_associate", "admin")`, `performAction` still gates every transition on both screens, and no probe moved. The PM gained oversight, not the associate's job. |
+| Q6 | `W0` (`parity:nav`) | **Core Parameters** (6 roles) and **Set up** (3 VC roles) appear in non-admin prototype sidebars but are admin-only in the app, and `PUT /api/config/parameters` is admin+superuser at 526/526. Read-only visibility, or no visibility? | **SPLIT — `W3-A`. The question conflates two things, and they have different answers.** **(a) AUTHORITY — settled and shipped.** `configparams` ("Configure 3 additional parameters") is a real runtime grant, seeded per **spec §10** to Super User + Client Admin + **Program Manager** (incubator) / **Partner** (VC), enforced on `POST`/`PUT`/`DELETE /api/config/additional-params*` and read by `MyParamsPage.canEdit` — which was the last role literal in the client. §1.1 decides the F0063/F0080-vs-F0150 conflict: the written spec outranks the live console, which grants it to the Super User alone. It is reachable **today**, because `myparams` is already in every internal role's sidebar. Reversing it is now **one cell**, not a redeploy — which is the point of the engine. Note `configparams` is about the ADDITIONAL parameters (its own label says so); **`PUT /api/config/parameters`, the core-13 rubric, stays admin-only**, so the `config.params` probe did **not** move. **(b) VISIBILITY — deferred, and not for permissions reasons.** `coreparams` does not render the prototype's Core Parameters panel: it renders that panel *plus* the AI system prompt, branding, and plan & credits, and its data comes from `GET /api/config`. Widening the nav would hand four panels the prototype puts nowhere near these roles to every role that gained it, and would 403 on load besides. The precondition is a screen split, not a matrix decision, so it belongs to the **Core Parameters lane**; `parity:nav`'s entry now carries the precondition verbatim. **Set up** is the same shape (no read-only VC wizard, console-gated config read) and there is no `setup` task in the prototype's grid at all, so it is a nav + screen decision rather than a permission one. F0913 / F0914 / F0924's *previewing-as* selector and the hard read-only variant go with it. |
 | Q7 | `W1-B` | The prototype's **task-permission matrix disagrees with the shipped app for the `admin` role**: its "Client admin" column has no Upload, Evaluate, Assign or Query (the section even says "Admins are read-only on evaluation … by default"), while this application's `admin` has had all four since Phase 1 and the roles harness asserts it. | Today's app wins (plan §1.1 puts the prototype below the shipped contract here, and narrowing would break 526/526). The seed grants `admin` those four; `W4-A` can offer the prototype's narrower default as a *reset* if the user wants it. |
-| Q8 | `W1-B` | `role_permissions` is seeded as a **gate, not a grant**: `granted = 0` removes a capability, `granted = 1` leaves the app's finer rules (pipeline transition role lists, `requireRole`, stage gating) in place. A single boolean cannot express the prototype's real distinction between *seeing* the Archive screen and *performing* an archive. | `W3-A` must AND the permission with the existing rule rather than replacing it — that is what keeps `npm run roles` at 526/526 on the default seed while still making every cell meaningful. If the user wants view/act as separate cells, that is a second column and a wider matrix. |
-| Q9 | `W1-B` | Two VC tasks have **no nav slug of their own**: *MP approval* is seeded from the `mp_approve_dd` transition (partner + superuser), and *Open checklist* from the union of the Investment DD and Legal DD screens. Both readings are judgement calls. | As seeded. `W3-A` / `W4-A` confirm when they render the grid; `PERMISSION_TASKS` in `src/shared/types.ts` records the mapping per task so changing it is a one-line edit plus a seed migration. |
+| Q8 | `W1-B` | `role_permissions` is seeded as a **gate, not a grant**. A single boolean cannot express the prototype's real distinction between *seeing* the Archive screen and *performing* an archive. | **SETTLED — `W3-A` built it exactly as this row specifies, and the constraint turned out to be load-bearing rather than a compromise.** `requireTask(taskId, ...roles)` is `requireRole(...roles) AND can(task)`; `canSeeNav(role, item, can?)` is the role rule AND the item's task. Because a nav-backed task's seed is the **union** of the roles reaching its slugs, it is a superset of any one route's role list — so the AND is provably a no-op on the default seed, which is what kept the harness green through a 27-call-site refactor. Three consequences worth recording: **(1)** ticking a cell ON grants nothing, so exposing the grid as checkboxes is safe by construction, and there is a unit test and a worker test that assert exactly that; **(2)** widening access is still an edit to `nav.ts` *plus* a cell, which is why every `0040` seed change is paired with one; **(3)** the permission expresses something a flat role list cannot — the same route admitting a different set per edition (`partner` configures parameters in VC, `program_manager` in the incubator). The view/act split this row anticipates is still a second column if the client wants it; nothing built here forecloses it, and `archive` is the exact case that would need it. |
+| Q9 | `W1-B` | Two VC tasks have **no nav slug of their own**: *MP approval* is seeded from the `mp_approve_dd` transition (partner + superuser), and *Open checklist* from the union of the Investment DD and Legal DD screens. | **CONFIRMED AS SEEDED — `W3-A`.** Both readings survive contact with the engine. `mpapproval` stays `source: "action"`, derived from `mp_approve_dd`, and `test/unit/permissions.test.ts` now re-derives it against the live pipeline table on every run. `openchecklist` stays the union of `investmentdd` + `legaldd` and is carried as the `task` on both nav items — the union is what makes the gate a no-op (ic_member holds the task and reaches Investment DD but not Legal DD, which the *role list* withholds, exactly as today). **One correction in the same family, flagged per §4:** `configparams` was seeded `source: "nav"` / `coreparams`, and that mapping is wrong — the task is named "Configure 3 additional parameters", the additional parameters have no sidebar item of their own, and `coreparams` is the core-13 screen. It is now `source: "route"` naming the additional-param routes. That is a reclassification of the derivation, not a weakened assertion: every genuinely nav-backed task keeps the exact-equality check against `nav.ts`. |
 | Q10 | `W1-B` | The **Rubric anchors** screen still shows the stale three-parameter taxonomy (P1 Super User · P2 Program Manager · P3 Jury Member) while the shipped model — and spec §6.2 — has nine role parameters per edition. | Seeded five band rows for all nine (text NULL, exactly as the prototype renders P1–P3 blank), so the screen has somewhere to write. `W2-B` renders nine sections, not three. |
 | Q11 | `W1-B` | The notification event **"All jury complete — ready for mentor review"** names a mentor review step that §1.2 says does not exist — `mentor` is a directory record with no pipeline authority. | Kept the prototype's label verbatim on the seeded row (`event_key` is the neutral `all_evaluations_complete`), so nothing is lost. `W3-B` should reword the label when it builds the producer; only the user can say whether the *step* was ever meant to exist. |
 | Q12 | `W1-B` | The **agreement templates' programme mapping** uses the prototype's own demo programme names (`Accelerator · Cohort 8`, `Seed Fund II`), none of which exist in this workspace. | Linked the two active templates per edition to real seeded programmes (Fintech Accelerator / SaaS Accelerator; Fund II / Deep Tech Fund) so the mapping is live rather than dangling. A programme that is absent simply inserts no row. `W5-B` re-points them if the user's real programmes differ. |
 | Q13 | `W1-A` (`parity:tokens`) | The application's deck-signal ramp has no prototype counterpart. `--color-signal-strong` was `#4a6644`, which the token harness flagged as a possible olive/green conflation. It is neither: the prototype paints scores from `asScoreCol` (`_scripts.js:898` — `#3A7D44` / `#BA7517` / `#B42318`, **three** bands, hardcoded, no token), while `--green #16A34A` is the status-pill hue (`.sp-d`, `.bx-g`). The application has **four** bands. Retune the four onto the prototype's three, or keep four and choose tokens for them? | Kept the four-band ramp under its own `--signal-*` tokens, distinct from `--green`, and declared `--green` at the prototype value. Repointing the ramp recolours scores on every screen in Waves 7–9, so it is theirs to settle. |
 | Q14 | `W1-A` | The prototype **inverts `--navy`** in dark mode (`#1A1E2E` → `#EDEFF5`) because it uses navy as an inverted surface (`.prof-btn{background:var(--navy);color:var(--surface)}`). This application uses navy as fixed ink on a gold chip (`bg-accent text-navy`, in routes W1-A does not own) and as a modal scrim — both must stay dark. | `--navy` is declared at the prototype's light value and deliberately **not** inverted in dark; `index.css` says so at the point of declaration. A later session needing the inverting-surface role should add a token for it rather than flip this one. |
 | Q15 | `W1-A` | The prototype **abandons the fixed frame on mobile**: `@media (max-width:640px){body{overflow:auto} .view{height:auto;min-height:100vh;overflow:visible}}`. The application's shell stays `h-screen` at every width. | Left as-is — it is what the application already did, so it is an unclosed parity detail rather than a regression, and it interacts with `<PanelFrame>`'s `position:absolute` frame, which no screen has adopted yet. Whichever wave adopts `PanelFrame` should close it. |
-| Q16 | `W1-C` (F0038, F0151) | **Who reaches the Admin console, and to do what?** All eleven prototypes ship a console; the seven non-admin ones carry a 12-section variant (`crm`, `nt`, `al` included) that is fully editable — jury and analyst get live CRM Connect/Disconnect buttons and the same ten writable toggles. That is almost certainly a prototype oversight for CRM and billing, but it is clearly deliberate for **Notifications**: `s-nt`'s own sub-line scopes it per person ("…for your account"), so a jury member has no reachable screen on which to switch off their own mail. Two decisions the client must make: (a) does every internal role get a console entry, and (b) is the non-admin console read-only? | Console stays admin + superuser only, as today — `W1-C` built no read-only variant (its §6 note forbids one) and `parity:nav` did not move. The shell is nevertheless ready for a widening: `canSeeAdminGroup()` gates the **Sign-up** group independently of console reachability, so opening `nt`/`al` to every role cannot leak Required documents, Agreements, Signatories or Seats/Fund with it. `W3-A` (permissions) and `W3-B` (notifications) both need the answer; `W3-B` is where it bites. |
+| Q16 | `W1-C` (F0038, F0151) | **Who reaches the Admin console, and to do what?** (a) does every internal role get a console entry, and (b) is the non-admin console read-only? | **ANSWERED — `W3-A`, and the shape of the answer changed.** **(a) No, not by default — but it is now a decision an administrator can take, not a redeploy.** Console reachability is the `adminconsole` task, seeded to admin + superuser (today's behaviour, `parity:nav` unmoved). It gates the nav item *and* `GET`/`PUT /api/permissions`, `GET /api/config`, `GET /api/users`, the rubric anchors and the question bank — so closing the cell closes the console and everything behind it, in one place, which is the property the client actually needs. Opening it to a new role is still an edit to `nav.ts` **plus** the cell, because §8 Q8 is gate-only; that pairing is deliberate and is what stops a checkbox widening access on its own. **(b) The non-admin console should be read-only, and F0183 is why the prototype does not show it:** the seven non-admin files are an *older build* (a flat 19-row `taskList` with the retired investor role names), not a read-only variant — so their editable cells carry no design intent to reproduce. **(c) The Notifications case stands apart and is still `W3-B`'s to solve**, as this row always said. `s-nt`'s own sub-line scopes it per person ("…for your account"), so a jury member has no reachable screen on which to switch off their own mail — and the answer to that is a per-account preference surface (My account), **not** a widened console. `W1-C`'s `canSeeAdminGroup()` still isolates the Sign-up group, so either route stays safe. |
 | Q17 | Wave 1 integration | `e2e/parity.spec.ts` is read-only but shares one local D1 with specs that mutate deals, under `fullyParallel` + 2 workers. It failed once on a screen that gained rows it did not have at capture time, and passes on a clean run. Union the capture, or give the walk its own serial project? | Left as-is for now — it passes clean and the harness's own docstring anticipates unioning. `W12-B` decides during the regression pass. **`W2-C` adds evidence that this is a *budget* problem, not a capture problem:** across two full suite runs on a machine with sibling worktrees building, `parity.spec.ts` failed twice — different roles each time (`vc/superuser`, then `incubator/program_manager`) and always the same shape, `locator('h1').first()` not visible within the 5 s expect timeout, i.e. the page had not finished loading. No assertion ever disagreed. That is the same family as the `coverage.spec.ts` rows in §9, and the same remedy applies: give the walk a budget matched to what it does. `W2-C` did not touch the file. |
 | Q18 | Wave 1 integration | `W1-A`'s §7 disposition does not reconcile: **F0370, F0371 and F0383 are dispositioned nowhere**, and F0380 is listed PARTIAL but received no work. | `W12-A`'s sweep picks up anything unclaimed; no finding is lost, but the wave's closure count is 3 lower than it reads. |
 | Q19 | Wave 1 integration | Six of `W1-A`'s closed findings have **no test that fails if the change is reverted** — they are closed by inspection, not by assertion, which is what §4 warns against. | Acceptable for token-level changes that `parity:tokens` now pins wholesale; `W12-B` to confirm coverage during the regression pass. |
@@ -876,6 +881,13 @@ best reading and note it.
 | Q23 | `W2-B` | **Which role owns P1 — and therefore what does `AI+` label?** The prototype's Rubric anchors and Area weights both say *P1 Super User · P2 Program Manager · P3 Jury Member* and `cpUpd()` prints exactly that as the AI+/AI++/AI+++ legend. The written spec (§6.2, `scope[standard|pm|pa|jury]`) and this application say *Program Associate · Program Manager · Jury* (VC: *Investment Associate · Partner · IC Member*). This is F0163, which says to resolve it before changing anything — and it now has a visible consequence, because the tier pills this session shipped are bound to `ADDITIONAL_PARAM_OWNERS` order. | Spec wins (§1.1), so `AI+` = the first owner in `ADDITIONAL_PARAM_OWNERS` — Program Associate / Investment Associate. Changing it is a one-line reorder of that constant plus a seed migration; nothing else reads the tier. Related to Q3, which asks the adjacent question about the VC count. |
 | Q24 | `W2-C` (F0042) | **The "weak signal" that picks the areas a founder is questioned about is the wrong scale.** `routes/decks.ts:63-65` derives `weak_areas` from `org_settings.threshold_mediocre` — the All-Decks *cohort rating* band an admin tunes to re-bucket a cohort — while `s-qb`'s own sub-title scopes the trigger to "weak, missing, or contradictory signal in a given area", which both specs define only on the BRD five-band rubric scale. So raising *Poor — below* from 5.0 to 6.5 to re-colour a cohort overview silently widens who gets asked questions, and an area scored 5.5 is never asked about even though the BRD calls 3–4 Weak. | Not fixed here, deliberately. The producer (`GET /api/questions/draft/:deckId`) mirrors `decks.ts`'s derivation **exactly**, so the draft and the Query screen can never disagree about what is weak. Moving one without the other is the worst of the three states. The five-band scale it needs is `W2-B`'s (`parameter_rubric_bands`, `0027`) and is not merged; the session that lands it should re-point **both** call sites in one commit, or introduce an explicit clarification threshold. |
 | Q25 | `W2-C` (F0040) | **There is no per-question round trip.** `queries.questions` is one text blob out and `queries.founder_response` one blob back, so once the bank is wired there is still nowhere to record *which* bank question was asked on a deck, who asked it, whether the founder answered *that* question, or when — and "which areas did the founder actually address" stays uncomputable. Both specs sketch the schema (`founder_clarifications(id, deck_id, asked_by, question, answer, answered_at)`). | The bank is keyed by `parameters.id` and the producer already returns the questions grouped by area, so the shape is ready for it. Building the table needs a migration plus `FounderPortal.tsx` (`W10-B`) and `pipeline.ts`, none of which is `W2-C`'s — **migration `0040` is still unused** and reserved. Prompt drafted in §10. |
+| Q26 | `W3-A` | **Is the superuser subject to its own permission grid?** `requireRole`'s superuser bypass is untouched (it still passes every role list), but `requireTask` puts the superuser through the grid like everyone else. The seed grants it all 21/24 cells, so nothing changes today — and F0019's own FIX line says "keep superuser hard-allowed", which is the opposite. | **Subject to the grid.** Exempting it would make the superuser column in the console's own grid a lie — 24 checkboxes that do nothing — and the prototype draws that column as toggleable. As built, an administrator who deliberately closes a superuser cell gets what they asked for, and `PUT /api/permissions` refuses to write the superuser row at all (`immutable_superuser`, mirroring `users.ts`), so the only way to reach that state is a direct DB edit or a future migration. The roles harness asserts the superuser holds every task on the default seed, so a seed that ever stopped granting one would go red rather than silently narrow. |
+| Q27 | `W3-A` | **Six task rows have a cell but still no verb.** `register`, `reassign`, `remind`, `deleteuser` and `outofofficedelegation` are enforced nowhere, because the product has no such action to gate — the grid can now express them, which makes their absence visible rather than fixing it. `activateuser` / `deactivateuser` DID get a verb here (`PATCH /api/users/:id`, checked per direction). | Left as vocabulary, which is what `0029` intended for `source: "none"` rows. Each has a named owner and the cell is ready for it: *Remind* → `W3-B` (`scheduled.ts` already sends evaluator reminders and should consult `remind` when it does); *Reassign / Resubmit* → the Assign lane; *Delete user* + the Activate/Deactivate UI → `W4-A`; *Out of office delegation* → F0072/F0907/F0928, a genuine product feature (an OOO window per user with a delegate inheriting assignments **and grants** for the period) that no wave currently owns — the prompt in §10 proposes one. *Register* is F0073 and is an onboarding-lane question, not a permissions one. |
+| Q28 | `W3-A` | **`npm run roles` and the e2e suite cannot both be trusted while sibling worktrees are busy.** §2.3 documents the false PASS (a neighbour's server on your `ROLES_BASE`). This session hit the mirror image: two full e2e runs failed ~16 specs on `page.goto` timeouts at **load average 64**, with `sj-W3-D`'s Playwright run live and `sj-W1-C` leaving two stale `workerd` servers up days after that session ended. Nothing the specs assert ever disagreed. | Ran the suite at `--workers=1` on a private port (5231, ownership proved by `lsof` → this worktree's `vite`): **124/124**. Two suggestions for the plan rather than for a session: (1) §2.3 should say "prove the port **and** check the machine" — `ps aux \| grep workerd` before believing a red e2e, the same way it already says to check before believing a green roles run; (2) an integration session should sweep stale `workerd`/`vite` processes from removed worktrees, since `git worktree remove` does not kill them. |
+| Q29 | `W3-D` | **A self-serve Connect button cannot, on its own, make a CRM connection usable — and that is by design.** §1.3 forbids a vendor credential on the critical path and `0037` says in as many words that keys "belong in Worker secrets, never in D1". The prototype shows the opposite: a per-provider Connect that an admin completes alone. The two cannot both be true, so this session resolved it by splitting the act: the admin's Connect posts a key, the app records **only** a masked tail plus the *name* of the Worker secret a live deployment reads (`CRM_SALESFORCE_TOKEN`), and the key itself is discarded. Going live therefore needs an operator to run `wrangler secret put` — the same external step the sending domain needs (§1.4). The client should know the Connect button is a configuration record, not a handshake. | Implemented as described. It is the only reading that satisfies both rules, and it makes the credential test trivially strong — there is no stored secret for a GET to leak. If the client wants true self-serve, the answer is a provider OAuth redirect storing a token in a secrets store, which is the same shape §1.2 already mandates for card data. |
+| Q30 | `W3-D` (F0179) | **"Auto-approve if within monthly cap" approves *what*?** The prototype's sub-line — "No manual approval needed if submission count is below the monthly limit" — implies that a pulled deck otherwise waits in an approval queue. **This product has no such queue**: a deck is uploaded, evaluated and enters the pipeline. So the toggle either (a) gates whether a CRM-pulled deck is evaluated immediately or parked for a human, which is a new pipeline state, or (b) is redundant once the cap itself is enforced. | Persisted and enforced as the **cap**, which is the half that is unambiguous and is the only spend guard on auto-pulled decks: `runPull` refuses once the month's pulled count reaches `monthly_deck_cap`, and records a `'skipped'` row saying so. The toggle is stored and carried on the recorded attempt payload (`autoApproveWithinCap`) so whichever reading wins costs one branch in the pull, not a schema change. The approval queue is **not** built. |
+| Q31 | `W3-D` | **Is a CRM connection per workspace, or per programme / cohort?** `0037` keys `crm_connections` on `(edition, provider)` — one Salesforce for the whole incubator side — and `s-crm` draws no programme selector. But the console title bar carries a programme/cohort chip on *every* section, which reads as though each section is scoped by it, and a multi-programme incubator plausibly wants one CRM pipeline per programme. | Edition-wide, per `0037`'s UNIQUE key, which is also what the prototype's four flat rows depict. Changing it later means a `program_id` column and widening that UNIQUE — contained, because every read goes through `src/server/crm/store.ts`. |
+| Q32 | Wave 3 integration | **The test suite is non-deterministic, it predates Wave 3, and it is getting worse as the suite grows (862 tests now).** It has cost four waves: W3-A ran its suite three times to get a clean number, W3-D ran e2e three times and got three different failure sets, Wave 2 produced two false e2e failures, and W2-C reached a documented wrong conclusion from one. The risk is not the flakiness — it is habituation: every wave that ends with "that red run was just load" makes the next genuine regression easier to wave through. Should a dedicated session fix it now, before Wave 4? | Integration recommends **yes** — one session owning `vitest.worker.config.ts`, `playwright.config.ts` and the two specs that mutate shared state, with the acceptance test being *ten consecutive green full-suite runs*, not one. Deferring it to `W12-B` means discovering it a fifth time. Awaiting the user's call. |
 
 ---
 
@@ -935,6 +947,12 @@ session places it.
 | `W2-C` | `test/client/adminConsole.test.tsx:294`, `e2e/admin-console.spec.ts:72` | **Already placed, flagged per §4 — two assertions that pinned Wave 1's state and would have broken for `W2-A` and `W2-B` too.** The client test asserted `Object.keys(SECTION_COMPONENTS)).toEqual(["tm"])`; the e2e walk asserted every section but `tm` renders a placeholder owner badge. Both are now read off the registry (`toContain("tm")`, `if (!SECTION_COMPONENTS[section.id])`), which is order-independent, keeps each test's actual subject intact, and means no session in Waves 3–5 has to touch either line. Neither assertion was weakened: a section with a placeholder is still asserted to name its owner. | placed by `W2-C` |
 | `W2-C` | `src/server/ai/evaluate.ts` / `src/server/queue.ts` *(unowned)* | **F0041 — nothing fires a clarification automatically.** The decision is implemented and tested (`shouldAutoClarify` in `src/shared/queries.ts`, and `GET /api/questions/draft/:deckId` returns `triggered`), and `org_scoring_settings.auto_clarification` is honoured — but the post-evaluation path never asks. What is missing is one call from the end of the evaluation path: if `triggered`, raise the query with `draft.message` through the same insert `pipeline.ts:487-499` uses. Neither file is `W2-C`'s. See the §10 prompt. | a Wave 3+ session; prompt drafted in §10 |
 | `W2-C` | `e2e/coverage.spec.ts:48,69` (or `playwright.config.ts`) | **Re-raising `W1-B`'s and `W1-A`'s row: it was assigned to *Wave 1 integration*, which has completed without placing it, so every session from here on inherits a red e2e leg it did not cause.** Measured again on `parity/W2-C`: run alone against the same server, the two nav sweeps pass in **18.7 s** and **21.5 s** against the default **30 s** budget; run inside the full suite at 2 workers they time out on `getByRole('heading', {level: 1})`. The fix is one line each — `test.setTimeout(120_000)` — exactly what `W0` gave `e2e/parity.spec.ts:113` for the same reason. I did not touch the file: it is not mine, and §4 says raise a timeout change rather than make it. | **Wave 2 integration** — do not defer again |
+| `W3-D` | `src/server/ai/evaluate.ts` *(unowned)* | **F0180 — evaluation completion still has no external side effect.** The outbound half is built and tested: `writeBackDeckScore(env, {edition, deckId, externalId, fields})` in `src/server/crm/sync.ts` finds the edition's live write-back connection, refuses with a `'skipped'` row when the toggle is off or no target field is set, and otherwise records exactly what it would have pushed. What is missing is **one call** at the end of the evaluation path — beside the existing `notifyIncompleteDeck` call (`evaluate.ts:723`) — passing the deck's composite and signal. It returns `null` when no connection wants it, so the common case costs one indexed query and the call needs no guard of its own. Neither `evaluate.ts` nor `queue.ts` is this session's. | a Wave 4+ session; one line |
+| `W3-D` | `src/server/scheduled.ts` *(`W3-B` this wave)* | **The sync *schedule* is persisted but nothing runs it.** `crm_connections.sync_schedule` is set from the console (manual / hourly / daily / weekly) and `runPull` is the job it names, but the only caller today is the section's **Sync now** button. The Worker already has a `*/10 * * * *` cron branch (`src/server/index.ts`, `runStuckSweep`); a third branch that walks live connections whose schedule is due and calls `runPull` would complete the loop. Not raised as a defect — with the provider stubbed, a scheduled pull would only write recorded rows — but it is the last piece before a real adapter makes the section work end to end. | Wave 13 (production hardening), or `W3-B` if it is already in `scheduled.ts` |
+| `W3-D` | `src/client/routes/UploadPage.tsx` *(`W7-B`)* | **Already placed, flagged per §2.2 — the prompt's BUILD item 3.** The "Pull decks from your CRM" row raised a customization ticket; it now renders a `<Link to="/app/admin?section=crm">Set up CRM sync</Link>` for anyone who can open the console, and the card's blurb no longer claims CRM is ticket-only. It is slightly more than "swapping the card's action": `OtherIntakeOptions` gained `useAuth()` and a `canOpenAdminConsole` check, because Upload is reachable by `program_manager` and `program_associate` and an unguarded link would send them to a screen they cannot open. The **email-triage** row is untouched and still raises a ticket — it has no screen. ~14 lines, all inside that one function. | placed by `W3-D` |
+| `W3-D` | `test/worker/migrations-w1b.test.ts` *(unowned)* | **Already placed, flagged per §4 — and every Wave 3 session will hit it.** The numbering guard capped the directory at `LAST + 3` (0040), which was Wave 2's allotment; Wave 3 allots 0040–0043, so `0043` fails it. Replaced the literal with a named `ALLOTMENT_CEILING = 43` carrying a comment that names the §10 table and says each wave raises this line. The assertion is **not** weakened — uniqueness, contiguity below 0037 and the block checks are all untouched; only the ceiling moved, and it moved to exactly this wave's allotment. `W3-A`, `W3-B` and `W3-C` each need the same edit, so **expect a one-line conflict here at integration and take the highest value.** | placed by `W3-D`; integration to reconcile four identical edits |
+| `W3-D` | `src/shared/crm.ts` *(new file, outside this session's stated ownership)* | **Declaring a deviation.** The prompt allotted `src/server/crm/**`, but the vocabulary (provider/direction/schedule enums, the connection view type) and the field-mapping validator are needed by **both** the route and the console section, and having the client import from `src/server/` would be the wrong architecture for a one-line convenience. They live in a new `src/shared/crm.ts` instead; `src/server/crm/` keeps the three Env-bound files (`provider.ts`, `store.ts`, `sync.ts`). The file is new and uniquely named, so it cannot collide — `src/shared/nav.ts` and `src/shared/roles.ts` are the §2.2 hazards and neither is touched. | no action; recorded so integration is not surprised |
+| `W3-D` | `src/client/routes/admin/index.ts` *(unowned)* | `CrmSyncSection` is imported by `registry.tsx` directly and is deliberately **not** re-exported from the barrel, unlike `RubricAnchorsSection` / `QuestionBankSection` / `TeamRolesSection`. Nothing needs it — the registry is the only consumer and the tests import the module path — but the barrel is now inconsistent. One line, whenever someone is in that file anyway. | any Wave 4–5 session |
 | Wave 2 integration | `src/shared/analytics.ts:348-353` *(`W8-A`)* | **The "one band table" is not one table.** `scoreDrift` still carries a private four-band `band()` (`>=8 strong … <2 absent`) driving the report's "same signal band" numbers, with a unit test pinning the retired cut-points. W2-B moved `signalTag` and the red-flag list onto `RUBRIC_BANDS` but not this. A deck can be Strong on its row and one band lower in the drift chart. Derive it from `RUBRIC_BANDS` and re-baseline the test. | `W8-A` |
 | Wave 2 integration | `src/client/components/EvalScorecard.tsx:77-82` and `EvaluationReport.tsx:25-30` *(`W7-D`)* | **Two more copies of the retired four-band cut-points**, in `scoreColor` — so a score is coloured on the old scale while the pill beside it names the new band. Same fix: derive from `RUBRIC_BANDS`. | `W7-D` |
 | Wave 2 integration | `src/server/routes/questions.ts:304` vs `src/server/routes/decks.ts:64-72` *(`W7-C`)* | **F0042 is reopened by the merge, and W2-A/W2-B/W2-C disagreed about it in their own handoffs.** The two weak-area derivations diverged: W2-A moved the Query screen's `weak_areas` onto the constant `WEAK_SIGNAL_MAX`, while W2-C's draft endpoint still reads `org_settings.threshold_mediocre` — under a comment asserting the two cannot disagree. Pick one (the rubric's Weak band, per F0042) and make both read it. | `W7-C` |
@@ -945,6 +963,16 @@ session places it.
 | Wave 2 integration | `src/shared/scoring.ts:293-301` + `pipeline.ts:425-431` *(`W7-D`)* | `overrideRationaleDelta` and `shortlistThreshold` are **enforced in canonical 0–10 but authored and captioned in the org's display scale**, so on a 1–5 org the admin sets "2 points" and gets 4. Convert at the boundary, or caption them canonically. | `W7-D` |
 | Wave 2 integration | `migrations/` + `test/worker/migrations-w1b.test.ts` *(`W12-B`)* | Two schema-hygiene items: `decks.signal` has **no CHECK constraint**, so nothing stops `absent` being written back after `0039` re-derived it; and the contiguity test was weakened to `n <= LAST` with `LAST = 37` rather than extended to cover `0038`/`0039`. | `W12-B` |
 | Wave 2 integration | `src/client/routes/analytics/VcReports.tsx:183` *(`W9-D`)* | Stale user-visible copy still names the retired band: "flagged by weak/absent signal". | `W9-D` |
+| `W3-A` | `src/client/App.tsx` *(hazard file — unowned this wave)* | **One argument.** `App.tsx:54` calls `landingNavId(user.edition, user.role)` without the permission lookup, so a role whose FIRST nav item has been switched off is redirected to a slug `RequireNav` then refuses. `guards.tsx` (mine) already passes the lookup, so the refusal is correct and safe — it is the redirect target that is stale. The fix is `landingNavId(user.edition, user.role, can)` with `const can = usePermissions();`, exactly as `guards.tsx:36` does it. Two lines, no behaviour change on the default seed (which is why it is not a defect today). | Wave 3 integration |
+| `W3-A` | `src/shared/types.ts` *(`W1-B`'s)*, `src/server/routes/{auth,analytics}.ts`, `src/server/types.ts`, `src/server/index.ts`, `src/client/{components/Sidebar,routes/MyParamsPage,auth/AuthProvider}.tsx` | **Already placed — the files the re-pointing reached beyond my named ownership, listed so integration can audit every one.** `shared/types.ts`: four seed cells + the `configparams` source reclassification (§8 Q9). `server/types.ts`: `Variables` gains `perms`. `server/index.ts`: one import + one `app.route` line. `routes/auth.ts`: login and `/me` return `permissions`. `routes/analytics.ts`: its `canAccessNav` delegation carries the lookup through (behaviour-neutral — no report slug has a task yet). `Sidebar.tsx`: two lines (`usePermissions()` + passing it to `navForUser`). `MyParamsPage.tsx`: `canEdit` stops being a role literal (§8 Q6a). `AuthProvider.tsx`: `AuthUser.permissions?`. Plus `scripts/parity-nav.ts` for the three closed gaps and the re-worded adjudications (§2.5 requires it), and `e2e/parity.spec.ts` for the three new role×screen rows. | placed by `W3-A` |
+| `W3-A` | `src/client/routes/StagePage.tsx:690` *(Prog Manager Pipeline lane)* + `src/shared/nav.ts` | **`parity:nav`'s two casing gaps are reassigned, not fixed.** The prototype says "Prog manager pipeline" and "My Scores"; the app says "Prog Manager Pipeline" and "My scores". I own the sidebar label but not the page heading, and `StagePage.tsx:690` hardcodes the same string — changing one without the other makes the sidebar and the `<h1>` disagree, which is worse than the casing. Whoever owns the screen should change both in one commit and delete the two `EXPECTED_GAPS` rows, whose reasons now name this precondition. | the Prog Manager Pipeline / jury Reports lanes |
+| `W3-A` | `src/shared/nav.ts` (`badge`) + a new counts route *(re-raising `W1-A`'s row, assigned to Wave 3)* | **Not done, deliberately, and the reason has not changed.** `W1-A` asked Wave 3 for an optional `badge` key on `NavItem` plus a cheap counts endpoint, having measured that the obvious wiring pushed `coverage.spec.ts`'s VC walk past its 30 s budget. The type field is a one-liner, but shipping it without the route adds a field nothing populates, and the route is a new server surface with a measured performance constraint — a session of its own, not a rider on the permission engine. `nav.ts` is free for it in Wave 4. | Wave 4, with an owner |
+| Wave 3 integration | `vitest.worker.config.ts` + `e2e/permissions.spec.ts` *(NEW SESSION — see §8 Q32)* | **The green gate is not trustworthy on this machine, and it is hiding real work.** Measured at Wave 3 integration: three runs of IDENTICAL merged code gave 4, 21 and 2 failures with **no test failing twice**; `pipeline.test.ts` failed alone once and passed alone the next time. A control on `main` @ `a9243b6` — none of Wave 3's code — failed **5 of 17** in the same file on its third run, so this is pre-existing and not merge-induced. Mechanism: `vitest.worker.config.ts` sets neither `isolatedStorage` nor `singleWorker`, so 30 worker files race one Miniflare over shared seed data; `e2e/permissions.spec.ts` mutates global permission state while `parity.spec.ts` walks the same roles in parallel. **An attempted fix at integration made it worse** — `singleWorker: true` + `isolatedStorage: true` gave 128 failed / 397 passed, and was reverted. This needs a session, not a guess. | **unassigned — see §8 Q32** |
+| Wave 3 integration | `src/server/crm/**` *(`W12-A`)* | CRM **field mappings are validated, stored and rendered but read by neither sync direction**, so the allowlist is not an allowlist; and the **sync schedule is stored and ignored** while the section is explicit about the provider stub. Both make the section look more finished than it is. | `W12-A` |
+| Wave 3 integration | `src/server/ai/evaluate.ts` *(`W12-A`)* | **F0180 is not closed.** W3-D's §9 request is not placeable as written — no schema correlates a deck score with a CRM connection, so "one call in evaluate.ts" has nothing to call with. `evaluate.ts` now carries five unowned §9 requests from three waves. | `W12-A` |
+| Wave 3 integration | deploy ordering *(`W14`)* | **Until `0040` runs, the VC partner loses the IC vote they have today, and no gate can see it** — `nav.ts` and the route guards ship in the bundle, the seed widening ships in the migration. Migrations must be applied `--remote` BEFORE the Worker deploy, which `docs/FINISH-PLAN.md` already prescribes; Wave 14 must not reverse it. | `W14` |
+| Wave 3 integration | `src/client/auth/AuthProvider.tsx` + `src/shared/permissions.ts` *(`W4-A`)* | `AuthProvider` documents a **fail-open** client permission lookup; the code fails **closed** for every matrix role. One of them is wrong. Also two client-side role literals now duplicate the `adminconsole` task and will drift from it. | `W4-A` |
+| Wave 3 integration | `test/unit/permission-engine.test.ts` *(`W12-B`)* | The parse-based guard **fails open**: an unresolvable spread silently reduces coverage and the count assertion is a floor, so the test can pass while covering fewer call sites than it claims. It is the main evidence for "the refactor is invisible on the default seed" — it should fail loudly when it cannot resolve a site. | `W12-B` |
 
 ---
 
@@ -1241,6 +1269,298 @@ FINISH
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
   Commit to parity/W3-D. Do not merge to main.
 ```
+
+### `W4-A` — Team & roles, and the grid that drives the engine *(written by `W3-A`)*
+
+> `W3-A` built the runtime permission engine and left this session the screen it was built for. Read
+> §8 Q8, Q16, Q26 and Q27 before designing the grid — they are the semantics you are rendering, and
+> three of them constrain what a checkbox is allowed to mean.
+
+```markdown
+You are running session W4-A — Team & roles, user lifecycle, and the task-permission grid — of the
+ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W4-A -b parity/W4-A main
+  cd ../sj-W4-A && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2 (§2.3 twice), §4, then ONLY your entry for W4-A in §6, and
+     §8 questions Q7, Q8, Q16, Q26, Q27 — W3-A settled the engine's semantics there and you are
+     rendering them, not re-deciding them.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "team|permission|user.access|s-tm|s-uc" --full
+     F0018 / F0019 / F0149 / F0903 are CLOSED server-side — the API, the vocabulary and the
+     enforcement all ship. What is missing is the grid itself.
+  3. The API you are binding to: src/server/routes/permissions.ts (GET/PUT /api/permissions),
+     PERMISSION_TASKS / PERMISSION_ROLES / permissionTasksFor in src/shared/types.ts, and
+     src/shared/permissions.ts. Read test/worker/permissions.test.ts for the contract — every
+     refusal you must render is already tested there.
+  4. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-tm.html (card 4, `#tm-perms`) and
+     the admin `_scripts.js` `permRender` / `permGroupDefs` / `permToggle`.
+
+BUILD
+  1. The grid: 21 × 5 (incubator) and 24 × 6 (investor), THREE grouped row headers in
+     PERMISSION_TASK_GROUPS order, coloured role pills as columns, click-to-toggle cells.
+     `GET /api/permissions` returns tasks, roles and a resolved `grid[taskId][role]` already shaped
+     for this — do not re-derive it client-side, and do not import DEFAULT_ROLE_PERMISSIONS into the
+     component: the resolved grid is the one that accounts for overrides.
+  2. Render the two refusals rather than letting them 403 blind: the `superuser` column is READ-ONLY
+     (`immutable_superuser`), and a cell is non-interactive when it would close the caller's own
+     `adminconsole` (`cannot_lock_yourself_out`). Both are enforced server-side; the screen should
+     not offer what the API will refuse.
+  3. **Tell the truth about what a cell does.** It is a GATE, not a grant (§8 Q8): unticking removes
+     a capability, ticking restores it, and ticking a cell for a role that was never in `nav.ts` for
+     that screen grants nothing. The prototype's own copy ("Tap a cell to toggle access") overstates
+     it. Say what it does — one line of sub-copy, not a tooltip nobody opens.
+  4. The six `source: "none"` rows (§8 Q27) are cells with no verb behind them yet. They must still
+     render and persist — the seed is real, and W3-B / W4-A themselves will start honouring them —
+     but do not imply they are enforced today. `PermissionTask.note` carries the reason for each.
+  5. The member roster with the full invite lifecycle (pending / resend / cancel), the role legend,
+     the workspace-type switch, and the VC free-text `Designation` field on both add-member rows.
+  6. The missing user verbs: activate, deactivate, delete. NOTE: `PATCH /api/users/:id` already gates
+     activate and deactivate SEPARATELY (per direction, `activateuser` / `deactivateuser`) — wire the
+     UI to that, do not add a third path. `deleteuser` has no route yet and is yours.
+  7. User access is RESET-ONLY. Never render a stored password (§1.2).
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/TeamRoles.tsx, src/client/routes/admin/UserAccess.tsx,
+    src/server/routes/users.ts. You own migration 0044 and only 0044.
+  - Do NOT touch src/shared/{nav,roles,permissions,types}.ts, src/server/auth/**,
+    src/server/routes/permissions.ts or scripts/role-matrix.ts. If the grid needs something from
+    them, that is a §9 cross-session request — W3-A's engine is one wave old and `npm run roles`
+    holds it at 566/566.
+  - §8 Q7 is settled and is not yours to relitigate: the prototype's "Client admin" column has no
+    Upload / Evaluate / Assign / Query, this application's `admin` has had all four since Phase 1,
+    and today's app wins. If the client wants the prototype's narrower default, offer it as a RESET
+    control that PUTs those cells — not as a changed seed.
+
+TEST
+  - Client: the grid renders the right shape per edition, groups in order, and a cell toggle PUTs
+    exactly one cell. The superuser column is not interactive.
+  - Worker: each new user verb — happy path, a forbidden role → 403, the self-demotion guard, and
+    `deleteuser` refusing the last admin.
+  - E2E (this is the one that matters): an admin unticks a cell in the grid and the target role loses
+    exactly that capability — its nav item disappears AND its route 403s. `e2e/permissions.spec.ts`
+    already does this through the API; yours does it through the screen. Restore the cell in
+    `afterEach` — a permission left off follows the suite into every later spec.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  Plus `npm run roles` (566/566, against YOUR server on a port you proved you own — and check
+  `ps aux | grep workerd` first, per §8 Q28) and `npm run parity:nav`.
+### Wave 4 — `W4-C` and `W4-D` drafted by `W3-D`
+
+> **Billing-route ownership, settled up front — the Wave 2 lesson again.** `W4-C` and `W4-D` were
+> both allotted `src/server/routes/billing.ts` in §6, which is the same collision Wave 2 hit on
+> `config.ts`. Split it here instead:
+>
+> | Session | Server routes | Migration | Admin section id |
+> |---|---|---|---|
+> | `W4-A` | `src/server/routes/users.ts` *(existing)* | `0044` | `tm`, `uc` |
+> | `W4-B` | — (branding already has a route in `config.ts`) | `0045` | `br` |
+> | `W4-C` | `src/server/routes/billing.ts` *(new)* | `0046` | `bl` |
+> | `W4-D` | `src/server/routes/pricing.ts` *(new)* | `0047` | `pc` |
+>
+> `W4-C` owns the credit ledger and the *reading* of published prices; `W4-D` owns the price
+> catalogue and publishing it. They meet at exactly one seam — `src/shared/plans.ts`, which is
+> **`W4-C`'s**. `W4-D` reads it and does not edit it; if the catalogue shape needs to change, that is
+> a §9 request, not an edit.
+>
+> Three shared files, one line each, declared in §9: `src/server/index.ts` (import + `app.route`),
+> `src/client/routes/admin/registry.tsx` (import + map entry). **Do not comment out another
+> session's registry line.**
+
+#### `W4-C` — credits & billing
+
+```
+You are running session W4-C — the Credits & billing admin section — of the ai.STARTUPJURY parity
+programme. You have no prior context.
+
+SETUP
+  nvm use
+  git worktree add ../sj-W4-C -b parity/W4-C main
+  cd ../sj-W4-C && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, §1.2 (seat/plan purchase — it governs the one screen
+     here you must NOT build as drawn), §1.3 (vendor-dependent work — payments is the third of the
+     three), §2, §4, the Wave 4 ownership note in §10, then ONLY your entry for W4-C in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "credit|billing|s-bl" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-bl.html
+  4. migrations/0032_credit_ledger.sql, and — as the pattern to copy — W3-D's CRM module:
+     src/server/crm/provider.ts (a real interface, an EMPTY adapter table, a stub that records),
+     src/server/routes/crm.ts (write-only credentials) and src/client/routes/admin/CrmSync.tsx.
+     Read src/server/email/outbox.ts too if the shape is still unclear; it is the original.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. The section: current-plan tile, usage history, the credit ledger, billing cycle, GST handling,
+     and invoice / receipt generation.
+  2. Keep today's 1-credit-per-deck metering and its atomic reserve/refund — EXTEND it to write
+     ledger rows rather than replacing it. An evaluation writes exactly one debit; a refund
+     reverses it. This is the half of the session that is real money, so it is the half that must
+     be exactly right.
+  3. **Payment is interface-complete, provider-stubbed (§1.3), and §1.2 is absolute: card data must
+     never reach this application.** No PAN or CVV field exists, at any point, in any state. A
+     purchase produces a provider-hosted redirect or an iframed element; the stub RECORDS the
+     intent — amount, currency, plan, GST — exactly as `crm_sync_log` records a sync it did not
+     perform, and a recorded intent is never reported as a completed payment.
+  4. Read published prices from `src/shared/plans.ts`, which you own. W4-D writes the catalogue.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/CreditsBilling.tsx, a NEW src/server/routes/billing.ts,
+    src/shared/plans.ts, and one line each in src/server/index.ts and registry.tsx.
+  - You own migration 0046 and only 0046.
+  - No card field, ever (§1.2). No payment-provider SDK on the critical path (§1.3).
+  - Ledger arithmetic is money: integer minor units, never floats.
+
+TEST
+  - Unit: ledger arithmetic and GST, including the rounding rule at 18 %.
+  - Worker: an evaluation writes exactly one debit; a refund reverses it and leaves the balance
+    where it started; two concurrent evaluations cannot both spend the last credit.
+  - Worker: authZ (a non-admin 403s), and a purchase records an intent WITHOUT completing one.
+  - Client: the plan tile, the ledger's empty and populated states.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  Note `test/worker/migrations-w1b.test.ts` caps migration numbers at a per-wave ALLOTMENT_CEILING;
+  Wave 4 raises it to 47. All four Wave 4 sessions hit that one line — expect a conflict, take the
+  highest. The e2e suite needs a freshly seeded database and a machine that is not saturated: with
+  several worktrees running at once, `e2e/parity.spec.ts` fails on CPU starvation and not on your
+  code (§2.3). Check `uptime` before you believe a red e2e leg.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W4-A. Do not merge to main.
+```
+
+### `Wx-OOO` — Out of office delegation *(written by `W3-A`; no wave owns this yet)*
+
+> The last of the task rows with a cell and no verb, and the only one that is a genuine product
+> feature rather than a UI binding: F0072, F0907 and F0928 all report it, it is default-ON for five
+> roles in the seeded matrix, and no session in Waves 3–14 owns it. Slot it where the profile menu
+> gets built — it is the same surface.
+
+```markdown
+You are running session Wx-OOO — out-of-office delegation and the profile menu — of the
+ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-Wx-OOO -b parity/Wx-OOO main
+  cd ../sj-Wx-OOO && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, and §8 Q27 (which is why this session exists).
+  2. python3 docs/prototype/tools/findings.py --area "Roles" --sev P1 --full   (F0907, F0928, F0929)
+     and: python3 docs/prototype/tools/findings.py --area "Admin console" --screen "permission" --full  (F0072)
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/*/_topnav.html — `#prof-menu` in the five incubator role
+     files. NOTE the negative: the Jury file deliberately has no OOO item. That is design intent, not
+     an omission, and it matches the seeded matrix — jury is the one internal role whose
+     `outofofficedelegation` cell is 0.
+  4. src/shared/permissions.ts and src/server/auth/middleware.ts — `requireTask` is the gate you hang
+     this on, and the `outofofficedelegation` cell already exists and is already seeded.
+
+BUILD
+  1. The avatar profile menu, which does not exist anywhere in the repo (F0929) — it is the host for
+     everything below, and today sign-out lives on the My account screen instead.
+  2. An OOO WINDOW per user: from, until, delegate. The delegate must be in the same edition and must
+     be able to do the work — a delegate who cannot act on what they inherit is not a delegation.
+  3. What a delegate inherits for the window, stated explicitly in the schema and in the tests: the
+     absent user's ASSIGNMENTS (their decks appear in the delegate's queue, attributed to the absent
+     user) and their GRANTS. The second is the part that touches W3-A's engine: resolve the
+     delegate's permission set as their own set UNION the absent user's, for the window only, and
+     never wider than the delegate's own role list admits. Gate, not grant, still holds (§8 Q8).
+  4. Self-service password change and the forgot-password / reset-link flow (F0907, F0929). RESET
+     ONLY — never display a stored credential (§1.2). PBKDF2 hashing stays.
+  5. Gate the OOO control itself on `requireTask("outofofficedelegation", ...)`, and do NOT offer it
+     to the jury — read the cell, do not hard-code the role.
+
+CONSTRAINTS
+  - Own only: the new OOO module (server + client), src/client/components/ProfileMenu.tsx (new),
+    src/server/routes/auth.ts, and your own numbered migration.
+  - Do NOT edit src/shared/{nav,roles,permissions}.ts, src/server/auth/middleware.ts or
+    scripts/role-matrix.ts. The permission resolver takes an overrides map — compose the delegated
+    set into that, which needs no change to the engine. If it turns out it does, that is a §9
+    request, not an edit.
+  - `mentor` gains nothing, here as everywhere (§1.2).
+
+TEST
+  - Unit: the delegated permission set is the union, clipped to the delegate's own role list; outside
+    the window it is the delegate's own set exactly.
+  - Worker: a delegate can act on the absent user's assignment during the window and 403s outside it;
+    an OOO window naming a delegate who cannot do the work is refused.
+  - E2E: a PM sets OOO with the associate as delegate; the associate sees the PM's queue; the PM
+    returns and the queue reverts.
+  - `npm run roles` must stay at its then-current baseline with no window open — an unused feature
+    must not move the matrix.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+
+FINISH
+  Complete the §2.4 exit checklist, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/Wx-OOO. Do not merge to main.
+```
+
+---
+  Commit to parity/W4-C. Do not merge to main.
+```
+
+#### `W4-D` — price configuration
+
+```
+You are running session W4-D — the Price configuration admin section — of the ai.STARTUPJURY parity
+programme. You have no prior context.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W4-D -b parity/W4-D main
+  cd ../sj-W4-D && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, §1.1 (precedence — you will need it), §2, §4, §8 Q1
+     (the pricing contradiction is ALREADY recorded; do not re-derive it), the Wave 4 ownership
+     note in §10, then ONLY your entry for W4-D in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "price|s-pc" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-pc.html
+  4. migrations/0033_price_configuration.sql, and src/shared/plans.ts (W4-C's — read, never edit).
+
+BUILD
+  1. The section: ~50 editable price fields, 14 toggles, seven currencies with editable FX, the
+     18 % GST rate, the plan / pack / enterprise catalogues, preview and publish.
+  2. **Implement ONE canonical pricing model** and record the alternatives in §8 against Q1. The
+     prototype contradicts itself — three per-deck base rates, two pay-as-you-go catalogues, four
+     enterprise vocabularies — and only the client can settle it. Pick the reading you judge best,
+     say so in your handoff, and make the others a data change rather than a code change.
+  3. Publish is atomic: a half-published catalogue must be impossible, and what `W4-C` reads is
+     always a complete published version. Keep the previous version so a publish is reversible.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/PriceConfiguration.tsx, a NEW src/server/routes/pricing.ts,
+    and one line each in src/server/index.ts and registry.tsx.
+  - You own migration 0047 and only 0047.
+  - `src/shared/plans.ts` is W4-C's. Read it; if its shape must change, that is a §9 request.
+  - FX rates are editable data, never a network call (§1.3 reasoning applies).
+
+TEST
+  - Unit: FX conversion, per-deck derivation, saving percentages, and the GST rate applied at 18 %.
+  - Worker: publish is atomic (an interrupted publish leaves the previous version intact), authZ
+    (a non-admin 403s), and a draft edit is invisible to readers until published.
+  - Client: the preview reflects an unpublished draft and the live catalogue does not.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  Same two notes as W4-C: the migration ALLOTMENT_CEILING line conflicts four ways, and a red e2e
+  leg on a saturated machine is contention, not your code — check `uptime` first (§2.3).
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W4-D. Do not merge to main.
+```
+
 
 ## 11. Reference
 

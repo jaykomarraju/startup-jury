@@ -20,6 +20,14 @@ export interface AuthUser {
    * place of the platform role label; `role` still drives every permission.
    */
   title?: string;
+  /**
+   * The `role_permissions` task ids this principal holds (W3-A). Resolved
+   * server-side on every `/api/auth/me`, so an administrator's edit to the Admin
+   * console's Task permissions grid reaches the sidebar on the next page load.
+   * Absent on a stale cached principal — `usePermissions()` treats that as
+   * "un-gated", which is the shipped default and never more than it.
+   */
+  permissions?: string[];
 }
 
 export interface AuthContextValue {

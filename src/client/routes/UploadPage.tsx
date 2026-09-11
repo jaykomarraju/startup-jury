@@ -28,6 +28,7 @@ import {
 } from "../api";
 import { useAuth } from "../auth/useAuth";
 import { useActiveContext } from "../activeContext";
+import { canOpenAdminConsole } from "./admin";
 import {
   INTAKE_FIELD_LABELS,
   missingIntakeFields,
@@ -526,22 +527,33 @@ function CreditsBar({ credits }: { credits: number | null }) {
   );
 }
 
-/** Issue 13 — CRM / email-triage intake, raised as a customization ticket. */
+/**
+ * Issue 13 — CRM / email-triage intake.
+ *
+ * **CRM is no longer a ticket** (W3-D): Admin console → Organisation → CRM sync
+ * is the real section — provider connection, filter rules, field mapping and
+ * schedule — so this row links there for anyone who can open the console. Email
+ * triage has no screen yet and still raises a customization ticket.
+ */
 function OtherIntakeOptions() {
+  const { user } = useAuth();
   const [busy, setBusy] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const canConfigureCrm = user ? canOpenAdminConsole(user.role) : false;
 
   const options = [
     {
       id: "crm",
       title: "Pull decks from your CRM",
       body: "Auto-sync deals from Salesforce, HubSpot, Pipedrive or your own API when they match your filter rules.",
+      to: canConfigureCrm ? "/app/admin?section=crm" : null,
     },
     {
       id: "email",
       title: "Email triage inbox",
       body: "Forward founder emails to a dedicated address; attachments are triaged into the pipeline automatically.",
+      to: null,
     },
   ];
 
@@ -569,8 +581,8 @@ function OtherIntakeOptions() {
         <div className="u-label">Other ways to bring in decks</div>
       </div>
       <p className="mt-1 text-sm text-fg-muted">
-        These intake routes are built per workspace. Requesting one raises a customization ticket
-        with our team — it is not switched on automatically.
+        CRM sync is configured in the Admin console. Email triage is built per workspace —
+        requesting it raises a customization ticket with our team.
       </p>
       <ul className="mt-3 flex flex-col gap-2">
         {options.map((o) => (
@@ -582,7 +594,13 @@ function OtherIntakeOptions() {
               <div className="text-sm font-medium text-fg">{o.title}</div>
               <p className="text-xs text-fg-muted">{o.body}</p>
             </div>
-            {sent === o.id ? (
+            {o.to ? (
+              <Link to={o.to} className="shrink-0">
+                <Button size="sm" variant="secondary">
+                  Set up CRM sync
+                </Button>
+              </Link>
+            ) : sent === o.id ? (
               <span className="shrink-0 text-xs font-medium text-positive">
                 Request raised — we&rsquo;ll be in touch
               </span>

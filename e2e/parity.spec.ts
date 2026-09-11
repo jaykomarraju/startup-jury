@@ -325,6 +325,14 @@ const EXPECTED: Record<string, Screen> = {
     title: "Intro calls",
     tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTIONS"]],
   },
+  "incubator/program_manager/incuration": {
+    title: "Sign up Pipeline",
+    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "SIGN-UP STATUS", "PAYMENT STATUS", "DOCUMENTS STATUS", "ACTION"]],
+  },
+  "incubator/program_manager/curation": {
+    title: "Onboard ready",
+    tables: [["STARTUP", "COHORT", "CURATION STAGE", "JURY MEMBER LEAD", "PROGRESS", "ACTION"]],
+  },
   "incubator/program_manager/archive": {
     title: "Archive",
     tables: [["STARTUP", "REASON", "STAGE REACHED", "ARCHIVED ON", "ARCHIVED BY", "ACTION"]],
@@ -626,6 +634,7 @@ const EXPECTED: Record<string, Screen> = {
     title: "Investment DD",
     tables: [["STARTUP", "SECTOR", "AI SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "STATUS", "ACTION"]],
   },
+  "vc/partner/icpipeline": { title: "IC Pipeline", tables: [] },
   "vc/partner/alignmentcall": {
     title: "Alignment call",
     tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTIONS"]],

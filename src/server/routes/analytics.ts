@@ -16,7 +16,7 @@ import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { requireAuth } from "../auth/middleware";
 import { loadScoringSettings } from "../config/scoringSettings";
-import { canAccessNav } from "../../shared/nav";
+import { canAccessNav, navItemById } from "../../shared/nav";
 import { RUBRIC_BANDS } from "../../shared/types";
 import {
   buildFunnel,
@@ -39,11 +39,21 @@ import {
 const analytics = new Hono<AppEnv>();
 analytics.use("*", requireAuth);
 
-/** Gate an endpoint to the roles that can see the matching nav slug. */
+/**
+ * Gate an endpoint to the roles that can see the matching nav slug.
+ *
+ * W3-A — the nav manifest is now permission-aware, so the delegation has to
+ * carry the permission through: a report whose sidebar item has been switched
+ * off must 403, not merely disappear from the sidebar. None of the report slugs
+ * carries a `task` today, so this is behaviour-neutral until one does.
+ */
 function guard(slug: string) {
   return createMiddleware<AppEnv>(async (c, next) => {
     const u = c.var.user;
-    if (!canAccessNav(u.edition, u.role, slug)) return c.json({ error: "forbidden" }, 403);
+    const task = navItemById(u.edition, slug)?.task;
+    const granted = task ? await c.var.perms.can(task) : true;
+    const can = (taskId: string) => (taskId === task ? granted : true);
+    if (!canAccessNav(u.edition, u.role, slug, can)) return c.json({ error: "forbidden" }, 403);
     await next();
   });
 }

@@ -1,5 +1,6 @@
 import type { Edition, Role } from "../shared/roles";
 import type { EmailSender } from "./email/outbox";
+import type { PermissionContext } from "./auth/permissions";
 
 /** A per-deck AI-evaluation job carried on the EVAL_QUEUE. */
 export interface EvalMessage {
@@ -53,5 +54,9 @@ export interface SessionUser {
 /** Hono environment for typed bindings + context variables. */
 export type AppEnv = {
   Bindings: Env;
-  Variables: { user: SessionUser };
+  /**
+   * `perms` is the request-scoped permission resolver (W3-A). `requireAuth`
+   * sets both, so any middleware or handler that runs after it may use either.
+   */
+  Variables: { user: SessionUser; perms: PermissionContext };
 };

@@ -26,7 +26,7 @@ import {
 import { RUBRIC_BANDS } from "../../shared/types";
 import { loadScoringSettings } from "../config/scoringSettings";
 import { getStage, performAction, transitionByAction } from "../../pipeline";
-import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
+import { denyMentor, requireAuth, requireRole, requireTask } from "../auth/middleware";
 import { sendEmail, buildQueryEmail, buildSignupEmail } from "../email/outbox";
 
 const pipeline = new Hono<AppEnv>();
@@ -303,7 +303,7 @@ pipeline.post(
   // assign_jury's pipeline roles are PM/associate/admin/superuser (the PM is the
   // decision maker; the associate the executor) — keep the coarse gate in lock-step
   // with the pipeline config so the admitted roles match the inner performAction.
-  requireRole("program_manager", "program_associate", "admin"),
+  requireTask("assign", "program_manager", "program_associate", "admin"),
   async (c) => {
     const user = c.var.user;
     const deck = await loadDeck(c, c.req.param("id"));
@@ -356,7 +356,8 @@ interface ScoreInput {
  *  Incubator: jury/staff. VC: analyst/associate/partner core+additional scoring. */
 pipeline.post(
   "/decks/:id/evaluate",
-  requireRole(
+  requireTask(
+    "evaluate",
     "jury",
     "program_manager",
     "program_associate",
@@ -564,7 +565,7 @@ pipeline.get(
  */
 pipeline.post(
   "/decks/:id/queries",
-  requireRole("program_associate", "program_manager", "admin", "analyst", "associate"),
+  requireTask("query", "program_associate", "program_manager", "admin", "analyst", "associate"),
   async (c) => {
     const user = c.var.user;
     const deck = await loadDeck(c, c.req.param("id"));
@@ -678,7 +679,7 @@ pipeline.post("/queries/:id/respond", async (c) => {
 /** POST /decks/:id/send-signup — advance to Signup + send the (stubbed) invite. */
 pipeline.post(
   "/decks/:id/send-signup",
-  requireRole("program_associate", "admin"),
+  requireTask("signuppipeline", "program_associate", "admin"),
   async (c) => {
     const user = c.var.user;
     const deck = await loadDeck(c, c.req.param("id"));
@@ -744,7 +745,7 @@ function emptyTally(): Record<IcVoteValue, number> {
  */
 pipeline.post(
   "/decks/:id/ic-vote",
-  requireRole("ic_member", "partner", "admin"),
+  requireTask("icpipeline", "ic_member", "partner", "admin"),
   async (c) => {
     const user = c.var.user;
     const deck = await loadDeck(c, c.req.param("id"));
@@ -769,7 +770,7 @@ pipeline.post(
 
 /** GET /decks/:id/ic-votes — every IC member's vote + the aggregated tally.
  *  Committee-only: individual ballots are confidential to the committee (+ MP). */
-pipeline.get("/decks/:id/ic-votes", requireRole("ic_member", "partner", "admin"), async (c) => {
+pipeline.get("/decks/:id/ic-votes", requireTask("icpipeline", "ic_member", "partner", "admin"), async (c) => {
   const deck = await loadDeck(c, c.req.param("id"));
   if (!deck) return c.json({ error: "not_found" }, 404);
   const rows = (
@@ -985,7 +986,7 @@ pipeline.get(
 );
 
 /** GET /jury — assignable jury members in the caller's edition (Assign screen). */
-pipeline.get("/jury", requireRole("program_associate", "program_manager", "admin"), async (c) => {
+pipeline.get("/jury", requireTask("assign", "program_associate", "program_manager", "admin"), async (c) => {
   const rows = (
     await c.env.DB.prepare(
       "SELECT id, name, initials FROM users WHERE edition = ? AND role = 'jury' AND active = 1 ORDER BY name",
