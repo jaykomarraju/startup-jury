@@ -840,6 +840,8 @@ One row per session. The integration session fills the wave row.
 
 | **Wave 2 integration** | **done** | — (integration closes no findings; it reopened F0042, see §9) | typecheck ✓ · lint ✓ · **731 passed / 1 skipped** ✓ (729 + 2 new pinning the fixes) · build ✓ · e2e re-run after the parity timeout fix · `parity:tokens` 0 gaps ✓ · `parity:nav` 70 known gaps ✓ | Merged `W2-A` → `W2-B` → `W2-C`. **Eleven overlapping files, against Wave 1's one** — W2-A and W2-B both edited `scoring.ts`, `evaluate.ts`, `pipeline.ts` and `analytics.ts`. Git flagged only the import blocks; the real collision was that W2-A had re-cut `weightedTotal` into a settings-aware `composite()` while W2-B's bodies still called the old name, which surfaced only as an unused-import error. The settings-aware version won. **Three blockers, two of them created by the merge and invisible to both branches.** (1) W2-A's AI-pre-scoring-off path returns `signal: "absent"` — the band W2-B's `0039` renamed to `insufficient` and deleted from `SIGNAL_STYLES` — so an org with the toggle off crashed the Upload screen. `EvaluationResult.signal` is typed `string` and `UploadPage` casts it, so typecheck was silent and the existing worker test never read the field. (2) **Blind scoring leaked**: `withholdsAiScore` guarded only `GET /api/decks/:id`, so the deck LIST still returned `aiScore`, `decisionScore` and `signal` — All decks being the screen a juror passes through on the way to scoring. Both fixed, each now pinned by a test that fails if reverted. (3) The integration tip itself did not typecheck — the import fix was uncommitted; caught by the review, not by me. **Also placed the §9 item that made the wave's headline deliverable real:** the question bank reached no founder at all — `QueryPage` still sent the pre-W2-C letter and `autoQuery.ts` was a stub commented "W2-C swaps this". Both now draw the bank, with `buildQueryMessage`'s no-bank output as the fallback. **The e2e failure was diagnosed, not suppressed:** `parity.spec.ts:88` asserts at Playwright's 5 s default, which `test.setTimeout(180_000)` cannot reach, so under load one slow navigation fails a test with minutes left — raised to 30 s. This also settles W2-C's §7 claim that the coverage timeout "was never placed": it was placed at Wave 1 integration and was present in W2-C's own worktree at `e2e/coverage.spec.ts:49` and `:70`. Ten further findings recorded in §9 with owners. |
 
+| `W3-D` | **done** | **F0026, F0142, F0178, F0179** closed; **F0180** closed on the module side, waiting on one call in `src/server/ai/evaluate.ts` (§9); **F0038** is not this session's — it is a console-reachability decision that belongs with `nav.ts` (`W3-A`), and this session reaffirms CRM stays admin-only (see §8 Q26) | typecheck ✓ · lint ✓ · **856 passed / 1 skipped** ✓ (802 inherited + 54 new: 18 unit, 34 worker, 19 client — less the 17 that were already counted) · build ✓ · **e2e 134** ✓ (127 + 7 new `e2e/crm-sync.spec.ts`) · roles **526/526** ✓ (probed against this worktree's own server on port 5234, PID and cwd confirmed per §2.3) · `parity:nav` 208/278 ✓ · `parity:tokens` **27/27, 0 known gaps** ✓ | **CRM sync was the emptiest section in the console; it is now the most complete example of §1.3.** Four provider rows with live status, a Configure pane (connection, direction + schedule, the prototype's filter-rules card field for field, a field-mapping editor), connect/disconnect, Sync now, and a sync log. Migration **0043** only (sync direction/schedule, credential *reference* columns, `crm_field_mappings`, `crm_sync_log`). The provider call sits behind `CrmClient` with an empty adapter table, so `resolveCrmClient` returns `null` even when the secret is set and every attempt lands as `status='recorded'` — never `'sent'`. **Credentials are write-only and are never stored**: the Connect body is consumed and discarded, and what persists is a masked tail plus the NAME of the Worker secret a live deployment would read (§8 Q26). Two tests hold that line — a worker test asserting the posted secret appears in no response body and in no `crm_connections` row, and a client test asserting it is cleared from component state the moment it is posted. The Upload screen's CRM ticket card now links here (§9). |
+
 <!-- Append a row per session. Do not rewrite history; add. -->
 
 ---
@@ -876,6 +878,9 @@ best reading and note it.
 | Q23 | `W2-B` | **Which role owns P1 — and therefore what does `AI+` label?** The prototype's Rubric anchors and Area weights both say *P1 Super User · P2 Program Manager · P3 Jury Member* and `cpUpd()` prints exactly that as the AI+/AI++/AI+++ legend. The written spec (§6.2, `scope[standard|pm|pa|jury]`) and this application say *Program Associate · Program Manager · Jury* (VC: *Investment Associate · Partner · IC Member*). This is F0163, which says to resolve it before changing anything — and it now has a visible consequence, because the tier pills this session shipped are bound to `ADDITIONAL_PARAM_OWNERS` order. | Spec wins (§1.1), so `AI+` = the first owner in `ADDITIONAL_PARAM_OWNERS` — Program Associate / Investment Associate. Changing it is a one-line reorder of that constant plus a seed migration; nothing else reads the tier. Related to Q3, which asks the adjacent question about the VC count. |
 | Q24 | `W2-C` (F0042) | **The "weak signal" that picks the areas a founder is questioned about is the wrong scale.** `routes/decks.ts:63-65` derives `weak_areas` from `org_settings.threshold_mediocre` — the All-Decks *cohort rating* band an admin tunes to re-bucket a cohort — while `s-qb`'s own sub-title scopes the trigger to "weak, missing, or contradictory signal in a given area", which both specs define only on the BRD five-band rubric scale. So raising *Poor — below* from 5.0 to 6.5 to re-colour a cohort overview silently widens who gets asked questions, and an area scored 5.5 is never asked about even though the BRD calls 3–4 Weak. | Not fixed here, deliberately. The producer (`GET /api/questions/draft/:deckId`) mirrors `decks.ts`'s derivation **exactly**, so the draft and the Query screen can never disagree about what is weak. Moving one without the other is the worst of the three states. The five-band scale it needs is `W2-B`'s (`parameter_rubric_bands`, `0027`) and is not merged; the session that lands it should re-point **both** call sites in one commit, or introduce an explicit clarification threshold. |
 | Q25 | `W2-C` (F0040) | **There is no per-question round trip.** `queries.questions` is one text blob out and `queries.founder_response` one blob back, so once the bank is wired there is still nowhere to record *which* bank question was asked on a deck, who asked it, whether the founder answered *that* question, or when — and "which areas did the founder actually address" stays uncomputable. Both specs sketch the schema (`founder_clarifications(id, deck_id, asked_by, question, answer, answered_at)`). | The bank is keyed by `parameters.id` and the producer already returns the questions grouped by area, so the shape is ready for it. Building the table needs a migration plus `FounderPortal.tsx` (`W10-B`) and `pipeline.ts`, none of which is `W2-C`'s — **migration `0040` is still unused** and reserved. Prompt drafted in §10. |
+| Q26 | `W3-D` | **A self-serve Connect button cannot, on its own, make a CRM connection usable — and that is by design.** §1.3 forbids a vendor credential on the critical path and `0037` says in as many words that keys "belong in Worker secrets, never in D1". The prototype shows the opposite: a per-provider Connect that an admin completes alone. The two cannot both be true, so this session resolved it by splitting the act: the admin's Connect posts a key, the app records **only** a masked tail plus the *name* of the Worker secret a live deployment reads (`CRM_SALESFORCE_TOKEN`), and the key itself is discarded. Going live therefore needs an operator to run `wrangler secret put` — the same external step the sending domain needs (§1.4). The client should know the Connect button is a configuration record, not a handshake. | Implemented as described. It is the only reading that satisfies both rules, and it makes the credential test trivially strong — there is no stored secret for a GET to leak. If the client wants true self-serve, the answer is a provider OAuth redirect storing a token in a secrets store, which is the same shape §1.2 already mandates for card data. |
+| Q27 | `W3-D` (F0179) | **"Auto-approve if within monthly cap" approves *what*?** The prototype's sub-line — "No manual approval needed if submission count is below the monthly limit" — implies that a pulled deck otherwise waits in an approval queue. **This product has no such queue**: a deck is uploaded, evaluated and enters the pipeline. So the toggle either (a) gates whether a CRM-pulled deck is evaluated immediately or parked for a human, which is a new pipeline state, or (b) is redundant once the cap itself is enforced. | Persisted and enforced as the **cap**, which is the half that is unambiguous and is the only spend guard on auto-pulled decks: `runPull` refuses once the month's pulled count reaches `monthly_deck_cap`, and records a `'skipped'` row saying so. The toggle is stored and carried on the recorded attempt payload (`autoApproveWithinCap`) so whichever reading wins costs one branch in the pull, not a schema change. The approval queue is **not** built. |
+| Q28 | `W3-D` | **Is a CRM connection per workspace, or per programme / cohort?** `0037` keys `crm_connections` on `(edition, provider)` — one Salesforce for the whole incubator side — and `s-crm` draws no programme selector. But the console title bar carries a programme/cohort chip on *every* section, which reads as though each section is scoped by it, and a multi-programme incubator plausibly wants one CRM pipeline per programme. | Edition-wide, per `0037`'s UNIQUE key, which is also what the prototype's four flat rows depict. Changing it later means a `program_id` column and widening that UNIQUE — contained, because every read goes through `src/server/crm/store.ts`. |
 
 ---
 
@@ -935,6 +940,12 @@ session places it.
 | `W2-C` | `test/client/adminConsole.test.tsx:294`, `e2e/admin-console.spec.ts:72` | **Already placed, flagged per §4 — two assertions that pinned Wave 1's state and would have broken for `W2-A` and `W2-B` too.** The client test asserted `Object.keys(SECTION_COMPONENTS)).toEqual(["tm"])`; the e2e walk asserted every section but `tm` renders a placeholder owner badge. Both are now read off the registry (`toContain("tm")`, `if (!SECTION_COMPONENTS[section.id])`), which is order-independent, keeps each test's actual subject intact, and means no session in Waves 3–5 has to touch either line. Neither assertion was weakened: a section with a placeholder is still asserted to name its owner. | placed by `W2-C` |
 | `W2-C` | `src/server/ai/evaluate.ts` / `src/server/queue.ts` *(unowned)* | **F0041 — nothing fires a clarification automatically.** The decision is implemented and tested (`shouldAutoClarify` in `src/shared/queries.ts`, and `GET /api/questions/draft/:deckId` returns `triggered`), and `org_scoring_settings.auto_clarification` is honoured — but the post-evaluation path never asks. What is missing is one call from the end of the evaluation path: if `triggered`, raise the query with `draft.message` through the same insert `pipeline.ts:487-499` uses. Neither file is `W2-C`'s. See the §10 prompt. | a Wave 3+ session; prompt drafted in §10 |
 | `W2-C` | `e2e/coverage.spec.ts:48,69` (or `playwright.config.ts`) | **Re-raising `W1-B`'s and `W1-A`'s row: it was assigned to *Wave 1 integration*, which has completed without placing it, so every session from here on inherits a red e2e leg it did not cause.** Measured again on `parity/W2-C`: run alone against the same server, the two nav sweeps pass in **18.7 s** and **21.5 s** against the default **30 s** budget; run inside the full suite at 2 workers they time out on `getByRole('heading', {level: 1})`. The fix is one line each — `test.setTimeout(120_000)` — exactly what `W0` gave `e2e/parity.spec.ts:113` for the same reason. I did not touch the file: it is not mine, and §4 says raise a timeout change rather than make it. | **Wave 2 integration** — do not defer again |
+| `W3-D` | `src/server/ai/evaluate.ts` *(unowned)* | **F0180 — evaluation completion still has no external side effect.** The outbound half is built and tested: `writeBackDeckScore(env, {edition, deckId, externalId, fields})` in `src/server/crm/sync.ts` finds the edition's live write-back connection, refuses with a `'skipped'` row when the toggle is off or no target field is set, and otherwise records exactly what it would have pushed. What is missing is **one call** at the end of the evaluation path — beside the existing `notifyIncompleteDeck` call (`evaluate.ts:723`) — passing the deck's composite and signal. It returns `null` when no connection wants it, so the common case costs one indexed query and the call needs no guard of its own. Neither `evaluate.ts` nor `queue.ts` is this session's. | a Wave 4+ session; one line |
+| `W3-D` | `src/server/scheduled.ts` *(`W3-B` this wave)* | **The sync *schedule* is persisted but nothing runs it.** `crm_connections.sync_schedule` is set from the console (manual / hourly / daily / weekly) and `runPull` is the job it names, but the only caller today is the section's **Sync now** button. The Worker already has a `*/10 * * * *` cron branch (`src/server/index.ts`, `runStuckSweep`); a third branch that walks live connections whose schedule is due and calls `runPull` would complete the loop. Not raised as a defect — with the provider stubbed, a scheduled pull would only write recorded rows — but it is the last piece before a real adapter makes the section work end to end. | Wave 13 (production hardening), or `W3-B` if it is already in `scheduled.ts` |
+| `W3-D` | `src/client/routes/UploadPage.tsx` *(`W7-B`)* | **Already placed, flagged per §2.2 — the prompt's BUILD item 3.** The "Pull decks from your CRM" row raised a customization ticket; it now renders a `<Link to="/app/admin?section=crm">Set up CRM sync</Link>` for anyone who can open the console, and the card's blurb no longer claims CRM is ticket-only. It is slightly more than "swapping the card's action": `OtherIntakeOptions` gained `useAuth()` and a `canOpenAdminConsole` check, because Upload is reachable by `program_manager` and `program_associate` and an unguarded link would send them to a screen they cannot open. The **email-triage** row is untouched and still raises a ticket — it has no screen. ~14 lines, all inside that one function. | placed by `W3-D` |
+| `W3-D` | `test/worker/migrations-w1b.test.ts` *(unowned)* | **Already placed, flagged per §4 — and every Wave 3 session will hit it.** The numbering guard capped the directory at `LAST + 3` (0040), which was Wave 2's allotment; Wave 3 allots 0040–0043, so `0043` fails it. Replaced the literal with a named `ALLOTMENT_CEILING = 43` carrying a comment that names the §10 table and says each wave raises this line. The assertion is **not** weakened — uniqueness, contiguity below 0037 and the block checks are all untouched; only the ceiling moved, and it moved to exactly this wave's allotment. `W3-A`, `W3-B` and `W3-C` each need the same edit, so **expect a one-line conflict here at integration and take the highest value.** | placed by `W3-D`; integration to reconcile four identical edits |
+| `W3-D` | `src/shared/crm.ts` *(new file, outside this session's stated ownership)* | **Declaring a deviation.** The prompt allotted `src/server/crm/**`, but the vocabulary (provider/direction/schedule enums, the connection view type) and the field-mapping validator are needed by **both** the route and the console section, and having the client import from `src/server/` would be the wrong architecture for a one-line convenience. They live in a new `src/shared/crm.ts` instead; `src/server/crm/` keeps the three Env-bound files (`provider.ts`, `store.ts`, `sync.ts`). The file is new and uniquely named, so it cannot collide — `src/shared/nav.ts` and `src/shared/roles.ts` are the §2.2 hazards and neither is touched. | no action; recorded so integration is not surprised |
+| `W3-D` | `src/client/routes/admin/index.ts` *(unowned)* | `CrmSyncSection` is imported by `registry.tsx` directly and is deliberately **not** re-exported from the barrel, unlike `RubricAnchorsSection` / `QuestionBankSection` / `TeamRolesSection`. Nothing needs it — the registry is the only consumer and the tests import the module path — but the barrel is now inconsistent. One line, whenever someone is in that file anyway. | any Wave 4–5 session |
 | Wave 2 integration | `src/shared/analytics.ts:348-353` *(`W8-A`)* | **The "one band table" is not one table.** `scoreDrift` still carries a private four-band `band()` (`>=8 strong … <2 absent`) driving the report's "same signal band" numbers, with a unit test pinning the retired cut-points. W2-B moved `signalTag` and the red-flag list onto `RUBRIC_BANDS` but not this. A deck can be Strong on its row and one band lower in the drift chart. Derive it from `RUBRIC_BANDS` and re-baseline the test. | `W8-A` |
 | Wave 2 integration | `src/client/components/EvalScorecard.tsx:77-82` and `EvaluationReport.tsx:25-30` *(`W7-D`)* | **Two more copies of the retired four-band cut-points**, in `scoreColor` — so a score is coloured on the old scale while the pill beside it names the new band. Same fix: derive from `RUBRIC_BANDS`. | `W7-D` |
 | Wave 2 integration | `src/server/routes/questions.ts:304` vs `src/server/routes/decks.ts:64-72` *(`W7-C`)* | **F0042 is reopened by the merge, and W2-A/W2-B/W2-C disagreed about it in their own handoffs.** The two weak-area derivations diverged: W2-A moved the Query screen's `weak_areas` onto the constant `WEAK_SIGNAL_MAX`, while W2-C's draft endpoint still reads `org_settings.threshold_mediocre` — under a comment asserting the two cannot disagree. Pick one (the rubric's Weak band, per F0042) and make both read it. | `W7-C` |
@@ -1241,6 +1252,147 @@ FINISH
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
   Commit to parity/W3-D. Do not merge to main.
 ```
+
+### Wave 4 — `W4-C` and `W4-D` drafted by `W3-D`
+
+> **Billing-route ownership, settled up front — the Wave 2 lesson again.** `W4-C` and `W4-D` were
+> both allotted `src/server/routes/billing.ts` in §6, which is the same collision Wave 2 hit on
+> `config.ts`. Split it here instead:
+>
+> | Session | Server routes | Migration | Admin section id |
+> |---|---|---|---|
+> | `W4-A` | `src/server/routes/users.ts` *(existing)* | `0044` | `tm`, `uc` |
+> | `W4-B` | — (branding already has a route in `config.ts`) | `0045` | `br` |
+> | `W4-C` | `src/server/routes/billing.ts` *(new)* | `0046` | `bl` |
+> | `W4-D` | `src/server/routes/pricing.ts` *(new)* | `0047` | `pc` |
+>
+> `W4-C` owns the credit ledger and the *reading* of published prices; `W4-D` owns the price
+> catalogue and publishing it. They meet at exactly one seam — `src/shared/plans.ts`, which is
+> **`W4-C`'s**. `W4-D` reads it and does not edit it; if the catalogue shape needs to change, that is
+> a §9 request, not an edit.
+>
+> Three shared files, one line each, declared in §9: `src/server/index.ts` (import + `app.route`),
+> `src/client/routes/admin/registry.tsx` (import + map entry). **Do not comment out another
+> session's registry line.**
+
+#### `W4-C` — credits & billing
+
+```
+You are running session W4-C — the Credits & billing admin section — of the ai.STARTUPJURY parity
+programme. You have no prior context.
+
+SETUP
+  nvm use
+  git worktree add ../sj-W4-C -b parity/W4-C main
+  cd ../sj-W4-C && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, §1.2 (seat/plan purchase — it governs the one screen
+     here you must NOT build as drawn), §1.3 (vendor-dependent work — payments is the third of the
+     three), §2, §4, the Wave 4 ownership note in §10, then ONLY your entry for W4-C in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "credit|billing|s-bl" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-bl.html
+  4. migrations/0032_credit_ledger.sql, and — as the pattern to copy — W3-D's CRM module:
+     src/server/crm/provider.ts (a real interface, an EMPTY adapter table, a stub that records),
+     src/server/routes/crm.ts (write-only credentials) and src/client/routes/admin/CrmSync.tsx.
+     Read src/server/email/outbox.ts too if the shape is still unclear; it is the original.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. The section: current-plan tile, usage history, the credit ledger, billing cycle, GST handling,
+     and invoice / receipt generation.
+  2. Keep today's 1-credit-per-deck metering and its atomic reserve/refund — EXTEND it to write
+     ledger rows rather than replacing it. An evaluation writes exactly one debit; a refund
+     reverses it. This is the half of the session that is real money, so it is the half that must
+     be exactly right.
+  3. **Payment is interface-complete, provider-stubbed (§1.3), and §1.2 is absolute: card data must
+     never reach this application.** No PAN or CVV field exists, at any point, in any state. A
+     purchase produces a provider-hosted redirect or an iframed element; the stub RECORDS the
+     intent — amount, currency, plan, GST — exactly as `crm_sync_log` records a sync it did not
+     perform, and a recorded intent is never reported as a completed payment.
+  4. Read published prices from `src/shared/plans.ts`, which you own. W4-D writes the catalogue.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/CreditsBilling.tsx, a NEW src/server/routes/billing.ts,
+    src/shared/plans.ts, and one line each in src/server/index.ts and registry.tsx.
+  - You own migration 0046 and only 0046.
+  - No card field, ever (§1.2). No payment-provider SDK on the critical path (§1.3).
+  - Ledger arithmetic is money: integer minor units, never floats.
+
+TEST
+  - Unit: ledger arithmetic and GST, including the rounding rule at 18 %.
+  - Worker: an evaluation writes exactly one debit; a refund reverses it and leaves the balance
+    where it started; two concurrent evaluations cannot both spend the last credit.
+  - Worker: authZ (a non-admin 403s), and a purchase records an intent WITHOUT completing one.
+  - Client: the plan tile, the ledger's empty and populated states.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  Note `test/worker/migrations-w1b.test.ts` caps migration numbers at a per-wave ALLOTMENT_CEILING;
+  Wave 4 raises it to 47. All four Wave 4 sessions hit that one line — expect a conflict, take the
+  highest. The e2e suite needs a freshly seeded database and a machine that is not saturated: with
+  several worktrees running at once, `e2e/parity.spec.ts` fails on CPU starvation and not on your
+  code (§2.3). Check `uptime` before you believe a red e2e leg.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W4-C. Do not merge to main.
+```
+
+#### `W4-D` — price configuration
+
+```
+You are running session W4-D — the Price configuration admin section — of the ai.STARTUPJURY parity
+programme. You have no prior context.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W4-D -b parity/W4-D main
+  cd ../sj-W4-D && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, §1.1 (precedence — you will need it), §2, §4, §8 Q1
+     (the pricing contradiction is ALREADY recorded; do not re-derive it), the Wave 4 ownership
+     note in §10, then ONLY your entry for W4-D in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "price|s-pc" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-pc.html
+  4. migrations/0033_price_configuration.sql, and src/shared/plans.ts (W4-C's — read, never edit).
+
+BUILD
+  1. The section: ~50 editable price fields, 14 toggles, seven currencies with editable FX, the
+     18 % GST rate, the plan / pack / enterprise catalogues, preview and publish.
+  2. **Implement ONE canonical pricing model** and record the alternatives in §8 against Q1. The
+     prototype contradicts itself — three per-deck base rates, two pay-as-you-go catalogues, four
+     enterprise vocabularies — and only the client can settle it. Pick the reading you judge best,
+     say so in your handoff, and make the others a data change rather than a code change.
+  3. Publish is atomic: a half-published catalogue must be impossible, and what `W4-C` reads is
+     always a complete published version. Keep the previous version so a publish is reversible.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/PriceConfiguration.tsx, a NEW src/server/routes/pricing.ts,
+    and one line each in src/server/index.ts and registry.tsx.
+  - You own migration 0047 and only 0047.
+  - `src/shared/plans.ts` is W4-C's. Read it; if its shape must change, that is a §9 request.
+  - FX rates are editable data, never a network call (§1.3 reasoning applies).
+
+TEST
+  - Unit: FX conversion, per-deck derivation, saving percentages, and the GST rate applied at 18 %.
+  - Worker: publish is atomic (an interrupted publish leaves the previous version intact), authZ
+    (a non-admin 403s), and a draft edit is invisible to readers until published.
+  - Client: the preview reflects an unpublished draft and the live catalogue does not.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  Same two notes as W4-C: the migration ALLOTMENT_CEILING line conflicts four ways, and a red e2e
+  leg on a saturated machine is contention, not your code — check `uptime` first (§2.3).
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W4-D. Do not merge to main.
+```
+
 
 ## 11. Reference
 
