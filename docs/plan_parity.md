@@ -918,7 +918,7 @@ best reading and note it.
 | Q47 | `W4-C` | **Should the historical per-deck figures be erased or merely hidden?** `0032` seeded every `deck_evaluated` row with ₹999. §8 Q1 retired the rate. | **Erased, by `0046`** (`UPDATE credit_ledger SET amount_minor = NULL, currency = NULL WHERE reason = 'deck_evaluated'`). A rate sitting in a column that no screen may render is a rate waiting to be resurrected by the next reader; the ruling is enforced in the data and again in the read path. Purchases keep their money — a pack really did cost ₹20,000. **Reversible**: if the historical figure turns out to matter for past accounting, it is a one-line migration to restore, but it must then also gain a "never render this" guard. |
 | Q48 | `W4-C` | **Two purchase paths now exist. Which survives to launch?** `POST /api/config/credits/purchase` (W3-C's, reached from the Buy credits screen) **grants credits immediately with no payment** — its own comment calls it a DEMO TOP-UP. `POST /api/billing/purchase` (this session's) records an intent, grants nothing, and reports `completed: false`. | **Both ship; only the new one is honest.** The demo path was not touched, because `routes/config.ts` is not this session's file and removing it would break the shipped Buy credits screen mid-wave. But it is the one route in the application that can add paid credits without a payment, so it should not reach production: either delete it and point `BuyCreditsPage.tsx` at `/api/billing/purchase`, or gate it behind a dev-only flag. Raised as a §9 request to Wave 13 (production hardening). |
 | Q49 | `W4-C` | **"Used this month" — calendar month or billing cycle?** The prototype's tile says *month* while its own plan is annual Enterprise, and its sub-line ("₹2,997 consumed") was a per-deck derivation §8 Q1 retired. | **Calendar month, read literally**, with the cycle figure reported separately in the Billing cycle card ("Used this cycle"). Both numbers are real and neither is invented; the retired sub-line is replaced by the month's name. If the tile was meant to mean the cycle all along, it is a one-line swap — `usedThisMonth` → `usedThisCycle` — and the sub-line becomes the cycle window. |
-| Q50 | `W4-C` | **Is "Configurable · Enterprise · 5 seats" a catalogue plan or a display label?** No catalogue row carries that name (the enterprise vocabulary is Q1, `W4-D`'s), and no seat model exists — `0036`'s `seat_capacity` is *cohort* seats for startups, not purchased user seats (F0111). | **A display label with an optional catalogue link.** `billing_subscriptions` stores `plan_label` / `tier_label` / `seats` and renders those; when `plan_code` names a live `price_plans` row, the catalogue's `name` wins instead, so `W4-D`'s renames flow into the tile with no copy here. The tile is therefore honest today and becomes catalogue-driven the moment the vocabulary is settled. **F0111's actual seat model** — `users.plan_tier`, capacity enforcement, seat purchase — is unbuilt and belongs with `W5-A`. |
+| Q50 | `W4-C` | **Is "Configurable · Enterprise · 5 seats" a catalogue plan or a display label?** No catalogue row carries that name (the enterprise vocabulary is Q1, `W4-D`'s), and no seat model exists — `0036`'s `seat_capacity` is *cohort* seats for startups, not purchased user seats (F0111). | **A display label with an optional catalogue link.** `billing_subscriptions` stores `plan_label` / `tier_label` / `seats` and renders those; when `plan_code` names a live `price_plans` row, the catalogue's `name` wins instead, so `W4-D`'s renames flow into the tile with no copy here. The tile is therefore honest today and becomes catalogue-driven the moment the vocabulary is settled. **F0111's actual seat model** — `users.plan_tier`, capacity enforcement, seat purchase — is unbuilt. **Corrected at Wave 5 integration per §8 Q59: it belongs to `W6-C`, not `W5-A`.** §6's Wave 6 entry already gives `W6-C` the per-member plan toggles, the seat-capacity bar and the buy-seats → payment → receipt sub-flow, which is F0111 and F0115 in as many words; `W5-A` owns cohort seats, a different thing entirely. |
 | Q51 | `W4-D` (F0089, F0159) | **Which pay-as-you-go ladder is current?** §8 Q1's ruling retired the per-deck contradiction but not this one. The price-configuration master table sells **10 / 50 / 100** units (₹5,000 / ₹20,000 / ₹30,000); the account overlay sells **20 / 35 / 50** (₹10,000 / ₹15,750 / ₹20,000 pro, ₹12,000 / ₹19,250 / ₹25,000 premium), and `BuyCreditsPage.tsx` hardcodes that second one. Under the ruling the overlay ladder loses its defining feature — its per-deck rates — while the master ladder survives as stated totals. | **10 / 50 / 100 is built**, because s-pc calls itself the master ("changes here update the public pricing page and all in-app plan displays") and it is the screen this session owns. It is DATA: rows in `price_plans` + `price_amounts`, and no file names a pack size. Switching to 20 / 35 / 50 is one migration. Until Buy credits reads the published catalogue (§9) the two screens visibly disagree. |
 | Q52 | `W4-D` (F0091, F0159) | **Which enterprise vocabulary?** Four exist: the price table's **100–500 unit annual tiers**, Standard/Pro/Premium *seats*, Basic/Configurable/Customisable, and Basic/Customizable Enterprise (the s-bl tile says "Configurable"). | **The unit tiers are built**, for the same reason as Q41 and because `0033` already seeded them. Every word the screen renders for a catalogue — title, badge, card name, card sub, footnote — is a row in `price_groups` (0047), so a vocabulary switch is an UPDATE, not a rewrite. |
 | Q53 | `W4-D` (F0094, F0185) | **Is Price configuration a platform-owner surface rather than a tenant one?** The decoded document renders its own chrome — "Super admin · Price configuration", footer "SA · Super admin · **Platform owner**" — and a sidebar with three sibling platform sections no session owns (Dashboard, Billing & invoices, Currency & FX). Read that way, this is the VENDOR's master SKU table, and putting it in a customer's admin console means every customer can edit ai.STARTUPJURY's price list. | **Built as a tenant console section**, which is what §6 assigns and what `0033` assumes ("none of these tables carry an edition — one catalogue serves the whole product"). It is harmless while the app is single-tenant (`0001`: "Single-tenant: one implicit organization") and wrong the moment it is not. If the client confirms the platform reading, the move is a role above org admin plus a route change — the store, the API and the screen do not change, and the tenant's Credits & billing becomes the read side of it. |
@@ -1100,6 +1100,7 @@ session places it.
 | Wave 5 integration | `vitest.{unit,worker,client}.config.ts` — **`W5-A`'s §8 Q32 fix, APPLIED** | `testTimeout: 30_000` and `hookTimeout: 30_000` are now in all three `test` blocks, with the measurement in a comment so no later session removes them as noise. **It is necessary but not sufficient on this machine.** With the raise alone, plain `npm test` at load 41-50 still failed 6 tests across 4 files — and all four files passed alone (23/23, 19/19, 57/57, 21/21), so all 6 were contention. The combination that IS reliable here is **`npm test -- --no-file-parallelism` with the raised budget**: 1450 passed / 1 skipped / **0 failed** at load 45. `W5-A` measured that parallelism alone did not fix it; integration measured that the clock alone does not either. Use both. |
 | Wave 5 integration | `playwright.config.ts` — **`W5-A`'s refined e2e recommendation, APPLIED** | `retries: 1` now applies everywhere, not only under CI. The failure being mitigated is not an assertion: the dev server dies mid-run with `[vite] Internal server error: Network connection lost` out of miniflare's runner-worker, and every test after it fails for reasons unrelated to the app. One retry is the cheapest honest mitigation — a genuinely broken test still fails twice, and a dropped connection is reported as **flaky** rather than **failed**, which keeps the instability visible and countable instead of either fatal or hidden. The flock guard `W5-A` first proposed is still open if this proves insufficient. |
 | Wave 5 integration | `docs/plan_parity.md` §10 — **two `W6-A` prompts existed; they are now one** | Both Wave 5 sessions wrote `W6-A`, and each wrote a different half: `W5-A`'s covered the document lifecycle, the seat card and the `StagePage` roll-up; `W5-B`'s covered the signing-method card, the signatory picker, the countersign gate and the founder's "How you'll sign" mirror. Neither alone was complete, and either alone would have sent `W6-A` to rebuild the other session's work — the precise failure the merged prompt's `DO NOT REBUILD` block now prevents. Merged rather than chosen between. `W6-C` still has no prompt and the merged `W6-A` says so. |
+| Wave 5 integration | `docs/plan_parity.md` §10 — **`W6-C` written, and §8 Q50 reconciled** | Wave 6 is three sessions and had two prompts: `W5-A` and `W5-B` both wrote `W6-A`, `W4-D` wrote `W6-B`, and nobody wrote `W6-C`. Written here from §6 and the schema. It is also the session that settles the programme's longest-running ambiguity — **"seat" means two unrelated things** (`cohorts.seat_capacity`, a batch's places for startups, vs a per-user purchased entitlement that does not exist yet) and every wave since `W4-C` has handed the purchased kind to the next one. Q50 said it was `W5-A`'s; Q59 corrected that to `W6-C`; **Q50's closing line is now reconciled to match**, and the prompt opens with a THE TWO SEATS section naming both so the next session cannot repeat the confusion. `W6-C` owns migration 0052 and, unusually, probably does need it. |
 
 ---
 
@@ -1779,7 +1780,7 @@ You are running session W6-A — the three-tab sign-up workspace, and the founde
 the ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
 
 SETUP
-  nvm use
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
   git worktree add ../sj-W6-A -b parity/W6-A main
   cd ../sj-W6-A && npm ci
   python3 docs/prototype/tools/split-prototypes.py
@@ -1929,6 +1930,137 @@ FINISH
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template —
   **`W6-C` still has no prompt**; read §8 Q50 before you write it.
   Commit to parity/W6-A. Do not merge to main.
+```
+
+### `W6-C` — Set up wizard: the team step, and the seat you actually buy *(written by Wave 5 integration)*
+
+> **Written here because nobody else could.** `W5-A` and `W5-B` each wrote a `W6-A`; `W4-D` wrote
+> `W6-B`; `W6-C` was left with none. It is also the session that finally settles the programme's
+> longest-running ambiguity: **"seat" means two different things**, and until now each wave has
+> handed the purchased kind to the next. §8 Q50 said it belonged to `W5-A`; §8 Q59 corrected that to
+> `W6-C` and Wave 5 integration reconciled Q50's closing line to match. This prompt is that ruling
+> made executable.
+>
+> Wave 6's base branch is **`main` after Wave 5 integration**. `W6-C` owns migration **0052**
+> (`W6-A` holds 0051, `Wx-PWD` 0050) and, unlike most sessions, it probably DOES need it: no
+> per-user seat entitlement exists anywhere in the schema.
+
+```
+You are running session W6-C — the Set up wizard's Team step, and the seat model behind it — of the
+ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W6-C -b parity/W6-C main
+  cd ../sj-W6-C && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules (§1.2 governs the payment half of this session), §2
+     Session protocol, §4 Testing, then **§8 Q50 and Q59 together** — they are the same question
+     asked twice and Q59 carries the answer. Then ONLY your entry for W6-C in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Set up" --screen "sus-|Set up" --full
+     Twenty-four findings. **F0111 and F0115 are yours** — every prior wave left them open because
+     each read "seat" as the other kind.
+  3. The prototype's seven Set up panels, in the incubator console:
+       ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/_rest.html — ids `sus-orgtype`,
+       `sus-configure`, `sus-select`, `sus-team`, `sus-buyseats`, `sus-buypay`, `sus-buysuccess`
+     Your four are `sus-team` and the three-screen buy flow. Diff the VC console's against them.
+  4. src/client/routes/SetupWizard.tsx — `STEPS` is already
+     `["Org type", "Configure", "Select", "Team"]` and step 4 (from line ~803) is the empty state
+     you are replacing. The first three steps WORK; do not rewrite them.
+  5. src/server/routes/programs.ts (the seat routes are yours), and — as the pattern for a purchase
+     that takes no card — src/server/billing/provider.ts and src/server/routes/billing.ts (`W4-C`):
+     a real interface, an EMPTY adapter table, a stub that RECORDS the intent.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+THE TWO SEATS — read this before you name a single variable
+  This programme has confused these for five waves. They are unrelated:
+    • `cohorts.seat_capacity` / `seats_filled` (`0036`, `W5-A`'s) — places for STARTUPS in a batch,
+      configured in Admin console → Seat capacity, with the `seatless` flag when a sign-up completes
+      without one. **NOT yours. Do not read, write or rename it.**
+    • a per-USER purchased entitlement — how many staff members this organisation may have, bought
+      as seats, enforced when a user is created. **This is yours, and it does not exist yet.**
+  `billing_subscriptions.seats` (`0046`, `W4-C`'s) already records how many were PURCHASED, and the
+  Credits & billing tile renders it. You are building what enforces it and what sells more. Read
+  that column; do not redefine it.
+
+BUILD
+  1. **The team step** (`sus-team`): the owner card, the super-user nomination gate, per-member plan
+     toggles, the seat-capacity bar, and the "View all members" roster.
+  2. **The seat model itself** (F0111): a per-user tier, and capacity ENFORCED at user creation —
+     creating a member beyond the purchased count is refused with a named error, not allowed and
+     reconciled later. `W4-A` owns `POST /api/users`; if the check belongs there, that is a §9
+     request, not an edit.
+  3. **The buy-seats sub-flow** (`sus-buyseats` → `sus-buypay` → `sus-buysuccess`): choose a
+     quantity, see the GST-inclusive total, "pay", get a receipt, and the seat cap increases by
+     exactly what was bought. Read prices from the published catalogue (`src/shared/priceBook.ts`,
+     `W4-D`'s) — **no hardcoded seat price**; `W6-B` is removing the last of those and you must not
+     add one back.
+  4. **§1.2 is absolute, and this is the third session to be told it**: no PAN, no CVV, no expiry
+     field, in any state. The purchase records an intent exactly as `W4-C`'s does and never reports
+     a completed payment. GST is `priceBreakdown` from `src/shared/plans.ts` — it takes a currency
+     now, so pass one; do not write a second tax calculation. (Wave 4 integration had to fix exactly
+     that: two modules, two GST rules, one of them wrong off-INR. See §8 Q55.)
+  5. **The role gating, corrected** (F0115): the prototype hides *Set up* from the incubator
+     Programme Associate and Jury, and hides *My account* from everyone except Super User and Admin;
+     the VC edition shows *Set up* to Partner, Associate and Analyst. Today's `nav.ts` disagrees.
+     `src/shared/nav.ts` is a §2.2 serialisation-hazard file — confirm in §6 that it is yours this
+     wave before editing, and if it is not, this is a §9 request.
+
+CONSTRAINTS
+  - Own only: src/client/routes/SetupWizard.tsx, the seat routes in src/server/routes/programs.ts,
+    and your own new files. One line each in src/server/index.ts and registry.tsx if you add either.
+  - You own migration 0052 and only 0052 (0050 `Wx-PWD`, 0051 `W6-A`). Raise ALLOTMENT_CEILING in
+    test/worker/migrations-w1b.test.ts to 52 in the same commit.
+  - Do NOT touch `cohorts.seat_capacity`, `src/server/routes/signup-config.ts` or
+    `src/shared/signupConfig.ts` — that is the OTHER seat (see above).
+  - Do NOT touch `src/shared/plans.ts` or `src/shared/priceBook.ts`. Read both; if the catalogue
+    needs a seat SKU it does not have, that is a §9 request to `W4-D`'s successor.
+  - `src/client/index.css`, `src/shared/roles.ts` and `src/client/App.tsx` are §2.2 files.
+
+TEST
+  - Unit: the seat arithmetic and the GST on a seat order, through `priceBreakdown` with a currency.
+    Assert a non-INR order carries NO GST — that is the rule both pricing modules now agree on.
+  - Worker: capacity enforcement (creating a member at the cap is refused, below it succeeds), the
+    cap rising by exactly the quantity purchased, a purchase RECORDING an intent without completing
+    one, and authZ on every new route — an allowed role AND a forbidden one → 403.
+  - Client: the team step's empty, populated and at-capacity states; the three buy screens.
+  - E2E: a seat purchase raises the cap and the roster then admits one more member. Mutating shared
+    rows? Run serially and restore what you found.
+  - `npm run roles` if you add a router — add its probes to scripts/role-matrix.ts in the SAME
+    commit, with each write probe's body shaped so an ALLOWED role still gets a 4xx. Run it as
+        ROLES_BASE=http://127.0.0.1:<your port> npm run roles
+    against a server you PROVED you own with `lsof`: it defaults to :5173 and **exits 0 even when it
+    cannot reach anything** (§8 Q28). Read the baseline off `main` first — Wave 5 left it at
+    **827/827** — and confirm your run moves it by exactly the probes you added.
+    **If you change `nav.ts` gating, `npm run roles` is the check that proves it**, and the number
+    WILL move by design. Say so in your handoff rather than letting integration wonder.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  **What a trustworthy run looks like here, measured at Wave 5 integration.** The vitest configs now
+  carry `testTimeout`/`hookTimeout` of 30 s (§8 Q32) — necessary but not sufficient on a loaded box:
+  with the raise alone, plain `npm test` at load 41-50 still failed 6 tests across 4 files, every one
+  of which passed alone. The reliable recipe is **`npm test -- --no-file-parallelism`**, which gave
+  1450 / 0 failed at load 45. `playwright.config.ts` now sets `retries: 1`, which took e2e from
+  98 passed / 48 failed / 28 never run to 162 passed / 4 flaky / 8 failed. **`flaky` is information,
+  not noise** — it means the dev server dropped, not that your code is wrong. Check `uptime` before
+  believing any red, re-run the failing file alone, and run a spec your change never touched as a
+  control before concluding the machine is at fault.
+  Four flakes earlier waves wrote and caught — you will write at least one:
+    • gate client assertions on a POPULATED element, never a heading the loading branch also renders;
+    • never locate an element by the attribute your click is about to change;
+    • never sign in as a second user on the same page — `/login` redirects an authenticated session
+      back to `/app` and you wait out the whole timeout. One test per role;
+    • if a screen keeps a draft, guard it against its own mount fetch: StrictMode runs that effect
+      twice and the second response lands after the first keystroke.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions — **Q50 and Q59 are yours
+  to CLOSE**, not to restate — and §9 Cross-session requests, then write the next prompt(s) into §10
+  using the §5 template. Wave 7 is six sessions and has no prompts yet; write `W7-C` and say in your
+  handoff which others still need one.
+  Commit to parity/W6-C. Do not merge to main.
 ```
 
 ### `W5-A` — required documents, seat capacity / fund deployment *(written by `W4-C`)*
