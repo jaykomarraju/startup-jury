@@ -1752,6 +1752,15 @@ TEST
     and the screen changes. Assert that no rendered string matches /per[- ]deck|\/deck/.
   - E2E: both branches through to a receipt.
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  **The gate takes about four and a half minutes on a quiet machine — measured at Wave 5
+  integration on both a busy and an idle box, same commit, same code.** Idle (load 5): `npm test`
+  is 1450 passed / 0 failed in 20.6 s and e2e is 172 passed / 2 flaky / 0 failed in 3.9 min. At
+  load 40+ the same tree shed 6 unit tests and 8 e2e tests and took forty minutes. So: `uptime`
+  BEFORE you start, never run your gate while a sibling session runs theirs, and never conclude
+  anything from a red run on a loaded box without re-running the file alone and running a spec your
+  change never touched as a control. `playwright.config.ts` sets `retries: 1` — **`flaky` is
+  information, not noise**: it means the dev server dropped a connection, not that your code is
+  wrong.
   The suite is non-deterministic under load (§8 Q32) — check `uptime` before blaming your code, and
   re-run a red file alone.
 
@@ -1904,16 +1913,18 @@ TEST
     (§8 Q28). Read the baseline off `main` FIRST and confirm your run moved it by exactly the
     probes you added — never match a figure written in a prompt.
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
-  **§8 Q32 has an answer now: the suite is timeout-starved, not non-deterministic.** At vitest's
-  5 s default this machine fails 30+ tests across files you never touched; with
-  `--testTimeout=30000 --hookTimeout=30000` the same tree went 1321/1321 green in 99 s. Wave 5
-  integration put that in the three vitest configs — if it is there, plain `npm test` is
-  trustworthy. Either way, re-run a failing file alone and check `uptime` before blaming your work.
-  **e2e does not parallelise across worktrees (§9).** Two Playwright + miniflare stacks kill each
-  other's dev server — the log fills with `Network connection lost` and specs neither session wrote
-  start failing. If a sibling is running `test:e2e`, wait for it; `--workers=1` is the safe setting
-  on a busy box. At load ~60 the login page alone outlasts Playwright's default expect timeout, and
-  `W5-B` lost two full runs to exactly that.
+  **What a trustworthy run looks like here, measured on BOTH a busy and an idle machine.**
+  Same commit, same code, only the machine differing:
+      unit/worker/client   load 41-50 → 6 failed · load 5 → **1450 passed, 0 failed, 20.6 s**
+      e2e (retries 1)      load 40+   → 8 failed · load 5 → **172 passed, 2 flaky, 0 failed, 3.9 min**
+  **The whole gate takes about four and a half minutes on a quiet box.** If yours is taking forty,
+  you are measuring the machine, not the code. `uptime` BEFORE you start; do not run your gate while
+  a sibling session runs theirs; and never conclude anything from a red run at load 40+ without
+  re-running the file alone and running a spec your change never touched as a control.
+  `--no-file-parallelism` is a DIAGNOSTIC for a loaded box, not a setting — it is a 16x slowdown and
+  buys nothing when the machine is quiet. `playwright.config.ts` sets `retries: 1`; **`flaky` is
+  information, not noise** — it means the dev server dropped a connection, not that your code is
+  wrong.
   Four flakes Wave 5 wrote and caught — you will write at least one of them:
     • gate client assertions on a POPULATED element, never on a heading the loading branch also
       renders;
@@ -2039,15 +2050,18 @@ TEST
     **If you change `nav.ts` gating, `npm run roles` is the check that proves it**, and the number
     WILL move by design. Say so in your handoff rather than letting integration wonder.
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
-  **What a trustworthy run looks like here, measured at Wave 5 integration.** The vitest configs now
-  carry `testTimeout`/`hookTimeout` of 30 s (§8 Q32) — necessary but not sufficient on a loaded box:
-  with the raise alone, plain `npm test` at load 41-50 still failed 6 tests across 4 files, every one
-  of which passed alone. The reliable recipe is **`npm test -- --no-file-parallelism`**, which gave
-  1450 / 0 failed at load 45. `playwright.config.ts` now sets `retries: 1`, which took e2e from
-  98 passed / 48 failed / 28 never run to 162 passed / 4 flaky / 8 failed. **`flaky` is information,
-  not noise** — it means the dev server dropped, not that your code is wrong. Check `uptime` before
-  believing any red, re-run the failing file alone, and run a spec your change never touched as a
-  control before concluding the machine is at fault.
+  **What a trustworthy run looks like here, measured on BOTH a busy and an idle machine.**
+  Same commit, same code, only the machine differing:
+      unit/worker/client   load 41-50 → 6 failed · load 5 → **1450 passed, 0 failed, 20.6 s**
+      e2e (retries 1)      load 40+   → 8 failed · load 5 → **172 passed, 2 flaky, 0 failed, 3.9 min**
+  **The whole gate takes about four and a half minutes on a quiet box.** If yours is taking forty,
+  you are measuring the machine, not the code. `uptime` BEFORE you start; do not run your gate while
+  a sibling session runs theirs; and never conclude anything from a red run at load 40+ without
+  re-running the file alone and running a spec your change never touched as a control.
+  `--no-file-parallelism` is a DIAGNOSTIC for a loaded box, not a setting — it is a 16x slowdown and
+  buys nothing when the machine is quiet. `playwright.config.ts` sets `retries: 1`; **`flaky` is
+  information, not noise** — it means the dev server dropped a connection, not that your code is
+  wrong.
   Four flakes earlier waves wrote and caught — you will write at least one:
     • gate client assertions on a POPULATED element, never a heading the loading branch also renders;
     • never locate an element by the attribute your click is about to change;
