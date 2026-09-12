@@ -284,7 +284,7 @@ describe("AdminConsole shell", () => {
     expect(screen.getAllByText(unbuilt!.placeholder.owner)).toHaveLength(2);
   });
 
-  it("keeps the existing user-CRUD roster reachable as Team & roles", async () => {
+  it("routes `tm` to the Team & roles roster", async () => {
     vi.mocked(listUsers).mockResolvedValue({
       users: [
         {
@@ -305,12 +305,20 @@ describe("AdminConsole shell", () => {
     // roles is still reachable at `tm`; registry COVERAGE is asserted separately,
     // above. All THREE Wave 2 sessions made this same edit independently; kept as
     // one assertion at Wave 2 integration.
+    //
+    // W4-A, flagged per plan §4 — the two CONTROL assertions this carried
+    // ("Add user", an "Organizational title" column) pinned the flat user-CRUD
+    // page W1-C moved here verbatim, which F0067 / F0123 / F0148 all report as
+    // the wrong shape: the prototype's roster has an *Invite member* button in
+    // the card header and names the field per edition. They are replaced rather
+    // than weakened — the roster's own columns, actions, invite lifecycle and
+    // counting rule are asserted in full in `test/client/teamRoles.test.tsx`.
+    // What belongs HERE is only that the console routes `tm` to that section.
     expect(SECTION_COMPONENTS).toHaveProperty("tm");
     renderConsole(user("incubator", "admin"), "/app/admin?section=tm");
     expect(screen.getByTestId("admin-section-title")).toHaveTextContent("Team & roles");
     expect(await screen.findByText("Tara Nair")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Add user" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Organizational title" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Invite member/ })).toBeInTheDocument();
   });
 
   it("badges Team & roles with the pending-invite count", async () => {

@@ -37,6 +37,7 @@ import { QuestionBankSection } from "./QuestionBank";
 import { RubricAnchorsSection } from "./RubricAnchors";
 import { ScoringFrameworkSection } from "./ScoringFramework";
 import { TeamRolesSection } from "./TeamRoles";
+import { UserAccessSection } from "./UserAccess";
 
 export const SECTION_COMPONENTS: Record<string, ComponentType | undefined> = {
   // Evaluation
@@ -45,7 +46,7 @@ export const SECTION_COMPONENTS: Record<string, ComponentType | undefined> = {
   rb: RubricAnchorsSection, //       W2-B · Rubric anchors
   qb: QuestionBankSection, //        W2-C · Question bank
   // Organisation
-  tm: TeamRolesSection, //           W4-A replaces this with the full roster
+  tm: TeamRolesSection, //           W4-A · Team & roles
   crm: CrmSyncSection, //            W3-D · CRM sync
   bl: undefined, //                  W4-C · Credits & billing
   pc: undefined, //                  W4-D · Price configuration
@@ -58,6 +59,6 @@ export const SECTION_COMPONENTS: Record<string, ComponentType | undefined> = {
   // System
   nt: NotificationsSection, //       W3-B · Notifications
   al: AuditLogSection, //            W3-C · Audit log
-  uc: undefined, //                  W4-A · User access
+  uc: UserAccessSection, //          W4-A · User access
   br: undefined, //                  W4-B · Branding
 };

@@ -1,6 +1,7 @@
 export { AdminConsole } from "./AdminConsole";
 export { RubricAnchorsSection } from "./RubricAnchors";
 export { TeamRolesSection } from "./TeamRoles";
+export { UserAccessSection } from "./UserAccess";
 export { QuestionBankSection } from "./QuestionBank";
 export { SectionPlaceholder } from "./SectionPlaceholder";
 export { SECTION_COMPONENTS } from "./registry";
