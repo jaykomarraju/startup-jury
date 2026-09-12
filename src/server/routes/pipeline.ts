@@ -65,6 +65,8 @@ interface DeckRow {
   founder_email: string | null;
   assigned_to: string | null;
   uploaded_by: string | null;
+  /** Bumped by `addDeckVersion`; keys the per-version notification dedupe. */
+  content_version: number | null;
 }
 
 // VC human-scoring stages (analyst core scores, then associate + partner review).
@@ -83,7 +85,8 @@ async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
 async function loadDeck(c: Context<AppEnv>, id: string): Promise<DeckRow | null> {
   const user = c.var.user;
   const row = await c.env.DB.prepare(
-    "SELECT id, edition, name, status, founder, founder_email, assigned_to, uploaded_by FROM decks WHERE id = ? AND edition = ?",
+    "SELECT id, edition, name, status, founder, founder_email, assigned_to, uploaded_by, content_version " +
+      "FROM decks WHERE id = ? AND edition = ?",
   )
     .bind(id, user.edition)
     .first<DeckRow>();
@@ -572,7 +575,14 @@ pipeline.post(
       link: `/app/decks/${deck.id}`,
       deckId: deck.id,
       actorId: user.id,
-      dedupeKey: `evaluator_scores_submitted:${deck.id}:${user.id}`,
+      // Keyed by VERSION as well, mirroring `ai_scoring_complete` in
+        // evaluate.ts. Without it the key is durable for the life of the deck:
+        // human evaluation rows survive a resubmit, so once an evaluator had
+        // scored a deck once, every later submission — including a fresh score on
+        // a resubmitted v2 — alerted nobody, and "all evaluations complete" fired
+        // exactly once per deck no matter how many versions the panel worked
+        // through. The PM is the whole audience for both. Wave 3 integration.
+        dedupeKey: `evaluator_scores_submitted:${deck.id}:${user.id}:v${deck.content_version ?? 1}`,
     });
 
     if (await allEvaluatorsHaveScored(c, deck)) {
@@ -586,7 +596,7 @@ pipeline.post(
         link: `/app/decks/${deck.id}`,
         deckId: deck.id,
         actorId: user.id,
-        dedupeKey: `all_evaluations_complete:${deck.id}`,
+        dedupeKey: `all_evaluations_complete:${deck.id}:v${deck.content_version ?? 1}`,
       });
     }
     return c.json({ ok: true, weightedTotal: total, signal: signalTag(total), status });

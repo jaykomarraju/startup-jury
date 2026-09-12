@@ -716,4 +716,33 @@ describe("GET /api/notifications/outbox (F0144)", () => {
     expect(payload.delivery.configured).toBe(false);
     expect(payload.entries.every((e) => e.status !== "sent")).toBe(true);
   });
+
+  // Wave 3 integration. The read had no edition predicate, so an incubator admin
+  // saw VC recipients' addresses and subject lines — and `0017` seeds an
+  // incubator row that a VC admin could read on a freshly migrated database.
+  // The existing test asserts only `length > 0` from one edition, which passes
+  // happily over the other edition's rows.
+  it("is scoped to the caller's edition — no cross-tenant recipients", async () => {
+    const inc = (await (await get("/api/notifications/outbox", await login(INC_ADMIN_EMAIL))).json()) as {
+      entries: { toEmail: string }[];
+    };
+    const vc = (await (await get("/api/notifications/outbox", await login(VC_ADMIN_EMAIL))).json()) as {
+      entries: { toEmail: string }[];
+    };
+    // The seeded incubator founder must never appear in the VC workspace's log.
+    expect(vc.entries.some((e) => e.toEmail === "meera.sharma@demo.startupjury.ai")).toBe(false);
+    // And each side only ever sees addresses belonging to its own edition.
+    for (const [body, edition] of [
+      [inc, "incubator"],
+      [vc, "vc"],
+    ] as const) {
+      for (const e of body.entries) {
+        const owner = await env.DB.prepare("SELECT edition FROM users WHERE email = ?")
+          .bind(e.toEmail)
+          .first<{ edition: string }>();
+        if (owner) expect(owner.edition).toBe(edition);
+      }
+    }
+  });
+
 });

@@ -323,16 +323,30 @@ export async function auditPermissionCells(
   c: Context<AppEnv>,
   cells: PermissionCell[],
   taskLabels: Map<string, string>,
+  /**
+   * The state each cell held BEFORE this write, keyed `role:taskId`. Absent
+   * means the cell had no override row, which is the seeded default. Without
+   * this the summary was rendered from the new value alone and claimed a
+   * transition that may never have occurred. Wave 3 integration.
+   */
+  before?: Map<string, boolean>,
 ): Promise<void> {
   const edition = c.var.user.edition as Edition;
+  // A no-op write is not an authorisation change; recording one as a flip makes
+  // the trail lie in the direction that matters most.
+  const changed = cells.filter(
+    (cell) => before?.get(`${cell.role}:${cell.taskId}`) !== cell.granted,
+  );
+  if (changed.length === 0) return;
   await recordAudit(
     c,
-    ...cells.map((cell) => ({
+    ...changed.map((cell) => ({
       category: "security" as const,
       action: "permission_changed",
       summary:
         `Task permission changed: ${roleLabel(edition, cell.role as never) ?? cell.role} · ` +
-        `${taskLabels.get(cell.taskId) ?? cell.taskId} — ${cell.granted ? "denied → allowed" : "allowed → denied"}`,
+        `${taskLabels.get(cell.taskId) ?? cell.taskId} — ` +
+        `${cell.granted ? "denied → allowed" : "allowed → denied"}`,
       detail: { role: cell.role, taskId: cell.taskId, granted: cell.granted },
       targetType: "permission",
       targetId: `${cell.role}:${cell.taskId}`,

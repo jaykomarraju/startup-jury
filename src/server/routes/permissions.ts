@@ -87,6 +87,23 @@ permissions.put("/", requireConsole, async (c) => {
     }
   }
 
+  // Read the PRIOR state before writing it. The audit summary used to render
+  // "denied → allowed" from the NEW value alone, so re-granting an already
+  // granted cell recorded a flip that never happened — a fabricated before-state
+  // in the one log that exists to be trusted about exactly this. Wave 3
+  // integration.
+  const before = new Map<string, boolean>(
+    (
+      await c.env.DB.prepare(
+        `SELECT role, task_id, granted FROM role_permissions WHERE edition = ? AND (${cells
+          .map(() => "(role = ? AND task_id = ?)")
+          .join(" OR ")})`,
+      )
+        .bind(edition, ...cells.flatMap((cell) => [cell.role as Role, cell.taskId]))
+        .all<{ role: string; task_id: string; granted: number }>()
+    ).results.map((r) => [`${r.role}:${r.task_id}`, r.granted === 1]),
+  );
+
   await c.env.DB.batch(
     cells.map((cell) =>
       c.env.DB.prepare(
@@ -102,6 +119,7 @@ permissions.put("/", requireConsole, async (c) => {
     c,
     cells,
     new Map(permissionTasksFor(edition).map((t) => [t.id, t.label])),
+    before,
   );
 
   const overrides = await loadEditionOverrides(c.env.DB, edition);

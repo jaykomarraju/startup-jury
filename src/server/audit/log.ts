@@ -444,13 +444,18 @@ export async function listAudit(db: D1Database, query: AuditQuery): Promise<Audi
       where.push(`${alias.deck} = ?`);
       params.push(query.deckId);
     }
+    // Bounds must be in the SAME canonical ISO form both branches are now
+    // selected in. They were space-separated SQLite datetimes, so `<=` against
+    // an ISO `…T23:59:59Z` was already false for every `pipeline_events` row —
+    // the `to` filter silently dropped same-day pipeline rows before this wave.
+    // Wave 3 integration.
     if (query.from) {
       where.push(`${alias.created} >= ?`);
-      params.push(`${query.from} 00:00:00`);
+      params.push(`${query.from}T00:00:00Z`);
     }
     if (query.to) {
       where.push(`${alias.created} <= ?`);
-      params.push(`${query.to} 23:59:59`);
+      params.push(`${query.to}T23:59:59Z`);
     }
     if (query.q) {
       where.push(`${alias.summary} LIKE ?`);
@@ -477,7 +482,7 @@ export async function listAudit(db: D1Database, query: AuditQuery): Promise<Audi
     }
     where.push(
       ...common({
-        created: "a.created_at",
+        created: "replace(a.created_at, ' ', 'T') || 'Z'",
         id: "a.id",
         deck: "a.deck_id",
         actor: "a.actor_id",
@@ -488,7 +493,15 @@ export async function listAudit(db: D1Database, query: AuditQuery): Promise<Audi
       "SELECT a.id AS id, a.category AS category, a.actor_id AS actor_id, a.actor_label AS actor_label, " +
         "u.name AS actor_name, u.title AS actor_title, a.action AS action, a.summary AS summary, " +
         "a.deck_id AS deck_id, d.name AS deck_name, a.target_type AS target_type, a.target_id AS target_id, " +
-        "NULL AS from_stage, NULL AS to_stage, NULL AS note, a.created_at AS created_at " +
+        "NULL AS from_stage, NULL AS to_stage, NULL AS note, " +
+        // `audit_log` stores SQLite datetime ('YYYY-MM-DD HH:MM:SS', from the column
+        // default and from 0030's seed) while `pipeline_events` stores ISO from
+        // `new Date().toISOString()`. This UNION orders and date-filters as RAW
+        // STRINGS, and ' ' (0x20) sorts before 'T' (0x54) — so a later audit row
+        // sorted BEFORE an earlier pipeline one and the `to` filter dropped
+        // same-day rows. Canonicalise both branches to ISO at the read.
+        // Wave 3 integration.
+        "replace(a.created_at, ' ', 'T') || 'Z' AS created_at " +
         "FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id LEFT JOIN decks d ON d.id = a.deck_id " +
         `WHERE ${where.join(" AND ")}`,
     );

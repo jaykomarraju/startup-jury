@@ -360,10 +360,24 @@ const OUTBOX_LIMIT = 50;
 notifications.get("/outbox", requireConsole, async (c) => {
   const rows = (
     await c.env.DB.prepare(
-      "SELECT id, kind, to_email, to_name, subject, status, error, created_at FROM email_outbox " +
-        "ORDER BY created_at DESC LIMIT ?",
+      // Scoped to the caller's edition. `email_outbox` has no edition column —
+      // it predates the two-edition split — so this resolves one through the
+      // deck the mail is about, falling back to the recipient's own user row.
+      // Without it an incubator admin read VC recipients' addresses and subject
+      // lines, and `0017` seeds an incubator row that a VC admin could see on a
+      // freshly migrated database. The COALESCE fails CLOSED: mail to a
+      // non-user with no deck drops out of the log rather than leaking across.
+      // The durable fix is an `edition` column stamped by `sendEmail`, which
+      // needs every call site — recorded in §9. Wave 3 integration.
+      "SELECT o.id AS id, o.kind AS kind, o.to_email AS to_email, o.to_name AS to_name, " +
+        "o.subject AS subject, o.status AS status, o.error AS error, o.created_at AS created_at " +
+        "FROM email_outbox o " +
+        "LEFT JOIN decks d ON d.id = o.deck_id " +
+        "LEFT JOIN users u ON u.email = o.to_email " +
+        "WHERE COALESCE(d.edition, u.edition) = ? " +
+        "ORDER BY o.created_at DESC LIMIT ?",
     )
-      .bind(OUTBOX_LIMIT)
+      .bind(c.var.user.edition, OUTBOX_LIMIT)
       .all<OutboxRow>()
   ).results;
 
