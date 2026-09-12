@@ -579,6 +579,41 @@ const PROBES: Probe[] = [
   { id: "pricing.draft", label: "PUT /api/pricing/draft (edit prices)", kind: "write", method: "PUT", path: "/api/pricing/draft", body: { tax: { gstRatePct: 999 } },
     allow: ["admin"] },
 
+  // ── W5-A · Sign-up configuration (`/api/signup-config`) ───────────────────
+  // §9's standing ask, again: a new router that skips this list stops being
+  // described by the harness that claims to cover it. Every probe here is
+  // gated on the console's own `adminconsole` task, so the expectation is
+  // `admin` (+ the implicit superuser) and 403 for everyone else.
+  //
+  // The two edition-specific sections are declared with `editions`, which is
+  // exactly what they enforce: `s-suseat` is not in the VC rail and `s-sufund`
+  // is not in the incubator's, so each refuses the other edition with a 403
+  // rather than serving a section its console never offers.
+  { id: "signupcfg.documents", label: "GET /api/signup-config/documents (required documents)", kind: "read", method: "GET", path: "/api/signup-config/documents",
+    allow: ["admin"] },
+  { id: "signupcfg.seats", label: "GET /api/signup-config/seats (cohort seat capacity)", kind: "read", method: "GET", path: "/api/signup-config/seats",
+    editions: ["incubator"], allow: ["admin"] },
+  { id: "signupcfg.fund", label: "GET /api/signup-config/fund (fund deployment)", kind: "read", method: "GET", path: "/api/signup-config/fund",
+    editions: ["vc"], allow: ["admin"] },
+  // Write probes carry a body that 400s before it could persist anything: an
+  // empty `items` list is `checklist_empty`, and a ghost cohort / program id is
+  // `unknown_cohort` / `unknown_program`. The harness's "a write probe must
+  // never succeed" rule therefore still holds for an admin.
+  { id: "signupcfg.documents.save", label: "PUT /api/signup-config/documents (save the checklist)", kind: "write", method: "PUT", path: "/api/signup-config/documents", body: { items: [] },
+    allow: ["admin"] },
+  { id: "signupcfg.seats.save", label: "PUT /api/signup-config/seats (save seat counts)", kind: "write", method: "PUT", path: "/api/signup-config/seats", body: { rows: [{ cohortId: "__ghost__", capacity: 0, filled: 0 }] },
+    editions: ["incubator"], allow: ["admin"] },
+  { id: "signupcfg.fund.save", label: "PUT /api/signup-config/fund (save fund deployment)", kind: "write", method: "PUT", path: "/api/signup-config/fund", body: { rows: [{ programId: "__ghost__" }] },
+    editions: ["vc"], allow: ["admin"] },
+  { id: "signupcfg.doc.move", label: "PATCH …/signups/:id/documents/:id (one lifecycle move)", kind: "write", method: "PATCH", path: "/api/signup-config/signups/__ghost__/documents/__ghost__", body: { status: "verified" },
+    allow: ["admin"] },
+  { id: "signupcfg.verifyall", label: "POST …/signups/:id/documents/verify-all (bulk verify)", kind: "write", method: "POST", path: "/api/signup-config/signups/__ghost__/documents/verify-all", body: {},
+    allow: ["admin"] },
+  { id: "signupcfg.complete", label: "POST …/signups/:id/complete (finish sign-up, resolve the seat)", kind: "write", method: "POST", path: "/api/signup-config/signups/__ghost__/complete", body: {},
+    editions: ["incubator"], allow: ["admin"] },
+  { id: "signupcfg.seat", label: "POST …/signups/:id/seat (allocate a cohort seat)", kind: "write", method: "POST", path: "/api/signup-config/signups/__ghost__/seat", body: {},
+    editions: ["incubator"], allow: ["admin"] },
+
   // ── Contract: analytics delegate to the nav manifest by design ────────────
   ...analyticsProbes(),
 ];
