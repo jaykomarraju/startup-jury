@@ -957,19 +957,29 @@ signupConfig.put("/seats", async (c) => {
 
 /**
  * `0036`'s rule, applied to today's numbers: a sign-up past the finish line
- * with no seat of its own is seatless exactly while its cohort has none free.
- * A deck with no cohort at all is seatless too — there is no batch to seat it
- * in, which is precisely the case the pipeline needs flagged.
+ * with no seat of its own is seatless while its cohort has none free. A deck
+ * with no cohort at all is seatless too — there is no batch to seat it in,
+ * which is precisely the case the pipeline needs flagged.
+ *
+ * **It only ever RAISES the flag.** Clearing it is `POST …/seat`'s job and
+ * nothing else's. Narrowing a cohort can strand a startup that had a seat
+ * coming, so the flag must follow; widening one does NOT un-strand anybody,
+ * because a seat is not allocated until somebody allocates it — the prototype's
+ * action provisions founder access, which must never happen as a side effect of
+ * an admin typing a bigger number. Lowering the flag here instead would leave
+ * the record neither flagged nor seated: gone from the allocation queue while
+ * holding no seat, which is the invisibility F0011 exists to end.
  */
 async function reconcileSeatless(c: Context<AppEnv>): Promise<void> {
   await c.env.DB.prepare(
-    "UPDATE signups SET seatless = CASE WHEN EXISTS (" +
-      "  SELECT 1 FROM decks d JOIN cohorts co ON co.id = d.cohort_id " +
-      "  WHERE d.id = signups.deck_id AND co.seats_filled < co.seat_capacity" +
-      ") THEN 0 ELSE 1 END " +
+    "UPDATE signups SET seatless = 1 " +
       "WHERE seat_allocated_at IS NULL " +
       "  AND status IN ('completed', 'onboarded') " +
-      "  AND deck_id IN (SELECT id FROM decks WHERE edition = ?)",
+      "  AND deck_id IN (SELECT id FROM decks WHERE edition = ?) " +
+      "  AND NOT EXISTS (" +
+      "    SELECT 1 FROM decks d JOIN cohorts co ON co.id = d.cohort_id " +
+      "    WHERE d.id = signups.deck_id AND co.seats_filled < co.seat_capacity" +
+      "  )",
   )
     .bind(c.var.user.edition)
     .run();

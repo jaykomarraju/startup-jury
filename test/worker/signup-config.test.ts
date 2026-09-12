@@ -870,22 +870,78 @@ describe("PUT /api/signup-config/seats", () => {
     expect(await seatsOf(CLIMATE_COHORT)).toEqual({ seat_capacity: 20, seats_filled: 18 });
   });
 
-  it("re-derives the seatless flag against the numbers that now hold", async () => {
+  it("raises the seatless flag when a capacity edit strands a completed sign-up", async () => {
     const cookie = await login(ADMIN);
-    // Fill the cohort, complete the sign-up → seatless.
+    // Completing with a free seat takes it: seated, not flagged.
+    await post(`/api/signup-config/signups/${MEDIXIR}/complete`, cookie);
+    expect(await signupRow(MEDIXIR)).toMatchObject({ seatless: 0 });
+
+    // Now a SECOND sign-up in the same cohort, completed after the cohort has
+    // been narrowed to what it already holds, is stranded and must be flagged.
+    await env.DB.prepare(
+      "UPDATE decks SET cohort_id = ? WHERE id = (SELECT deck_id FROM signups WHERE id = ?)",
+    )
+      .bind(CLIMATE_COHORT, LEDGERLITE)
+      .run();
+    await env.DB.prepare("UPDATE signups SET status = 'progress' WHERE id = ?")
+      .bind(LEDGERLITE)
+      .run();
+    const res = await put("/api/signup-config/seats", cookie, {
+      rows: [{ cohortId: CLIMATE_COHORT, capacity: 19, filled: 19 }],
+    });
+    expect(res.status).toBe(200);
+    await post(`/api/signup-config/signups/${LEDGERLITE}/complete`, cookie);
+    expect((await signupRow(LEDGERLITE)).seatless).toBe(1);
+
+    // A later capacity edit re-derives it and it STAYS flagged.
+    await put("/api/signup-config/seats", cookie, {
+      rows: [{ cohortId: CLIMATE_COHORT, capacity: 19, filled: 19 }],
+    });
+    expect((await signupRow(LEDGERLITE)).seatless).toBe(1);
+  });
+
+  it("does NOT clear the flag when a cohort is widened — a seat is not a side effect", async () => {
+    const cookie = await login(ADMIN);
     await put("/api/signup-config/seats", cookie, {
       rows: [{ cohortId: CLIMATE_COHORT, capacity: 18, filled: 18 }],
     });
     await post(`/api/signup-config/signups/${MEDIXIR}/complete`, cookie);
     expect((await signupRow(MEDIXIR)).seatless).toBe(1);
 
-    // Widen the cohort and the flag clears on the next save.
+    // Widening makes allocation POSSIBLE. It must not make it HAPPEN: the
+    // prototype's Allocate seat provisions founder access, and clearing the
+    // flag here would drop the startup out of the queue holding no seat.
     const res = await put("/api/signup-config/seats", cookie, {
       rows: [{ cohortId: CLIMATE_COHORT, capacity: 25, filled: 18 }],
     });
     expect(res.status).toBe(200);
-    expect((await signupRow(MEDIXIR)).seatless).toBe(0);
-    expect(((await res.json()) as SeatPayload).seatless).toEqual([]);
+    const row = await signupRow(MEDIXIR);
+    expect(row.seatless).toBe(1);
+    expect(row.seat_allocated_at).toBeNull();
+    expect(((await res.json()) as SeatPayload).seatless.map((s) => s.startup)).toEqual(["Medixir"]);
+
+    // …and now allocating lands INSIDE capacity rather than pushing past it.
+    const seat = await post(`/api/signup-config/signups/${MEDIXIR}/seat`, cookie);
+    expect(await seat.json()).toEqual({ ok: true, seated: true, over: false, status: "onboarded" });
+    expect((await seats(cookie)).seatless).toEqual([]);
+  });
+
+  it("never leaves a completed sign-up neither flagged nor seated", async () => {
+    const cookie = await login(ADMIN);
+    await put("/api/signup-config/seats", cookie, {
+      rows: [{ cohortId: CLIMATE_COHORT, capacity: 18, filled: 18 }],
+    });
+    await post(`/api/signup-config/signups/${MEDIXIR}/complete`, cookie);
+    await put("/api/signup-config/seats", cookie, {
+      rows: [{ cohortId: CLIMATE_COHORT, capacity: 30, filled: 18 }],
+    });
+    // The invariant: past the finish line, a sign-up is seated or it is flagged.
+    const limbo = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM signups WHERE status IN ('completed', 'onboarded') " +
+        "AND seat_allocated_at IS NULL AND seatless = 0 " +
+        "AND deck_id IN (SELECT id FROM decks WHERE edition = 'incubator')",
+    ).first<{ n: number }>();
+    expect(limbo!.n).toBe(0);
   });
 });
 
