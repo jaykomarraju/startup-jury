@@ -31,6 +31,7 @@
 import type { ComponentType } from "react";
 import { AreaWeightsSection } from "./AreaWeights";
 import { AuditLogSection } from "./AuditLog";
+import { CreditsBillingSection } from "./CreditsBilling";
 import { CrmSyncSection } from "./CrmSync";
 import { NotificationsSection } from "./Notifications";
 import { QuestionBankSection } from "./QuestionBank";
@@ -47,7 +48,7 @@ export const SECTION_COMPONENTS: Record<string, ComponentType | undefined> = {
   // Organisation
   tm: TeamRolesSection, //           W4-A replaces this with the full roster
   crm: CrmSyncSection, //            W3-D · CRM sync
-  bl: undefined, //                  W4-C · Credits & billing
+  bl: CreditsBillingSection, //      W4-C · Credits & billing
   pc: undefined, //                  W4-D · Price configuration
   // Sign-up (admin + superuser only)
   sudocs: undefined, //              W5-A · Required documents

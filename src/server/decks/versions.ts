@@ -15,6 +15,8 @@ import { evaluateDeck, type EvaluationResult } from "../ai/evaluate";
 import { recordEvalFailure } from "../ai/health";
 import { emitNotification } from "../email/outbox";
 import { LOW_CREDIT_THRESHOLD } from "../../shared/notifications";
+// W4-C — the ledger row behind every credit this application spends.
+import { recordLedgerEntry } from "../billing/ledger";
 
 // Anthropic caps a Messages request at 32 MB; the PDF is base64-encoded (~1.33×)
 // into one request, so keep the raw deck comfortably under that.
@@ -33,19 +35,52 @@ export function versionKey(deckId: string, version: number): string {
   return version <= 1 ? `decks/${deckId}.pdf` : `decks/${deckId}_v${version}.pdf`;
 }
 
+/** What a reservation should say about itself in the ledger. */
+export interface CreditContext {
+  /** The deck the spend is for, when it already exists (a re-upload does). */
+  deckId?: string | null;
+  /** Overrides the default movement sentence. */
+  note?: string | null;
+  actorId?: string | null;
+}
+
 /**
  * Atomically reserve `n` upload credits from an edition. The conditional UPDATE
  * only succeeds when the balance covers `n`, so concurrent uploads can't drive
  * it negative. Returns false when there aren't enough credits (→ 402, before any
  * R2 write). Admins top the balance up in Config.
+ *
+ * W4-C — and it writes the `credit_ledger` debit. This is the one place every
+ * credit the application spends passes through, so it is the only place a debit
+ * per spend can be guaranteed: **one row per successful reservation, none for a
+ * refused one**, written after the conditional UPDATE has committed. The balance
+ * stays the authority — it is what makes the spend atomic — and the row is the
+ * append-only explanation of it, which is what the Credits & billing usage
+ * history renders.
+ *
+ * The debit carries **no money**. §8 Q1, ruled 2026-09-11: there is no per-deck
+ * price, so an evaluation's whole record is "one credit".
  */
-export async function reserveCredits(env: Env, edition: Edition, n: number): Promise<boolean> {
+export async function reserveCredits(
+  env: Env,
+  edition: Edition,
+  n: number,
+  ctx: CreditContext = {},
+): Promise<boolean> {
   const res = await env.DB.prepare(
     "UPDATE org_settings SET credits_balance = credits_balance - ? WHERE edition = ? AND credits_balance >= ?",
   )
     .bind(n, edition, n)
     .run();
   if (res.meta.changes !== 1) return false;
+
+  await recordLedgerEntry(env, edition, {
+    delta: -n,
+    reason: "deck_evaluated",
+    deckId: ctx.deckId ?? null,
+    note: ctx.note ?? (n === 1 ? "Pitchdeck evaluation" : `Pitchdeck evaluation — ${n} decks`),
+    actorId: ctx.actorId ?? null,
+  });
 
   // W3-B producer — "Credit balance low — under 10 credits". Every credit the
   // app ever spends passes through this conditional UPDATE, which makes it the
@@ -80,15 +115,34 @@ async function announceIfCreditsLow(env: Env, edition: Edition, spent: number): 
   });
 }
 
-/** Return `n` reserved credits — used to compensate when a store fails after the
- *  reservation, so a transient R2/DB error never silently burns credits. */
-export async function refundCredits(env: Env, edition: Edition, n: number): Promise<void> {
+/**
+ * Return `n` reserved credits — used to compensate when a store fails after the
+ * reservation, so a transient R2/DB error never silently burns credits.
+ *
+ * W4-C — the compensating `refund` row. It REVERSES the debit rather than
+ * erasing it: the ledger is append-only, so a spend that was undone reads as a
+ * pair that nets to zero and the balance ends where it started. An accounting
+ * trail that deletes its own mistakes is not one.
+ */
+export async function refundCredits(
+  env: Env,
+  edition: Edition,
+  n: number,
+  ctx: CreditContext = {},
+): Promise<void> {
   if (n <= 0) return;
   await env.DB.prepare(
     "UPDATE org_settings SET credits_balance = credits_balance + ? WHERE edition = ?",
   )
     .bind(n, edition)
     .run();
+  await recordLedgerEntry(env, edition, {
+    delta: n,
+    reason: "refund",
+    deckId: ctx.deckId ?? null,
+    note: ctx.note ?? (n === 1 ? "Evaluation credit refunded" : `${n} evaluation credits refunded`),
+    actorId: ctx.actorId ?? null,
+  });
 }
 
 /** The `deck_versions` INSERT, as a statement so callers can batch it with theirs. */
@@ -149,7 +203,8 @@ export type AddVersionResult =
  */
 export async function addDeckVersion(env: Env, args: AddVersionArgs): Promise<AddVersionResult> {
   // Re-scoring the new version costs a credit, same as any other AI run.
-  if (!(await reserveCredits(env, args.edition, 1))) return { ok: false, error: "no_credits" };
+  if (!(await reserveCredits(env, args.edition, 1, { deckId: args.deckId })))
+    return { ok: false, error: "no_credits" };
 
   const version = (args.contentVersion ?? 1) + 1;
   const key = versionKey(args.deckId, version);
@@ -174,7 +229,7 @@ export async function addDeckVersion(env: Env, args: AddVersionArgs): Promise<Ad
       ).bind(key, version, ts, args.deckId),
     ]);
   } catch (err) {
-    await refundCredits(env, args.edition, 1);
+    await refundCredits(env, args.edition, 1, { deckId: args.deckId });
     throw err;
   }
 
