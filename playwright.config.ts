@@ -14,7 +14,17 @@ export default defineConfig({
   // default, because nothing burns a 30s timeout.
   workers: 2,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 1 : 0,
+  // `W5-A`'s measurement, applied at Wave 5 integration (§8 Q28 / Q32). The
+  // failures this suite produces locally are not assertion failures: the dev
+  // server itself dies mid-run with `[vite] Internal server error: Network
+  // connection lost` out of miniflare's runner-worker, and every test after it
+  // fails for a reason that has nothing to do with the app. A sibling
+  // Playwright stack makes that near-certain but is not required for it.
+  // One retry is the cheapest honest mitigation: a genuinely broken test still
+  // fails twice, and a dropped connection is reported as `flaky` rather than
+  // `failed`, which keeps the instability VISIBLE and countable instead of
+  // either fatal or hidden.
+  retries: 1,
   reporter: process.env.CI ? "list" : "html",
   use: { baseURL, trace: "on-first-retry" },
   webServer: {
