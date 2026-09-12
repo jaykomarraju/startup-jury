@@ -373,11 +373,13 @@ export function PriceConfigurationSection() {
     }
   }, [load]);
 
+  // A draft that cannot be saved should not offer a Save: the server would
+  // refuse it, and the error list above already says what to fix.
   useAdminSave({
-    dirty,
+    dirty: dirty && errors.length === 0,
     saving,
     onSave: save,
-    hint: dirty ? undefined : "No unsaved price changes.",
+    hint: errors.length > 0 ? errors[0] : dirty ? undefined : "No unsaved price changes.",
   });
 
   if (!book || !payload) {

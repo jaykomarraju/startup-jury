@@ -19,12 +19,12 @@ const BLOCK_SIZE = LAST - FIRST + 1;
 
 /**
  * The highest number the wave in flight has allotted, from the plan's §10
- * ownership table. Wave 2 was 0038–0040; **Wave 3 is 0040–0043** (W3-A 0040,
- * W3-B 0041, W3-C 0042, W3-D 0043). Each wave raises this line, and every
- * parallel session in the wave hits it — expect a one-line merge conflict here
- * and take the highest value.
+ * ownership table. Wave 2 was 0038–0040; Wave 3 was 0040–0043; **Wave 4 is
+ * 0044–0047** (W4-A 0044, W4-B 0045, W4-C 0046, W4-D 0047). Each wave raises
+ * this line, and every parallel session in the wave hits it — expect a
+ * one-line merge conflict here and take the highest value.
  */
-const ALLOTMENT_CEILING = 43;
+const ALLOTMENT_CEILING = 47;
 
 const MIGRATIONS = env.TEST_MIGRATIONS;
 

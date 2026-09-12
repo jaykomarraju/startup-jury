@@ -112,7 +112,11 @@ ON CONFLICT (id) DO NOTHING;
 
 -- ── §8 Q1: retire the per-deck model ────────────────────────────────────────
 
--- The ₹500/deck "Base rate" row IS the per-deck rate. `price_amounts` cascades.
+-- The ₹500/deck "Base rate" row IS the per-deck rate. Its amounts are deleted
+-- explicitly rather than left to `ON DELETE CASCADE`: whether D1 enforces
+-- foreign keys is not something a migration should have to assume, and four
+-- orphaned rows would be four prices belonging to a plan that does not exist.
+DELETE FROM price_amounts WHERE plan_id IN (SELECT id FROM price_plans WHERE code = 'base_rate');
 DELETE FROM price_plans WHERE code = 'base_rate';
 
 -- The derived "₹X per deck" column.
