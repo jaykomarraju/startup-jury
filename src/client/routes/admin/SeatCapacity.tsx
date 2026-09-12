@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { AlertTriangle, Armchair, Building2, CircleCheck, Info, RotateCcw } from "lucide-react";
 import { Card, Button } from "../../components";
@@ -183,13 +183,22 @@ export function SeatCapacitySection() {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
+  /**
+   * Set on the first edit, cleared when the draft is seeded or saved. React's
+   * StrictMode double-invokes the mount effect, and on a loaded machine the
+   * second response can land AFTER the admin's first keystroke — reseeding the
+   * draft then would silently discard it and leave Save disabled. See the same
+   * guard in `RequiredDocuments.tsx`; a real e2e run caught it there.
+   */
+  const touched = useRef(false);
+
   const load = useCallback(async (reset: boolean) => {
     try {
       const r = await fetch("/api/signup-config/seats");
       if (!r.ok) throw new Error(String(r.status));
       const next = (await r.json()) as SeatPayload;
       setPayload(next);
-      if (reset) setDraft(seatDraftOf(next.rows));
+      if (reset && !touched.current) setDraft(seatDraftOf(next.rows));
       setLoadError(false);
     } catch {
       setLoadError(true);
@@ -222,6 +231,7 @@ export function SeatCapacitySection() {
   }, [draft, payload]);
 
   const setRow = (cohortId: string, patch: Partial<SeatDraft>) => {
+    touched.current = true;
     setDraft((d) => d.map((x) => (x.cohortId === cohortId ? { ...x, ...patch } : x)));
     setError(null);
     setNote(null);
@@ -239,6 +249,7 @@ export function SeatCapacitySection() {
           filled: intOrZero(d.filled),
         })),
       })) as unknown as SeatPayload & { saved: number };
+      touched.current = false;
       setPayload({ rows: r.rows, seatless: r.seatless });
       setDraft(seatDraftOf(r.rows));
       setNote(
@@ -260,6 +271,9 @@ export function SeatCapacitySection() {
       setNote(null);
       try {
         const r = await send("POST", `/api/signup-config/signups/${signupId}/seat`);
+        // The allocation changed `seats_filled` server-side, so the table must
+        // re-seed even though the admin may have touched it.
+        touched.current = false;
         await load(true);
         setNote(
           `Seat allocated to ${startup} · founder access provisioned.` +
@@ -472,13 +486,16 @@ export function FundDeploymentSection() {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
+  /** Same late-response guard as the two sections above. */
+  const touched = useRef(false);
+
   const load = useCallback(async () => {
     try {
       const r = await fetch("/api/signup-config/fund");
       if (!r.ok) throw new Error(String(r.status));
       const next = (await r.json()) as FundPayload;
       setPayload({ rows: next.rows });
-      setDraft(fundDraftOf(next.rows));
+      if (!touched.current) setDraft(fundDraftOf(next.rows));
       setLoadError(false);
     } catch {
       setLoadError(true);
@@ -546,6 +563,7 @@ export function FundDeploymentSection() {
   }, [draft, payload]);
 
   const setRow = (programId: string, patch: Partial<FundDraft>) => {
+    touched.current = true;
     setDraft((d) => d.map((x) => (x.programId === programId ? { ...x, ...patch } : x)));
     setError(null);
     setNote(null);
@@ -564,6 +582,7 @@ export function FundDeploymentSection() {
           unutilised: crOrNull(d.unutilised),
         })),
       })) as unknown as FundPayload & { saved: number };
+      touched.current = false;
       setPayload({ rows: r.rows });
       setDraft(fundDraftOf(r.rows));
       setNote(

@@ -105,15 +105,27 @@ test("a document walks the lifecycle one step at a time, and the skip is refused
   const set = page.getByTestId("signup-set-su_inc_deck_medixir");
   await expect(set).toBeVisible();
 
-  // The item is picked by its BADGE rather than by name: `verified` is terminal
-  // by design, so this walk cannot restore what it moved, and a second pass
-  // over the same database would find the named item already finished. Picking
-  // whatever is still `Not requested` — and skipping when nothing is — keeps
-  // the spec honest on a re-run instead of failing on §2.3's stale-seed trap.
-  const pending = set.locator("li").filter({ has: page.getByTestId("doc-badge-not_requested") });
-  const count = await pending.count();
-  test.skip(count === 0, "every document on this sign-up has already been requested");
-  const item = pending.first();
+  // Which row to walk is chosen by its badge, but the row is then PINNED BY
+  // NAME. `verified` is terminal by design, so this walk cannot restore what it
+  // moves and a second pass over the same database would find a named item
+  // already finished — hence the dynamic choice. But a locator defined by the
+  // badge is a locator defined by the very thing each click changes: the first
+  // `Request` flips `not_requested` to `awaiting`, the filter stops matching,
+  // and the row silently becomes a different row. The name never changes.
+  //
+  // 0034's back-fill leaves exactly the OPTIONAL items at `not_requested`, so
+  // those are the candidates.
+  const OPTIONAL = ["Bank account details", "GST / tax registration"];
+  let name: string | null = null;
+  for (const candidate of OPTIONAL) {
+    const row = set.locator("li").filter({ hasText: candidate }).first();
+    if ((await row.getByTestId("doc-badge-not_requested").count()) > 0) {
+      name = candidate;
+      break;
+    }
+  }
+  test.skip(name === null, "every optional document on this sign-up has already been requested");
+  const item = set.locator("li").filter({ hasText: name! }).first();
 
   // not_requested offers Request and nothing else — no skip is on offer.
   await expect(item.getByRole("button")).toHaveText(["Request"]);
@@ -224,11 +236,21 @@ test("fund deployment draws the third figure and reconciles, then warns when it 
   );
 });
 
-test("each edition gets only its own fourth Sign-up section", async ({ page }) => {
-  test.setTimeout(120_000);
-  await openSection(page, INC_ADMIN, "suseat", "Seat capacity");
-  await expect(page.getByRole("heading", { level: 2, name: "Fund Deployment" })).toHaveCount(0);
+// One test per edition, NOT one test that signs in twice: a second `login()` on
+// an already-authenticated page navigates to /login, gets redirected straight
+// back into /app, and waits forever for an email field that never renders.
+// `admin-console.spec.ts` splits its own edition-swap check for the same reason.
+const EDITIONS = [
+  { edition: "incubator", email: INC_ADMIN, section: "suseat", present: "Seat capacity", absent: "Fund Deployment" },
+  { edition: "vc", email: VC_ADMIN, section: "sufund", present: "Fund Deployment", absent: "Seat capacity" },
+] as const;
 
-  await openSection(page, VC_ADMIN, "sufund", "Fund Deployment");
-  await expect(page.getByRole("heading", { level: 2, name: "Seat capacity" })).toHaveCount(0);
-});
+for (const e of EDITIONS) {
+  test(`the ${e.edition} console's fourth Sign-up section is ${e.present}, not ${e.absent}`, async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await openSection(page, e.email, e.section, e.present);
+    await expect(page.getByRole("heading", { level: 2, name: e.absent })).toHaveCount(0);
+  });
+}

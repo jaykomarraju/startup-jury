@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { FileCheck, FileText, Folders, Info, Plus, Trash2 } from "lucide-react";
 import { Card, Button } from "../../components";
@@ -210,14 +210,26 @@ export function RequiredDocumentsSection() {
     return { programId: programId || null, cohortId: cohortId || null };
   }, [scopeKey]);
 
+  /**
+   * True once the admin has edited the draft, cleared when the draft is seeded
+   * or saved. It is what stops a SLOW FETCH from eating an edit: React's
+   * StrictMode double-invokes the mount effect, and on a loaded machine the
+   * second response can land after the first click — seeding the draft again
+   * would silently discard what was just typed, and the console's Save button
+   * would go back to "No checklist changes to save". A real e2e run caught
+   * exactly that.
+   */
+  const touched = useRef(false);
+
   const load = useCallback(
     async (programId: string | null, cohortId: string | null, reset: boolean) => {
       try {
         const next = await fetchPayload(programId, cohortId);
         setPayload(next);
-        // Never blanket-overwrite the draft: a refresh after a lifecycle action
-        // must not discard checklist edits the admin has not saved yet.
-        if (reset) setDraft(draftOf(next.items));
+        // Never overwrite a draft the admin is working in — not on a refresh
+        // after a lifecycle action (reset=false), and not on a late mount
+        // response either.
+        if (reset && !touched.current) setDraft(draftOf(next.items));
         setLoadError(false);
       } catch {
         setLoadError(true);
@@ -227,6 +239,9 @@ export function RequiredDocumentsSection() {
   );
 
   useEffect(() => {
+    // Changing scope deliberately abandons the draft: it belonged to the
+    // programme being navigated away from.
+    touched.current = false;
     void load(scope.programId, scope.cohortId, true);
   }, [load, scope.programId, scope.cohortId]);
 
@@ -250,6 +265,7 @@ export function RequiredDocumentsSection() {
   );
 
   const setItem = (key: string, patch: Partial<DraftItem>) => {
+    touched.current = true;
     setDraft((d) => d.map((i) => (i.key === key ? { ...i, ...patch } : i)));
     setError(null);
     setNote(null);
@@ -280,6 +296,7 @@ export function RequiredDocumentsSection() {
       setPayload((p) =>
         p ? { ...p, items: r.items, signups: r.signups, inherited: r.inherited } : p,
       );
+      touched.current = false;
       setDraft(draftOf(r.items));
       setNote(
         applyTo === "all" && r.resynced > 0
@@ -492,6 +509,7 @@ export function RequiredDocumentsSection() {
                   aria-label={`Remove ${item.name || "new document"}`}
                   className="text-fg-muted hover:text-signal-flagged"
                   onClick={() => {
+                    touched.current = true;
                     setDraft((d) => d.filter((i) => i.key !== item.key));
                     setError(null);
                     setNote(null);
@@ -507,6 +525,7 @@ export function RequiredDocumentsSection() {
           <Button
             size="sm"
             onClick={() => {
+              touched.current = true;
               setDraft((d) => [
                 ...d,
                 { id: null, name: "", note: "", mandatory: true, key: newKey() },
