@@ -116,6 +116,12 @@ export interface TaxBreakdown {
   ratePct: number;
   /** True when the stated price already contained the tax. */
   inclusive: boolean;
+  /**
+   * False when GST does not apply to this price at all — every non-base
+   * currency. `src/shared/priceBook.ts` carries the same flag by the same name
+   * for the same reason; see `priceBreakdown`.
+   */
+  taxed: boolean;
 }
 
 /**
@@ -138,6 +144,7 @@ export function taxOnExclusive(subtotalMinor: number, ratePct: number): TaxBreak
     totalMinor: subtotal + taxMinor,
     ratePct,
     inclusive: false,
+    taxed: true,
   };
 }
 
@@ -158,11 +165,50 @@ export function taxFromInclusive(totalMinor: number, ratePct: number): TaxBreakd
     totalMinor: total,
     ratePct,
     inclusive: true,
+    taxed: true,
   };
 }
 
-/** The breakdown for `amountMinor` under the org's tax settings. */
-export function priceBreakdown(amountMinor: number, tax: TaxSettings): TaxBreakdown {
+/** The currency GST applies to. Everything else is stated exclusive of local tax. */
+export const BASE_CURRENCY = "INR";
+
+/**
+ * The breakdown for `amountMinor` under the org's tax settings.
+ *
+ * **GST is the INR-billing tax.** The prototype states the rule once — "GST at
+ * 18% added at checkout for INR billing. International pricing shown exclusive
+ * of local taxes" — and `src/shared/priceBook.ts` (`taxBreakdown`) implements
+ * exactly that for the catalogue. This function is the billing side of the same
+ * rule, so it takes the price's `currency` and agrees with it: on INR the two
+ * produce identical minor units, and off INR both state the price untaxed.
+ *
+ * Wave 4 integration added the parameter. Before it, this function taxed
+ * whatever it was handed, so a USD plan was advertised tax-free by the
+ * catalogue and charged 18 % more at checkout, while the very card showing the
+ * GST line ALSO showed "customers are responsible for local VAT/GST". Nothing
+ * could reach it — `billing_subscriptions.currency` defaults to 'INR' and no
+ * route sets it otherwise — but W4-D's seven-currency catalogue exists to make
+ * that settable, so the divergence was armed rather than harmless.
+ *
+ * `currency` is optional and defaults to the base: an INR-only caller is
+ * unaffected, which is every caller that existed before.
+ */
+export function priceBreakdown(
+  amountMinor: number,
+  tax: TaxSettings,
+  currency: string = BASE_CURRENCY,
+): TaxBreakdown {
+  if (currency !== BASE_CURRENCY) {
+    const amount = Math.max(0, Math.trunc(amountMinor));
+    return {
+      subtotalMinor: amount,
+      taxMinor: 0,
+      totalMinor: amount,
+      ratePct: tax.ratePct,
+      inclusive: tax.inclusive,
+      taxed: false,
+    };
+  }
   return tax.inclusive
     ? taxFromInclusive(amountMinor, tax.ratePct)
     : taxOnExclusive(amountMinor, tax.ratePct);

@@ -160,7 +160,7 @@ function PlanOption({
   selected: boolean;
   onSelect: () => void;
 }) {
-  const money = priceBreakdown(multiplyMinor(plan.amountMinor, quantity), tax);
+  const money = priceBreakdown(multiplyMinor(plan.amountMinor, quantity), tax, plan.currency);
   return (
     <button
       type="button"
@@ -208,7 +208,7 @@ function GstBreakdown({
   tax: TaxSettings;
   quantity: number;
 }) {
-  const money = priceBreakdown(multiplyMinor(plan.amountMinor, quantity), tax);
+  const money = priceBreakdown(multiplyMinor(plan.amountMinor, quantity), tax, plan.currency);
   const line = (label: string, value: string, strong?: boolean) => (
     <div
       className={`flex items-center justify-between py-[3px] text-[11.5px] ${strong ? "border-t border-line pt-[6px] font-semibold text-fg" : "text-fg-2"}`}
@@ -220,7 +220,7 @@ function GstBreakdown({
   return (
     <div className="rounded-lg bg-bg px-3 py-2">
       {line("Subtotal", formatMinor(money.subtotalMinor, plan.currency))}
-      {line(`GST (${money.ratePct}%)`, formatMinor(money.taxMinor, plan.currency))}
+      {money.taxed && line(`GST (${money.ratePct}%)`, formatMinor(money.taxMinor, plan.currency))}
       {line("Total", formatMinor(money.totalMinor, plan.currency), true)}
       <p className="mt-1.5 text-[10.5px] text-fg-muted">
         GST-compliant invoice provided · suitable for input tax credit.

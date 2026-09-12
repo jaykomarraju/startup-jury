@@ -397,7 +397,7 @@ export async function issueMissingInvoices(env: Env, edition: Edition): Promise<
     const number = `INV-${year}-${String((seq?.n ?? 0) + 1).padStart(4, "0")}`;
     // The ledger's amount is the price that was charged; whether that price
     // already contained the tax is the org's `prices_include_gst` setting.
-    const breakdown = priceBreakdown(row.amount_minor, tax);
+    const breakdown = priceBreakdown(row.amount_minor, tax, row.currency);
 
     try {
       await env.DB.prepare(

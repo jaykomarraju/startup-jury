@@ -42,6 +42,7 @@ describe("GST at 18 %", () => {
       totalMinor: 2_360_000,
       ratePct: 18,
       inclusive: false,
+      taxed: true,
     });
   });
 
@@ -102,6 +103,7 @@ describe("GST extracted from an inclusive price", () => {
       totalMinor: 11_800,
       ratePct: 18,
       inclusive: true,
+      taxed: true,
     });
   });
 

@@ -260,7 +260,7 @@ billing.post("/purchase", async (c) => {
 
   const stated = multiplyMinor(plan.amountMinor, quantity);
   if (stated <= 0) return c.json({ error: "plan_not_purchasable" }, 400);
-  const money = priceBreakdown(stated, tax);
+  const money = priceBreakdown(stated, tax, plan.currency);
 
   const intent = await recordPaymentIntent(c.env, {
     edition,
