@@ -1788,8 +1788,13 @@ TEST
     sign-up that completes with no seat; authZ (a non-admin 403s on each verb).
   - Unit: utilisation arithmetic, and the fund-deployment percentages.
   - Client: the checklist's empty and populated states, and the four badges the prototype draws.
-  - If you add a router, add its probe to scripts/role-matrix.ts — a router that skips that list
-    stops being described by the harness that claims to cover it.
+  - You ARE adding a router (`signup-config.ts`), so add its probes to scripts/role-matrix.ts in
+    the SAME commit — a router that skips that list stops being described by the harness that
+    claims to cover it. Then run it as
+        ROLES_BASE=http://127.0.0.1:<your port> npm run roles
+    against a server you PROVED you own with `lsof`. It reads ROLES_BASE, defaults to :5173, and
+    **exits 0 even when it cannot reach anything** (§8 Q28) — Wave 4 integration was handed a
+    false "156 passed" that way. The real baseline is 631/631.
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
   Note `test/worker/migrations-w1b.test.ts` caps migration numbers at ALLOTMENT_CEILING; Wave 5
   raises it to 49. Both Wave 5 sessions hit that one line — expect a conflict, take the highest.
