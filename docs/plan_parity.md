@@ -857,6 +857,7 @@ One row per session. The integration session fills the wave row.
 | `W4-D` | **done** | **F0023, F0024, F0029, F0159** closed outright; **F0091, F0092, F0093, F0095, F0185** closed for the half this section owns, with the remainder named below; **F0043, F0089, F0094, F0158** are not this session's — see the notes | typecheck ✓ · lint ✓ · **1044 passed / 1 skipped** (985 + 60 new: 22 unit, 21 worker, 17 client) — measured under heavy sibling load (`uptime` 50–90 through the run), so at the default 5 s budget 140 tests across 29 files time out; at `--testTimeout=30000` exactly ONE fails, `crmSync.test.tsx`'s mapping-editor alert (`W3-D`'s file, §8 Q32), and it passes 19/19 alone · build ✓ · **e2e 144 (142 + 2 new) — NOT measurable on this machine, and Wave 4 integration must re-measure**: at load 40–130 through the night (four Wave 4 worktrees at once) 30 of the first 89 tests failed, every one of them on the 30 s per-test budget and none of them in `price-configuration.spec.ts`, and the dev server then began answering "Network connection lost"; `price-configuration.spec.ts` (2) and `admin-console.spec.ts` (19) were then run together on a freshly seeded server and came back **21 / 21 in 3.4 min**, the 16-section walk for all four admin roles included — which is the leg that proves this section renders, is reachable and no longer names an owner · **roles 605/605** ✓ (566 + this router's 3 probes × 13 users; live server on port 5174, ownership verified with `lsof`) · `parity:nav` 67 known gaps ✓ · `parity:tokens` 27/27, 0 gaps ✓ | **§8 Q1 is built as ruled: there is no per-deck pricing anywhere.** The `base_rate` plan, the derived "₹X per deck" column and the saving percentage are deleted from the seed, and `perDeckArtefacts()` (`src/shared/priceBook.ts`) makes publishing a catalogue whose copy re-introduces one a 400 — the ruling is executable, not a comment. The two ambiguities it left are §8 Q51 (pack ladder: **10/50/100 built**) and Q52 (enterprise vocabulary: **unit tiers built**); both are rows in `price_plans` / `price_groups`, so switching either is a migration and no file names a pack size or a tier. **Publish is atomic by shape**: `0033`'s tables are the draft, `pricing_versions` holds one complete `PriceBook` per row, and a partial unique index makes two live versions impossible — a reader can never see half a price list. Nothing is deleted, so `POST /rollback` republishes the predecessor. Three things this session ADDED beyond its two named files, each declared in §9: `src/shared/priceBook.ts` (new, unowned — the catalogue's shape and its pure logic, needed by client, Worker and unit tests alike), three probes in `scripts/role-matrix.ts` (§9's standing request to every session that adds a router), and two restated assertions in `test/worker/schema-w1b.test.ts` that pinned the pre-ruling seed. Not closed: **F0043 / F0158** (both sections read-only for every role) is a `nav.ts` decision under §8 Q16, not a pricing one — but the live catalogue is already readable by every internal role, so only the nav entry is missing; **F0094** is §8 Q53 (is this a platform-owner surface?); **F0089**'s other half is the §9 request to point Buy credits at the published catalogue, with the `W6-B` prompt written in §10. |
 | **Wave 4 integration** | **done** | — (integration closes no findings; it fixed one cross-session defect, below) | typecheck ✓ · lint ✓ · **1192 passed / 1 skipped, 0 failed** ✓ (serial) · build ✓ · **roles 631/631** ✓ (was 566; the new `billing.*` and `pricing.*` probes are covered) · `parity:tokens` 0 gaps ✓ · `parity:nav` 67 known gaps ✓ · **e2e NOT cleanly obtained — see below** | Merged `W4-A`, `W4-B`, `W4-C`, `W4-D` in that order. Conflicts were narrow and all genuine unions: `registry.tsx` three times (each session claiming its own slot — **fourth wave running**, the instruction is still the wrong mechanism), the `ALLOTMENT_CEILING` comment twice (whitespace only; the value agreed at 47), and `plan_parity.md` throughout. **Three §8 numbering collisions:** all four sessions started numbering at Q41, so `W4-B`'s two became Q44–Q45, `W4-C`'s five Q46–Q50 and `W4-D`'s four Q51–Q54, with each session's own back-references repointed. `Wx-PWD` and `W5-B` both claimed migration 0048; `W5-B` keeps it (it needs the tables), `Wx-PWD` moved to 0050 and `W5-A` reserves 0049. **The one real defect was at the money seam.** `W4-C`'s `src/shared/plans.ts` and `W4-D`'s `src/shared/priceBook.ts` each implement GST; being separate files they merged with no conflict, and each session's own gate was green. They agreed on INR and disagreed on every other currency — `priceBreakdown` took no currency and taxed whatever it was handed, so a USD plan was published tax-free and charged 18 % more at checkout, and `CreditsBilling.tsx` rendered a "GST (18%)" line directly above "customers are responsible for local VAT/GST" for the same price. Latent only because `billing_subscriptions.currency` defaults to 'INR' and no route sets it — which is precisely what `W4-D`'s seven-currency catalogue exists to change. Fixed by making `priceBreakdown` currency-aware (defaulting to the base, so every prior caller is unchanged) and adding `taxed` to `TaxBreakdown`; `test/unit/pricing-seam.test.ts` now pins the two modules across 7 currencies × 9 amounts × both tax modes. The residual duplication is **§8 Q55**. **e2e could not be trusted on this machine and is recorded as NOT obtained, not as green.** The box never stayed quiet for the ~11 min the suite needs: a run that began at load 14 was clean for its first 119 tests, then load reached 105 and it finished 132 passed / 25 failed / 2 not run in 1.2 h. 37 of the errors were `Network connection lost` — the dev server dying, not the app. `rubric-anchors` (Wave 2, untouched here) failed more often than any Wave 4 spec. Every Wave 4 spec passes in isolation; the two that looked real were disproved directly — `PUT /api/permissions` returns 200 and reads back, and the grid cell toggles true→false in a real browser. This is §8 Q17 / Q28 / Q32 getting worse as the suite grows, not a Wave 4 regression. |
 | `W5-A` | **done** | **F0009, F0010, F0033, F0048, F0049, F0050, F0121** closed (7); **F0011** and **F0034**'s seatless half closed for the model, the derivation, the `Allocate seat` action and a surface that performs it (the console's seatless queue) — the red *Seatless* / green *Seat allocated* card **on the pipeline row** is `StagePage.tsx`'s and is a §9 request to `W6-A`; **F0047** PARTIAL — the write is no longer dead and the third column now exists, but `loadFundTotals` is in a file this session does not own (§9); **F0090** closed for the MODEL it asks for (`signup_documents` is the one four-state document table with a bulk verify, exactly as F0090's own FIX asks, "sharing the same table as the incubator's signup_documents so one document model serves both editions") and NOT for the DD drawer on the `legaldd` / `investmentdd` screens, which is `StagePage.tsx`'s and Wave 9's; **F0111, F0115** not this session's — see §8 Q59, they are `W6-C`'s | typecheck ✓ · lint ✓ · **1321 passed / 1 skipped, 0 failed** ✓ (1192 + 129: **31 unit** · **63 worker** · **35 client**) — measured with `--testTimeout=30000`, assertions untouched; at the 5 s default this box fails 30+ tests across 20+ files it has nothing to do with. That is **§8 Q32's mechanism, found**: see the §9 row, it is one line per vitest config · build ✓ · **roles 723 / 723** ✓ against a server proved with `lsof` to be this worktree's (was 631; +92 is exactly the ten new `signupcfg.*` probes — 4 edition-agnostic × 13 sessions, 4 incubator-only × 7, 2 VC-only × 6) · `parity:nav` 67 known gaps ✓ · `parity:tokens` 27/27, 0 gaps ✓ · **e2e E2E_RESULT** | Three sections, one router (`src/server/routes/signup-config.ts`), one shared pure module (`src/shared/signupConfig.ts` — the lifecycle table, the badges, the seat and fund arithmetic, following `W3-D`'s `src/shared/crm.ts` precedent; recorded because the ownership list named neither). **The document lifecycle is a closed state machine.** `LEGAL_DOCUMENT_TRANSITIONS` has five edges: the three forward steps, plus `awaiting → not_requested` (stand an item down) and `submitted → awaiting` (send a wrong file back). Every skip, every no-op and every move out of `verified` is a `400 illegal_transition` naming both ends, and the worker suite asserts all 16 from/to pairs and re-reads the row after each refusal — a 400 that still wrote is the failure mode the plan names. `verified` being terminal is a DECISION, not an omission: §8 Q56. **`deck_onboarding.documents_status` stops being hand-set.** It is re-derived from the item rows on every change (`rollUpDocumentsStatus`), which is F0050's own FIX — the Sign up Pipeline column keeps rendering while the truth moves to `signup_documents`. `StagePage.tsx`'s editable `<select>` over it is now wrong and is a §9 request. **Seats never block sign-up.** `POST …/complete` takes a free cohort seat if one exists and raises `seatless` if not; it returns 200 either way, and a test asserts the 200 specifically. Allocating past capacity is allowed too — refusing would block a startup that has already signed — and `seatNote` then reports the over-capacity row in the prototype's own words. `cohorts.seats_filled` stays hand-writable (§8 Q60) because an incubator with off-platform history has a count no allocation log here can reconstruct. **Migration 0048** adds `programs.fund_unutilised`: the prototype stores three figures and the ±0.5 Cr reconciliation had no second operand without it (F0047). Allotted reads as `fund_allocated`, not `fund_size`, so the section and the Capital Deployment report agree — §8 Q57. The reconciliation is **advisory**: it warns, names each offending programme and its delta, and the save succeeds, because an admin with one true figure and one still being chased must be able to store the true one. **Two things a reviewer should check rather than assume.** (1) The router is `requireTask("adminconsole", "admin")` on `"*"`, and a test revokes that cell and asserts the API closes with the console (§8 Q16) — the shape `W3-D` missed. (2) `suseat` / `sufund` 403 the other edition with `{error:"wrong_edition"}`: the section is not in that console's rail, so serving it would be a capability the UI never offers. **One self-inflicted flake, found and fixed here:** the first client tests gated on the section `<h2>`, which the loading branch also renders, so they passed fast and failed under load; they now gate on a populated element. That is worth repeating to Wave 6 and is in the `W6-A` prompt. **The `seatless` flag only ever goes up.** A capacity edit re-derives it and can RAISE it (narrowing a cohort strands a startup that had a seat coming) but never lowers it: clearing it is `POST …/seat`'s job alone, because the prototype's Allocate seat provisions founder access and that must not happen because an admin typed a bigger number. Lowering it on a widen — which this session wrote first, with a test that asserted it — left the record neither flagged nor seated: gone from the allocation queue while holding no seat, which is exactly the invisibility F0011 exists to end. Both the code and that test were corrected, and a third test now pins the invariant directly (no `completed`/`onboarded` sign-up may have `seatless = 0` and `seat_allocated_at IS NULL`). Flagged per §4 because the weakened assertion was this session's own. **Three stated deviations from the drawn prototype, all of them deliberate.** (1) The in-card *Save seat settings* / *Save deployment* buttons are the console's title-bar **Save changes** instead — `registry.tsx`'s own contract is that a section owning unsaved state wires that button via `useAdminSave`, and every built section follows it. (2) **Add program / cohort** and **Add program / fund** are NOT reproduced. The seat table lists every active cohort (each one HAS a capacity, and a table showing only the configured ones would hide the cohort most in need of configuring) and the fund table every active VC programme, so an in-card Add would be a second creation surface for objects Set up → Programs already creates through `POST /api/programs/:id/cohorts`. (3) **Remove** clears a row's figures rather than deleting the row: deleting a programme or a cohort from a deployment or seat table would destroy an object half the schema references, which is not what a figures table should do. Reopen any of the three if the client disagrees — each is a small change, not a rebuild. **The e2e leg earned its keep — it found three defects the other three levels could not.** (1) The spec located the lifecycle row by its BADGE, which is the one thing each click changes: `Request` flips `not_requested` to `awaiting`, the filter stops matching, and the row silently becomes a different row. Now chosen by badge but PINNED BY NAME. (2) The edition-swap test signed in as a second user on an already-authenticated page, so `/login` redirected back into `/app` and it waited 120 s for a field that never renders; split into one test per edition, as `admin-console.spec.ts` already does. (3) **The real one:** a click landed, the draft changed, and the console's Save went back to *No checklist changes to save* — the section's mount fetch resolving AFTER the first edit and reseeding over it. `main.tsx` wraps the app in StrictMode, so that effect genuinely runs twice in a browser. All three sections now hold a `touched` ref and never reseed a draft the admin is working in; the paths that MUST reseed (a scope change, an allocation that moved `seats_filled` server-side) clear it explicitly. **No unit test is claimed for (3)** — the client harness would not reproduce the double mount, so rather than assert a mechanism that had not been proven the test written for it was deleted and the fix verified where the failure lived: the spec now passes **8/8 three times consecutively**, having failed reproducibly before. Flagged here rather than dressed up. **The one thing Wave 5 integration must fix and neither session's gate can catch:** `test/client/adminConsole.test.tsx`'s drift-proof "some section is still unbuilt" assertion — Wave 5 is the wave that runs out of placeholders. §9, first row. **One stale sentence to ignore:** the Wave 4 integration row above says "`W5-B` keeps [0048] … and `W5-A` reserves 0049". Three later statements say the opposite — the `Wx-PWD` prompt ("`W5-A` holds 0048 and `W5-B` holds 0049"), the `W5-B` prompt ("you own 0049") and this session's own prompt — so **0048 is `W5-A`'s and 0049 is `W5-B`'s**, which is what both branches did. No collision; just correct that sentence when Wave 5 integrates. |
+| `W5-B` | **done** | **F0007, F0008, F0025, F0032, F0035, F0045, F0046** closed (all 7 — 5 P0, 2 P1). F0025 is closed on the **model, the API and the staff side**; its founder-portal mirror is a screen this session does not own (§9). | typecheck ✓ · lint ✓ · **1320 passed / 1 skipped** (was 1193; +128) ✓ · build ✓ · **e2e 155 tests** (148 inherited + 7 new in `e2e/agreements.spec.ts`) — **7/7 of mine green**; the one contended full run scored 131/155, and **all 24 failures came back green on re-run alone** (`roles`+`team-roles`+`programs`+`parity` 24/26 then the 2 stragglers, the other seven specs 37/37, `parity.spec.ts` 11/12 then 3/3). **No test failed twice, and no parity role failed twice** — see Notes · **roles 735/735** against a server proved with `lsof` on port 5252 · `parity:nav` 208/275 ok (67 known gaps) · `parity:tokens` 27/27 ok | **The prompt's premise was wrong and that is the headline.** It said "none of these tables exist. You WILL need `0049`" — but `W1-B` had already built every one of them in `0034` / `0035`, seeded from `SU_TPL` and `s-susign.html`, including the four signing-method columns. The findings say `REPO NONE` because the **audit predates Wave 1** (§9's last row asks the plan to stop repeating that). `0049` therefore adds only what was genuinely missing: `signups.authorised_signatory_role` (the prototype's picker assigns a ROLE or a person; 0034 modelled only the person), `signups.founder_signed_at` (**the lock** — the one field with an explicit immutability rule in both specs, and nothing recorded it), `agreement_templates.updated_at`, and **`esign_outbox`** (§1.3's recording stub, shaped exactly like `email_outbox` / `crm_sync_log`). **New shared module `src/shared/agreements.ts`** (§9, declared) — `substituteMergeFields`, `countersignRefusal`, `canEditSigningMethod` and the per-edition wording all live there, so screen and server cannot drift. **One router, two gates**: the library + signatory pool take `requireTask("adminconsole", "admin")`; the sign-up workspace takes the staff who run sign-up, because `suAssignCard` says "no admin console needed" (§8 Q64). Eight probes added to `scripts/role-matrix.ts` in the same commit. **Two defects my own tests found and fixed**: an upload re-seeded the editor draft and silently discarded the template's unsaved name (regression test added); and the spec's delete assertion counted the success message as a list row. **The suite's non-determinism cost this session ~90 minutes and it is getting worse (§8 Q32).** `npm test` reported **59 failures** at load ~52 — 55 of them the literal string `Test timed out`, none in my three new files, file durations 10–100× normal — and **1320/1320 with `--maxWorkers=3` eight minutes later, in 84 s instead of 426 s**. The full e2e run failed 24 with **58 `Network connection lost`** errors from the local Worker runtime; re-run alone, `roles`+`team-roles`+`programs` (10 failures) and `rubric-anchors`+`resubmit`+`question-bank`+`price-configuration`+`permissions`+`upload`+`coverage` (37 tests) were **all green**. A sibling worktree ran its own suites throughout; load peaked at **112**. |
 
 ---
 
@@ -927,6 +928,10 @@ best reading and note it.
 | Q58 | `W5-A` | **Is "Applies to" (`All startups entering sign-up` / `New sign-ups only`) a stored setting or a choice made at save time?** It is drawn as a select in `s-sudocs.html`'s scope card, which reads like configuration, but nothing in the prototype ever reads it back. | **A choice made at save time**, defaulting to the prototype's first option. `PUT /documents` takes it per request: `"new"` leaves open sign-ups untouched, `"all"` re-syncs them — adding items they never inherited and dropping only ones still at `not_requested`, because withdrawing a document already requested from a founder would silently un-ask something the founder can see. Storing it would imply a standing rule that re-syncs on some later trigger, and there is no such trigger anywhere in the prototype. |
 | Q59 | `W5-A` | **Q50's answer assigns F0111's purchased-seat model to `W5-A`; this session's prompt excludes it. Who actually owns it?** The two "seats" are `cohorts.seat_capacity` (a batch's places for startups, this session's) and a per-user purchased entitlement (`users.plan_tier`, seat caps, the buy-seats flow). | **`W6-C`**, and Q50's closing sentence is simply stale. §6's Wave 6 entry already gives `W6-C` "per-member plan toggles, seat-capacity bar … and the buy-seats → payment → receipt sub-flow with its seat-cap increment" plus the seat routes in `programs.ts` — which is F0111 and F0115 in as many words. This session touched neither `billing_subscriptions.seats` nor `src/shared/plans.ts`, and left F0111 / F0115 open in its worklist. Reconcile Q50's last line when Wave 5 integrates. |
 | Q60 | `W5-A` | **`cohorts.seats_filled` is both hand-writable and maintained by allocation. Which is authoritative?** `PUT /seats` lets an admin type a filled count (the prototype's own input), while `POST …/complete` and `POST …/seat` each increment it. | **Hand-writable, and treated as a counter the product maintains from here on.** An incubator that has been running cohorts off-platform has a real filled count no allocation history in this database can reconstruct, which is why the prototype makes the column an input — so the first save is a migration of that truth, and every allocation afterwards adds to it. The risk is a drift no test can catch: nothing reconciles `seats_filled` against the count of seated sign-ups. A derived count (`COUNT(*) FROM signups WHERE seat_allocated_at IS NOT NULL`) would be self-correcting but would read every off-platform cohort as empty. If the answer is "derived", the honest shape is a stored figure PLUS a reconciliation line beside the table, like Fund Deployment's. |
+| Q61 | `W5-B` (F0025) | **The signing method's editable window does not translate cleanly.** The prototype's guard is `!d.founderSigned && ['shortlisted','initiated'].includes(d.signup)` (`_scripts.js:2262`), but `shortlisted` is a **deck** status in this application, not a sign-up one — a shortlisted deck has no `signups` row at all, and `0034` creates the row at `initiated`. So one of the prototype's two editable states cannot exist here. | Collapsed to **editable iff `status = 'initiated'` AND `founder_signed_at IS NULL`**. `progress` already implies a founder signature (the prototype's own `suwFSubmit` sets `founderSigned` and moves initiated → progress in one step), so it is correctly outside the set. Stated once, in `canEditSigningMethod`, and asserted both ways. If `W6-A` gives a shortlisted deck a `signups` row before sign-up is initiated, this predicate is the line to revisit. |
+| Q62 | `W5-B` | **Two things were built that the prototype does not draw. Both are deliberate; please confirm both stand.** (a) **Delete an unused draft template.** `suAdd()` creates a row on the click, before a name is typed, and the prototype offers no way to remove the mistake — so a misclick leaves a permanent "New agreement" in the library. (b) **"Add individual" reveals the staff roster** rather than opening a free-text name form (the prototype's button opens nothing at all). | (a) Delete is allowed **only** for a `draft` that no `agreements` row references — anything that has produced an agreement can still only be retired, which is what "retired stays for audit" protects. It is also what lets `e2e/agreements.spec.ts` restore the database it found. (b) A signatory signs *as themselves*, so they must be a user of the workspace; a typed name with no account behind it could never be matched to a caller in `countersignRefusal`. The copy says to add the person in Team & roles first. |
+| Q63 | `W5-B` | **The `wet_ink` default disagrees between the schema and the prototype.** `migrations/0034` declares `wet_ink INTEGER NOT NULL DEFAULT 0`; `suMethodCard` defaults the method object to `{inApp:true, wetInk:true}`. | The **prototype wins** (§1.1 — it is the visual contract) and nothing depends on the column default: `PUT …/method` always writes all four fields explicitly, and a record that has never been configured is reported as `configured:false` and rendered from `DEFAULT_SIGNING_METHOD`. The column default is therefore unreachable rather than wrong, and `0049` does not change it. Also added, which the prototype's two toggles allow and should not: **both fallbacks off is refused** (400 `no_signing_channel`) — a founder shown a method with no channel cannot sign at all. |
+| Q64 | `W5-B` (F0008, F0025) | **Who may set the signing method and assign the countersignatory?** The prototype's sign-up workspace draws no role gate, and its assign card says the opposite of a gate — "assign here — no admin console needed". | Split into two gates and stated in `src/server/esign/routes.ts`. The **library and the signatory pool** are console configuration → `requireTask("adminconsole", "admin")`, so revoking the `adminconsole` cell closes screen and API together (§8 Q16's property, asserted). The **workspace** (method, assignment, countersign) is open to the staff who run sign-up — incubator `program_manager` / `program_associate`, VC `partner` / `associate` / `analyst`, `admin` in both, superuser by bypass; `jury` and `ic_member` never. The **founder** reads their own record's method (that is the data behind the prototype's "How you'll sign" mirror) and may record their own signature, nothing else. Countersign is stricter again: assigned **and** the caller **and** still enabled. |
 
 ---
 
@@ -1082,6 +1087,14 @@ session places it.
 | `W5-A` | `src/server/routes/signups.ts` + `SignupWorkspace.tsx` *(new, `W6-A`'s)* | **Do not model documents a second time.** Spec §8.3 says the Documents tab and the Founder tab share ONE document set, and that set is `signup_documents` with its lifecycle already enforced: `PATCH /api/signup-config/signups/:id/documents/:docId` for one move, `POST …/verify-all` for the bulk action, `{waived, waivedReason}` on the same PATCH for waive-with-reason. The founder-facing half needs only the two moves this router has no surface for — a founder attaching a file (`awaiting → submitted`, with `file_url`) — and `W6-A` may either call the PATCH or, if the founder path must stay tokenized and unauthenticated like `routes/resubmit.ts`, add that one verb there and reuse `canTransitionDocument` from `src/shared/signupConfig.ts`. What it must not do is add a second status column. | `W6-A` |
 | `W5-A` | `src/client/api.ts` *(unowned)* | **No edit needed — recorded so the third session does not have to rediscover it.** The three sections fetch `/api/signup-config/*` with bare `fetch` rather than through `api.ts`, exactly as `CrmSync.tsx` does and for the same reason: `api.ts` is shared by every wave and no Wave 5 session owns it. That is now **four** console sections with their own inline clients (`crm`, `billing`, `pricing`, `signup-config`). A single consolidation pass that lifts them all into `api.ts` is worth one session in Wave 10 or 12; doing it piecemeal per wave is how it stays undone. | Wave 10/12 |
 | `W5-A` | `migrations/0048_fund_unutilised.sql` — **a note for whoever deploys, not an edit** | It is a plain `ALTER TABLE programs ADD COLUMN fund_unutilised REAL` plus one back-fill, so it is safe on real data — unlike `0038` (§9 above). The back-fill only writes rows where `fund_allocated` and `capital_deployed` are both set and `fund_unutilised` is still NULL, so re-running it is a no-op and a production programme with partial figures keeps its blanks. Production D1 was 22 migrations behind at Wave 4 integration; migrate before deploying, as that note says. | Wave 5 integration / Wave 13 |
+| `W5-B` | `src/shared/agreements.ts` — **a NEW shared module, declared here per §2.2** | The vocabulary and the pure rules both halves need: the five providers and two signature types with their labels, the template lifecycle and stage enums, the flow actions and per-edition actors, `substituteMergeFields` and its validation, `canEditSigningMethod`, `countersignRefusal`, `templateSummary`, `nextVersionLabel`, and the per-edition wording (programmes vs funds, organisation vs firm). `src/shared/crm.ts`, `audit.ts` and `branding.ts` are the precedent. Nothing else imports it yet; `W6-A` will. | placed by `W5-B` |
+| `W5-B` | `src/client/routes/FounderPortal.tsx` *(`W6-A`'s)* | **The founder-side "How you'll sign" mirror has its API and no screen.** `GET /api/esign/signups/:id/method` is readable by the founder **for their own record only** (founder isolation checked in `resolveSignup`) and returns `providerLabel`, `sigTypeLabel`, both fallback flags and `lockReason` — everything `suwFounderMethod` (`_scripts.js:2280-2284`) renders: "Sign with &lt;provider&gt; · &lt;type&gt;", the `DSC / Aadhaar / QES` chip on a certificate signature (`CERTIFICATE_CHIP`), and "Alternatives your team enabled: …". `POST …/founder-signature` is the button under it. F0025 is closed on the model, the API and the staff side; **the founder mirror is the half this session could not place.** | not placed |
+| `W5-B` | the staff sign-up workspace *(`W6-A`'s `SignupWorkspace.tsx`)* | **The method card, the assign card and the Countersign button are API-complete and have no screen either.** In prototype terms: `suMethodCard` (editable card + the locked variant), `suAssignCard` (the `optgroup` picker, "By role" / "Named individuals", from `GET /api/esign/signatories`'s `options`), and the gate at `_scripts.js:2038` — the Countersign button is replaced by "Assign an authorised signatory to countersign." until one is assigned. The server already refuses it (409 `no_signatory`); the screen needs to stop offering it. `POST …/agreement` fills the blanks, `…/countersign` completes. | not placed |
+| `W5-B` | `src/client/api.ts` *(unowned — the third session to file this row)* | Both sections `fetch` directly rather than through the shared client, because §2.2 gives this session none of it. `CrmSync.tsx` filed the same row in Wave 3 and the branding sections in Wave 4. Worth one consolidation pass rather than a fourth copy of `async function send(...)`. | not placed |
+| `W5-B` | `test/client/setup.ts` *(unowned — **`W4-B` asked for this and it is now costing every wave**)* | **Two lines would retire a recurring class of false red.** `configure({ asyncUtilTimeout: 5_000 })` plus a raised `testTimeout`. Every client test that waits on a mocked fetch is exposed to testing-library's 1 s default and vitest's 5 s budget, and on a box running four worktrees' suites at once both blow: this session's `agreements.test.tsx` failed once at load 64 and passed alone at the same load a minute later, which is exactly what `W4-B` reported for `branding.test.tsx`. Done in my own file again, for the same reason and with the same comment — the second session to pay for it locally. | not placed |
+| `W5-B` | `playwright.config.ts` *(unowned — a recommendation, with the measurement)* | **Playwright's 5 s default `expect` timeout is the e2e suite's real flake, not the tests.** At load ~60 with a sibling session's suite live, `e2e/agreements.spec.ts` test 1 went from **12.5 s to 1.1 min** and test 2 timed out at 180 s *waiting for the login page's email field to render* — nothing any assertion claims ever disagreed (§8 Q28 again, from the other side). Mitigated inside my own spec with a named `NAV = { timeout: 30_000 }` on the navigation-gated assertions only, leaving semantic assertions at the default so a real failure still fails fast. A config-level `expect: { timeout: 15_000 }` would do it once for 90+ specs. Worth pairing with Q32's dedicated session rather than another per-file patch. | not placed |
+| `W5-B` | `docs/plan_parity.md` §6 / §10 — **plan hygiene, and it cost this session an hour** | **A finding's `REPO NONE` line is evidence about the repo as it was audited, which is BEFORE Wave 1.** All seven of this session's findings (F0007, F0008, F0025, F0032, F0035, F0045, F0046) say "no `agreement`/`signator` table exists" — and `W1-B` built every one of them in `migrations/0034` and `0035`, seeded from `SU_TPL` and `s-susign.html`, including the four signing-method columns and `authorised_signatory_user_id`. The `W5-B` prompt repeated the findings' claim ("none of these tables exist. You WILL need `0049`") and it was simply false; `0049` ended up adding three columns and one table, not nine tables. **`W5-A`'s prompt got this right** (it names `0034` and `0036` as already carrying the schema), so the fix is to keep doing what `W5-A`'s author did: before telling a session its tables do not exist, `grep migrations/`. | not placed |
+
 ---
 
 ## 10. Next prompts
@@ -1740,20 +1753,24 @@ FINISH
   Commit to parity/W6-B. Do not merge to main.
 ```
 
-### `W6-A` — the three-tab sign-up workspace *(written by `W5-A`)*
 
-> Written here because **W6-A is the first consumer of everything `W5-A` built** and the one session
-> that could accidentally rebuild it. The document lifecycle, its four states, its bulk verify and the
-> `seatless` resolution all exist and are tested; spec §8.3's "the Documents tab and the Founder tab
-> share one document set" is a schema fact now (`signup_documents`, one row per item, one table read by
-> both surfaces), not an aspiration. The prompt therefore leads with what NOT to build.
+### `W6-A` — the three-tab sign-up workspace *(written by `W5-A` and `W5-B`, merged at Wave 5 integration)*
+
+> **Both Wave 5 sessions wrote this prompt, and each wrote half of it.** `W5-A` built the document
+> lifecycle and the seat resolution; `W5-B` built the agreement templates, the signatory pool, the
+> signing-method model and the countersign gate. `W6-A` is the first consumer of BOTH, and the one
+> session that could accidentally rebuild either. Wave 5 integration merged the two prompts rather
+> than choosing between them — the halves do not overlap, and either alone would have sent this
+> session to rebuild the other's work. The prompt therefore leads with what NOT to build.
 >
-> Its migration allotment starts at **0051**: Wave 5 used 0048 (`W5-A`) and 0049 (`W5-B`), and
-> `Wx-PWD` holds 0050. `W6-A` may well need none.
+> Wave 6's base branch is **`main` after Wave 5 integration**. Its migration allotment starts at
+> **0051**: Wave 5 used 0048 (`W5-A`) and 0049 (`W5-B`), and `Wx-PWD` holds 0050. `W6-A` may well
+> need none. `W6-B` already has a prompt (written by `W4-D`); `W6-C` does not, and whoever writes it
+> should read §8 Q50 first — "seats" means two different things.
 
 ```
-You are running session W6-A — the three-tab sign-up workspace — of the ai.STARTUPJURY parity
-programme. You have no prior context. Everything you need is in the repo.
+You are running session W6-A — the three-tab sign-up workspace, and the founder's side of it — of
+the ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
 
 SETUP
   nvm use
@@ -1762,103 +1779,149 @@ SETUP
   python3 docs/prototype/tools/split-prototypes.py
 
 READ FIRST (in this order, and nothing else)
-  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §4 Testing, §8 Q56 and Q58
-     (the document lifecycle's two settled edges), §9 the three `W5-A` rows addressed to you,
-     then ONLY your entry for W6-A in §6.
+  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §4 Testing, then the four settled
+     questions you are RENDERING and not re-deciding: §8 Q56 and Q58 (the document lifecycle's two
+     settled edges) and §8 Q61 and Q64 (the signing method's editable window, and who may touch it).
+     Then ONLY your entry for W6-A in §6, and the `W5-A` / `W5-B` rows in §9 addressed to you.
   2. Your worklist:
        python3 docs/prototype/tools/findings.py \
          --grep "three-tab|Documents tab|Agreement tab|Founder tab|8\.3|signup workspace" --full
   3. docs/prototype/source/specs/incubator.html §8.3 — the three tabs, the assignment gate and the
-     shared document set. It OUTRANKS the prototype (§1.1).
-  4. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/_scripts.js — read ONLY these ranges:
-     2000-2075 (suSignupBody: the four stage cards and the red/green seat card),
-     2130-2200 (suwDocs: the Documents tab, its four badges and Verify all),
-     2075-2130 (openFounderSignup / fpSuSubmit: the founder's own view).
-     Do NOT read that file whole — it is 4k+ lines.
-  5. src/server/routes/signup-config.ts (W5-A's — the document + seat API you consume),
-     src/shared/signupConfig.ts (the lifecycle table and the badges),
-     src/server/routes/resubmit.ts (the tokenized, UNauthenticated founder pattern),
-     src/client/routes/StagePage.tsx:374-390 (the Documents select you are replacing).
+     shared document set. The written spec OUTRANKS the prototype (§1.1).
+  4. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/_scripts.js — read ONLY these ranges, the
+     file is 2,900+ lines:
+       2000-2075  suSignupBody / suStage / suPanel — the stage cards and the red/green seat card
+       2075-2130  openFounderSignup / fpSuSubmit  — the founder's own view
+       2130-2200  suwDocs                          — the Documents tab, four badges, Verify all
+       2260-2296  suMethodCard + suAssignCard      — the signing method and the signatory picker
+  5. **Both APIs you are building a screen for already exist.** Read, in this order:
+       src/server/routes/signup-config.ts  (`W5-A`) — the document + seat API
+       src/shared/signupConfig.ts          — the lifecycle table and the badges
+       src/server/esign/routes.ts          (`W5-B`) — every route, with its gate and refusal codes
+       src/shared/agreements.ts            — the signing vocabulary and its pure rules
+       src/server/routes/resubmit.ts       — the tokenized, UNauthenticated founder pattern
+       src/client/routes/StagePage.tsx:374-390 — the Documents select you are replacing
+     test/worker/esign.test.ts and the signup-config worker tests are the executable descriptions.
   Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
 
-DO NOT REBUILD
-  The document set, its lifecycle and the seat resolution are done and tested. Consume them:
-    GET    /api/signup-config/documents              the checklist + every open sign-up's set
-    PATCH  /api/signup-config/signups/:id/documents/:docId   one move, or {waived, waivedReason}
+DO NOT REBUILD — this is the paragraph that saves the session
+  The document set, its lifecycle, the seat resolution, the agreement templates, the signatory pool,
+  the signing-method model and the countersign gate are ALL built and tested. They have no screen.
+  Consume them:
+    GET    /api/signup-config/documents                      checklist + every open sign-up's set
+    PATCH  /api/signup-config/signups/:id/documents/:docId    one move, or {waived, waivedReason}
     POST   /api/signup-config/signups/:id/documents/verify-all
-    POST   /api/signup-config/signups/:id/complete   progress → completed, resolves the seat
-    POST   /api/signup-config/signups/:id/seat       Allocate seat
-  `canTransitionDocument` / `DOCUMENT_STATUS_BADGES` in src/shared/signupConfig.ts are the one
-  source for legal moves and badge colours. A SECOND status column anywhere is the failure this
-  paragraph exists to prevent.
+    POST   /api/signup-config/signups/:id/complete           progress → completed, resolves the seat
+    POST   /api/signup-config/signups/:id/seat               Allocate seat
+    GET    /api/esign/signups/:id/method                     the method view, incl. `editable`
+    PUT    /api/esign/signups/:id/signatory                  assign the countersignatory
+    POST   /api/esign/signups/:id/founder-signature          the founder signs
+  `canTransitionDocument` / `DOCUMENT_STATUS_BADGES` (src/shared/signupConfig.ts) and
+  `describeSigningMethod` / `describeCountersignRefusal` / `CERTIFICATE_CHIP`
+  (src/shared/agreements.ts) are the ONE source for legal moves, badge colours and copy. Import
+  them; do not restate them. A SECOND status column, or a client-side re-derivation of the
+  editable rule, is the failure this paragraph exists to prevent.
 
 BUILD
-  1. The three tabs over one sign-up: Documents, Agreement, Founder — spec §8.3. The Documents tab
-     renders the existing set with its four badges and Verify all; the Founder tab renders the SAME
-     rows as the founder sees them. One set, two surfaces.
-  2. The founder's own submission path: attach a file per item and sign. That is the one lifecycle
-     move W5-A's router has no surface for — `awaiting → submitted` carrying `file_url`. Either call
-     the PATCH above, or, if the founder link must stay tokenized and unauthenticated the way
+  1. **The three tabs over ONE sign-up** (`SignupWorkspace.tsx`): Documents, Agreement, Founder —
+     spec §8.3, over ONE document set, not a copy per tab. The Documents tab renders the existing
+     set with its four badges and Verify all; the Founder tab renders the SAME rows as the founder
+     sees them. Replace today's single "Complete sign-up" button (the `complete_signup` transition
+     in src/pipeline/incubator.ts).
+  2. **The founder's submission path**: attach a file per item and sign. That is the one lifecycle
+     move `W5-A`'s router has no surface for — `awaiting → submitted` carrying `file_url`. Either
+     call the PATCH above, or, if the founder link must stay tokenized and unauthenticated the way
      resubmit.ts is, add that single verb to your own router and reuse `canTransitionDocument`.
-  3. The assignment gate: a Program Manager's workspace is READ-ONLY until a Super User or Admin
-     assigns them (`signups.assigned_user_id`, already on the table). Read-only means every write
-     verb 403s, not a disabled button.
-  4. Replace today's single "Complete sign-up" button, and replace `StagePage.tsx`'s hand-set
-     Documents `<select>` with a read-only roll-up badge that links into the workspace — that column
-     is derived now (§9).
-  5. The seat card the pipeline is missing: the red "Seatless — no cohort seat allocated yet" with
-     its Allocate seat action, and the green "Seat allocated · founder access provisioned".
+  3. **The signing-method card**, from `GET /api/esign/signups/:id/method`. Editable while
+     `method.editable`; otherwise it collapses to the locked line (`describeSigningMethod` +
+     `lockReason`). The view carries the rule — do not re-derive it client-side.
+  4. **The authorised-signatory picker**, from that response's `options`: an `optgroup` "By role"
+     (`roleOptionLabel`) and one "Named individuals" (`userOptionLabel`). PUT `…/signatory`.
+  5. **The countersign gate, in the UI.** Until a signatory is assigned the button is REPLACED by
+     "Assign an authorised signatory to countersign." (`_scripts.js:2038`). The server already
+     refuses with 409 `no_signatory`; your job is to stop offering it.
+     `describeCountersignRefusal` has all three sentences.
+  6. **The PM assignment gate**: a Program Manager's workspace is READ-ONLY until a Super User or
+     Admin assigns them (`signups.assigned_user_id`, on the table since 0034, read by nothing yet).
+     Read-only means every write verb 403s, not a disabled button.
+  7. **The founder side** in FounderPortal.tsx: the shared document set to submit, the read-only
+     "How you'll sign" mirror (`suwFounderMethod` — provider, type, the DSC/Aadhaar/QES chip from
+     `CERTIFICATE_CHIP` on a certificate signature, and "Alternatives your team enabled: …"), and
+     the signature itself. A founder reaches ONLY their own record; the server enforces it and your
+     test must assert it.
+  8. **The pipeline's missing seat card**: the red "Seatless — no cohort seat allocated yet" with
+     its Allocate seat action, and the green "Seat allocated · founder access provisioned". And
+     replace `StagePage.tsx`'s hand-set Documents `<select>` with a read-only roll-up badge linking
+     into the workspace — that column is DERIVED now (§9).
 
 CONSTRAINTS
-  - Own only: src/client/routes/SignupWorkspace.tsx (new), src/server/routes/signups.ts (new),
-    the sign-up path in src/client/routes/FounderPortal.tsx, and the sign-up/curation stage
-    configs in src/client/routes/StagePage.tsx. One line each in src/server/index.ts and
+  - Own only: src/client/routes/SignupWorkspace.tsx (new), src/server/routes/signups.ts (new), the
+    sign-up path in src/client/routes/FounderPortal.tsx, and the sign-up / curation stage configs
+    in src/client/routes/StagePage.tsx. One line each in src/server/index.ts and
     src/client/App.tsx if you add a route. Need anything else? §9, do not edit.
-  - You own migration 0051 and only 0051 — and you probably need none. 0034/0035 already carry
-    `signups`, `signup_documents`, the signing-method model and the signatory.
-  - §1.2: no card fields, and no "Mentor can adjust composite".
-  - `verified` is terminal (§8 Q56) and a no-op PATCH is a 400. Do not add an un-verify button.
+  - **Do NOT modify src/server/esign/**, src/shared/agreements.ts, src/server/routes/signup-config.ts
+    or src/shared/signupConfig.ts.** All four are complete and tested. If you need a field an API
+    does not return, file a §9 request and say which assertion would have to move.
+  - `src/client/index.css`, `src/shared/roles.ts` and `src/client/App.tsx` are §2.2
+    serialisation-hazard files. `src/shared/nav.ts` is yours THIS wave IF you add a screen —
+    confirm against §6 before you touch it.
+  - You own migration 0051 and only 0051 (0050 is `Wx-PWD`'s) — and you probably need none.
+    0034/0035/0049 already carry `signups`, `signup_documents`, `agreements`, `signatures`,
+    `authorised_signatories` and the signing-method model, all seeded. **A finding's `REPO NONE`
+    line predates Wave 1 and is not evidence a table is missing** — check the schema first; it cost
+    `W5-B` an hour. If you do add one, raise ALLOTMENT_CEILING to match.
+  - §1.2: no card fields anywhere, ever. `verified` is terminal (§8 Q56) and a no-op PATCH is a
+    400 — do not add an un-verify button.
 
 TEST
-  - E2E the whole loop for one role: admin configures the checklist → founder submits → staff
-    verifies → countersigned → onboarded. That is this session's headline deliverable per §6.
-  - Worker: the read-only gate (an unassigned PM 403s on every write verb, and passes once
-    assigned), and the founder verb refusing an illegal transition.
-  - Client: the three tabs, and that the Documents and Founder tabs render the SAME rows.
+  - E2E, the whole loop, ONE ROLE AT A TIME: admin configures the checklist and a template → staff
+    assigns a signatory → founder submits documents and signs → the method is now LOCKED on screen
+    → staff verifies and countersigns → the deck is onboarded. That is this session's headline
+    deliverable per §6. Mutating shared rows? Run serially and restore what you found —
+    `e2e/agreements.spec.ts` and `e2e/crm-sync.spec.ts` show the shape, including the
+    `NAV = { timeout: 30_000 }` budget for navigation-gated assertions (§9).
+  - Worker: the PM read-only gate (unassigned → refused on every write verb, assigned → allowed),
+    founder isolation (another founder's record → 404, never 200), and the founder verb refusing an
+    illegal transition.
+  - Client: the three tabs render the SAME rows on Documents and Founder; the method card in BOTH
+    states (editable and locked); the countersign button in both (offered, and replaced by the
+    sentence).
   - You ARE adding a router (`signups.ts`) — add its probes to scripts/role-matrix.ts in the SAME
-    commit, then run it against a server you PROVED you own with `lsof`:
+    commit. Write each write-probe body so an ALLOWED role still gets a 4xx (a ghost id, or a body
+    that fails validation): the harness reports a write probe returning 2xx as a finding. Then:
         PORT=5161; lsof -nP -iTCP:$PORT -sTCP:LISTEN      # must be EMPTY first
         E2E_PORT=$PORT npm run e2e:serve &                 # then, once up, lsof again
         ROLES_BASE=http://127.0.0.1:$PORT npm run roles
     It reads ROLES_BASE, defaults to :5173, and **exits 0 even when it cannot reach anything**
-    (§8 Q28). `W5-A` took it from 631 to 723; if `W5-B` added probes too the merged baseline is
-    higher, so read the number off `main` FIRST and confirm your run moved it by exactly the
-    probes you added — not that it matches a figure written here.
+    (§8 Q28). Read the baseline off `main` FIRST and confirm your run moved it by exactly the
+    probes you added — never match a figure written in a prompt.
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
   **§8 Q32 has an answer now: the suite is timeout-starved, not non-deterministic.** At vitest's
   5 s default this machine fails 30+ tests across files you never touched; with
-  `npx vitest run --testTimeout=30000 --hookTimeout=30000` the same tree is 1321/1321 green in
-  99 s. If Wave 5 integration has already put `testTimeout` in the three vitest configs (§9), plain
-  `npm test` is trustworthy — check before you spend an hour re-running. Either way, re-run a
-  failing file alone and check `uptime` before blaming your work.
+  `--testTimeout=30000 --hookTimeout=30000` the same tree went 1321/1321 green in 99 s. Wave 5
+  integration put that in the three vitest configs — if it is there, plain `npm test` is
+  trustworthy. Either way, re-run a failing file alone and check `uptime` before blaming your work.
   **e2e does not parallelise across worktrees (§9).** Two Playwright + miniflare stacks kill each
   other's dev server — the log fills with `Network connection lost` and specs neither session wrote
-  start failing. If a sibling session is running `test:e2e`, wait for it; `--workers=1` inside your
-  own run is the safe setting on a busy box.
-  Three flakes `W5-A` wrote and caught — you will write at least one of them:
+  start failing. If a sibling is running `test:e2e`, wait for it; `--workers=1` is the safe setting
+  on a busy box. At load ~60 the login page alone outlasts Playwright's default expect timeout, and
+  `W5-B` lost two full runs to exactly that.
+  Four flakes Wave 5 wrote and caught — you will write at least one of them:
     • gate client assertions on a POPULATED element, never on a heading the loading branch also
       renders;
     • never locate an element by the attribute your click is about to change (a row picked by its
       status badge stops being that row the moment you advance it — pin it by name);
     • never sign in as a second user on the same page: `/login` redirects an authenticated session
       straight back to `/app` and you will wait out the whole timeout for a field that never
-      renders. One test per role.
-  And if a section keeps a draft, guard it against its own mount fetch: StrictMode runs that effect
-  twice, and on a loaded machine the second response lands after the user's first keystroke.
+      renders. One test per role;
+    • if a screen keeps a draft, guard it against its own mount fetch — StrictMode runs that effect
+      twice, and on a loaded machine the second response lands after the user's first keystroke and
+      silently discards it.
 
 FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
-  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template —
+  **`W6-C` still has no prompt**; read §8 Q50 before you write it.
   Commit to parity/W6-A. Do not merge to main.
 ```
 

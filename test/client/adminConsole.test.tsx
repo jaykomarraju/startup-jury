@@ -256,11 +256,26 @@ describe("AdminConsole shell", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Branding & theme" })).toBeInTheDocument();
   });
 
-  it("names what will fill every unbuilt section, and who lands it", () => {
-    // The placeholder is rendered on its own — mounting the whole console once
-    // per section only re-proves the routing the test above already covers.
+  // Wave 5 is the wave the console ran out of placeholders. `W3-C` made this
+  // test drift-proof by asking the registry which section was still unbuilt —
+  // which held for Waves 3 and 4 and then, inevitably, found nothing. Rather
+  // than delete the property, Wave 5 integration split it in two: the milestone
+  // is now asserted directly, and the placeholder component is still covered by
+  // driving it with a section rather than by waiting for one to be missing.
+  it("has a body for every section — the console is complete", () => {
+    for (const edition of ["incubator", "vc"] as const) {
+      const unbuilt = adminSections(edition)
+        .filter((s) => !SECTION_COMPONENTS[s.id])
+        .map((s) => `${s.id} (${s.placeholder.owner})`);
+      expect(unbuilt, `${edition}: sections still on the placeholder`).toEqual([]);
+    }
+  });
+
+  it("names what would fill a section, and who lands it, if one had no body", () => {
+    // Rendered on its own against real section metadata: mounting the whole
+    // console only re-proves the routing the test above already covers, and no
+    // section is unbuilt any more to route to.
     for (const section of adminSections("incubator")) {
-      if (SECTION_COMPONENTS[section.id]) continue; // built — has a real body
       const view = render(<SectionPlaceholder section={section} />);
       expect(screen.getByRole("heading", { level: 2, name: section.heading })).toBeInTheDocument();
       expect(screen.getAllByText(section.placeholder.owner).length).toBeGreaterThan(0);
@@ -269,19 +284,6 @@ describe("AdminConsole shell", () => {
       }
       view.unmount();
     }
-    // …and the console actually reaches for it when a section has no body.
-    //
-    // Flagged per plan §4 — NOT weakened, made drift-proof. This hardcoded
-    // `?section=al` and `"W3-C"`, so it failed for the one session that builds
-    // `al`, and would have failed again for W4-A/B/C/D and W5-A/B in turn. It
-    // now asks the registry which section is still unbuilt, which asserts the
-    // same property and keeps asserting it as Waves 4-5 land. (W3-C)
-    const unbuilt = adminSections("incubator").find((s) => !SECTION_COMPONENTS[s.id]);
-    expect(unbuilt).toBeDefined();
-    renderConsole(user("incubator", "admin"), `/app/admin?section=${unbuilt!.id}`);
-    expect(screen.getByText("Not built yet")).toBeInTheDocument();
-    // Twice: the owner badge beside "Not built yet", and the inline sentence.
-    expect(screen.getAllByText(unbuilt!.placeholder.owner)).toHaveLength(2);
   });
 
   it("routes `tm` to the Team & roles roster", async () => {

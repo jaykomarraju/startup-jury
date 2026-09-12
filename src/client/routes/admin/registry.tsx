@@ -29,8 +29,10 @@
  * `SectionPlaceholder`.
  */
 import type { ComponentType } from "react";
+import { AgreementsLibrarySection } from "./AgreementsLibrary";
 import { AreaWeightsSection } from "./AreaWeights";
 import { AuditLogSection } from "./AuditLog";
+import { AuthorisedSignatoriesSection } from "./AuthorisedSignatories";
 import { BrandingSection } from "./Branding";
 import { CreditsBillingSection } from "./CreditsBilling";
 import { CrmSyncSection } from "./CrmSync";
@@ -56,11 +58,11 @@ export const SECTION_COMPONENTS: Record<string, ComponentType | undefined> = {
   bl: CreditsBillingSection, //      W4-C · Credits & billing
   pc: PriceConfigurationSection, //  W4-D · Price configuration
   // Sign-up (admin + superuser only)
-  sudocs: RequiredDocumentsSection, // W5-A · Required documents
-  suagr: undefined, //               W5-B · Agreements library
-  susign: undefined, //              W5-B · Authorised signatories
-  suseat: SeatCapacitySection, //    W5-A · Seat capacity      (incubator)
-  sufund: FundDeploymentSection, //  W5-A · Fund Deployment    (VC)
+  sudocs: RequiredDocumentsSection, //        W5-A · Required documents
+  suagr: AgreementsLibrarySection, //         W5-B · Agreements library
+  susign: AuthorisedSignatoriesSection, //    W5-B · Authorised signatories
+  suseat: SeatCapacitySection, //             W5-A · Seat capacity   (incubator)
+  sufund: FundDeploymentSection, //           W5-A · Fund Deployment (VC)
   // System
   nt: NotificationsSection, //       W3-B · Notifications
   al: AuditLogSection, //            W3-C · Audit log

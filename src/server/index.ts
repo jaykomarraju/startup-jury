@@ -17,6 +17,7 @@ import pricing from "./routes/pricing";
 import resubmit from "./routes/resubmit";
 import notifications from "./routes/notifications";
 import signupConfig from "./routes/signup-config";
+import esign from "./esign/routes";
 import { tickets, messages, issues } from "./routes/support";
 import { calls } from "./routes/calls";
 import { handleQueue } from "./queue";
@@ -57,6 +58,7 @@ app.route("/api/audit", audit);
 app.route("/api/pricing", pricing);
 app.route("/api/notifications", notifications);
 app.route("/api/signup-config", signupConfig);
+app.route("/api/esign", esign); // W5-B · agreements library, signatories, signing method
 app.route("/api/tickets", tickets);
 app.route("/api/issues", issues);
 app.route("/api/messages", messages);
