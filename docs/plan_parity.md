@@ -1239,7 +1239,7 @@ You are running session W4-C — the Credits & billing admin section — of the 
 programme. You have no prior context.
 
 SETUP
-  nvm use
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
   git worktree add ../sj-W4-C -b parity/W4-C main
   cd ../sj-W4-C && npm ci
   python3 docs/prototype/tools/split-prototypes.py
