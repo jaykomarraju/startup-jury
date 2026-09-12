@@ -74,15 +74,21 @@ test("program manager reaches the intro-call decision screen", async ({ page }) 
   await expect(page.getByText("Not available for your role")).toHaveCount(0);
 });
 
-test("admin buys a credit pack (simulated top-up)", async ({ page }) => {
+// W6-B restated this test. It asserted the pre-W6-B screen: a hardcoded 20-credit
+// pack and a click that GRANTED credits with no payment ("Demo mode", "Added 20
+// credits") — the ladder §8 Q51 did not choose and the free grant §1.3 forbids.
+// Buy credits is now the account overlay opened on the PUBLISHED credit packs;
+// ordering one, through to the receipt, is walked in e2e/account-purchase.spec.ts.
+test("admin opens Buy credits on the published credit packs", async ({ page }) => {
   await login(page, INC_ADMIN);
   await page.goto("/app/billing");
-  await expect(page.getByRole("heading", { name: "Buy credits" })).toBeVisible();
-  await expect(page.getByText("Demo mode", { exact: false })).toBeVisible();
-
-  // Buy the first Pro pack (20 credits).
-  await page.getByRole("button", { name: "Buy credits" }).first().click();
-  await expect(page.getByText("Added 20 credits")).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Choose your plan" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Pay-as-you-go credit packs" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByTestId("ac-plan-pack_50")).toContainText("₹20,000");
+  await expect(page.getByText("Added 20 credits")).toHaveCount(0);
 });
 
 test("a team member sees their own account and can sign out", async ({ page }) => {
