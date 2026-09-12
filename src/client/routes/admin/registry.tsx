@@ -1,18 +1,23 @@
 /**
  * Section id → the component that renders its body.
  *
- * **This file is the slot Waves 2–5 land in.** A session that builds a console
- * section adds its component here as ONE line, keyed by the prototype section
- * id, and changes nothing else in the shell:
+ * **This file is the slot Waves 2–5 land in.** EVERY section id has an entry
+ * already. A session that builds one changes `undefined` to its component on its
+ * OWN line, and adds one import:
  *
- *     import { ScoringFramework } from "./ScoringFramework";
+ *     import { CreditsBillingSection } from "./CreditsBilling";
  *     …
- *     fw: ScoringFramework,
+ *     bl: CreditsBillingSection, //  W4-C · Credits & billing
  *
- * Anything absent from this map renders `SectionPlaceholder`, which names what
- * the section will contain and which session lands it (see `sections.ts`).
- * Keep the entries in `secs` order so a three-way merge of three parallel
- * sessions stays a three-line diff.
+ * `undefined` means "not built yet" and renders `SectionPlaceholder`, which
+ * names what the section will contain and which session lands it (`sections.ts`).
+ *
+ * Why every id is pre-listed rather than commented out: this file conflicted in
+ * all three of Waves 1–3, because a commented placeholder forces a session to
+ * turn a comment into code, and parallel sessions kept resolving by commenting
+ * out each other's entries. One session, one line, one token — distinct lines
+ * merge cleanly three ways. **Never comment out or delete another session's
+ * line.** Restructured at Wave 3 integration.
  *
  * A section that owns unsaved state wires the title bar's global Save changes
  * button by calling `useAdminSave({ dirty, saving, onSave })` from
@@ -33,26 +38,26 @@ import { RubricAnchorsSection } from "./RubricAnchors";
 import { ScoringFrameworkSection } from "./ScoringFramework";
 import { TeamRolesSection } from "./TeamRoles";
 
-export const SECTION_COMPONENTS: Record<string, ComponentType> = {
+export const SECTION_COMPONENTS: Record<string, ComponentType | undefined> = {
   // Evaluation
-  fw: ScoringFrameworkSection, //   W2-A · Scoring framework
-  wt: AreaWeightsSection, //        W2-A · Area weights
-  rb: RubricAnchorsSection, //      W2-B · Rubric anchors
-  qb: QuestionBankSection, //       W2-C · Question bank
+  fw: ScoringFrameworkSection, //    W2-A · Scoring framework
+  wt: AreaWeightsSection, //         W2-A · Area weights
+  rb: RubricAnchorsSection, //       W2-B · Rubric anchors
+  qb: QuestionBankSection, //        W2-C · Question bank
   // Organisation
-  tm: TeamRolesSection, //   W4-A replaces this with the full roster
-  crm: CrmSyncSection, //  W3-D · CRM sync
-  // bl:      W4-C · Credits & billing
-  // pc:      W4-D · Price configuration
-  // Sign-up
-  // sudocs:  W5-A · Required documents
-  // suagr:   W5-B · Agreements library
-  // susign:  W5-B · Authorised signatories
-  // suseat:  W5-A · Seat capacity      (incubator)
-  // sufund:  W5-A · Fund Deployment    (VC)
+  tm: TeamRolesSection, //           W4-A replaces this with the full roster
+  crm: CrmSyncSection, //            W3-D · CRM sync
+  bl: undefined, //                  W4-C · Credits & billing
+  pc: undefined, //                  W4-D · Price configuration
+  // Sign-up (admin + superuser only)
+  sudocs: undefined, //              W5-A · Required documents
+  suagr: undefined, //               W5-B · Agreements library
+  susign: undefined, //              W5-B · Authorised signatories
+  suseat: undefined, //              W5-A · Seat capacity      (incubator)
+  sufund: undefined, //              W5-A · Fund Deployment    (VC)
   // System
-  nt: NotificationsSection, //      W3-B · Notifications
-  al: AuditLogSection, //           W3-C · Audit log
-  // uc:      W4-A · User access
-  // br:      W4-B · Branding
+  nt: NotificationsSection, //       W3-B · Notifications
+  al: AuditLogSection, //            W3-C · Audit log
+  uc: undefined, //                  W4-A · User access
+  br: undefined, //                  W4-B · Branding
 };
