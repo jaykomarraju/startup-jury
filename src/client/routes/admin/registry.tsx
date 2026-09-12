@@ -29,8 +29,10 @@
  * `SectionPlaceholder`.
  */
 import type { ComponentType } from "react";
+import { AgreementsLibrarySection } from "./AgreementsLibrary";
 import { AreaWeightsSection } from "./AreaWeights";
 import { AuditLogSection } from "./AuditLog";
+import { AuthorisedSignatoriesSection } from "./AuthorisedSignatories";
 import { BrandingSection } from "./Branding";
 import { CreditsBillingSection } from "./CreditsBilling";
 import { CrmSyncSection } from "./CrmSync";
@@ -55,8 +57,8 @@ export const SECTION_COMPONENTS: Record<string, ComponentType | undefined> = {
   pc: PriceConfigurationSection, //  W4-D · Price configuration
   // Sign-up (admin + superuser only)
   sudocs: undefined, //              W5-A · Required documents
-  suagr: undefined, //               W5-B · Agreements library
-  susign: undefined, //              W5-B · Authorised signatories
+  suagr: AgreementsLibrarySection, // W5-B · Agreements library
+  susign: AuthorisedSignatoriesSection, // W5-B · Authorised signatories
   suseat: undefined, //              W5-A · Seat capacity      (incubator)
   sufund: undefined, //              W5-A · Fund Deployment    (VC)
   // System

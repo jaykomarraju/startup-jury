@@ -579,6 +579,41 @@ const PROBES: Probe[] = [
   { id: "pricing.draft", label: "PUT /api/pricing/draft (edit prices)", kind: "write", method: "PUT", path: "/api/pricing/draft", body: { tax: { gstRatePct: 999 } },
     allow: ["admin"] },
 
+  // ── W5-B · Agreements library, signatories, signing method (`/api/esign`) ─
+  // §9 asks every session that adds a router to add its probe; this router is
+  // new, and it carries TWO different gates, so it needs two sets of rows.
+  //
+  // The console half is `requireTask("adminconsole", "admin")`. The write probe
+  // is a PUT at a GHOST template id — never POST /templates, which would
+  // CREATE one and break this harness's "the probe never mutates anything"
+  // rule.
+  { id: "esign.templates", label: "GET /api/esign/templates (agreements library)", kind: "read", method: "GET", path: "/api/esign/templates",
+    allow: ["admin"] },
+  { id: "esign.signatories", label: "GET /api/esign/signatories (who may countersign)", kind: "read", method: "GET", path: "/api/esign/signatories",
+    allow: ["admin"] },
+  { id: "esign.template.save", label: "PUT /api/esign/templates/:id (edit a template)", kind: "write", method: "PUT", path: "/api/esign/templates/__ghost__", body: {},
+    allow: ["admin"] },
+  // The body names a role that does not exist, so an admin gets a 400: it
+  // exercises the gate without granting anybody anything, and the harness's
+  // "a write probe must never succeed" rule still holds. Same trick as
+  // `pricing.draft`'s 999 % GST rate.
+  { id: "esign.signatories.save", label: "PUT /api/esign/signatories (toggle a grant)", kind: "write", method: "PUT", path: "/api/esign/signatories", body: { roles: { __not_a_role__: true } },
+    allow: ["admin"] },
+
+  // The sign-up workspace half is NOT admin-only: `suAssignCard`'s own subtitle
+  // is "assign here — no admin console needed", so the staff who run sign-up
+  // reach it. A jury member and an IC member never do. The founder reads their
+  // OWN record's method (the "How you'll sign" mirror), which is why they are
+  // admitted on the read and refused on the write.
+  { id: "esign.method.read", label: "GET /api/esign/signups/:id/method (signing method)", kind: "read", method: "GET", path: "/api/esign/signups/__ghost__/method",
+    allow: ["admin", "program_manager", "program_associate", "founder", "partner", "associate", "analyst"] },
+  { id: "esign.method.write", label: "PUT /api/esign/signups/:id/method (choose the method)", kind: "write", method: "PUT", path: "/api/esign/signups/__ghost__/method", body: {},
+    allow: ["admin", "program_manager", "program_associate", "partner", "associate", "analyst"] },
+  { id: "esign.signatory.assign", label: "PUT /api/esign/signups/:id/signatory (assign in-workspace)", kind: "write", method: "PUT", path: "/api/esign/signups/__ghost__/signatory", body: {},
+    allow: ["admin", "program_manager", "program_associate", "partner", "associate", "analyst"] },
+  { id: "esign.countersign", label: "POST /api/esign/signups/:id/countersign", kind: "write", method: "POST", path: "/api/esign/signups/__ghost__/countersign", body: {},
+    allow: ["admin", "program_manager", "program_associate", "partner", "associate", "analyst"] },
+
   // ── Contract: analytics delegate to the nav manifest by design ────────────
   ...analyticsProbes(),
 ];
