@@ -558,6 +558,18 @@ const PROBES: Probe[] = [
   { id: "permissions.write", label: "PUT /api/permissions (toggle a cell)", kind: "write", method: "PUT", path: "/api/permissions", body: {},
     allow: ["admin"] },
 
+  // ── W4-D · Price configuration (`/api/pricing`) ───────────────────────────
+  // §9 asked every session that adds a router to add its probe; this router is
+  // new. The write probe carries a GST rate of 999 %, so an admin gets a 400 —
+  // it exercises the gate without publishing anything, and the harness's "a
+  // write probe must never succeed" rule still holds.
+  { id: "pricing.read", label: "GET /api/pricing (the price editor)", kind: "read", method: "GET", path: "/api/pricing",
+    allow: ["admin"] },
+  { id: "pricing.published", label: "GET /api/pricing/published (the live catalogue)", kind: "read", method: "GET", path: "/api/pricing/published",
+    allow: ["admin", "program_manager", "program_associate", "jury", "founder", "partner", "ic_member", "associate", "analyst"] },
+  { id: "pricing.draft", label: "PUT /api/pricing/draft (edit prices)", kind: "write", method: "PUT", path: "/api/pricing/draft", body: { tax: { gstRatePct: 999 } },
+    allow: ["admin"] },
+
   // ── Contract: analytics delegate to the nav manifest by design ────────────
   ...analyticsProbes(),
 ];

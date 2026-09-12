@@ -903,6 +903,10 @@ best reading and note it.
 | Q38 | `W3-B` (F0016) | **"All jury complete" assumes a panel, and neither edition has one.** The incubator assigns a deck to exactly ONE evaluator (`decks.assigned_to`); the VC has no assignee at all and is scored sequentially as the deal walks analyst → associate → partner. So "all jury" is either trivially "the one assignee" or a stage-walk, and the prototype's plural implies a third thing the data model does not hold. | Implemented per edition in `allEvaluatorsHaveScored` (`src/server/routes/pipeline.ts`): incubator = the assignee has an `evaluations` row; VC = analyst, associate **and** partner have each scored. Both are real and testable. If a genuine multi-evaluator panel is intended (several jurors per deck, a quorum, a composite across them) that is a schema change — `decks.assigned_to` becomes a join table — and it belongs to whichever wave owns Assign. |
 | Q39 | `W3-B` (F0058) | **The notification centre has no design, because the prototype's bell is inert.** `_topnav.html` carries `<button class="nb">` in all eleven prototypes and there is no dropdown markup anywhere in any of them, so the panel's contents, grouping, paging and empty state are unspecified. Whatever is built here is an invention, not parity. | Built the smallest thing that makes the in-app channel real: twenty most-recent alerts, unread marker, relative time, click-through to the deep link, mark-one and mark-all, 60-second poll. No grouping, no paging, no per-event filter, no retention policy — `notifications` rows are never pruned, which is fine at demo volume and is not at a year's. Worth a design pass before launch (Wave 13). |
 | Q40 | Wave 4 prep | The 2026-09-11 ruling says **no per-deck pricing**. Taken as a ruling on the PRICE CATALOGUE: no per-deck rates or derived per-deck columns. It leaves one thing open — does usage metering survive? The app debits one credit per evaluated deck (`org_settings.credits_balance`, `reserveCredits`/`refundCredits`, migration `0032`'s ledger), which is shipped behaviour several screens read. | Metering stays; only the pricing presentation changes. `W4-C` and `W4-D` proceed on that. If credits should go entirely, that is a change to Upload, the plan tile, the ledger and the seed — raise it before Wave 6. |
+| Q41 | `W4-D` (F0089, F0159) | **Which pay-as-you-go ladder is current?** §8 Q1's ruling retired the per-deck contradiction but not this one. The price-configuration master table sells **10 / 50 / 100** units (₹5,000 / ₹20,000 / ₹30,000); the account overlay sells **20 / 35 / 50** (₹10,000 / ₹15,750 / ₹20,000 pro, ₹12,000 / ₹19,250 / ₹25,000 premium), and `BuyCreditsPage.tsx` hardcodes that second one. Under the ruling the overlay ladder loses its defining feature — its per-deck rates — while the master ladder survives as stated totals. | **10 / 50 / 100 is built**, because s-pc calls itself the master ("changes here update the public pricing page and all in-app plan displays") and it is the screen this session owns. It is DATA: rows in `price_plans` + `price_amounts`, and no file names a pack size. Switching to 20 / 35 / 50 is one migration. Until Buy credits reads the published catalogue (§9) the two screens visibly disagree. |
+| Q42 | `W4-D` (F0091, F0159) | **Which enterprise vocabulary?** Four exist: the price table's **100–500 unit annual tiers**, Standard/Pro/Premium *seats*, Basic/Configurable/Customisable, and Basic/Customizable Enterprise (the s-bl tile says "Configurable"). | **The unit tiers are built**, for the same reason as Q41 and because `0033` already seeded them. Every word the screen renders for a catalogue — title, badge, card name, card sub, footnote — is a row in `price_groups` (0047), so a vocabulary switch is an UPDATE, not a rewrite. |
+| Q43 | `W4-D` (F0094, F0185) | **Is Price configuration a platform-owner surface rather than a tenant one?** The decoded document renders its own chrome — "Super admin · Price configuration", footer "SA · Super admin · **Platform owner**" — and a sidebar with three sibling platform sections no session owns (Dashboard, Billing & invoices, Currency & FX). Read that way, this is the VENDOR's master SKU table, and putting it in a customer's admin console means every customer can edit ai.STARTUPJURY's price list. | **Built as a tenant console section**, which is what §6 assigns and what `0033` assumes ("none of these tables carry an edition — one catalogue serves the whole product"). It is harmless while the app is single-tenant (`0001`: "Single-tenant: one implicit organization") and wrong the moment it is not. If the client confirms the platform reading, the move is a role above org admin plus a route change — the store, the API and the screen do not change, and the tenant's Credits & billing becomes the read side of it. |
+| Q44 | `W4-D` | **Three lines of prototype copy were omitted rather than reproduced, and nothing replaces them.** §8 Q1 requires it: the enterprise rows' "Save ₹10,000 vs base" … "Save ₹50,000 vs base · ₹400/deck" are savings computed against a per-deck base, and the packs card's "Per-deck rate shown alongside pack price." plus its footnote describe the retired column. So enterprise tiers 200–500 now carry no description at all. | Left empty rather than invented — a made-up benefit line is worse than none. It is one `UPDATE price_plans SET features = …` when the client writes the replacement copy. |
 
 ---
 
@@ -1017,6 +1021,12 @@ session places it.
 | Wave 3 integration | `src/server/crm/**` *(`W12-A`)* | Five configurable CRM fields — base URL, webhook path, monthly deck cap, auto-approve and one more — are stored and rendered but **read by nothing**. Same class as the field mappings and the schedule already recorded: the section looks more finished than it is. | `W12-A` |
 | Wave 3 integration | `src/client/routes/admin/*` *(`W4-A`)* | **`canEditWorkspace` is computed from a different rule than the guard that enforces it** — the Wave 3 first-pair defect class, reproduced and latent. A client flag and a server guard that disagree produce buttons that 403. `W4-A` owns the console's client surface and should reconcile them. | `W4-A` |
 | Wave 3 integration | `scripts/role-matrix.ts` *(every session that adds a router)* | **`roles` stayed at 566 across a wave that added two routers.** The harness re-ran the same checks; it says nothing about whether revoking `adminconsole` closes `/api/audit` or `/api/notifications` — the property that was silently false for CRM until integration fixed it. **A session that adds a router must add its probe**, or the harness's coverage falls behind the surface it claims to describe. | standing rule |
+| `W4-D` | **`src/shared/priceBook.ts` — a NEW file, beyond this session's stated ownership list** | **Declared loudly, per §2.2.** The session was allotted two files; the price catalogue's TYPES and its pure arithmetic (FX conversion, GST, validation, the §8 Q1 guard) are needed by the client, the Worker and the unit tests alike, and this repo's convention for a three-way contract is `src/shared`. Putting them in the route file would drag `hono` into the browser bundle; duplicating them would give the ruling two enforcement points and one of them would rot. The name is deliberately NOT `pricing.ts`: that is the name a sibling might independently invent, and a colliding new file is the same pain as a colliding migration. Nothing else imports it yet. | nobody — it is new and unowned; integration only needs to know it exists |
+| `W4-D` | **`migrations/0047_price_catalogue_publishing.sql` — this session's allotted number, and it is used** | Says so loudly per §2.2. It adds `price_groups`, `pricing_versions` (+ a partial unique index making two live versions impossible) and `pricing_draft_meta`, then applies the §8 Q1 ruling to what `0033` seeded: the `base_rate` plan is deleted, `per_unit_label` and `saving_pct` are emptied, the "Save ₹… vs base" taglines are dropped, AED/SGD/AUD are deactivated (the prototype's own currency bar), every FX row becomes `manual` with a pinned stamp, and non-INR amounts are marked `overridden` because the prototype's own figures are hand-set, not FX-derived. **`0033`'s two dead columns are left in place** — emptied, unread, and guarded by `perDeckArtefacts()`; dropping a column is a table rebuild for no gain. | already in `0047` |
+| `W4-D` | `scripts/role-matrix.ts` *(unowned — §9's standing request to "every session that adds a router")* | **Already placed, three probes**, appended as one block at the end of `PROBES` so a sibling adding its own block conflicts cleanly rather than interleaving: `pricing.read` (GET `/api/pricing`, admin), `pricing.published` (GET `/api/pricing/published`, every internal role and the founder — 403 for the mentor user-type) and `pricing.draft` (PUT, admin). The write probe carries `gstRatePct: 999`, so an admin gets a 400 and the harness's "a write probe must never succeed" rule still holds — it exercises the gate without publishing anything. | placed by `W4-D` |
+| `W4-D` | `src/client/routes/BuyCreditsPage.tsx` *(`W6-B`)* | **The catalogue is now data, and this screen is the last place a price is a literal.** `BuyCreditsPage.tsx:20-31` hardcodes the account-overlay ladder (20 / 35 / 50), which §8 Q41 did not choose; the published catalogue sells 10 / 50 / 100. Point it at `GET /api/pricing/published` — the response is a complete `PublishedPriceBook`, amounts are integer minor units keyed by currency, and `taxBreakdown()` gives the GST line the order summary needs. Until then the two screens disagree in front of the customer. The prompt is written in §10. | `W6-B` |
+| `W4-D` | `src/client/routes/admin/sections.ts` *(console metadata, `W1-C`'s)* | **One line of copy the ruling falsified.** The `pc` subtitle still reads "…every plan, pack and enterprise SKU — **per-deck rates**, currencies and tax". Replace with "— currencies, exchange rates and tax". I did not edit it: it is the file every wave's sections share, and the section's own `<h2>` (which this session does own) already says the right thing. | Wave 4 integration |
+| `W4-D` | The free-trial grant path *(`W4-C` / `W6-A` — `src/server/routes/config.ts`, the signup path)* | **`free_trial_decks` and `free_trial_expiry_days` are configuration now, and nothing reads them.** F0093's other half: a new org is still given a seeded `credits_balance` (`0002` sets 3, `0007` overwrites it with 50), so changing the free deck limit in the console changes what the pricing page SAYS and not what a new account GETS. Whoever owns org creation should read the published book and grant `trial.decks` with reason `trial_grant`, and honour `expiryDays` (0 = never). | `W4-C` or Wave 6 |
 
 ---
 
@@ -1438,6 +1448,80 @@ TEST
 FINISH
   Complete the §2.4 exit checklist, then write the next prompt(s) into §10 using the §5 template.
   Commit to parity/Wx-OOO. Do not merge to main.
+```
+
+### `W6-B` — My account, the purchase wizard, and the end of hardcoded prices *(written by `W4-D`)*
+
+> **Why this prompt exists now, and why it is Wave 6's.** `W4-D` made the price catalogue editable
+> data with a publish step, which means `BuyCreditsPage.tsx`'s hardcoded `PACKS` literal is no longer
+> merely duplicated — it now contradicts the published catalogue (§8 Q41). `W6-B` owns that file.
+> Wave 5's two prompts (`W5-A`, `W5-B`) are still unwritten; a Wave 4 sibling or Wave 4 integration
+> should write them from §6.
+
+```markdown
+You are running session W6-B — My account and the purchase wizard — of the ai.STARTUPJURY parity
+programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  nvm use
+  git worktree add ../sj-W6-B -b parity/W6-B main
+  cd ../sj-W6-B && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules (§1.2 and §1.3 both bite here), §2 Session protocol,
+     §4 Testing, §8 Q1 + Q40 + Q41 + Q42 (the pricing rulings — do NOT re-derive them), then ONLY
+     your entry for W6-B in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Set up" --screen "acs-|My account|BuyCredits|credits bar" --full
+  3. The prototype: ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/_rest.html (#ac-* overlay)
+     and the `PACKS` / `gstOf` / `buyTotals` blocks in that build's _scripts.js.
+  4. src/shared/priceBook.ts and src/server/routes/pricing.ts (W4-D's — READ, never edit), then
+     the two files you own.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. The eight-screen account overlay, full-bleed rather than inside the app shell: individual and
+     organisation branches, the eleven-field org form, the plan choice, packs, payment-method
+     selection, the GST order summary, the receipt and the invoice download.
+  2. **Delete the hardcoded price ladder.** `BuyCreditsPage.tsx:20-31` is the last literal price in
+     the product. Read `GET /api/pricing/published` instead: it returns one complete
+     `PublishedPriceBook` — `plans[]` grouped by `plan_group`, amounts as integer MINOR units keyed
+     by currency code, plus `tax` and `trial`. Render whatever rows come back; name no pack size and
+     no tier in code. That is what makes §8 Q41 and Q42 a data change, and it is the point.
+  3. The order summary's GST line comes from `taxBreakdown(amountMinor, currency, tax)` — do not
+     write a second 18 % anywhere. GST applies to INR billing only; international prices carry the
+     "excl. local taxes" notice when `tax.showInternationalTaxNotice` is on.
+  4. §8 Q1 IS RULED: there is NO per-deck pricing. No "₹X per deck" figure, no saving percentage
+     computed against a per-deck base — not in the wizard, not on a receipt, not in an invoice. The
+     prototype's own screens show them; omit them rather than reproduce them.
+  5. A plan or pack that is `active: false` in the published catalogue is not purchasable and is not
+     drawn. The free trial appears first only when `trial.showOnPricingPage` is on.
+
+CONSTRAINTS
+  - Own only: src/client/routes/AccountPage.tsx, src/client/routes/BuyCreditsPage.tsx. Anything
+    else — including src/shared/priceBook.ts and src/server/routes/pricing.ts — is a §9 request.
+  - §1.2: NO card number, expiry or CVV field reaches this application, whatever the prototype
+    draws. Payment is a provider-hosted surface; only its reference comes back.
+  - §1.3: the provider is stubbed. A purchase records what it WOULD have charged, exactly as
+    `email_outbox` records an unsent message, and says "Recorded" rather than "Paid".
+  - Credit metering is unchanged (§8 Q40): an evaluation still costs one credit.
+
+TEST
+  - Unit: order totals — subtotal, GST at the CONFIGURED rate, gross — for INR and for one
+    international currency, asserting GST is applied to INR only.
+  - Worker: a purchase writes exactly one credit_ledger row and one receipt, and a non-admin 403s.
+  - Client: the pack list renders from a fetched catalogue, NOT from a literal — change the fixture
+    and the screen changes. Assert that no rendered string matches /per[- ]deck|\/deck/.
+  - E2E: both branches through to a receipt.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  The suite is non-deterministic under load (§8 Q32) — check `uptime` before blaming your code, and
+  re-run a red file alone.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W6-B. Do not merge to main.
 ```
 
 ---
