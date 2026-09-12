@@ -57,8 +57,9 @@ import {
   isDocumentStatus,
   rollUpDocumentsStatus,
   seatNote,
-  seatUtilisation,
+  seatRowState,
   seatlessNote,
+  seatsRemaining,
   verifiableCount,
   type DocumentApplyTo,
   type DocumentItem,
@@ -830,18 +831,24 @@ async function loadSeatRows(c: Context<AppEnv>): Promise<SeatRowView[]> {
   )
     .bind(c.var.user.edition)
     .all<SeatRowDb>();
-  return results.map((r) => ({
-    cohortId: r.cohort_id,
-    programId: r.program_id,
-    programName: r.program_name,
-    cohortName: r.cohort_name,
-    name: `${r.program_name} · ${r.cohort_name}`,
-    capacity: r.seat_capacity,
-    filled: r.seats_filled,
-    utilisation: seatUtilisation(r.seat_capacity, r.seats_filled),
-    over: r.seats_filled > r.seat_capacity,
-    remaining: Math.max(0, r.seat_capacity - r.seats_filled),
-  }));
+  return results.map((r) => {
+    const row = {
+      name: `${r.program_name} · ${r.cohort_name}`,
+      capacity: r.seat_capacity,
+      filled: r.seats_filled,
+    };
+    const { pct, over } = seatRowState(row);
+    return {
+      ...row,
+      cohortId: r.cohort_id,
+      programId: r.program_id,
+      programName: r.program_name,
+      cohortName: r.cohort_name,
+      utilisation: pct,
+      over,
+      remaining: seatsRemaining(row),
+    };
+  });
 }
 
 /** The sign-ups the seatless callout counts, with enough to allocate from. */

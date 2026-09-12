@@ -7,7 +7,7 @@ import {
   fundReconcileNote,
   fundUtilisation,
   seatNote,
-  seatUtilisation,
+  seatRowState,
   seatlessNote,
   type FundRowView,
   type SeatRowView,
@@ -207,13 +207,8 @@ export function SeatCapacitySection() {
       const d = draft.find((x) => x.cohortId === r.cohortId);
       const capacity = d ? intOrZero(d.capacity) : r.capacity;
       const filled = d ? intOrZero(d.filled) : r.filled;
-      return {
-        ...r,
-        capacity,
-        filled,
-        utilisation: seatUtilisation(capacity, filled),
-        over: filled > capacity,
-      };
+      const { pct, over } = seatRowState({ name: r.name, capacity, filled });
+      return { ...r, capacity, filled, utilisation: pct, over };
     });
   }, [draft, payload]);
 
