@@ -35,6 +35,7 @@ import { BrandingSection } from "./Branding";
 import { CreditsBillingSection } from "./CreditsBilling";
 import { CrmSyncSection } from "./CrmSync";
 import { NotificationsSection } from "./Notifications";
+import { PriceConfigurationSection } from "./PriceConfiguration";
 import { QuestionBankSection } from "./QuestionBank";
 import { RubricAnchorsSection } from "./RubricAnchors";
 import { ScoringFrameworkSection } from "./ScoringFramework";
@@ -51,7 +52,7 @@ export const SECTION_COMPONENTS: Record<string, ComponentType | undefined> = {
   tm: TeamRolesSection, //           W4-A · Team & roles
   crm: CrmSyncSection, //            W3-D · CRM sync
   bl: CreditsBillingSection, //      W4-C · Credits & billing
-  pc: undefined, //                  W4-D · Price configuration
+  pc: PriceConfigurationSection, //  W4-D · Price configuration
   // Sign-up (admin + superuser only)
   sudocs: undefined, //              W5-A · Required documents
   suagr: undefined, //               W5-B · Agreements library

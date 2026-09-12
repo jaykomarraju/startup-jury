@@ -433,20 +433,39 @@ describe("price configuration", () => {
     expect(results.map((r) => r.code)).toEqual(["INR", "USD", "GBP", "EUR", "AED", "SGD", "AUD"]);
   });
 
-  it("carries the page's live FX rates against the INR base", async () => {
+  it("carries the page's FX rates against the INR base, all admin-maintained", async () => {
+    // W4-D (`0047`): the rates are unchanged — 1 INR = 0.01199 USD is still the
+    // prototype's own figure — but `source` is no longer 'live'. §1.3 keeps a
+    // rates vendor off the critical path, nothing ever fetched these, and a row
+    // claiming to be live was a lie about where the number came from. Asserted
+    // for EVERY row rather than one, which is stronger than what it replaces.
     const usd = await env.DB.prepare("SELECT rate, source FROM fx_rates WHERE currency = 'USD'")
       .first<{ rate: number; source: string }>();
-    expect(usd).toEqual({ rate: 0.01199, source: "live" });
+    expect(usd).toEqual({ rate: 0.01199, source: "manual" });
     const base = await env.DB.prepare("SELECT rate FROM fx_rates WHERE currency = 'INR'").first<{ rate: number }>();
     expect(base!.rate).toBe(1);
+    const live = await env.DB.prepare("SELECT COUNT(*) AS n FROM fx_rates WHERE source <> 'manual'")
+      .first<{ n: number }>();
+    expect(live!.n).toBe(0);
   });
 
-  it("seeds the four catalogues with the page's own prices", async () => {
+  it("seeds the four catalogues with the page's own prices, and no per-deck rate", async () => {
+    // W4-D (`0047`): §8 Q1 was RULED by the user on 2026-09-11 — there is no
+    // per-deck pricing. `0033` seeded the prototype's per-deck artefacts
+    // faithfully; two of them are retired here, so this test now pins the
+    // ruling instead of the artefact.
+    //
+    //   • credit_pack is 3, not 4: the `base_rate` row WAS the ₹500/deck rate.
+    //   • `per_unit_label` is empty for EVERY row, not just this one — which is
+    //     a stronger statement than the single "₹400/deck" it replaces.
+    //
+    // The prices themselves are untouched: ₹1,999/mo and ₹20,000 are still the
+    // prototype's own figures.
     const { results } = await env.DB.prepare(
       "SELECT plan_group, COUNT(*) n FROM price_plans GROUP BY plan_group ORDER BY plan_group",
     ).all<{ plan_group: string; n: number }>();
     expect(results).toEqual([
-      { plan_group: "credit_pack", n: 4 },
+      { plan_group: "credit_pack", n: 3 },
       { plan_group: "enterprise", n: 5 },
       { plan_group: "free_trial", n: 1 },
       { plan_group: "subscription", n: 2 },
@@ -457,8 +476,15 @@ describe("price configuration", () => {
     expect(pro!.amount_minor).toBe(199900); // ₹1,999 / mo
     const pack50 = await env.DB.prepare(
       "SELECT amount_minor, per_unit_label FROM price_amounts WHERE plan_id = 'pp_pack_50' AND currency = 'INR'",
-    ).first<{ amount_minor: number; per_unit_label: string }>();
-    expect(pack50).toEqual({ amount_minor: 2000000, per_unit_label: "₹400/deck" });
+    ).first<{ amount_minor: number; per_unit_label: string | null }>();
+    expect(pack50).toEqual({ amount_minor: 2000000, per_unit_label: null });
+
+    const perDeck = await env.DB.prepare(
+      "SELECT (SELECT COUNT(*) FROM price_amounts WHERE per_unit_label IS NOT NULL) labels, " +
+        "(SELECT COUNT(*) FROM price_plans WHERE saving_pct IS NOT NULL) savings, " +
+        "(SELECT COUNT(*) FROM price_plans WHERE code = 'base_rate') base",
+    ).first<{ labels: number; savings: number; base: number }>();
+    expect(perDeck).toEqual({ labels: 0, savings: 0, base: 0 });
   });
 
   it("holds the singleton tax and free-trial configuration", async () => {
