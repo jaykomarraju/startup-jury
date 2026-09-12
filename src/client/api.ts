@@ -779,6 +779,19 @@ export interface UserView {
   userType: string;
   initials: string;
   active: boolean;
+  // ── W4-A · the invite lifecycle (F0064) ──────────────────────────────────
+  // `sections.ts` reserved `invitePending` for this session ("Not on `UserView`
+  // yet — W4-A adds it with the invite lifecycle"); the rail's pending badge has
+  // been reading for it since Wave 1 and counting zero. Optional so a reader on
+  // an older payload still type-checks.
+  /** The credential has never been used — `invite_accepted_at IS NULL`. */
+  invitePending?: boolean;
+  /** When the invite last went out (create or resend). */
+  inviteSentAt?: string;
+  /** First successful sign-in, stamped by `POST /api/auth/login`. */
+  inviteAcceptedAt?: string;
+  /** The credential in play is one the SYSTEM issued and has not been changed. */
+  mustChangePassword?: boolean;
 }
 
 export function listUsers(): Promise<{ users: UserView[] }> {

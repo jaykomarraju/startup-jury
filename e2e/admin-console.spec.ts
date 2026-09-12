@@ -97,23 +97,34 @@ for (const admin of ADMINS) {
       }
     }
 
-    // Team & roles still carries the user-CRUD roster it replaced — with the
-    // same columns. `e2e/parity.spec.ts` used to pin this header set at
-    // /app/admin; the console opens on Scoring framework now, so the pin lives
-    // here (plan_parity.md §4: assert the exact header set).
+    // Team & roles carries the roster, and `e2e/parity.spec.ts` used to pin this
+    // header set at /app/admin; the console opens on Scoring framework now, so
+    // the pin lives here (plan_parity.md §4: assert the exact header set).
+    //
+    // W4-A, flagged per plan §4: the previous set was the flat user-CRUD page's
+    // (MEMBER · ROLE · ORGANIZATIONAL TITLE · TYPE · STATUS · ACTION) and three
+    // findings say it is wrong — F0182 (the repo's extra Type column; the
+    // prototype reads mentor as a role tag), F0066 (the missing plan pill) and
+    // F0123 (the missing invite lifecycle). The set is re-captured, not relaxed:
+    // it is still an exact equality, and the field is named per edition because
+    // the VC prototype calls it Designation on both its add-member rows.
     await rail.getByRole("button", { name: "Team & roles", exact: false }).click();
-    await expect(page.getByRole("button", { name: "Add user" })).toBeVisible();
-    // The roster table only exists once listUsers resolves; the Add-user card
-    // below it does not wait, so reading headers straight away races the fetch.
-    await expect(page.getByRole("columnheader", { name: "MEMBER" })).toBeVisible();
-    const headers = await page.locator("table thead th").allInnerTexts();
+    await expect(page.getByRole("button", { name: /Invite member/ })).toBeVisible();
+    // The roster table only exists once listUsers resolves; the cards below it
+    // do not wait, so reading headers straight away races the fetch.
+    // Scoped to the roster, and EXACT: the section also renders the
+    // task-permission grid, whose column headers are role pills — one of which
+    // is "Jury Member", which an unscoped substring match on "MEMBER" also hits.
+    const roster = page.getByTestId("member-roster");
+    await expect(roster.getByRole("columnheader", { name: "Member", exact: true })).toBeVisible();
+    const headers = await roster.locator("thead th").allInnerTexts();
     expect(headers.map((h) => h.replace(/\s+/g, " ").trim())).toEqual([
       "MEMBER",
       "ROLE",
-      "ORGANIZATIONAL TITLE",
-      "TYPE",
+      admin.edition === "vc" ? "DESIGNATION" : "ORGANIZATIONAL TITLE",
+      "PLAN",
       "STATUS",
-      "ACTION",
+      "ACTIONS",
     ]);
 
     // The title bar carries the scope chip and the global save.
