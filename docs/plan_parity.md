@@ -1057,7 +1057,7 @@ session places it.
 | `W4-D` | `src/client/routes/admin/sections.ts` *(console metadata, `W1-C`'s)* | **One line of copy the ruling falsified.** The `pc` subtitle still reads "…every plan, pack and enterprise SKU — **per-deck rates**, currencies and tax". Replace with "— currencies, exchange rates and tax". I did not edit it: it is the file every wave's sections share, and the section's own `<h2>` (which this session does own) already says the right thing. | Wave 4 integration |
 | `W4-D` | The free-trial grant path *(`W4-C` / `W6-A` — `src/server/routes/config.ts`, the signup path)* | **`free_trial_decks` and `free_trial_expiry_days` are configuration now, and nothing reads them.** F0093's other half: a new org is still given a seeded `credits_balance` (`0002` sets 3, `0007` overwrites it with 50), so changing the free deck limit in the console changes what the pricing page SAYS and not what a new account GETS. Whoever owns org creation should read the published book and grant `trial.decks` with reason `trial_grant`, and honour `expiryDays` (0 = never). | `W4-C` or Wave 6 |
 | Wave 4 integration | `src/shared/plans.ts` · `src/shared/priceBook.ts` *(`W4-C`'s and `W4-D`'s)* | **Already placed — the GST rule now agrees across both.** `priceBreakdown` takes a currency and `TaxBreakdown` carries `taxed`; four call sites pass it and the console hides the GST line on an untaxed price. `test/unit/pricing-seam.test.ts` holds them together. Neither owning session needs to do anything; whoever answers **§8 Q55** decides whether the two modules merge. |
-| Wave 4 integration | `docs/plan_parity.md` §10 — **`W5-A` has no prompt** | **Wave 5 cannot start as designed.** `W4-B`'s note says `W4-A` writes `W5-A` and `W4-B` writes `W5-B`; `W5-B` exists, `W5-A` does not — `W4-A` wrote `Wx-PWD` instead. `W5-A` owns `sudocs` (Required documents), `suseat` (Seat capacity, incubator) and `sufund` (Fund deployment, VC), all still `undefined` in `registry.tsx`, and holds migration **0049**. Someone must write it before Wave 5 runs. |
+| Wave 4 integration | `docs/plan_parity.md` §10 — **corrects an integration error, not a session's** | **Wave 4 integration first reported that `W5-A` had no prompt. That was wrong** — `W4-C` wrote it (and `W4-D` wrote `W6-B`), both below `Wx-OOO` in §10; a §10 heading scan truncated and missed them. Nothing was missing and nothing was rewritten. What the mis-read did surface, though, is real and is fixed here: `Wx-PWD` had **lost its closing fence** in the Wave 4 §10 union, so its prompt ran straight into `W5-B`'s heading — the same defect `W4-A` carried into this wave. `W4-B`'s note claiming `W4-C` / `W4-D` write no prompts is corrected in place, since both did. **Migration numbers reconciled across the three prompts that disagreed:** `W5-A` 0048, `W5-B` 0049 (was 0048, colliding), `Wx-PWD` 0050, and both Wave 5 sessions are told to raise ALLOTMENT_CEILING to the same 49 so that shared line conflicts with itself. **Stale §8 references repointed after the Wave 4 renumbering:** `W5-A` cited Q45 four times meaning `W4-C`'s seat question, now **Q50**; `W6-B` cited Q41/Q42 meaning `W4-D`'s, now **Q51/Q52**. Renumbering a question is not free — it silently invalidates every prompt already written against the old number. |
 | Wave 4 integration | **The deployed database, not a file** | **Production D1 `startup-jury-db` was 22 migrations behind** (at 0024; the repo is at 0047), so deploying current code against it would 500 on most screens. Confirmed with the user on 2026-09-12 that it is a demo instance and migrating is authorised. Recorded because the drift will recur: nothing in the programme applies migrations to the deployed database, and every wave adds more. |
 | Wave 4 integration | **`migrations/0038_scoring_framework_fixups.sql` — its stated assumption is false against real data** | **It asserts in its own comment that the two retired parameters it deletes carry no child rows** — "`scores` (0001), the five-band anchors (0027) and the question bank (0028) are all seeded by explicit id and none names these two". True of a freshly seeded database; NOT true of one that has been running. Production held **9 `scores` rows** referencing them (7 × `inc_add_program_fit`, 2 × `vc_add_thesis_fit`), and `scores.parameter_id` has no `ON DELETE CASCADE`, so the migration died on `FOREIGN KEY constraint failed` after 13 of 22 had applied. Resolved on 2026-09-12 by repointing the 9 rows onto the surviving ids (`inc_add_pa_1`, `vc_add_assoc_1`) — a rename, which is what the collision always was — then resuming. None of the 9 collided with an existing score, so nothing was lost. **The lesson generalises: a migration verified only against the local seed is not verified.** Every later migration that deletes or re-keys seeded rows carries the same risk. |
 
@@ -1435,7 +1435,7 @@ You are running session Wx-PWD — finishing the credential lifecycle — of the
 parity programme. You have no prior context. Everything you need is in the repo.
 
 SETUP
-  nvm use
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
   git worktree add ../sj-Wx-PWD -b parity/Wx-PWD main
   cd ../sj-Wx-PWD && npm ci
   python3 docs/prototype/tools/split-prototypes.py
@@ -1471,7 +1471,7 @@ BUILD
 CONSTRAINTS
   - Own only: src/server/routes/auth.ts, src/client/routes/AccountPage.tsx (or whatever My account
     is, check `nav.ts` for the `account` slug), and your own new files. You own migration 0050
-    and only 0050 — `W5-B` holds 0048 and `W5-A` holds 0049. Raise ALLOTMENT_CEILING in
+    and only 0050 — `W5-A` holds 0048 and `W5-B` holds 0049. Raise ALLOTMENT_CEILING in
     test/worker/migrations-w1b.test.ts to match, in the same commit.
   - Do NOT touch src/server/routes/users.ts — the verb and its guards are W4-A's and are tested.
     You are giving it a caller, not changing it.
@@ -1495,12 +1495,14 @@ FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions (Q42 is yours to close)
   and §9 Cross-session requests, then write the next prompt(s) into §10 using the §5 template.
   Commit to parity/Wx-PWD. Do not merge to main.
+```
+
 ### `W5-B` — agreements library & authorised signatories *(written by `W4-B`)*
 
 > **Which Wave 4 session writes which Wave 5 prompt.** Wave 5 has two sessions and Wave 4 has four, so
 > the letters map straight across: **`W4-A` writes `W5-A`**, **`W4-B` writes `W5-B`** (this one), and
-> `W4-C` / `W4-D` write none — they carry the §7, §8 and §9 updates only. If you are `W4-C` or `W4-D`
-> and find no prompt of yours to write, that is the reason, not an omission.
+> `W4-C` / `W4-D` were told they write none. **They wrote some anyway, and it was the right call:**
+> `W4-C` wrote `W5-A` and `W4-D` wrote `W6-B`, both below. Wave 4 integration confirmed both exist.
 >
 > Wave 5's base branch is **`main` after Wave 4 integration** — fill the commit in when you know it.
 
@@ -1510,7 +1512,7 @@ and the signing-method model underneath them — of the ai.STARTUPJURY parity pr
 prior context.
 
 SETUP
-  nvm use
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
   git worktree add ../sj-W5-B -b parity/W5-B main
   cd ../sj-W5-B && npm ci
   python3 docs/prototype/tools/split-prototypes.py
@@ -1550,9 +1552,10 @@ CONSTRAINTS
     shared vocabulary module if the client and server both need it — `src/shared/crm.ts`,
     `src/shared/audit.ts` and `src/shared/branding.ts` are the precedent, and declaring it in §9
     is what makes it legitimate.
-  - `migrations/` — you own 0048 and only 0048. You WILL need it: none of these tables exist.
+  - `migrations/` — you own 0049 and only 0049. You WILL need it: none of these tables exist.
     `test/worker/migrations-w1b.test.ts` caps migration numbers at ALLOTMENT_CEILING; Wave 4 left
-    it at 47, so raise it to 48 in the same commit or your migration fails the numbering guard.
+    it at 47. Raise it to **49** — the same value `W5-A` is told to write, so the conflict you hit
+    on that one line resolves to itself.
   - `src/client/index.css`, `src/shared/nav.ts`, `src/shared/roles.ts` and `src/client/App.tsx` are
     §2.2 serialisation-hazard files and are NOT yours.
   - The e-signature provider is a §1.3 stub. If you find yourself reaching for an API key, stop and
@@ -1653,7 +1656,7 @@ FINISH
 
 > **Why this prompt exists now, and why it is Wave 6's.** `W4-D` made the price catalogue editable
 > data with a publish step, which means `BuyCreditsPage.tsx`'s hardcoded `PACKS` literal is no longer
-> merely duplicated — it now contradicts the published catalogue (§8 Q41). `W6-B` owns that file.
+> merely duplicated — it now contradicts the published catalogue (§8 Q51). `W6-B` owns that file.
 > Wave 5's two prompts (`W5-A`, `W5-B`) are still unwritten; a Wave 4 sibling or Wave 4 integration
 > should write them from §6.
 
@@ -1662,7 +1665,7 @@ You are running session W6-B — My account and the purchase wizard — of the a
 programme. You have no prior context. Everything you need is in the repo.
 
 SETUP
-  nvm use
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
   git worktree add ../sj-W6-B -b parity/W6-B main
   cd ../sj-W6-B && npm ci
   python3 docs/prototype/tools/split-prototypes.py
@@ -1687,7 +1690,7 @@ BUILD
      the product. Read `GET /api/pricing/published` instead: it returns one complete
      `PublishedPriceBook` — `plans[]` grouped by `plan_group`, amounts as integer MINOR units keyed
      by currency code, plus `tax` and `trial`. Render whatever rows come back; name no pack size and
-     no tier in code. That is what makes §8 Q41 and Q42 a data change, and it is the point.
+     no tier in code. That is what makes §8 Q51 and Q52 a data change, and it is the point.
   3. The order summary's GST line comes from `taxBreakdown(amountMinor, currency, tax)` — do not
      write a second 18 % anywhere. GST applies to INR billing only; international prices carry the
      "excl. local taxes" notice when `tax.showInternationalTaxNotice` is on.
@@ -1731,11 +1734,11 @@ FINISH
 > prints "Enterprise · 5 seats" from `billing_subscriptions.seats`, which is a *purchased* seat
 > entitlement and the first place one has ever existed in this repo. `0036`'s `seat_capacity` is a
 > different thing entirely — cohort seats for startups — and F0111's real seat model (per-user plan
-> tier, capacity enforced on user creation, a seat purchase flow) is still unbuilt. Read §8 Q45 before
+> tier, capacity enforced on user creation, a seat purchase flow) is still unbuilt. Read §8 Q50 before
 > deciding which of the two "seats" this section is about; the answer is the cohort one, and the
 > entitlement one stays `W4-C`'s tile until someone owns F0111.
 >
-> If another Wave 4 session also drafted a `W5-A` prompt, keep the one that names §8 Q45 and merge any
+> If another Wave 4 session also drafted a `W5-A` prompt, keep the one that names §8 Q50 and merge any
 > extra deliverables into it.
 
 ```
@@ -1743,13 +1746,13 @@ You are running session W5-A — Required documents, and Seat capacity / Fund de
 ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
 
 SETUP
-  nvm use
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
   git worktree add ../sj-W5-A -b parity/W5-A main
   cd ../sj-W5-A && npm ci
   python3 docs/prototype/tools/split-prototypes.py
 
 READ FIRST (in this order, and nothing else)
-  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §4 Testing, §8 Q45 (which of the
+  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §4 Testing, §8 Q50 (which of the
      two meanings of "seat" this section is about), then ONLY your entry for W5-A in §6.
   2. Your worklist:
        python3 docs/prototype/tools/findings.py --area "Admin console" \
@@ -1776,7 +1779,7 @@ CONSTRAINTS
   - Own only: src/client/routes/admin/RequiredDocuments.tsx, SeatCapacity.tsx, a NEW
     src/server/routes/signup-config.ts, and one line each in src/server/index.ts and registry.tsx.
   - You own migration 0048 and only 0048 (Wave 5 is 0048–0049; W5-B has 0049).
-  - Seat CAPACITY here is the cohort's, per §8 Q45. Do not touch `billing_subscriptions.seats` or
+  - Seat CAPACITY here is the cohort's, per §8 Q50. Do not touch `billing_subscriptions.seats` or
     src/shared/plans.ts — that is the purchased entitlement and it is W4-C's.
   - The document lifecycle is a state machine: an illegal transition is a 400, not a silent write.
 
