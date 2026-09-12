@@ -33,6 +33,18 @@ import type { UserView } from "../../src/client/api";
  * is the one that accounts for an administrator's overrides.
  */
 
+/**
+ * Every test here mounts the whole section, and the grid alone is 105 (or 144)
+ * interactive cells — a heavy jsdom render by the standards of this suite. On an
+ * idle machine each test is well under a second; with the sibling parity
+ * worktrees running it has been measured at ten. The 5 s default is therefore a
+ * budget these tests can blow for reasons that have nothing to do with what they
+ * assert, which is the failure mode §8 Q28 describes and `e2e/parity.spec.ts`
+ * and `e2e/coverage.spec.ts` already carry explicit budgets for. Nothing is
+ * relaxed about the assertions; only the clock.
+ */
+vi.setConfig({ testTimeout: 30_000 });
+
 function principal(edition: Edition, role: Role = "admin"): AuthUser {
   return { id: "u_admin", name: "Nisha Kapoor", initials: "NK", role, edition };
 }
@@ -372,9 +384,12 @@ describe("member roster (F0064 / F0123 / F0148)", () => {
     ]);
     renderSection(<TeamRolesSection />, "incubator");
     await screen.findByText(/Active members/);
-    expect(within(screen.getByText("Nisha Kapoor").closest("tr")!).getByText("You")).toBeInTheDocument();
+    // Scoped to the roster: the owner's name and the words "Account owner" also
+    // appear on the Account owner card above it.
+    const roster = within(screen.getByTestId("member-roster"));
+    expect(within(roster.getByText("Nisha Kapoor").closest("tr")!).getByText("You")).toBeInTheDocument();
     expect(
-      within(screen.getByText("Priya Sharma").closest("tr")!).getByText("Account owner"),
+      within(roster.getByText("Priya Sharma").closest("tr")!).getByText("Account owner"),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Remove / })).toBeNull();
   });

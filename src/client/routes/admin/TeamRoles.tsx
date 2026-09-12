@@ -1011,8 +1011,11 @@ function PermissionCards({
     })).filter((g) => g.tasks.length > 0);
   }, [data]);
 
-  async function writeCells(cells: { role: string; taskId: string; granted: boolean }[]) {
-    if (!data) return;
+  /** Returns whether the write actually landed — the reset's Undo depends on it. */
+  async function writeCells(
+    cells: { role: string; taskId: string; granted: boolean }[],
+  ): Promise<boolean> {
+    if (!data) return false;
     const key = cells.length === 1 ? `${cells[0].taskId}:${cells[0].role}` : "bulk";
     setBusyCell(key);
     setError(null);
@@ -1028,9 +1031,11 @@ function PermissionCards({
     });
     try {
       await putPermissionCells(cells);
+      return true;
     } catch (err) {
       setData(previous);
       setError(refusalMessage(err));
+      return false;
     } finally {
       setBusyCell(null);
     }
@@ -1099,13 +1104,13 @@ function PermissionCards({
             data={data}
             undoAdmin={undoAdmin}
             busy={busyCell !== null}
+            // Only on a write that landed: a refused PUT must not leave the
+            // card claiming a change it did not make, or offering to undo one.
             onApply={async (cells, snapshot) => {
-              await writeCells(cells);
-              setUndoAdmin(snapshot);
+              if (await writeCells(cells)) setUndoAdmin(snapshot);
             }}
             onUndo={async (cells) => {
-              await writeCells(cells);
-              setUndoAdmin(null);
+              if (await writeCells(cells)) setUndoAdmin(null);
             }}
           />
         </div>

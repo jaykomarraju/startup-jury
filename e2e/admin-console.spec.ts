@@ -112,10 +112,12 @@ for (const admin of ADMINS) {
     await expect(page.getByRole("button", { name: /Invite member/ })).toBeVisible();
     // The roster table only exists once listUsers resolves; the cards below it
     // do not wait, so reading headers straight away races the fetch.
-    await expect(page.getByRole("columnheader", { name: "MEMBER" })).toBeVisible();
-    // Scoped to the roster: the section also renders the task-permission grid,
-    // which is a second table with a header row of its own.
-    const headers = await page.getByTestId("member-roster").locator("thead th").allInnerTexts();
+    // Scoped to the roster, and EXACT: the section also renders the
+    // task-permission grid, whose column headers are role pills — one of which
+    // is "Jury Member", which an unscoped substring match on "MEMBER" also hits.
+    const roster = page.getByTestId("member-roster");
+    await expect(roster.getByRole("columnheader", { name: "Member", exact: true })).toBeVisible();
+    const headers = await roster.locator("thead th").allInnerTexts();
     expect(headers.map((h) => h.replace(/\s+/g, " ").trim())).toEqual([
       "MEMBER",
       "ROLE",
