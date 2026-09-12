@@ -20,6 +20,7 @@ import {
   signalTag,
   decisionScore,
   fromDisplayScale,
+  toDisplayScale,
   overrideNeedsRationale,
   shortlistFloor,
 } from "../../shared/scoring";
@@ -27,7 +28,17 @@ import { RUBRIC_BANDS } from "../../shared/types";
 import { loadScoringSettings } from "../config/scoringSettings";
 import { getStage, performAction, transitionByAction } from "../../pipeline";
 import { denyMentor, requireAuth, requireRole, requireTask } from "../auth/middleware";
-import { sendEmail, buildQueryEmail, buildSignupEmail } from "../email/outbox";
+import {
+  sendEmail,
+  buildQueryEmail,
+  buildSignupEmail,
+  emitNotification,
+} from "../email/outbox";
+import { evaluatorNoun } from "../../shared/notifications";
+// W3-C — the audit store. `listAudit` is what makes the Activity card below
+// and the console's Audit log section ONE store rather than two; F0052 is
+// the score-override half.
+import { listAudit, recordScoreOverrides, toAuditView } from "../audit/log";
 
 const pipeline = new Hono<AppEnv>();
 // Scope auth to this router's own prefixes (not "*"): mounted at /api, a "*"
@@ -54,6 +65,8 @@ interface DeckRow {
   founder_email: string | null;
   assigned_to: string | null;
   uploaded_by: string | null;
+  /** Bumped by `addDeckVersion`; keys the per-version notification dedupe. */
+  content_version: number | null;
 }
 
 // VC human-scoring stages (analyst core scores, then associate + partner review).
@@ -72,7 +85,8 @@ async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
 async function loadDeck(c: Context<AppEnv>, id: string): Promise<DeckRow | null> {
   const user = c.var.user;
   const row = await c.env.DB.prepare(
-    "SELECT id, edition, name, status, founder, founder_email, assigned_to, uploaded_by FROM decks WHERE id = ? AND edition = ?",
+    "SELECT id, edition, name, status, founder, founder_email, assigned_to, uploaded_by, content_version " +
+      "FROM decks WHERE id = ? AND edition = ?",
   )
     .bind(id, user.edition)
     .first<DeckRow>();
@@ -83,6 +97,45 @@ async function loadDeck(c: Context<AppEnv>, id: string): Promise<DeckRow | null>
 
 function eventId(deckId: string): string {
   return `${deckId}_evt_${crypto.randomUUID()}`;
+}
+
+/**
+ * W3-B — has every evaluator this deck was going to draw now scored it?
+ *
+ * The prototype's fourth alert ("All jury complete") assumes a panel; the two
+ * editions express one differently, so the question is asked differently:
+ *
+ *   • **incubator** — a deck is assigned to exactly ONE evaluator
+ *     (`decks.assigned_to`, set by `assign_jury`). The panel is complete when
+ *     that person has an `evaluations` row.
+ *   • **VC** — there is no assignee. The deal is scored as it walks
+ *     analyst → associate → partner, so the panel is complete when all three of
+ *     those roles have scored it.
+ *
+ * Both read `evaluations`, which `POST /decks/:id/evaluate` writes one row of
+ * per evaluator and replaces on a re-submit, so the count never double-counts.
+ */
+async function allEvaluatorsHaveScored(
+  c: Context<AppEnv>,
+  deck: DeckRow,
+): Promise<boolean> {
+  if (deck.edition === "incubator") {
+    if (!deck.assigned_to) return false;
+    const row = await c.env.DB.prepare(
+      "SELECT 1 AS n FROM evaluations WHERE deck_id = ? AND evaluator_id = ?",
+    )
+      .bind(deck.id, deck.assigned_to)
+      .first<{ n: number }>();
+    return Boolean(row);
+  }
+  const scored = (
+    await c.env.DB.prepare(
+      "SELECT DISTINCT u.role AS role FROM evaluations e JOIN users u ON u.id = e.evaluator_id WHERE e.deck_id = ?",
+    )
+      .bind(deck.id)
+      .all<{ role: string }>()
+  ).results.map((r) => r.role);
+  return ["analyst", "associate", "partner"].every((r) => scored.includes(r));
 }
 
 interface TransitionBody {
@@ -496,6 +549,56 @@ pipeline.post(
     }
 
     await c.env.DB.batch(stmts);
+    // F0052 — a human value more than `delta` from the AI's is an override, and
+    // the prototype's Score rows carry both numbers and the stated reason.
+    await recordScoreOverrides(c, {
+      deckId: deck.id,
+      deckName: deck.name,
+      scores: clean,
+      aiByParam,
+      delta: scoring.overrideRationaleDelta,
+      toDisplay: (v) => toDisplayScale(v, scoring.scoreScale),
+    });
+
+    // ── W3-B producers — rows 3 and 4 of the Notifications section ───────────
+    // Both fire here because this is the only route that writes an
+    // `evaluations` row, and both are keyed so the idempotent re-submit above
+    // (which DELETEs and re-INSERTs this evaluator's rows) re-scores without
+    // re-alerting.
+    await emitNotification(c.env, {
+      event: "evaluator_scores_submitted",
+      edition: deck.edition,
+      title: `${evaluatorNoun(deck.edition)} submitted scores: ${deck.name}`,
+      body:
+        `${user.name} submitted scores for ${deck.name}.\n\n` +
+        `Weighted total ${total.toFixed(2)} · ${signalTag(total)}.`,
+      link: `/app/decks/${deck.id}`,
+      deckId: deck.id,
+      actorId: user.id,
+      // Keyed by VERSION as well, mirroring `ai_scoring_complete` in
+        // evaluate.ts. Without it the key is durable for the life of the deck:
+        // human evaluation rows survive a resubmit, so once an evaluator had
+        // scored a deck once, every later submission — including a fresh score on
+        // a resubmitted v2 — alerted nobody, and "all evaluations complete" fired
+        // exactly once per deck no matter how many versions the panel worked
+        // through. The PM is the whole audience for both. Wave 3 integration.
+        dedupeKey: `evaluator_scores_submitted:${deck.id}:${user.id}:v${deck.content_version ?? 1}`,
+    });
+
+    if (await allEvaluatorsHaveScored(c, deck)) {
+      await emitNotification(c.env, {
+        event: "all_evaluations_complete",
+        edition: deck.edition,
+        title: `All evaluations complete: ${deck.name}`,
+        body:
+          `Every evaluator assigned to ${deck.name} has submitted their scores. ` +
+          "It is ready for review.",
+        link: `/app/decks/${deck.id}`,
+        deckId: deck.id,
+        actorId: user.id,
+        dedupeKey: `all_evaluations_complete:${deck.id}:v${deck.content_version ?? 1}`,
+      });
+    }
     return c.json({ ok: true, weightedTotal: total, signal: signalTag(total), status });
   },
 );
@@ -671,6 +774,24 @@ pipeline.post("/queries/:id/respond", async (c) => {
     }
   }
   await c.env.DB.batch(stmts);
+
+  // W3-B producer — "Startup responded to clarification questions". Default OFF
+  // in the prototype's mask, which is why this one is easy to believe is dead:
+  // the producer exists and the toggle starts down. Keyed on the query, so a
+  // staff member relaying a corrected answer does not alert the room twice.
+  await emitNotification(c.env, {
+    event: "founder_responded",
+    edition: deck.edition,
+    title: `Startup responded: ${deck.name}`,
+    body:
+      `${deck.founder ?? "The founder"} answered the clarification questions on ${deck.name}.\n\n` +
+      `${response}`,
+    link: `/app/decks/${deck.id}`,
+    deckId: deck.id,
+    actorId: user.id,
+    dedupeKey: `founder_responded:${query.id}`,
+  });
+
   return c.json({ ok: true, status });
 });
 
@@ -869,67 +990,40 @@ pipeline.get("/decks/:id/my-scores", async (c) => {
 /**
  * GET /activity — the workspace ACTIVITY LOG (Aug-2026 issue 8).
  *
- * The All-decks right rail shows this under the cohort rating thresholds. It is
- * the same `pipeline_events` audit trail as `/decks/:id/events`, but across the
- * whole edition and capped, optionally narrowed to a program / cohort so it
- * matches the toolbar filter the user is looking at.
+ * The All-decks right rail shows this under the cohort rating thresholds: the
+ * most recent stage transitions across the edition, optionally narrowed to the
+ * program / cohort the toolbar filter is on.
+ *
+ * **W3-C — this is now a FILTERED VIEW, not a second source of truth.** It goes
+ * through `listAudit()` — the same reader the console's Audit log section uses —
+ * with `categories: ["pipeline"]`, so the card and the section can never
+ * disagree about what happened. The response shape, the 12-row default, the
+ * 1–50 clamp and the founder isolation are all unchanged; only the query moved.
  */
 pipeline.get("/activity", async (c) => {
   const { id: userId, edition, role } = c.var.user;
   const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 12) || 12, 1), 50);
-  const programId = c.req.query("programId");
-  const cohortId = c.req.query("cohortId");
 
-  const clauses = ["d.edition = ?"];
-  const params: unknown[] = [edition];
-  // Founders only ever see their own submissions' history.
-  if (role === "founder") {
-    clauses.push("d.uploaded_by = ?");
-    params.push(userId);
-  }
-  if (programId) {
-    clauses.push("d.program_id = ?");
-    params.push(programId);
-  }
-  if (cohortId) {
-    clauses.push("d.cohort_id = ?");
-    params.push(cohortId);
-  }
-  params.push(limit);
-
-  const rows = (
-    await c.env.DB.prepare(
-      "SELECT e.id, e.deck_id, e.from_stage, e.to_stage, e.action, e.note, e.created_at, " +
-        "d.name AS deck_name, u.name AS actor_name, u.title AS actor_title " +
-        "FROM pipeline_events e JOIN decks d ON d.id = e.deck_id " +
-        "LEFT JOIN users u ON u.id = e.actor_id WHERE " +
-        clauses.join(" AND ") +
-        " ORDER BY e.created_at DESC, e.rowid DESC LIMIT ?",
-    )
-      .bind(...params)
-      .all<{
-        id: string;
-        deck_id: string;
-        from_stage: string | null;
-        to_stage: string;
-        action: string;
-        note: string | null;
-        created_at: string;
-        deck_name: string;
-        actor_name: string | null;
-        actor_title: string | null;
-      }>()
-  ).results;
+  const { rows } = await listAudit(c.env.DB, {
+    edition,
+    categories: ["pipeline"],
+    programId: c.req.query("programId") || undefined,
+    cohortId: c.req.query("cohortId") || undefined,
+    // Founders only ever see their own submissions' history.
+    founderId: role === "founder" ? userId : undefined,
+    limit,
+  });
 
   return c.json({
     events: rows.map((r) => ({
-      id: r.id,
+      ...toAuditView(edition, r),
+      // The card renders the transition itself, so the two stage labels stay on
+      // the wire beside the composed sentence every other reader uses.
       deckId: r.deck_id,
       deckName: r.deck_name,
       toStage: r.to_stage,
-      toLabel: getStage(edition, r.to_stage)?.label ?? r.to_stage,
-      fromLabel: r.from_stage ? getStage(edition, r.from_stage)?.label ?? r.from_stage : null,
-      action: r.action,
+      toLabel: r.to_stage ? (getStage(edition, r.to_stage)?.label ?? r.to_stage) : null,
+      fromLabel: r.from_stage ? (getStage(edition, r.from_stage)?.label ?? r.from_stage) : null,
       note: r.note,
       actorName: r.actor_name ?? "AI",
       actorTitle: r.actor_title ?? undefined,

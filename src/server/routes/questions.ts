@@ -33,6 +33,9 @@ import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { parseMissingFields } from "../../shared/intake";
 import { requireAuth, requireTask } from "../auth/middleware";
+// W3-C — the bank is scoring configuration: an edit changes what a founder
+// is asked, so it belongs in the Config trail.
+import { auditConfig } from "../audit/events";
 import {
   areasNeedingResponse,
   buildQueryMessage,
@@ -202,6 +205,11 @@ questions.post("/", requireAdmin, async (c) => {
   )
     .bind(id, area.id, seq, text)
     .run();
+  await auditConfig(c, "bank_question_added", `Clarification question added to ${area.name}`, {
+    targetType: "question_bank",
+    targetId: id,
+    detail: { text },
+  });
   return c.json({ question: { id, parameterId: area.id, seq, text } }, 201);
 });
 
@@ -240,6 +248,10 @@ questions.put("/reorder", requireAdmin, async (c) => {
       c.env.DB.prepare("UPDATE question_bank SET seq = ? WHERE id = ?").bind(i + 1, id),
     ),
   );
+  await auditConfig(c, "bank_reordered", `Clarification questions reordered for ${area.name}`, {
+    targetType: "question_bank",
+    targetId: area.id,
+  });
   return c.json({ ok: true, parameterId: area.id, ids });
 });
 
@@ -251,6 +263,11 @@ questions.put("/:id", requireAdmin, async (c) => {
   const text = cleanText(body.text);
   if (!text) return c.json({ error: "text_required" }, 400);
   await c.env.DB.prepare("UPDATE question_bank SET text = ? WHERE id = ?").bind(text, row.id).run();
+  await auditConfig(c, "bank_question_edited", `Clarification question Q${row.seq} reworded`, {
+    targetType: "question_bank",
+    targetId: row.id,
+    detail: { from: row.text, to: text },
+  });
   return c.json({
     question: { id: row.id, parameterId: row.parameter_id, seq: row.seq, text },
   });
@@ -266,6 +283,11 @@ questions.delete("/:id", requireAdmin, async (c) => {
   const row = await loadQuestion(c, c.req.param("id"));
   if (!row) return c.json({ error: "not_found" }, 404);
   await c.env.DB.prepare("UPDATE question_bank SET active = 0 WHERE id = ?").bind(row.id).run();
+  await auditConfig(c, "bank_question_removed", `Clarification question Q${row.seq} removed`, {
+    targetType: "question_bank",
+    targetId: row.id,
+    detail: { text: row.text },
+  });
   return c.json({ ok: true, id: row.id, active: false });
 });
 

@@ -17,6 +17,8 @@ import { ROLE_LABELS, type Edition, type Role } from "../../shared/roles";
 import { PERMISSION_ROLES, permissionTasksFor } from "../../shared/types";
 import { can, isMatrixRole, isMatrixTask } from "../../shared/permissions";
 import { loadEditionOverrides } from "../auth/permissions";
+// W3-C — an authorisation change is the one event an audit trail most needs.
+import { auditPermissionCells } from "../audit/events";
 
 const permissions = new Hono<AppEnv>();
 permissions.use("*", requireAuth);
@@ -85,6 +87,23 @@ permissions.put("/", requireConsole, async (c) => {
     }
   }
 
+  // Read the PRIOR state before writing it. The audit summary used to render
+  // "denied → allowed" from the NEW value alone, so re-granting an already
+  // granted cell recorded a flip that never happened — a fabricated before-state
+  // in the one log that exists to be trusted about exactly this. Wave 3
+  // integration.
+  const before = new Map<string, boolean>(
+    (
+      await c.env.DB.prepare(
+        `SELECT role, task_id, granted FROM role_permissions WHERE edition = ? AND (${cells
+          .map(() => "(role = ? AND task_id = ?)")
+          .join(" OR ")})`,
+      )
+        .bind(edition, ...cells.flatMap((cell) => [cell.role as Role, cell.taskId]))
+        .all<{ role: string; task_id: string; granted: number }>()
+    ).results.map((r) => [`${r.role}:${r.task_id}`, r.granted === 1]),
+  );
+
   await c.env.DB.batch(
     cells.map((cell) =>
       c.env.DB.prepare(
@@ -94,6 +113,13 @@ permissions.put("/", requireConsole, async (c) => {
           "granted = excluded.granted, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
       ).bind(edition, cell.role as Role, cell.taskId, cell.granted ? 1 : 0, actorId),
     ),
+  );
+
+  await auditPermissionCells(
+    c,
+    cells,
+    new Map(permissionTasksFor(edition).map((t) => [t.id, t.label])),
+    before,
   );
 
   const overrides = await loadEditionOverrides(c.env.DB, edition);

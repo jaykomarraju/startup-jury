@@ -5,7 +5,8 @@
 // Cloudflare Email binding — the selection logic stays the same.
 
 import type { Env } from "./types";
-import { sendEmail, buildReminderEmail } from "./email/outbox";
+import type { Edition } from "../shared/roles";
+import { sendEmail, buildReminderEmail, emitNotification } from "./email/outbox";
 import { sweepStuckEvaluations, type SweepResult } from "./ai/health";
 
 /** One assigned-but-unscored deck row (assignee + deck). */
@@ -94,4 +95,105 @@ export async function runStuckSweep(env: Env): Promise<SweepResult> {
     );
   }
   return result;
+}
+
+/**
+ * W3-B producer — "Monthly usage summary report", the tenth of the prototype's
+ * ten events and the only one with no moment in the application to hang on.
+ *
+ * It rides the EXISTING daily cron rather than adding a third schedule, and is
+ * made monthly by its dedupe key alone: `emitNotification` keys each recipient's
+ * message on the reporting month, and `email_outbox.dedupe_key` carries a UNIQUE
+ * index, so the first daily run of a month sends the digest and the other thirty
+ * are no-ops. That is one mechanism doing two jobs — idempotence and schedule —
+ * and it is the same one that makes a queue retry safe everywhere else.
+ *
+ * The report covers the month that just ENDED, which is what makes it a report
+ * rather than a partial count.
+ */
+export interface UsageSummary {
+  edition: Edition;
+  /** The month reported on, `YYYY-MM`. */
+  month: string;
+  decksSubmitted: number;
+  decksAiScored: number;
+  evaluationsSubmitted: number;
+  creditsRemaining: number;
+}
+
+/** The calendar month before `now`, as `YYYY-MM`. */
+export function previousMonth(now: Date): string {
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/** Count the month's activity for one edition. Pure SQL, no side effects. */
+export async function usageSummary(
+  env: Env,
+  edition: Edition,
+  month: string,
+): Promise<UsageSummary> {
+  const decks = await env.DB.prepare(
+    "SELECT COUNT(*) AS submitted, SUM(CASE WHEN ai_score IS NOT NULL THEN 1 ELSE 0 END) AS scored " +
+      "FROM decks WHERE edition = ? AND substr(created_at, 1, 7) = ?",
+  )
+    .bind(edition, month)
+    .first<{ submitted: number; scored: number | null }>();
+
+  const evals = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM evaluations e JOIN decks d ON d.id = e.deck_id " +
+      "WHERE d.edition = ? AND substr(e.submitted_at, 1, 7) = ? AND e.evaluator_id IS NOT NULL",
+  )
+    .bind(edition, month)
+    .first<{ n: number }>();
+
+  const org = await env.DB.prepare("SELECT credits_balance FROM org_settings WHERE edition = ?")
+    .bind(edition)
+    .first<{ credits_balance: number }>();
+
+  return {
+    edition,
+    month,
+    decksSubmitted: decks?.submitted ?? 0,
+    decksAiScored: decks?.scored ?? 0,
+    evaluationsSubmitted: evals?.n ?? 0,
+    creditsRemaining: org?.credits_balance ?? 0,
+  };
+}
+
+/** The digest's body. Pure, so the copy is unit-testable without a database. */
+export function buildUsageSummaryBody(s: UsageSummary): string {
+  return (
+    `Usage for ${s.month}:\n\n` +
+    `  • Pitchdecks submitted: ${s.decksSubmitted}\n` +
+    `  • Decks AI pre-scored: ${s.decksAiScored}\n` +
+    `  • Evaluations submitted: ${s.evaluationsSubmitted}\n` +
+    `  • Evaluation credits remaining: ${s.creditsRemaining}\n\n` +
+    "Open the Admin console for the full breakdown."
+  );
+}
+
+/**
+ * Send each edition's digest for the month just ended. Safe to call every day —
+ * see the header. Returns the summaries it produced (for tests / observability).
+ */
+export async function runMonthlyUsageSummary(
+  env: Env,
+  now: Date = new Date(),
+): Promise<UsageSummary[]> {
+  const month = previousMonth(now);
+  const out: UsageSummary[] = [];
+  for (const edition of ["incubator", "vc"] as const) {
+    const summary = await usageSummary(env, edition, month);
+    out.push(summary);
+    await emitNotification(env, {
+      event: "monthly_usage_summary",
+      edition,
+      title: `Monthly usage summary — ${month}`,
+      body: buildUsageSummaryBody(summary),
+      link: "/app/admin",
+      dedupeKey: `monthly_usage_summary:${edition}:${month}`,
+    });
+  }
+  return out;
 }

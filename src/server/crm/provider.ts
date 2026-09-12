@@ -23,6 +23,7 @@
 import type { Env } from "../types";
 import type { Edition } from "../../shared/roles";
 import type { CrmOperation, CrmProvider, CrmSyncStatus } from "../../shared/crm";
+import { emitNotification } from "../email/outbox";
 
 /** What a sync attempt would carry. Never a credential. */
 export interface CrmSyncAttempt {
@@ -141,6 +142,12 @@ export async function recordSyncAttempt(
   attempt: CrmSyncAttempt,
   connection: { credentialRef: string | null },
   now: () => string = () => new Date().toISOString(),
+  // W3-B — the same seam `evaluateDeck` takes its `callModel` through, and for
+  // the same reason: `ADAPTERS` is empty by design (§1.3), so `status='failed'`
+  // is otherwise unreachable and the "CRM sync error" producer below could not
+  // be tested at its real call site. Production passes nothing and resolves the
+  // client exactly as before.
+  client: CrmClient | null = null,
 ): Promise<CrmSyncRecord> {
   const id = `crmsync_${crypto.randomUUID()}`;
   const createdAt = now();
@@ -150,14 +157,16 @@ export async function recordSyncAttempt(
   let recordCount = attempt.recordCount ?? 0;
 
   if (!attempt.skipReason) {
-    const client = resolveCrmClient(env, {
-      provider: attempt.provider,
-      credentialRef: connection.credentialRef,
-    });
-    if (client) {
+    const resolved =
+      client ??
+      resolveCrmClient(env, {
+        provider: attempt.provider,
+        credentialRef: connection.credentialRef,
+      });
+    if (resolved) {
       try {
         if (attempt.operation === "pull_deals") {
-          const res = await client.pullDeals({
+          const res = await resolved.pullDeals({
             baseUrl: (attempt.payload.baseUrl as string | null) ?? null,
             triggerField: (attempt.payload.triggerField as string | null) ?? null,
             triggerValue: (attempt.payload.triggerValue as string | null) ?? null,
@@ -165,7 +174,7 @@ export async function recordSyncAttempt(
           });
           recordCount = res.records.length;
         } else {
-          await client.writeBack({
+          await resolved.writeBack({
             baseUrl: (attempt.payload.baseUrl as string | null) ?? null,
             externalId: (attempt.payload.externalId as string | null) ?? null,
             fields: (attempt.payload.fields as Record<string, unknown>) ?? {},
@@ -213,6 +222,27 @@ export async function recordSyncAttempt(
     )
       .bind(createdAt, recordCount, error, status, createdAt, attempt.connectionId)
       .run();
+  }
+
+  // W3-B producer — "CRM sync error or failure". This is the only place a sync
+  // can fail: `runPull` and `writeBackDeckScore` both end here, and 'failed' is
+  // written in exactly one branch above (an adapter threw). A 'skipped' row is
+  // a refusal, not a failure, and a 'recorded' row is the no-provider case §1.3
+  // makes correct — neither alerts. Keyed on the log row, so every distinct
+  // failure is heard once and a retry of the same call is a new attempt.
+  if (status === "failed") {
+    await emitNotification(env, {
+      event: "crm_sync_failed",
+      edition: attempt.edition,
+      title: `CRM sync failed — ${attempt.provider}`,
+      body:
+        `The ${attempt.operation.replace(/_/g, " ")} sync to ${attempt.provider} failed.\n\n` +
+        `${error ?? "No reason was reported."}\n\n` +
+        "The connection is now marked Error in the Admin console.",
+      link: "/app/admin",
+      deckId: attempt.deckId ?? null,
+      dedupeKey: `crm_sync_failed:${id}`,
+    });
   }
 
   return { ...attempt, id, status, createdAt, error, recordCount };

@@ -19,6 +19,7 @@ import {
   type IntakeFlag,
 } from "../../shared/intake";
 import { detectIntakeFlags } from "../intake";
+import { emitNotification } from "../email/outbox";
 import { notifyIncompleteDeck } from "../resubmit";
 import type { Env } from "../types";
 
@@ -873,6 +874,25 @@ export async function evaluateDeck(
       console.error(`incomplete-deck notification failed for ${deckId}:`, err);
     }
   }
+
+  // ── W3-B producer — "AI scoring complete" ─────────────────────────────────
+  // After the batch, like the two notifications around it, and keyed on the
+  // deck's CONTENT VERSION: a queue retry or a manual re-score of unchanged
+  // content is the same evaluation and must not alert twice, while a new
+  // version genuinely is a new result and does. The skip path
+  // (`skipAiEvaluation`, AI pre-scoring switched off) deliberately does not
+  // reach here — no scoring ran, so there is nothing to announce.
+  await emitNotification(env, {
+    event: "ai_scoring_complete",
+    edition: deck.edition,
+    title: `AI scoring complete: ${effectiveName ?? "a pitch deck"}`,
+    body:
+      `${effectiveName ?? "A pitch deck"} has been parsed and pre-scored by the AI engine.\n\n` +
+      `Weighted total ${total.toFixed(2)} · ${signal} · ${verdict.replace(/_/g, " ")}.`,
+    link: `/app/decks/${deckId}`,
+    deckId,
+    dedupeKey: `ai_scoring_complete:${deckId}:v${deck.content_version ?? 1}`,
+  });
 
   // ── Auto-triggered clarification (admin console → Scoring framework) ───────
   // "Send targeted questions to startup when AI detects weak signal". Runs

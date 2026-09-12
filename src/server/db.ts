@@ -11,6 +11,12 @@ export interface UserRow {
   active: number;
   /** Organizational alias title (Aug-2026 issue 1); NULL = use the role label. */
   title: string | null;
+  /**
+   * When this account first signed in (W3-B, `migrations/0041`). NULL means the
+   * invite is still outstanding — `account_invite` went out and nobody has used
+   * it — which is what makes "New team member accepted invite" producible.
+   */
+  invite_accepted_at: string | null;
 }
 
 export async function getUserByEmail(
