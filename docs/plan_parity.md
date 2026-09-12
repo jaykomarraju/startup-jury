@@ -863,7 +863,7 @@ best reading and note it.
 
 | # | Raised by | Question | Working assumption |
 |---|---|---|---|
-| Q1 | audit | Pricing contradicts itself: three per-deck base rates (₹500 / ₹999 / ₹500–700), two pay-as-you-go catalogues (20/35/50 vs 10/50/100) and four enterprise vocabularies. | `W4-D` implements one canonical model and records the alternatives here. |
+| Q1 | audit | Pricing contradicts itself: three per-deck base rates (₹500 / ₹999 / ₹500–700), two pay-as-you-go catalogues (20/35/50 vs 10/50/100) and four enterprise vocabularies. | **RULED BY THE USER, 2026-09-11: no per-deck pricing.** The catalogue carries no per-deck rate, no derived "₹X per deck" column and no saving percentage computed against one. Plans, packs and seats are priced as stated amounts. This retires the three-rate contradiction outright. It does NOT change metering: an evaluation still costs one credit (`reserveCredits`), because that is usage accounting, not a price. `W4-D` builds the catalogue under this ruling; `W4-C` keeps 1-credit-per-deck metering. If the intent was also to remove credit metering, that is a much larger change and needs saying — flagged as Q40. |
 | Q2 | audit | Does the workspace **launcher** belong in the product, or is it only a prototype navigation device? | Not a product feature. `W10-B` to confirm. |
 | Q3 | audit | VC has **four** additional-parameter owner roles (12 params) in the prototype; the app has three (9). | Follow spec §6.2. `W8-B` to reconcile. |
 | Q4 | `W0` (`parity:nav`) | `AISJ_ICAdmin_V6` is the only incubator prototype whose sidebar drops **both** Collaborate items (Contact Admin, Contact team); Super User, PM, PA and Jury all keep them. Prototype inconsistency, or a deliberate "the admin *is* who you contact" trim? | **SETTLED — `W3-A`. Prototype inconsistency; both items stay for the admin, which is the app's current behaviour.** Three reasons, none of them a preference: one file of eleven drops them and the other ten (including the incubator Super User, whose sidebar is the superset the admin's is trimmed from) keep them; no Aug-2026 issue asked for the removal, and §1.1 ranks the issue log above the prototype precisely for this kind of silent trim; and *Contact team* is the only route an admin has to the people they administer, so the trim removes a capability rather than tidying a menu. Zero code changed. The two `parity:nav` rows stay as permanent DELIBERATE entries with this reasoning attached. |
@@ -902,6 +902,7 @@ best reading and note it.
 | Q37 | `W3-B` (F0015, F0016) | **Who hears each alert? The prototype never says.** `s-nt` settles that a person controls their *own* mail — it does not settle who is a *candidate* for each event, and nothing in either spec does either. Building producers forced the question: an alert with no audience is a row nobody receives. | Invented, and named in one table (`AUDIENCE` in `src/server/email/outbox.ts`) so it is one edit to change. Pipeline events reach whoever works the pipeline (incubator PM + associate; VC analyst + associate + partner); the two scoring events reach the **decision makers only** (PM / partner), so a jury member is not mailed about another jury member's submission; the four operational events (credits, CRM, invites, usage) reach admin + superuser. The one I am least sure of is `evaluator_scores_submitted` — in a small programme the whole panel may want it. |
 | Q38 | `W3-B` (F0016) | **"All jury complete" assumes a panel, and neither edition has one.** The incubator assigns a deck to exactly ONE evaluator (`decks.assigned_to`); the VC has no assignee at all and is scored sequentially as the deal walks analyst → associate → partner. So "all jury" is either trivially "the one assignee" or a stage-walk, and the prototype's plural implies a third thing the data model does not hold. | Implemented per edition in `allEvaluatorsHaveScored` (`src/server/routes/pipeline.ts`): incubator = the assignee has an `evaluations` row; VC = analyst, associate **and** partner have each scored. Both are real and testable. If a genuine multi-evaluator panel is intended (several jurors per deck, a quorum, a composite across them) that is a schema change — `decks.assigned_to` becomes a join table — and it belongs to whichever wave owns Assign. |
 | Q39 | `W3-B` (F0058) | **The notification centre has no design, because the prototype's bell is inert.** `_topnav.html` carries `<button class="nb">` in all eleven prototypes and there is no dropdown markup anywhere in any of them, so the panel's contents, grouping, paging and empty state are unspecified. Whatever is built here is an invention, not parity. | Built the smallest thing that makes the in-app channel real: twenty most-recent alerts, unread marker, relative time, click-through to the deep link, mark-one and mark-all, 60-second poll. No grouping, no paging, no per-event filter, no retention policy — `notifications` rows are never pruned, which is fine at demo volume and is not at a year's. Worth a design pass before launch (Wave 13). |
+| Q40 | Wave 4 prep | The 2026-09-11 ruling says **no per-deck pricing**. Taken as a ruling on the PRICE CATALOGUE: no per-deck rates or derived per-deck columns. It leaves one thing open — does usage metering survive? The app debits one credit per evaluated deck (`org_settings.credits_balance`, `reserveCredits`/`refundCredits`, migration `0032`'s ledger), which is shipped behaviour several screens read. | Metering stays; only the pricing presentation changes. `W4-C` and `W4-D` proceed on that. If credits should go entirely, that is a change to Upload, the plan tile, the ledger and the seed — raise it before Wave 6. |
 
 ---
 
@@ -1260,7 +1261,11 @@ BUILD
   1. The section: current-plan tile, usage history, the credit ledger, billing cycle, GST handling,
      and invoice / receipt generation.
   2. Keep today's 1-credit-per-deck metering and its atomic reserve/refund — EXTEND it to write
-     ledger rows rather than replacing it. An evaluation writes exactly one debit; a refund
+     ledger rows rather than replacing it. **§8 Q1 was ruled on 2026-09-11: no per-deck PRICING.
+     That is a ruling on the catalogue, not on metering** — a deck still costs one credit, because
+     that is usage accounting. What must not appear anywhere you render is a per-deck rate, a
+     derived "₹X per deck" column, or a saving computed against one. An evaluation writes exactly
+     one debit; a refund
      reverses it. This is the half of the session that is real money, so it is the half that must
      be exactly right.
   3. **Payment is interface-complete, provider-stubbed (§1.3), and §1.2 is absolute: card data must
@@ -1320,8 +1325,11 @@ READ FIRST (in this order, and nothing else)
 BUILD
   1. The section: ~50 editable price fields, 14 toggles, seven currencies with editable FX, the
      18 % GST rate, the plan / pack / enterprise catalogues, preview and publish.
-  2. **Implement ONE canonical pricing model** and record the alternatives in §8 against Q1. The
-     prototype contradicts itself — three per-deck base rates, two pay-as-you-go catalogues, four
+  2. **§8 Q1 IS RULED — there is NO per-deck pricing.** Build no per-deck rate, no derived
+     "₹X per deck" column, and no saving percentage computed against a per-deck base. Plans, packs
+     and seats carry stated prices and nothing is derived from a rate-per-deck. This retires the
+     prototype's three-rate contradiction; where its screens show a per-deck figure, omit it rather
+     than reproducing it. The remaining Q1 ambiguities — two pay-as-you-go catalogues, four
      enterprise vocabularies — and only the client can settle it. Pick the reading you judge best,
      say so in your handoff, and make the others a data change rather than a code change.
   3. Publish is atomic: a half-published catalogue must be impossible, and what `W4-C` reads is
@@ -1335,7 +1343,8 @@ CONSTRAINTS
   - FX rates are editable data, never a network call (§1.3 reasoning applies).
 
 TEST
-  - Unit: FX conversion, per-deck derivation, saving percentages, and the GST rate applied at 18 %.
+  - Unit: FX conversion and the GST rate applied at 18 %. There is no per-deck derivation to
+    test — §8 Q1 removed it; assert instead that no published price exposes one.
   - Worker: publish is atomic (an interrupted publish leaves the previous version intact), authZ
     (a non-admin 403s), and a draft edit is invisible to readers until published.
   - Client: the preview reflects an unpublished draft and the live catalogue does not.
