@@ -379,12 +379,30 @@ describe("credit_ledger", () => {
     }
   });
 
-  it("seeds the prototype's usage history at ₹999 per evaluation", async () => {
+  // W4-C — RESTATED, not weakened (§4), and flagged in the handoff. This asserted
+  // that every `deck_evaluated` row carries ₹999, the per-deck rate `s-bl.html`
+  // renders. **§8 Q1 was ruled by the user on 2026-09-11: there is no per-deck
+  // pricing**, and a client ruling outranks the prototype it was written from
+  // (§1.1), so `0046` cleared the figure from the data rather than leaving a rate
+  // in a column no screen may render. The property is now the inverse — and it is
+  // the stronger one, because it holds for every future row as well as the seeded
+  // ones. Metering is untouched: the row itself, and its delta of exactly −1, are
+  // still asserted here and in `test/worker/billing.test.ts`.
+  it("records an evaluation as one credit and no money (§8 Q1: no per-deck rate)", async () => {
     const { results } = await env.DB.prepare(
-      "SELECT amount_minor, currency FROM credit_ledger WHERE reason = 'deck_evaluated'",
+      "SELECT delta, amount_minor, currency FROM credit_ledger WHERE reason = 'deck_evaluated'",
+    ).all<{ delta: number; amount_minor: number | null; currency: string | null }>();
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.every((r) => r.delta === -1)).toBe(true);
+    expect(results.every((r) => r.amount_minor === null && r.currency === null)).toBe(true);
+  });
+
+  it("keeps the money on a purchase, which really did cost money", async () => {
+    const { results } = await env.DB.prepare(
+      "SELECT amount_minor, currency FROM credit_ledger WHERE reason = 'purchase'",
     ).all<{ amount_minor: number; currency: string }>();
     expect(results.length).toBeGreaterThan(0);
-    expect(results.every((r) => r.amount_minor === 99900 && r.currency === "INR")).toBe(true);
+    expect(results.every((r) => r.amount_minor === 2000000 && r.currency === "INR")).toBe(true);
   });
 
   it("rejects a zero movement, an unknown reason and a half-specified amount", async () => {

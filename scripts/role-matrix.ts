@@ -510,6 +510,8 @@ const PROBES: Probe[] = [
     allow: ["admin"] },
   { id: "users.list", label: "GET /api/users (roster)", kind: "read", method: "GET", path: "/api/users",
     allow: ["admin"] },
+  { id: "billing.read", label: "GET /api/billing (credits & billing)", kind: "read", method: "GET", path: "/api/billing",
+    allow: ["admin"] },
   { id: "tickets.list", label: "GET /api/tickets", kind: "read", method: "GET", path: "/api/tickets",
     allow: ["admin"] },
   { id: "issues.list", label: "GET /api/issues (issue log)", kind: "read", method: "GET", path: "/api/issues",
@@ -529,6 +531,13 @@ const PROBES: Probe[] = [
   { id: "config.params", label: "PUT /api/config/parameters (edit the core 13)", kind: "write", method: "PUT", path: "/api/config/parameters", body: {},
     allow: ["admin"] },
   { id: "config.credits", label: "POST /api/config/credits/purchase", kind: "write", method: "POST", path: "/api/config/credits/purchase", body: { pack: "__invalid__" },
+    allow: ["admin"] },
+  // W4-C — the Credits & billing router. Added because §10 says a new router
+  // that skips this list silently stops being described by the harness that
+  // claims to cover it (which is how CRM's missing `adminconsole` gate survived
+  // a green run). The purchase probe names no plan, so it 400s before it could
+  // record anything.
+  { id: "billing.purchase", label: "POST /api/billing/purchase", kind: "write", method: "POST", path: "/api/billing/purchase", body: {},
     allow: ["admin"] },
   { id: "programs.create", label: "POST /api/programs (create a program)", kind: "write", method: "POST", path: "/api/programs", body: {},
     allow: ["admin"] },
