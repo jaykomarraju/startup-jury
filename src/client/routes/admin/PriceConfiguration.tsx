@@ -803,7 +803,7 @@ function FreeTrial({
               <td className={TD}>
                 <div className="font-medium text-fg">Free trial expiry</div>
                 <div className="mt-px text-[10.5px] text-fg-muted">
-                  Days before the free trial expires (0 = never)
+                  Days before free trial expires (0 = never)
                 </div>
               </td>
               <td className={TD}>
@@ -833,7 +833,7 @@ function FreeTrial({
                   }
                 />
               </td>
-              <td className={`${TD} text-[11px] text-fg-muted`}>Displayed as the first option</td>
+              <td className={`${TD} text-[11px] text-fg-muted`}>Displayed as first option</td>
             </tr>
           </tbody>
         </table>
@@ -1060,7 +1060,7 @@ function TaxCard({
               <td className={TD}>
                 <div className="font-medium text-fg">Show prices inclusive of GST</div>
                 <div className="mt-px text-[10.5px] text-fg-muted">
-                  Display GST-inclusive prices on the public pricing page
+                  Display GST-inclusive prices on public pricing page
                 </div>
               </td>
               <td className={TD}>
@@ -1095,7 +1095,7 @@ function TaxCard({
                 />
               </td>
               <td className={`${TD} text-[11px] text-fg-muted`}>
-                Customers are responsible for local VAT/GST
+                Customers responsible for local VAT/GST
               </td>
             </tr>
           </tbody>
