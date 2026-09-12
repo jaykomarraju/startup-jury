@@ -1040,8 +1040,6 @@ with the following wave's — it is a worklist, not an archive. Earlier waves' p
 > **The suite is known non-deterministic (§8 Q32).** Before blaming a red run on your work OR on
 > load, re-run the failing file alone and check `uptime`. No test should fail twice.
 
-
-
 ### `W4-A` — Team & roles, and the grid that drives the engine *(written by `W3-A`)*
 
 > `W3-A` built the runtime permission engine and left this session the screen it was built for. Read
@@ -1142,9 +1140,6 @@ TEST
 > Three shared files, one line each, declared in §9: `src/server/index.ts` (import + `app.route`),
 > `src/client/routes/admin/registry.tsx` (import + map entry). **Do not comment out another
 > session's registry line.**
-
-#### `W4-C` — credits & billing
-
 ```
 
 ### `W4-B` — branding, applied *(written by `W3-C`)*
@@ -1155,13 +1150,85 @@ TEST
 You are running session W4-B — the Branding admin section, and the applier that makes it visible —
 of the ai.STARTUPJURY parity programme. You have no prior context.
 
-> The one Wave 4 session nobody had drafted. It is smaller than its siblings and carries a **§1.5
-> defect**, not just parity work: branding is persisted, round-trips through the API and is read back
-> by two screens — and is **applied by nothing**. Note also that `W1-A` already fixed the *other*
-> branding defect (the save that wiped `orgName`); `test/worker/branding.test.ts` pins it, so do not
-> re-open the replace-vs-merge question.
+SETUP
+  nvm use
+  git worktree add ../sj-W4-B -b parity/W4-B main
+  cd ../sj-W4-B && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
 
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules (§1.5's third bullet is YOUR defect), §2 Session
+     protocol, §4 Testing, the Wave 4 ownership note in §10, then ONLY your entry for W4-B in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" --screen "brand|s-br" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-br.html and its `_style.css`.
+     Do NOT build `panel-branding.html` — it is a stale richer draft unreachable in all 11
+     prototypes, and your §6 entry says `s-br` is the contract.
+  4. src/client/index.css (the token layer you will write into at runtime),
+     src/client/components/Logo.tsx, and `PUT /api/config/branding` in src/server/routes/config.ts.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  Branding round-trips through the API today and is then thrown away: nothing reads `branding_json`
+  and `Logo.tsx` hardcodes the wordmark (§1.5). The section is half the work; the applier is the
+  half that makes any of it true.
+  1. The section per `s-br`: 10 brand + 4 status colour tokens, logo image, the two-part wordmark,
+     tagline, and reset-to-defaults.
+  2. The applier: a provider that writes the saved values as CSS custom properties on `:root` at
+     load and on save, so a change is visible without a reload. `W1-A` established the token names
+     — write THOSE, never new ones, or the app and the branding drift.
+  3. `Logo.tsx` renders the saved two-part wordmark, falling back to today's literal.
+  4. Dark mode: `index.css` defines every token twice (§2.2 hazard file — you may not edit it).
+     Decide, and say in your handoff, whether a branded accent overrides the dark value too.
+  5. Register as `br` in registry.tsx — one import, one map entry.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/Branding.tsx, src/client/components/Logo.tsx, the applier
+    (a new file under src/client/theme/), and one line each in src/client/routes/admin/registry.tsx
+    and, if you need one, src/server/index.ts.
+  - `src/client/index.css` is a §2.2 serialisation-hazard file and is NOT yours. Apply at runtime.
+  - `PUT /api/config/branding` REPLACES `branding_json` wholesale. §1.5's first bullet is the same
+    defect on the other screen — `W1-A` fixed `ConfigPage`; check it is fixed here too before you
+    add fields, or saving a colour will wipe `orgName`/`orgType` and the account screen with it.
+  - You own migration 0044 and only 0044 — and you probably need none.
+
+TEST
+  - Client: a saved accent changes the COMPUTED custom property, not just the stored value.
+  - Client: the wordmark renders in two parts, and reset-to-defaults restores the literal.
+  - Worker: a branding save that omits `orgName` does not destroy it.
+  - E2E: a branded wordmark survives reload and appears in the top bar.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  Plus `npm run parity:tokens` — it compares index.css against the prototype palette and is at
+  0 known gaps; a runtime applier must not move it.
+  Read §8 Q28 / Q32 before you believe a red run: with several worktrees busy the suite fails
+  differently every time. `uptime` first; re-run the failures in isolation before concluding
+  anything.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W4-B. Do not merge to main.
 ```
+
+> **Billing-route ownership, settled up front — the Wave 2 lesson again.** `W4-C` and `W4-D` were
+> both allotted `src/server/routes/billing.ts` in §6, which is the same collision Wave 2 hit on
+> `config.ts`. Split it here instead:
+>
+> | Session | Server routes | Migration | Admin section id |
+> |---|---|---|---|
+> | `W4-A` | `src/server/routes/users.ts` *(existing)* | `0044` | `tm`, `uc` |
+> | `W4-B` | — (branding already has a route in `config.ts`) | `0045` | `br` |
+> | `W4-C` | `src/server/routes/billing.ts` *(new)* | `0046` | `bl` |
+> | `W4-D` | `src/server/routes/pricing.ts` *(new)* | `0047` | `pc` |
+>
+> `W4-C` owns the credit ledger and the *reading* of published prices; `W4-D` owns the price
+> catalogue and publishing it. They meet at exactly one seam — `src/shared/plans.ts`, which is
+> **`W4-C`'s**. `W4-D` reads it and does not edit it; if the catalogue shape needs to change, that is
+> a §9 request, not an edit.
+>
+> Three shared files, one line each, declared in §9: `src/server/index.ts` (import + `app.route`),
+> `src/client/routes/admin/registry.tsx` (import + map entry). **Do not comment out another
+> session's registry line.**
 
 ### `W4-C` — credits & billing
 
