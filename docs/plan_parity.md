@@ -1152,7 +1152,7 @@ You are running session W4-B — the Branding admin section, and the applier tha
 of the ai.STARTUPJURY parity programme. You have no prior context.
 
 SETUP
-  nvm use
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
   git worktree add ../sj-W4-B -b parity/W4-B main
   cd ../sj-W4-B && npm ci
   python3 docs/prototype/tools/split-prototypes.py
@@ -1298,7 +1298,7 @@ TEST
 FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
-  Commit to parity/W4-A. Do not merge to main.
+  Commit to parity/W4-C. Do not merge to main.
 ```
 
 ### `W4-D` — price configuration
