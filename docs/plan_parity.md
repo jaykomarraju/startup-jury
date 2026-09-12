@@ -1047,7 +1047,7 @@ with the following wave's — it is a worklist, not an archive. Earlier waves' p
 > §8 Q8, Q16, Q26 and Q27 before designing the grid — they are the semantics you are rendering, and
 > three of them constrain what a checkbox is allowed to mean.
 
-```markdown
+```
 You are running session W4-A — Team & roles, user lifecycle, and the task-permission grid — of the
 ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
 
@@ -1120,6 +1120,16 @@ TEST
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
   Plus `npm run roles` (566/566, against YOUR server on a port you proved you own — and check
   `ps aux | grep workerd` first, per §8 Q28) and `npm run parity:nav`.
+  Note `test/worker/migrations-w1b.test.ts` caps migration numbers at a per-wave
+  ALLOTMENT_CEILING; Wave 4 raises it to 47. All four Wave 4 sessions hit that one line —
+  expect a conflict, take the highest.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W4-A. Do not merge to main.
+```
+
 ### Wave 4 — `W4-C` and `W4-D` drafted by `W3-D`
 
 > **Billing-route ownership, settled up front — the Wave 2 lesson again.** `W4-C` and `W4-D` were
@@ -1141,7 +1151,6 @@ TEST
 > Three shared files, one line each, declared in §9: `src/server/index.ts` (import + `app.route`),
 > `src/client/routes/admin/registry.tsx` (import + map entry). **Do not comment out another
 > session's registry line.**
-```
 
 ### `W4-B` — branding, applied *(written by `W3-C`)*
 
