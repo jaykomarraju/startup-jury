@@ -1279,8 +1279,8 @@ BUILD
      That is a ruling on the catalogue, not on metering** — a deck still costs one credit, because
      that is usage accounting. What must not appear anywhere you render is a per-deck rate, a
      derived "₹X per deck" column, or a saving computed against one. An evaluation writes exactly
-     one debit; a refund reverses it. This is the half of the session that is real money, so it is the half that must
-     be exactly right.
+     one debit; a refund reverses it. This is the half of the session that is real money, so it
+     is the half that must be exactly right.
   3. **Payment is interface-complete, provider-stubbed (§1.3), and §1.2 is absolute: card data must
      never reach this application.** No PAN or CVV field exists, at any point, in any state. A
      purchase produces a provider-hosted redirect or an iframed element; the stub RECORDS the
@@ -1342,9 +1342,10 @@ BUILD
      "₹X per deck" column, and no saving percentage computed against a per-deck base. Plans, packs
      and seats carry stated prices and nothing is derived from a rate-per-deck. This retires the
      prototype's three-rate contradiction; where its screens show a per-deck figure, omit it rather
-     than reproducing it. The remaining Q1 ambiguities — two pay-as-you-go catalogues, four
-     enterprise vocabularies — and only the client can settle it. Pick the reading you judge best,
-     say so in your handoff, and make the others a data change rather than a code change.
+     than reproducing it. Two Q1 ambiguities SURVIVE the ruling and only the client can settle
+     them: which of the two pay-as-you-go catalogues is current, and which of the four enterprise
+     vocabularies to use. Pick the reading you judge best, say which in your handoff, and shape the
+     code so switching to another is a DATA change and not a code change.
   3. Publish is atomic: a half-published catalogue must be impossible, and what `W4-C` reads is
      always a complete published version. Keep the previous version so a publish is reversible.
 
