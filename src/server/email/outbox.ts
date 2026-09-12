@@ -21,15 +21,30 @@
 // race that a plain read-then-write check would leave open.
 
 import type { Env } from "../types";
+import type { Edition, Role } from "../../shared/roles";
+import { isMentor } from "../../shared/roles";
 import { describeMissingFields, type IntakeField } from "../../shared/intake";
+import {
+  NOTIFICATION_DEFAULTS,
+  type NotificationChannel,
+  type NotificationEvent,
+} from "../../shared/notifications";
 
+/**
+ * The six transactional kinds, plus one `alert_<event>` kind per prototype
+ * notification event (W3-B). The alert kinds are what make "this producer
+ * exists" a testable claim: the assertion is one `email_outbox` row of exactly
+ * this kind when the toggle is on and none when it is off, rather than a count
+ * of undifferentiated mail.
+ */
 export type EmailKind =
   | "founder_query"
   | "signup_invite"
   | "evaluator_reminder"
   | "incomplete_resubmit"
   | "call_invite"
-  | "account_invite";
+  | "account_invite"
+  | `alert_${NotificationEvent}`;
 
 export type EmailStatus = "sent" | "failed" | "recorded";
 
@@ -458,4 +473,267 @@ export function buildAccountInviteEmail(args: {
 /** "a Jury Member" / "an Admin" — English article for a role label. */
 function indefinite(label: string): string {
   return `${/^[aeiou]/i.test(label) ? "an" : "a"} ${label}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W3-B — the notification emitter.
+//
+// Everything above this line is a message the app composes for ONE named
+// recipient, at one call site, unconditionally. The Admin console's
+// Notifications section governs something different: ten *platform events*,
+// each of which fans out to whoever in the workspace asked to hear about it,
+// on either or both of two channels.
+//
+// `emitNotification` is that fan-out, and it is the whole of it — a producer is
+// one call at the point in the pipeline where the thing actually happens. It:
+//
+//   1. resolves the event's AUDIENCE (below) to live users of the edition,
+//      minus the actor, plus any extra recipient the caller names;
+//   2. resolves each recipient's preference per channel — their own row wins,
+//      else the workspace default row, else the prototype's seeded default;
+//   3. records an email through `sendEmail` (so `EMAIL_FROM` gating, the outbox
+//      audit and dedupe all still apply, unchanged) and/or an in-app row.
+//
+// It never throws. A producer sits inside a pipeline action that has already
+// committed — an alert that cannot be recorded must not fail the upload, the
+// evaluation or the score submission that triggered it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Who hears about each event, per edition.
+ *
+ * The prototype ships the section in all eleven role consoles and scopes it
+ * "for your account", which says a person controls their own mail — it does not
+ * say every person is a candidate for every event. These lists are that missing
+ * half: pipeline events reach the people who work the pipeline, decisions reach
+ * the decision makers, and the four operational events (credits, CRM, invites,
+ * usage) reach the people who administer the workspace. §8 Q16 asks whether the
+ * console itself should widen to every internal role; that question changes who
+ * can *edit* a preference, not who is a candidate for an alert.
+ */
+const AUDIENCE: Record<NotificationEvent, Record<Edition, readonly Role[]>> = {
+  // Intake and AI: whoever works the front of the pipeline.
+  deck_submitted: {
+    incubator: ["program_manager", "program_associate", "admin", "superuser"],
+    vc: ["analyst", "associate", "partner", "admin", "superuser"],
+  },
+  ai_scoring_complete: {
+    incubator: ["program_manager", "program_associate", "admin", "superuser"],
+    vc: ["analyst", "associate", "partner", "admin", "superuser"],
+  },
+  // Scoring and completion: the decision makers (§1.4 — the PM decides in the
+  // incubator; the partner carries the deal in the VC).
+  evaluator_scores_submitted: {
+    incubator: ["program_manager", "admin", "superuser"],
+    vc: ["partner", "admin", "superuser"],
+  },
+  all_evaluations_complete: {
+    incubator: ["program_manager", "admin", "superuser"],
+    vc: ["partner", "admin", "superuser"],
+  },
+  // The founder loop and scheduling are run by the programme staff.
+  founder_responded: {
+    incubator: ["program_manager", "program_associate", "admin", "superuser"],
+    vc: ["analyst", "associate", "partner", "admin", "superuser"],
+  },
+  intro_call_scheduled: {
+    incubator: ["program_manager", "program_associate", "admin", "superuser"],
+    vc: ["analyst", "associate", "partner", "admin", "superuser"],
+  },
+  // Operational: the workspace's administrators, in both editions.
+  credits_low: { incubator: ["admin", "superuser"], vc: ["admin", "superuser"] },
+  crm_sync_failed: { incubator: ["admin", "superuser"], vc: ["admin", "superuser"] },
+  invite_accepted: { incubator: ["admin", "superuser"], vc: ["admin", "superuser"] },
+  monthly_usage_summary: { incubator: ["admin", "superuser"], vc: ["admin", "superuser"] },
+};
+
+/** The roles an event is broadcast to. Exported so the section can explain itself. */
+export function notificationAudience(event: NotificationEvent, edition: Edition): readonly Role[] {
+  return AUDIENCE[event][edition];
+}
+
+interface PrefRow {
+  user_id: string | null;
+  channel: string;
+  enabled: number;
+}
+
+/**
+ * Resolve `(recipient, channel)` → on/off for one event, in one query.
+ *
+ * Precedence is the one `0031` designed for: a row with the recipient's
+ * `user_id` overrides the workspace default row (`user_id IS NULL`), which
+ * overrides the prototype's seeded mask. So an admin can set a policy and a
+ * person can still opt out of it.
+ */
+export async function resolveNotificationPreferences(
+  env: Env,
+  edition: Edition,
+  event: NotificationEvent,
+  userIds: string[],
+): Promise<(userId: string, channel: NotificationChannel) => boolean> {
+  const fallback = NOTIFICATION_DEFAULTS[event];
+  if (userIds.length === 0) return () => fallback;
+
+  const placeholders = userIds.map(() => "?").join(", ");
+  const rows = (
+    await env.DB.prepare(
+      "SELECT user_id, channel, enabled FROM notification_preferences " +
+        `WHERE edition = ? AND event_key = ? AND (user_id IS NULL OR user_id IN (${placeholders}))`,
+    )
+      .bind(edition, event, ...userIds)
+      .all<PrefRow>()
+  ).results;
+
+  const defaults = new Map<string, boolean>();
+  const perUser = new Map<string, boolean>();
+  for (const r of rows) {
+    if (r.user_id === null) defaults.set(r.channel, r.enabled === 1);
+    else perUser.set(`${r.user_id}:${r.channel}`, r.enabled === 1);
+  }
+
+  return (userId, channel) =>
+    perUser.get(`${userId}:${channel}`) ?? defaults.get(channel) ?? fallback;
+}
+
+export interface NotificationInput {
+  event: NotificationEvent;
+  edition: Edition;
+  /** The alert's one line — the in-app title and the email subject. */
+  title: string;
+  /** The email body and the bell's second line. Defaults to `title`. */
+  body?: string | null;
+  /** In-app deep link, e.g. `/app/decks/<id>`. */
+  link?: string | null;
+  deckId?: string | null;
+  /** Recipients outside the audience — the call organiser, the deck's uploader. */
+  alsoNotify?: ReadonlyArray<string | null | undefined>;
+  /** Nobody is told about their own action. */
+  actorId?: string | null;
+  /** At most one alert per recipient per key, ever. */
+  dedupeKey?: string | null;
+}
+
+export interface EmitResult {
+  event: NotificationEvent;
+  /** Users the event resolved to, before preferences. */
+  recipients: number;
+  /** Outbox rows written (a deduped one does not count). */
+  emails: number;
+  /** `notifications` rows written. */
+  inApp: number;
+}
+
+interface RecipientRow {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+}
+
+/**
+ * Fire one platform event. Returns what it actually produced, which is what the
+ * worker tests assert on.
+ *
+ * Two things this deliberately does NOT do. It does not consult
+ * `emailDeliveryConfigured`: with no verified sending domain the message is
+ * still recorded in `email_outbox` with `status='recorded'` and dispatched to
+ * nobody, which is the correct, auditable behaviour and must stay true (§1.4).
+ * And it does not batch the in-app inserts with the caller's own statements —
+ * the alert is always written after the caller's transaction has committed, so
+ * a bell entry can never describe a state the database does not hold.
+ */
+export async function emitNotification(
+  env: Env,
+  input: NotificationInput,
+  now: () => string = () => new Date().toISOString(),
+): Promise<EmitResult> {
+  const result: EmitResult = { event: input.event, recipients: 0, emails: 0, inApp: 0 };
+  try {
+    const roles = AUDIENCE[input.event][input.edition];
+    const extra = [...new Set((input.alsoNotify ?? []).filter((id): id is string => Boolean(id)))];
+
+    const rolePlaceholders = roles.map(() => "?").join(", ");
+    const extraPlaceholders = extra.map(() => "?").join(", ");
+    const where =
+      extra.length > 0
+        ? `(role IN (${rolePlaceholders}) OR id IN (${extraPlaceholders}))`
+        : `role IN (${rolePlaceholders})`;
+
+    const recipients = (
+      await env.DB.prepare(
+        `SELECT id, name, email, role FROM users WHERE edition = ? AND active = 1 AND ${where}`,
+      )
+        .bind(input.edition, ...roles, ...extra)
+        .all<RecipientRow>()
+    ).results
+      // A named extra recipient could be anyone; a mentor holds no screens and
+      // must not be mailed about a pipeline it cannot see (`denyMentor`).
+      .filter((u) => !isMentor(u.role) && u.id !== input.actorId);
+
+    result.recipients = recipients.length;
+    if (recipients.length === 0) return result;
+
+    const enabled = await resolveNotificationPreferences(
+      env,
+      input.edition,
+      input.event,
+      recipients.map((u) => u.id),
+    );
+    const body = input.body?.trim() || input.title;
+
+    for (const user of recipients) {
+      if (enabled(user.id, "email")) {
+        const sent = await sendEmail(
+          env,
+          {
+            kind: `alert_${input.event}`,
+            toEmail: user.email,
+            toName: user.name,
+            subject: input.title,
+            body,
+            deckId: input.deckId ?? null,
+            dedupeKey: input.dedupeKey ? `${input.dedupeKey}:${user.id}` : null,
+          },
+          now,
+        );
+        if (!sent.deduped) result.emails += 1;
+      }
+      if (enabled(user.id, "in_app")) {
+        result.inApp += await insertInAppNotification(env, input, user.id, body, now);
+      }
+    }
+  } catch (err) {
+    // An alert is never worth failing the action that produced it.
+    console.error(`notification emit failed (${input.event}):`, err);
+  }
+  return result;
+}
+
+/** One `notifications` row. Returns 1 when written, 0 when the dedupe key won. */
+async function insertInAppNotification(
+  env: Env,
+  input: NotificationInput,
+  userId: string,
+  body: string,
+  now: () => string,
+): Promise<number> {
+  const res = await env.DB.prepare(
+    "INSERT OR IGNORE INTO notifications (id, edition, user_id, event_key, title, body, link, deck_id, created_at, dedupe_key) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  )
+    .bind(
+      `ntf_${crypto.randomUUID()}`,
+      input.edition,
+      userId,
+      input.event,
+      input.title,
+      body,
+      input.link ?? null,
+      input.deckId ?? null,
+      now(),
+      input.dedupeKey ? `${input.dedupeKey}:${userId}` : null,
+    )
+    .run();
+  return res.meta.changes === 1 ? 1 : 0;
 }

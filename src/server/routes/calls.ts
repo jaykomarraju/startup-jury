@@ -29,7 +29,7 @@ import {
 } from "../../shared/roles";
 import { buildIcs, icsFilename, ICS_CONTENT_TYPE, type IcsAttendee } from "../../shared/ics";
 import { introCallPrompts } from "../config/callPrompts";
-import { buildCallInviteEmail, sendEmail } from "../email/outbox";
+import { buildCallInviteEmail, emitNotification, sendEmail } from "../email/outbox";
 import { performAction } from "../../pipeline";
 
 const calls = new Hono<AppEnv>();
@@ -438,6 +438,8 @@ calls.post("/", async (c) => {
   const invited = body.sendInvite === true ? await dispatchInvite(c, id) : { sent: 0 };
   const row = await loadVisibleCall(c, id);
   const parts = await loadParticipants(c.env, [id]);
+  // A draft with no slot yet is not a scheduled call — nothing to announce.
+  if (row?.scheduled_at) await announceCall(c, row, false);
   return c.json({
     ok: true,
     advanced,
@@ -553,6 +555,10 @@ calls.patch("/:id", async (c) => {
   const invited = body.sendInvite === true ? await dispatchInvite(c, id) : { sent: 0 };
   const row = await loadVisibleCall(c, id);
   const parts = await loadParticipants(c.env, [id]);
+  // Only a genuine move of the slot is a reschedule. Editing a title or
+  // cancelling is neither of the two things the alert's label names.
+  const moved = row?.scheduled_at && row.scheduled_at !== existing.scheduled_at;
+  if (row && moved && row.status !== "cancelled") await announceCall(c, row, Boolean(existing.scheduled_at));
   return c.json({ ok: true, invited: invited.sent, call: row ? toCallView(row, parts, true) : null });
 });
 
@@ -625,6 +631,45 @@ calls.get("/:id/ics", async (c) => {
     },
   });
 });
+
+/**
+ * W3-B producer — "Intro call scheduled or rescheduled".
+ *
+ * Distinct from `dispatchInvite` above, which mails the PARTICIPANTS a calendar
+ * file because a scheduler pressed Send invite. This is the account-holder
+ * alert the Notifications section governs: the programme staff hear that a call
+ * exists whether or not anyone chose to send invites, which is F0016's point —
+ * `call_invite` was the one prototype event with any producing code, and it was
+ * producing the wrong thing.
+ *
+ * Keyed on the call's `ics_sequence`, the same counter the .ics uses to make a
+ * re-issue an UPDATE rather than a duplicate, so a reschedule alerts exactly
+ * once and a repeated save of the same slot does not alert at all.
+ */
+async function announceCall(
+  c: Context<AppEnv>,
+  row: CallRow,
+  rescheduled: boolean,
+): Promise<void> {
+  const kindLabel = CALL_KIND_LABELS[row.kind as CallKind] ?? row.kind;
+  const verb = rescheduled ? "rescheduled" : "scheduled";
+  await emitNotification(c.env, {
+    event: "intro_call_scheduled",
+    edition: row.edition as Edition,
+    title: `${kindLabel} ${verb}: ${row.deck_name}`,
+    body:
+      `The ${kindLabel.toLowerCase()} for ${row.deck_name} is ${verb} for ` +
+      `${formatWhen(row.scheduled_at)} (${row.duration_minutes} min).` +
+      (row.location ? `\nWhere: ${row.location}` : ""),
+    link: `/app/calls`,
+    deckId: row.deck_id,
+    // The organiser hears about their own call even if their role is not in the
+    // event's audience — they are the one person certain to care.
+    alsoNotify: [row.organizer_id],
+    actorId: c.var.user.id,
+    dedupeKey: `intro_call_scheduled:${row.id}:s${row.ics_sequence}`,
+  });
+}
 
 /** Compose + send one invite per participant, with the .ics attached. */
 async function dispatchInvite(c: Context<AppEnv>, callId: string): Promise<{ sent: number }> {

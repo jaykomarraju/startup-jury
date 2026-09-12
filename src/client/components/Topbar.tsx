@@ -1,5 +1,6 @@
 import { Menu, Moon, Sun, LogOut } from "lucide-react";
 import { Logo } from "./Logo";
+import { NotificationBell } from "./NotificationBell";
 import type { Theme } from "../theme/ThemeProvider";
 
 interface TopbarProps {
@@ -82,6 +83,11 @@ export function Topbar({
             )}
           </div>
         </div>
+
+        {/* `.nb` — the prototype's bell, in its own position in the cluster
+            (after the identity block, before the avatar). W3-B owns the
+            component; this is the mount point and nothing else. */}
+        <NotificationBell />
 
         {/* `.nav-av` — 27px, purple. Gold is the logo's, not the avatar's. */}
         <span

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { setCookie, deleteCookie, getCookie } from "hono/cookie";
-import type { AppEnv, SessionUser } from "../types";
-import { getUserByEmail } from "../db";
+import type { AppEnv, Env, SessionUser } from "../types";
+import { getUserByEmail, type UserRow } from "../db";
 import { verifyPassword } from "../auth/password";
 import {
   createSession,
@@ -10,7 +10,9 @@ import {
 } from "../auth/session";
 import { requireAuth } from "../auth/middleware";
 import { loadPermissionOverrides } from "../auth/permissions";
+import { emitNotification } from "../email/outbox";
 import { grantedTasks } from "../../shared/permissions";
+import { roleLabel } from "../../shared/roles";
 
 const auth = new Hono<AppEnv>();
 
@@ -50,6 +52,15 @@ auth.post("/login", async (c) => {
   const ok = await verifyPassword(body.password, user.password_hash);
   if (!ok) return c.json({ error: "invalid_credentials" }, 401);
 
+  // W3-B producer — "New team member accepted invite". An invite is *accepted*
+  // the first time its credential is actually used, which is here and nowhere
+  // else: `POST /api/users` sends the temporary password, and until now nothing
+  // recorded whether anyone ever signed in with it (F0016; the column is the
+  // one `W1-C` asked for in §9). `migrations/0041` backfills every account that
+  // already exists, so this fires for new invitees only — never for the seeded
+  // demo logins.
+  if (user.invite_accepted_at === null) await recordInviteAccepted(c.env, user);
+
   const sessionUser = toSessionUser(user);
   const token = await createSession(c.env.SESSIONS, sessionUser);
   setCookie(c, SESSION_COOKIE, token, {
@@ -61,6 +72,34 @@ auth.post("/login", async (c) => {
   });
   return c.json({ user: { ...sessionUser, permissions: await permissionsFor(c.env.DB, sessionUser) } });
 });
+
+/**
+ * Stamp the acceptance and alert the workspace's administrators. Non-fatal by
+ * construction — `emitNotification` swallows its own failures, and the stamp is
+ * written first so a login can never alert twice even if the emit is retried.
+ */
+async function recordInviteAccepted(env: Env, user: UserRow): Promise<void> {
+  const at = new Date().toISOString();
+  const res = await env.DB.prepare(
+    "UPDATE users SET invite_accepted_at = ? WHERE id = ? AND invite_accepted_at IS NULL",
+  )
+    .bind(at, user.id)
+    .run();
+  // Lost the race with a concurrent first login — the other one alerts.
+  if (res.meta.changes !== 1) return;
+
+  await emitNotification(env, {
+    event: "invite_accepted",
+    edition: user.edition,
+    title: `${user.name} accepted their invite`,
+    body:
+      `${user.name} (${user.email}) signed in for the first time as ` +
+      `${roleLabel(user.edition, user.role)}.`,
+    link: "/app/admin",
+    actorId: user.id,
+    dedupeKey: `invite_accepted:${user.id}`,
+  });
+}
 
 auth.post("/logout", async (c) => {
   await deleteSession(c.env.SESSIONS, getCookie(c, SESSION_COOKIE));
