@@ -1190,7 +1190,8 @@ CONSTRAINTS
   - `PUT /api/config/branding` REPLACES `branding_json` wholesale. §1.5's first bullet is the same
     defect on the other screen — `W1-A` fixed `ConfigPage`; check it is fixed here too before you
     add fields, or saving a colour will wipe `orgName`/`orgType` and the account screen with it.
-  - You own migration 0044 and only 0044 — and you probably need none.
+  - You own migration 0045 and only 0045 (W4-A has 0044, W4-C 0046, W4-D 0047) — and you
+    probably need none.
 
 TEST
   - Client: a saved accent changes the COMPUTED custom property, not just the stored value.
