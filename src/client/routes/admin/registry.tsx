@@ -31,6 +31,7 @@
 import type { ComponentType } from "react";
 import { AreaWeightsSection } from "./AreaWeights";
 import { AuditLogSection } from "./AuditLog";
+import { BrandingSection } from "./Branding";
 import { CrmSyncSection } from "./CrmSync";
 import { NotificationsSection } from "./Notifications";
 import { QuestionBankSection } from "./QuestionBank";
@@ -59,5 +60,5 @@ export const SECTION_COMPONENTS: Record<string, ComponentType | undefined> = {
   nt: NotificationsSection, //       W3-B · Notifications
   al: AuditLogSection, //            W3-C · Audit log
   uc: undefined, //                  W4-A · User access
-  br: undefined, //                  W4-B · Branding
+  br: BrandingSection, //            W4-B · Branding
 };

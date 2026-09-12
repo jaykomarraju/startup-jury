@@ -852,6 +852,7 @@ One row per session. The integration session fills the wave row.
 
 | **Wave 3 integration (B+C)** | **done** | — (integration closes no findings) | typecheck ✓ · lint ✓ · **985 passed / 1 skipped, 0 failed** ✓ (serial) · build ✓ · **e2e 142/142** ✓ · **roles 566/566** ✓ · `parity:tokens` 0 gaps ✓ · `parity:nav` 67 known gaps ✓ | Merged `W3-C` → `W3-B`. Four conflicts, all genuine unions — including `registry.tsx` for the **third wave running**, because each session again commented out the other's entry despite an explicit instruction not to (the instruction is the wrong mechanism; see §9). The real one was `pipeline.ts`: both sessions edited the SAME evaluate handler, W3-C adding `recordScoreOverrides` and W3-B two producers. Kept audit-record first, then the producers. **Four defects fixed, one a blocker.** (1) **The audit log sorted wrongly.** It unions `audit_log` (SQLite datetimes, from the column default and `0030`'s seed) with `pipeline_events` (ISO, from `toISOString`) and orders them as raw strings — `' '` (0x20) sorts before `'T'` (0x54), so a LATER audit row sorted BEFORE an earlier pipeline one, in the one feature whose purpose is an accurate chronological trail. Canonicalising the audit branch then exposed the second half: the date bounds were space-separated too, so the `to` filter had **already** been silently dropping same-day `pipeline_events` rows before this wave. Both halves canonicalised at the read. (2) **Cross-tenant leak**: `GET /api/notifications/outbox` had no edition predicate, so an incubator admin read VC recipients' addresses and subjects — and `0017` seeds an incubator row a VC admin sees on any fresh database. Scoped, fails closed, mutation-tested. (3) **The audit log fabricated its before-state**: `auditPermissionCells` rendered "denied → allowed" from the NEW value alone, so re-granting an already-granted cell recorded a flip that never happened. Now reads the prior state and skips no-ops. (4) **The PM went permanently silent after a resubmit**: both evaluate-route dedupe keys omitted `content_version` while human evaluation rows survive a resubmit, so a second submission alerted nobody and "all evaluations complete" fired once per deck for its whole life. W3-B's own AI producer had this right; the two it added did not. |
 
+| `W4-B` | **done** | **F0014, F0056, F0057, F0120, F0137, F0138, F0139, F0140, F0141, F0173, F0177** closed (11 of 12); **F0055** is `W1-A`'s and was already fixed in `ConfigPage` — this session applies the same read-then-merge to the new screen and adds the worker test for the larger payload, but does NOT change the route's replace semantics (see §9) | typecheck ✓ · lint ✓ · **1014 passed / 1 skipped, 0 failed** ✓ (985 inherited → +29: 12 unit · 13 client · 4 worker) · build ✓ · **e2e 146 (142 inherited + 4 new in `e2e/branding.spec.ts`) — 4/4 of mine green, and no test failed twice; see the contention note** · `parity:tokens` **27/27, 0 gaps** ✓ · `parity:nav` **67 known gaps** ✓ · roles not run (no nav or authZ change — no router, no gate, no nav item) | **The section was half the job; the applier was the half that made it true.** `src/shared/branding.ts` holds the vocabulary (14 tokens with their `index.css` names and light-theme fallbacks, `brNorm`'s hex rules, how a stored record is read and written) and `src/client/theme/branding.ts` the DOM applier; `BrandingProvider` reads `GET /api/config/summary` once per session and writes the branded tokens onto `<html>` as inline custom properties, which outrank every selector in `index.css` — so nothing in that §2.2 hazard file was touched and `parity:tokens` did not move. **Reset removes the overrides rather than writing a second set of hardcoded hexes**, so "default" stays whatever `index.css` says today and stays theme-correct. `Logo.tsx` now renders both wordmark halves, the tagline and an optional logo image from the saved branding, falling back to the shipped literal; its accessible name brands too but keeps the product's written form `ai.STARTUPJURY` (the form `outbox` uses as a sender name, and the one `e2e/home.spec.ts` asserts). **Two defects found while building.** (1) **A load/keystroke race.** The section adopts the server's branding when the read lands, a tick or two after first paint — guarded by state, the effect ran with its own commit's stale "nothing typed yet" and wiped whatever had just been typed. The guards are refs, read when the effect actually runs; a client test pins it. (2) **`BrandingProvider` re-fetched on every render** because it keyed its effect on the principal OBJECT, and `AuthProvider` hands out a new one on every `updateUser`. Keyed on `user.id`. **Three things branding does NOT reach yet, all §9**: the console's own chrome (`AdminConsole.tsx` hardcodes `--ac-olive`/`--ac-gold` on the overlay and the rail wordmark as a literal — the one surface whose copy promises "across the entire admin console instantly"), `ConfigPage`'s older three-field branding card (now a weaker duplicate of this section, which F0173 says should be the single surface), and an off-origin logo URL, which the app's `img-src 'self' data:` CSP blocks — the field warns and falls back to the text mark rather than saving a logo that silently never appears (§8 Q42). Dark mode: branded values apply in light for all 14 tokens and in dark only for the five identity hues `index.css`'s dark block does not re-derive (§8 Q41). No migration needed — **0045 is unused** and `ALLOTMENT_CEILING` was not touched. **The e2e leg could not be driven to a clean full-suite number on this machine, and the reason is measured, not assumed (§8 Q28/Q32).** Wave 4 ran all four sessions at once on a 10-core box: `uptime` sat between 80 and 135 for four hours — 8× to 13× oversubscribed — and at load ~120 even `tsc` took 68 minutes. Three runs, each on a freshly seeded database: (1) the full 146 at default timeouts failed 57 specs, all `page.goto` timeouts; (2) the full 146 at `--timeout=120000` reached 127/146 with **8 failures, every one of them a `parity.spec.ts` role walk**, each immediately after the local Worker runtime logged `Network connection lost` — the run was then killed when miniflare stopped serving altogether (17 of those errors); **every other spec passed**, including all four branding specs, `home.spec.ts`, `resubmit.spec.ts`, `csp.spec.ts`, all eleven `nav.spec.ts` role walks and both `coverage.spec.ts` nav sweeps; (3) `parity + branding + home` re-run together: **17 passed, 1 failed** (`incubator/program_manager`, again straight after `Network connection lost`), and that one test **passes alone in 1.5 min**. So no test fails twice, which is the bar §8 Q32 sets — but integration should re-measure the full 146 on a quiet machine before trusting any count. `npm test` was measured the same way: at the default 5 s `testTimeout` under load it failed 75, at `--testTimeout=30000` it is the 1014/1-skipped/0-failed above. That contention also found a real defect in MY OWN tests — see §9 — which is the one thing this exercise was unambiguously worth. |
 <!-- Append a row per session. Do not rewrite history; add. -->
 
 ---
@@ -903,6 +904,8 @@ best reading and note it.
 | Q38 | `W3-B` (F0016) | **"All jury complete" assumes a panel, and neither edition has one.** The incubator assigns a deck to exactly ONE evaluator (`decks.assigned_to`); the VC has no assignee at all and is scored sequentially as the deal walks analyst → associate → partner. So "all jury" is either trivially "the one assignee" or a stage-walk, and the prototype's plural implies a third thing the data model does not hold. | Implemented per edition in `allEvaluatorsHaveScored` (`src/server/routes/pipeline.ts`): incubator = the assignee has an `evaluations` row; VC = analyst, associate **and** partner have each scored. Both are real and testable. If a genuine multi-evaluator panel is intended (several jurors per deck, a quorum, a composite across them) that is a schema change — `decks.assigned_to` becomes a join table — and it belongs to whichever wave owns Assign. |
 | Q39 | `W3-B` (F0058) | **The notification centre has no design, because the prototype's bell is inert.** `_topnav.html` carries `<button class="nb">` in all eleven prototypes and there is no dropdown markup anywhere in any of them, so the panel's contents, grouping, paging and empty state are unspecified. Whatever is built here is an invention, not parity. | Built the smallest thing that makes the in-app channel real: twenty most-recent alerts, unread marker, relative time, click-through to the deep link, mark-one and mark-all, 60-second poll. No grouping, no paging, no per-event filter, no retention policy — `notifications` rows are never pruned, which is fine at demo volume and is not at a year's. Worth a design pass before launch (Wave 13). |
 | Q40 | Wave 4 prep | The 2026-09-11 ruling says **no per-deck pricing**. Taken as a ruling on the PRICE CATALOGUE: no per-deck rates or derived per-deck columns. It leaves one thing open — does usage metering survive? The app debits one credit per evaluated deck (`org_settings.credits_balance`, `reserveCredits`/`refundCredits`, migration `0032`'s ledger), which is shipped behaviour several screens read. | Metering stays; only the pricing presentation changes. `W4-C` and `W4-D` proceed on that. If credits should go entirely, that is a change to Upload, the plan tile, the ledger and the seed — raise it before Wave 6. |
+| Q41 | `W4-B` | **Should a branded token override the DARK theme too?** `index.css` declares every token twice, and an inline custom property beats both blocks — so applying all fourteen in dark mode paints a light background and light borders onto the dark theme and breaks it. | **Implemented: split by whether `index.css` re-derives the token.** A branded value applies in light for all fourteen; in dark only for the five the dark block does NOT override (`--gold`, `--navy`, `--red`, `--blue`, `--purple`), which therefore have one value in both themes and are theme-neutral to brand. So an organisation keeps its accent at night but does not get a white page. The richer alternative — DERIVING branded dark surfaces from the branded light ones (darken/lift by the same ratios the dark block uses) — needs a designer, not a guess, and would make every branded workspace's dark theme a computed artefact nobody has reviewed. |
+| Q42 | `W4-B` (F0057) | **Where does a white-label logo live?** The prototype's field hot-links one (`https://…/logo.svg`), but this application's CSP is `img-src 'self' data:` (`src/server/security.ts:59`), so an external logo is blocked by the browser with **no visible error** — the admin saves, sees nothing change, and has no way to find out why. | **Built the field, and made the failure visible instead of widening the policy.** The section warns inline when the URL is off-origin and `Logo` keeps the text mark rather than rendering a broken image. A same-origin path or a `data:` URI works today. The real answer is an **upload** — store the logo in R2 and serve it from this origin — which is a Wave 13 production-hardening item, not a CSP relaxation. Widening `img-src` to `https:` to make one field work would be the wrong trade. |
 
 ---
 
@@ -1018,6 +1021,13 @@ session places it.
 | Wave 3 integration | `src/client/routes/admin/*` *(`W4-A`)* | **`canEditWorkspace` is computed from a different rule than the guard that enforces it** — the Wave 3 first-pair defect class, reproduced and latent. A client flag and a server guard that disagree produce buttons that 403. `W4-A` owns the console's client surface and should reconcile them. | `W4-A` |
 | Wave 3 integration | `scripts/role-matrix.ts` *(every session that adds a router)* | **`roles` stayed at 566 across a wave that added two routers.** The harness re-ran the same checks; it says nothing about whether revoking `adminconsole` closes `/api/audit` or `/api/notifications` — the property that was silently false for CRM until integration fixed it. **A session that adds a router must add its probe**, or the harness's coverage falls behind the surface it claims to describe. | standing rule |
 
+| `W4-B` | `src/client/main.tsx` *(unowned this wave)* | **Already placed, flagged per §2.2 — two lines, and the applier is inert without them.** `import { BrandingProvider } from "./theme/BrandingProvider";` plus the element wrapping `<BrowserRouter>`, INSIDE `AuthProvider` (the read is `GET /api/config/summary`, which needs a session) and INSIDE `ThemeProvider` (the applier is theme-aware — §8 Q41). The prompt allotted "a new file under `src/client/theme/`" and one line each in `registry.tsx` / `src/server/index.ts`, but a provider that is never mounted applies nothing, and `App.tsx` — the only alternative — is a §2.2 hazard file. No Wave 4 session touches `main.tsx`, so this should merge clean. | placed by `W4-B` |
+| `W4-B` | **`src/client/routes/admin/AdminConsole.tsx`** *(unowned — **the biggest gap this session leaves**)* | **Branding does not reach the console's own chrome, which is the one surface whose copy promises it does.** Two hardcodes: (1) `CONSOLE_VARS` at :80-82 sets `--ac-olive` / `--ac-gold` / `--ac-gold-dk` as an inline style on the overlay div, and an inline style on a descendant beats the branded `:root` — so the rail, header and Save button stay the shipped olive/gold no matter what an admin picks. Derive them from the branded `--olive` / `--gold` / `--gold-dk` (or drop `CONSOLE_VARS` and use those directly, which is `W1-C`'s own §9 row about the two palettes). (2) :254-255 renders the rail wordmark as the literal `ai`+`STARTUPJURY` rather than `<Logo>`, so a rebranded workspace still reads "STARTUPJURY" in its own admin console. Both are small; neither is mine. | not placed |
+| `W4-B` | `src/server/routes/config.ts:675` *(unowned; §1.5's first bullet)* | **Recommend moving the branding merge server-side — the client-side one is now duplicated and the third caller will forget.** `PUT /api/config/branding` replaces `branding_json` wholesale, so `ConfigPage` (W1-A) and now `BrandingSection` each have to re-read and spread before every save; a caller that forgets silently destroys the Set up wizard's `orgName` / `orgType` and with them the account screen and the founder resubmit email. **Not done here deliberately**: the file is unowned, and `test/worker/branding.test.ts:47` PINS the replace semantics on purpose ("that is the route's contract and it is not being changed here"), so changing them means changing a sibling session's deliberate assertion — §4 says say so rather than quietly edit it. If integration takes this, the shape is a `PATCH`-like merge plus the hex validation F0139 asks for (`sanitiseBranding` can be lifted from `src/shared/branding.ts`, which already has the token whitelist and `normaliseHex`), and `branding.test.ts`'s first case is then rewritten to assert the merge — not deleted. | not placed |
+| `W4-B` | `src/client/routes/ConfigPage.tsx:395-460` *(`W1-A`'s)* | **Its branding card is now a weaker duplicate of a built console section, and F0173 says there should be ONE branding surface.** The card offers a single wordmark field, one tagline and one accent; the console's `br` section offers both wordmark halves, fourteen tokens, the logo image and reset, and applies all of it live. They stay compatible — `wordmark` still means the second half and `accent` is mirrored out of `--gold`, both asserted in `test/unit/branding.test.ts` — so nothing breaks while both exist. The card should be replaced by a link into `/app/admin?section=br`, which is also the answer to "why are there two". | not placed |
+| `W4-B` | `test/worker/migrations-w1b.test.ts` *(unowned)* | **No edit needed, and worth saying so.** This session was allotted migration `0045` and needs none — branding lives in `org_settings.branding_json`, which has existed since Phase 6. `ALLOTMENT_CEILING` is untouched at 43; `W4-A`/`W4-C`/`W4-D` raise it to 47 between them and this branch will not conflict with any of them on that line. | no action |
+| `W4-B` | `src/client/components/Topbar.tsx`, `scripts/role-matrix.ts` *(unowned)* | **No edit needed, by design.** `Topbar` passes `tagline="Venture Intelligence First"`; `Logo` now treats that prop as the FALLBACK and shows the branded tagline when there is one, which is what keeps the top bar branded without touching the file. No router was added and no gate changed, so the roles harness needs no new probe and `npm run roles` was not run (§2.3). | no action || `W4-B` | `test/client/branding.test.tsx` *(mine — recorded because the LESSON is not mine)* | **Testing-library's 1 s `asyncUtilTimeout` is a latent flake in every client test that waits on a fetch, and the contention exposed it.** Two of my tests passed alone and failed inside `npm test` under load, because every assertion in that file is downstream of `BrandingProvider`'s read → the section's adopt → the applier's write, and a busy box blows a one-second budget easily. Fixed in my own file with `configure({ asyncUtilTimeout: 5_000 })`. **This is not a branding-specific problem**: `rubricAnchors`, `scoringFramework` and `notifications` all wait on mocked fetches the same way, and all three appeared in the load-induced failure lists. A one-line `configure()` in `test/client/setup.ts` would inoculate the whole client project at once — that file is unowned, it is two lines, and it would take a recurring class of false red off every future wave. | not placed |
+| `W4-B` | `src/client/main.tsx` / `src/client/api.ts` *(unowned — measure before acting)* | **The applier adds one `GET /api/config/summary` per full page load.** `BrandingProvider` reads once per mount, and a mount is once per `page.goto`, so `e2e/parity.spec.ts` — which navigates ~30 screens per role — now issues ~30 extra requests per walk. I do not believe it caused the parity failures (they arrive with `Network connection lost` from the Worker runtime, and every one passes in isolation), but it is the one thing this session added to that spec's request volume and integration should not have to guess about it. If it matters on a quiet machine, the fix is a cheap client-side cache of the summary rather than removing the read. | not placed |
 ---
 
 ## 10. Next prompts
@@ -1370,6 +1380,92 @@ FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
   Commit to parity/W4-D. Do not merge to main.
+```
+
+### `W5-B` — agreements library & authorised signatories *(written by `W4-B`)*
+
+> **Which Wave 4 session writes which Wave 5 prompt.** Wave 5 has two sessions and Wave 4 has four, so
+> the letters map straight across: **`W4-A` writes `W5-A`**, **`W4-B` writes `W5-B`** (this one), and
+> `W4-C` / `W4-D` write none — they carry the §7, §8 and §9 updates only. If you are `W4-C` or `W4-D`
+> and find no prompt of yours to write, that is the reason, not an omission.
+>
+> Wave 5's base branch is **`main` after Wave 4 integration** — fill the commit in when you know it.
+
+```
+You are running session W5-B — the Agreements library and Authorised signatories admin sections,
+and the signing-method model underneath them — of the ai.STARTUPJURY parity programme. You have no
+prior context.
+
+SETUP
+  nvm use
+  git worktree add ../sj-W5-B -b parity/W5-B main
+  cd ../sj-W5-B && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules (§1.3 vendor-dependent work is the rule that shapes this
+     whole session), §2 Session protocol, §4 Testing, then ONLY your entry for W5-B in §6.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Admin console" \
+         --screen "agreement|signator|signing|suagr|susign" --full
+     Seven findings, five of them P0. F0025 is the one that spans screens — read it twice.
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/admin/s-suagr.html and s-susign.html,
+     and their `_style.css`. The VC console has the same two sections — diff
+     AISJ_VC_Superuser_V8/admin/ against them before assuming they are identical.
+  4. src/server/email/outbox.ts — the interface-complete, provider-stubbed shape §1.3 tells you to
+     copy, and the ONLY pattern to follow for the e-signature provider.
+  5. src/client/routes/admin/registry.tsx (the two lines you claim) and sections.ts (the copy for
+     `suagr` / `susign`, already written).
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. **Agreements library** (`s-suagr`): templates with a lifecycle, file upload, a merge-field
+     editor, stage + programme/fund mapping, a signing-workflow builder, and versioning.
+  2. **Authorised signatories** (`s-susign`): by ROLE and by NAMED INDIVIDUAL, with countersign
+     gated until one is assigned.
+  3. **The signing method** (F0025) — provider ∈ {SignDesk, DocuSign, Adobe, Zoho, eMudhra},
+     type ∈ {standard e-signature, certificate}, `inApp` / `wetInk` flags — modelled, exposed on
+     the API, and **locked once the founder signs**. Today it has no model, no API and no screen.
+  4. One provider interface, STUBBED (§1.3). The stub records instead of sending, exactly as
+     `email_outbox` does. Never put a vendor SDK or credential on the critical path.
+  5. Register `suagr` and `susign` in registry.tsx — one import and one map entry EACH, on their
+     own lines. Never comment out or delete another session's line.
+
+CONSTRAINTS
+  - Own only: src/client/routes/admin/AgreementsLibrary.tsx, AuthorisedSignatories.tsx,
+    src/server/esign/** (new), one line each in src/server/index.ts and registry.tsx, and a
+    shared vocabulary module if the client and server both need it — `src/shared/crm.ts`,
+    `src/shared/audit.ts` and `src/shared/branding.ts` are the precedent, and declaring it in §9
+    is what makes it legitimate.
+  - `migrations/` — you own 0048 and only 0048. You WILL need it: none of these tables exist.
+    `test/worker/migrations-w1b.test.ts` caps migration numbers at ALLOTMENT_CEILING; Wave 4 left
+    it at 47, so raise it to 48 in the same commit or your migration fails the numbering guard.
+  - `src/client/index.css`, `src/shared/nav.ts`, `src/shared/roles.ts` and `src/client/App.tsx` are
+    §2.2 serialisation-hazard files and are NOT yours.
+  - The e-signature provider is a §1.3 stub. If you find yourself reaching for an API key, stop and
+    re-read §1.3.
+
+TEST
+  - Unit: merge-field substitution, including a field with no value and a field that is not in the
+    template's declared set.
+  - Worker: the countersign gate (no signatory assigned → refused), the lock-on-founder-signature
+    (a signing-method change after the founder signs → refused), and authZ on every new route —
+    an allowed role AND a forbidden one → 403.
+  - Client: both sections in their empty, populated and error states.
+  - E2E: an admin uploads a template, maps it to a stage and a programme, assigns a signatory, and
+    the mapping survives a reload. If your spec MUTATES shared rows, run it serially and restore
+    what it found — `e2e/crm-sync.spec.ts` and `e2e/branding.spec.ts` show the shape.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  Plus `npm run roles` IF you add a router — and if you do, add its probe to scripts/role-matrix.ts
+  in the same commit, or the harness silently stops covering the surface it claims to cover.
+  Pick an e2e/roles port from your session id and PROVE you own it (§2.3) — a neighbour's server is
+  a false pass. Read §8 Q28 / Q32 before you believe a red run: `uptime` first, then re-run the
+  failing file alone. No test should fail twice.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W5-B. Do not merge to main.
 ```
 
 ### `Wx-OOO` — Out of office delegation *(written by `W3-A`; no wave owns this yet)*
