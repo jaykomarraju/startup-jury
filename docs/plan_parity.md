@@ -1123,6 +1123,8 @@ TEST
   Note `test/worker/migrations-w1b.test.ts` caps migration numbers at a per-wave
   ALLOTMENT_CEILING; Wave 4 raises it to 47. All four Wave 4 sessions hit that one line —
   expect a conflict, take the highest.
+  With four worktrees testing at once, a red `e2e/parity.spec.ts` leg is CPU starvation and
+  not your code (§2.3) — check `uptime` before you believe it.
 
 FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
@@ -1209,6 +1211,9 @@ TEST
   - Worker: a branding save that omits `orgName` does not destroy it.
   - E2E: a branded wordmark survives reload and appears in the top bar.
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  Note `test/worker/migrations-w1b.test.ts` caps migration numbers at a per-wave
+  ALLOTMENT_CEILING; Wave 4 raises it to 47. All four Wave 4 sessions hit that one line —
+  expect a conflict, take the highest.
   Plus `npm run parity:tokens` — it compares index.css against the prototype palette and is at
   0 known gaps; a runtime applier must not move it.
   Read §8 Q28 / Q32 before you believe a red run: with several worktrees busy the suite fails
