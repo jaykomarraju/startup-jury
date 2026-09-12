@@ -13,6 +13,8 @@ import type { Env } from "../types";
 import type { Edition } from "../../shared/roles";
 import { evaluateDeck, type EvaluationResult } from "../ai/evaluate";
 import { recordEvalFailure } from "../ai/health";
+import { emitNotification } from "../email/outbox";
+import { LOW_CREDIT_THRESHOLD } from "../../shared/notifications";
 
 // Anthropic caps a Messages request at 32 MB; the PDF is base64-encoded (~1.33×)
 // into one request, so keep the raw deck comfortably under that.
@@ -43,7 +45,39 @@ export async function reserveCredits(env: Env, edition: Edition, n: number): Pro
   )
     .bind(n, edition, n)
     .run();
-  return res.meta.changes === 1;
+  if (res.meta.changes !== 1) return false;
+
+  // W3-B producer — "Credit balance low — under 10 credits". Every credit the
+  // app ever spends passes through this conditional UPDATE, which makes it the
+  // one place the balance can cross the threshold, and the reservation has
+  // already committed by the time we read it back.
+  //
+  // It fires on the CROSSING, not on every spend below the line: alerting once
+  // at 9 is a warning, alerting again at 8, 7 and 6 is noise that trains an
+  // administrator to filter the mail. Topping up and dropping back under
+  // crosses again and alerts again, which is the behaviour you want.
+  await announceIfCreditsLow(env, edition, n);
+  return true;
+}
+
+/** Read the post-reservation balance and alert if this spend took it under. */
+async function announceIfCreditsLow(env: Env, edition: Edition, spent: number): Promise<void> {
+  const row = await env.DB.prepare("SELECT credits_balance FROM org_settings WHERE edition = ?")
+    .bind(edition)
+    .first<{ credits_balance: number }>();
+  if (!row) return;
+  const after = row.credits_balance;
+  if (after >= LOW_CREDIT_THRESHOLD || after + spent < LOW_CREDIT_THRESHOLD) return;
+  await emitNotification(env, {
+    event: "credits_low",
+    edition,
+    title: `Credit balance low — ${after} credit${after === 1 ? "" : "s"} left`,
+    body:
+      `The ${edition === "vc" ? "VC" : "incubator"} workspace has ${after} evaluation ` +
+      `credit${after === 1 ? "" : "s"} remaining, below the ${LOW_CREDIT_THRESHOLD}-credit ` +
+      "warning line. Top up in the Admin console before the next upload is refused.",
+    link: "/app/admin",
+  });
 }
 
 /** Return `n` reserved credits — used to compensate when a store fails after the

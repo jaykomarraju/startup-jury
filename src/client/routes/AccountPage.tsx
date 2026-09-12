@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Card, Button, Badge } from "../components";
+import { NotificationPreferences } from "./admin/Notifications";
 import { useAuth } from "../auth/useAuth";
 import { getConfigSummary, updateMyTitle } from "../api";
 import { roleLabel, editionLabel } from "../../shared/roles";
@@ -122,6 +123,18 @@ export function AccountPage() {
           </Button>
         </div>
       </Card>
+
+      {/* W3-B — §8 Q16(c). `admin/s-nt.html` scopes its toggles to one person
+          ("…for your account"), and the console that hosts that section is
+          admin-only, so this is the surface on which every other role reaches
+          their own mask. Same control, same API, user scope only. */}
+      <div className="max-w-xl">
+        <h2 className="text-base font-semibold text-fg">Notifications</h2>
+        <p className="mb-3 mt-0.5 text-sm text-fg-muted">
+          Control which platform events trigger email and in-app alerts for your account.
+        </p>
+        <NotificationPreferences lockToUserScope />
+      </div>
     </div>
   );
 }

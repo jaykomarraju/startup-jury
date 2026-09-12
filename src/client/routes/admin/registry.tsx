@@ -26,6 +26,7 @@
 import type { ComponentType } from "react";
 import { AreaWeightsSection } from "./AreaWeights";
 import { CrmSyncSection } from "./CrmSync";
+import { NotificationsSection } from "./Notifications";
 import { QuestionBankSection } from "./QuestionBank";
 import { RubricAnchorsSection } from "./RubricAnchors";
 import { ScoringFrameworkSection } from "./ScoringFramework";
@@ -49,7 +50,7 @@ export const SECTION_COMPONENTS: Record<string, ComponentType> = {
   // suseat:  W5-A · Seat capacity      (incubator)
   // sufund:  W5-A · Fund Deployment    (VC)
   // System
-  // nt:      W3-B · Notifications
+  nt: NotificationsSection, //   W3-B · Notifications
   // al:      W3-C · Audit log
   // uc:      W4-A · User access
   // br:      W4-B · Branding

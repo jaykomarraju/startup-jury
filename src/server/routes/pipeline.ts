@@ -27,7 +27,8 @@ import { RUBRIC_BANDS } from "../../shared/types";
 import { loadScoringSettings } from "../config/scoringSettings";
 import { getStage, performAction, transitionByAction } from "../../pipeline";
 import { denyMentor, requireAuth, requireRole, requireTask } from "../auth/middleware";
-import { sendEmail, buildQueryEmail, buildSignupEmail } from "../email/outbox";
+import { sendEmail, buildQueryEmail, buildSignupEmail, emitNotification } from "../email/outbox";
+import { evaluatorNoun } from "../../shared/notifications";
 
 const pipeline = new Hono<AppEnv>();
 // Scope auth to this router's own prefixes (not "*"): mounted at /api, a "*"
@@ -83,6 +84,45 @@ async function loadDeck(c: Context<AppEnv>, id: string): Promise<DeckRow | null>
 
 function eventId(deckId: string): string {
   return `${deckId}_evt_${crypto.randomUUID()}`;
+}
+
+/**
+ * W3-B — has every evaluator this deck was going to draw now scored it?
+ *
+ * The prototype's fourth alert ("All jury complete") assumes a panel; the two
+ * editions express one differently, so the question is asked differently:
+ *
+ *   • **incubator** — a deck is assigned to exactly ONE evaluator
+ *     (`decks.assigned_to`, set by `assign_jury`). The panel is complete when
+ *     that person has an `evaluations` row.
+ *   • **VC** — there is no assignee. The deal is scored as it walks
+ *     analyst → associate → partner, so the panel is complete when all three of
+ *     those roles have scored it.
+ *
+ * Both read `evaluations`, which `POST /decks/:id/evaluate` writes one row of
+ * per evaluator and replaces on a re-submit, so the count never double-counts.
+ */
+async function allEvaluatorsHaveScored(
+  c: Context<AppEnv>,
+  deck: DeckRow,
+): Promise<boolean> {
+  if (deck.edition === "incubator") {
+    if (!deck.assigned_to) return false;
+    const row = await c.env.DB.prepare(
+      "SELECT 1 AS n FROM evaluations WHERE deck_id = ? AND evaluator_id = ?",
+    )
+      .bind(deck.id, deck.assigned_to)
+      .first<{ n: number }>();
+    return Boolean(row);
+  }
+  const scored = (
+    await c.env.DB.prepare(
+      "SELECT DISTINCT u.role AS role FROM evaluations e JOIN users u ON u.id = e.evaluator_id WHERE e.deck_id = ?",
+    )
+      .bind(deck.id)
+      .all<{ role: string }>()
+  ).results.map((r) => r.role);
+  return ["analyst", "associate", "partner"].every((r) => scored.includes(r));
 }
 
 interface TransitionBody {
@@ -496,6 +536,40 @@ pipeline.post(
     }
 
     await c.env.DB.batch(stmts);
+
+    // ── W3-B producers — rows 3 and 4 of the Notifications section ───────────
+    // Both fire here because this is the only route that writes an
+    // `evaluations` row, and both are keyed so the idempotent re-submit above
+    // (which DELETEs and re-INSERTs this evaluator's rows) re-scores without
+    // re-alerting.
+    await emitNotification(c.env, {
+      event: "evaluator_scores_submitted",
+      edition: deck.edition,
+      title: `${evaluatorNoun(deck.edition)} submitted scores: ${deck.name}`,
+      body:
+        `${user.name} submitted scores for ${deck.name}.\n\n` +
+        `Weighted total ${total.toFixed(2)} · ${signalTag(total)}.`,
+      link: `/app/decks/${deck.id}`,
+      deckId: deck.id,
+      actorId: user.id,
+      dedupeKey: `evaluator_scores_submitted:${deck.id}:${user.id}`,
+    });
+
+    if (await allEvaluatorsHaveScored(c, deck)) {
+      await emitNotification(c.env, {
+        event: "all_evaluations_complete",
+        edition: deck.edition,
+        title: `All evaluations complete: ${deck.name}`,
+        body:
+          `Every evaluator assigned to ${deck.name} has submitted their scores. ` +
+          "It is ready for review.",
+        link: `/app/decks/${deck.id}`,
+        deckId: deck.id,
+        actorId: user.id,
+        dedupeKey: `all_evaluations_complete:${deck.id}`,
+      });
+    }
+
     return c.json({ ok: true, weightedTotal: total, signal: signalTag(total), status });
   },
 );
@@ -671,6 +745,24 @@ pipeline.post("/queries/:id/respond", async (c) => {
     }
   }
   await c.env.DB.batch(stmts);
+
+  // W3-B producer — "Startup responded to clarification questions". Default OFF
+  // in the prototype's mask, which is why this one is easy to believe is dead:
+  // the producer exists and the toggle starts down. Keyed on the query, so a
+  // staff member relaying a corrected answer does not alert the room twice.
+  await emitNotification(c.env, {
+    event: "founder_responded",
+    edition: deck.edition,
+    title: `Startup responded: ${deck.name}`,
+    body:
+      `${deck.founder ?? "The founder"} answered the clarification questions on ${deck.name}.\n\n` +
+      `${response}`,
+    link: `/app/decks/${deck.id}`,
+    deckId: deck.id,
+    actorId: user.id,
+    dedupeKey: `founder_responded:${query.id}`,
+  });
+
   return c.json({ ok: true, status });
 });
 

@@ -13,6 +13,7 @@ import { loadScoringSettings } from "../config/scoringSettings";
 import { missingIntakeFields, parseMissingFields, type IntakeMatch } from "../../shared/intake";
 import { denyMentor, requireAuth, requireTask } from "../auth/middleware";
 import { detectIntakeFlags, intakeFlagStatement } from "../intake";
+import { emitNotification } from "../email/outbox";
 import { evaluateDeck } from "../ai/evaluate";
 import {
   classifyEvalError,
@@ -1142,6 +1143,26 @@ async function storeDeck(
       uploadedBy: c.var.user.id,
     }),
   ]);
+
+  // W3-B producer — "New pitchdeck submitted". Here rather than in the two
+  // upload routes because this is the only place a deck row is created, so the
+  // alert fires exactly once per deck whether it arrived singly or in a bulk
+  // batch. After the batch, so it can never describe a deck that failed to
+  // store; keyed on the deck id, so it can never fire twice for one.
+  const deckName = meta.name || file.name.replace(/\.pdf$/i, "") || "Untitled deck";
+  await emitNotification(c.env, {
+    event: "deck_submitted",
+    edition: c.var.user.edition,
+    title: `New pitchdeck submitted: ${deckName}`,
+    body:
+      `${deckName} was uploaded by ${c.var.user.name} and is queued for AI pre-scoring.\n\n` +
+      "Open it in ai.STARTUPJURY to follow the evaluation.",
+    link: `/app/decks/${id}`,
+    deckId: id,
+    actorId: c.var.user.id,
+    dedupeKey: `deck_submitted:${id}`,
+  });
+
   return id;
 }
 

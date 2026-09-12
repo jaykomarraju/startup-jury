@@ -12,10 +12,11 @@ import permissions from "./routes/permissions";
 import analytics from "./routes/analytics";
 import questions from "./routes/questions";
 import resubmit from "./routes/resubmit";
+import notifications from "./routes/notifications";
 import { tickets, messages, issues } from "./routes/support";
 import { calls } from "./routes/calls";
 import { handleQueue } from "./queue";
-import { runReminders, runStuckSweep } from "./scheduled";
+import { runMonthlyUsageSummary, runReminders, runStuckSweep } from "./scheduled";
 import { withSecurityHeaders } from "./security";
 
 export type { Env } from "./types";
@@ -47,6 +48,7 @@ app.route("/api/users", users);
 app.route("/api/permissions", permissions);
 app.route("/api/analytics", analytics);
 app.route("/api/questions", questions);
+app.route("/api/notifications", notifications);
 app.route("/api/tickets", tickets);
 app.route("/api/issues", issues);
 app.route("/api/messages", messages);
@@ -83,7 +85,11 @@ export default {
   //                    often because a stranded deck is invisible to its
   //                    uploader until something picks it back up.
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    if (controller.cron === "0 8 * * *") ctx.waitUntil(runReminders(env));
+    // W3-B rides the daily schedule rather than adding a third cron: the
+    // monthly digest is made monthly by its dedupe key (see `scheduled.ts`), so
+    // thirty of every thirty-one runs are no-ops.
+    if (controller.cron === "0 8 * * *")
+      ctx.waitUntil(Promise.all([runReminders(env), runMonthlyUsageSummary(env)]));
     else ctx.waitUntil(runStuckSweep(env));
   },
 } satisfies ExportedHandler<Env, EvalMessage>;

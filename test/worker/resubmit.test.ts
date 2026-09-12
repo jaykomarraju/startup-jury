@@ -289,7 +289,14 @@ describe("evaluateDeck → founder notification on Incomplete", () => {
         scores: (await paramKeys()).map((key) => ({ key, value: 9 })),
       }),
     });
-    const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM email_outbox WHERE deck_id = ?")
+    // W3-B — narrowed, not weakened (plan §4). The subject of this assertion is
+    // the FOUNDER-facing mail: a complete deck must produce none of it. The
+    // platform-alert channel this session added is a different audience (staff
+    // who asked to hear that AI scoring finished) and a deliberately different
+    // kind prefix, so it is excluded by name rather than by lowering the count.
+    const n = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM email_outbox WHERE deck_id = ? AND kind NOT LIKE 'alert%'",
+    )
       .bind("notify_complete")
       .first<{ n: number }>();
     expect(n?.n).toBe(0);

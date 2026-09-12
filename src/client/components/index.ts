@@ -20,6 +20,7 @@ export {
   type ResearchProvider,
 } from "./ResearchMenu";
 export { Sidebar, type NavBadge } from "./Sidebar";
+export { NotificationBell } from "./NotificationBell";
 export { Topbar } from "./Topbar";
 export { AppShell } from "./AppShell";
 export { PanelFrame, PageToolbar, ToolbarButton } from "./PanelFrame";
