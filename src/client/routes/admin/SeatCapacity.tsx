@@ -318,7 +318,7 @@ export function SeatCapacitySection() {
     );
   }
 
-  const note0 = seatNote(rows);
+  const capacityNote = seatNote(rows);
 
   return (
     <div className="flex flex-col gap-3">
@@ -397,7 +397,7 @@ export function SeatCapacitySection() {
             </table>
           </div>
         )}
-        <NoteLine tone={note0.tone} text={note0.text} testId="seat-note" />
+        <NoteLine tone={capacityNote.tone} text={capacityNote.text} testId="seat-note" />
       </Card>
 
       {error && (
@@ -458,7 +458,6 @@ interface FundDraft {
 
 interface FundPayload {
   rows: FundRowView[];
-  totals: { allotted: number; deployed: number; unutilised: number; utilisation: number };
 }
 
 function fundDraftOf(rows: FundRowView[]): FundDraft[] {
@@ -483,7 +482,7 @@ export function FundDeploymentSection() {
       const r = await fetch("/api/signup-config/fund");
       if (!r.ok) throw new Error(String(r.status));
       const next = (await r.json()) as FundPayload;
-      setPayload(next);
+      setPayload({ rows: next.rows });
       setDraft(fundDraftOf(next.rows));
       setLoadError(false);
     } catch {
@@ -520,6 +519,24 @@ export function FundDeploymentSection() {
     });
   }, [draft, payload]);
 
+  /**
+   * Totalled from the rows as typed, not from the server's figures — the bars
+   * and the reconciliation line already track the draft, and a footer that
+   * lagged them would show a sum that matches none of the rows above it.
+   */
+  const totals = useMemo(() => {
+    const sum = (pick: (r: (typeof rows)[number]) => number | null) =>
+      Math.round(rows.reduce((n, r) => n + (pick(r) ?? 0), 0) * 100) / 100;
+    const allotted = sum((r) => r.allotted);
+    const deployed = sum((r) => r.deployed);
+    return {
+      allotted,
+      deployed,
+      unutilised: sum((r) => r.unutilised),
+      utilisation: fundUtilisation({ allotted, deployed }),
+    };
+  }, [rows]);
+
   const dirty = useMemo(() => {
     if (!payload) return false;
     return payload.rows.some((r) => {
@@ -552,7 +569,7 @@ export function FundDeploymentSection() {
           unutilised: crOrNull(d.unutilised),
         })),
       })) as unknown as FundPayload & { saved: number };
-      setPayload({ rows: r.rows, totals: r.totals });
+      setPayload({ rows: r.rows });
       setDraft(fundDraftOf(r.rows));
       setNote(
         `Fund deployment saved for ${r.saved} program${r.saved === 1 ? "" : "s"}. These figures feed the Capital Deployment & Pacing report.`,
@@ -682,16 +699,16 @@ export function FundDeploymentSection() {
                 <tr className="border-t border-line" data-testid="fund-totals">
                   <td className="py-1.5 pr-3 text-[12px] font-semibold text-fg">All programs</td>
                   <td className="py-1.5 pr-3 text-[12px] tabular-nums text-fg-2">
-                    {payload.totals.allotted}
+                    {totals.allotted}
                   </td>
                   <td className="py-1.5 pr-3 text-[12px] tabular-nums text-fg-2">
-                    {payload.totals.deployed}
+                    {totals.deployed}
                   </td>
                   <td className="py-1.5 pr-3 text-[12px] tabular-nums text-fg-2">
-                    {payload.totals.unutilised}
+                    {totals.unutilised}
                   </td>
                   <td className="py-1.5 pr-3 text-[12px] tabular-nums text-fg-2">
-                    {payload.totals.utilisation}%
+                    {totals.utilisation}%
                   </td>
                   <td />
                 </tr>

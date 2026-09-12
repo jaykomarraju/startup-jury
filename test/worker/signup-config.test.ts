@@ -452,6 +452,40 @@ describe("PUT /api/signup-config/documents", () => {
     expect(added.mandatory).toBe(true);
   });
 
+  it("resyncs each sign-up against the checklist that governs IT, not the one just saved", async () => {
+    const cookie = await login(ADMIN);
+    // Medixir's programme authors its own, deliberately shorter, list.
+    const deck = (await env.DB.prepare(
+      "SELECT program_id FROM decks d JOIN signups s ON s.deck_id = d.id WHERE s.id = ?",
+    )
+      .bind(MEDIXIR)
+      .first<{ program_id: string }>())!;
+    await put("/api/signup-config/documents", cookie, {
+      programId: deck.program_id,
+      applyTo: "new",
+      items: [{ name: "Certificate of incorporation", note: "PDF · one file", mandatory: true }],
+    });
+
+    // Now widen the EDITION DEFAULT and push it to every open sign-up.
+    const defaults = await documents(cookie);
+    const res = await put("/api/signup-config/documents", cookie, {
+      applyTo: "all",
+      items: [
+        ...defaults.items.map((i) => ({ id: i.id, name: i.name, note: i.note, mandatory: i.mandatory })),
+        { name: "Board resolution", note: "Signed copy", mandatory: true },
+      ],
+    });
+    expect(res.status).toBe(200);
+
+    // The overriding programme turned those items off on purpose — the default
+    // save must not push them back on.
+    const set = await setOf(cookie, MEDIXIR);
+    expect(set.items.map((i) => i.name)).not.toContain("Board resolution");
+    // …while a sign-up with no programme override does inherit the new item.
+    const other = (await documents(cookie)).signups.find((s) => s.signupId === LEDGERLITE);
+    expect(other?.items.map((i) => i.name)).toContain("Board resolution");
+  });
+
   it("drops a retired item from a sign-up only while it was never requested", async () => {
     const cookie = await login(ADMIN);
     const before = await documents(cookie);

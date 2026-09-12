@@ -673,6 +673,17 @@ describe("Fund Deployment", () => {
     expect(totals).toHaveTextContent("74%");
   });
 
+  it("totals from the rows as typed, so the footer never disagrees with them", async () => {
+    mockFetch(fundPayload());
+    mount(<FundDeploymentSection />);
+    await screen.findByTestId("fund-recon");
+
+    fireEvent.change(screen.getByLabelText("Seed Fund II deployed"), { target: { value: "200" } });
+    // 200 + 410 = 610 deployed against 800 allotted -> 76 %.
+    await waitFor(() => expect(screen.getByTestId("fund-totals")).toHaveTextContent("610"));
+    expect(screen.getByTestId("fund-totals")).toHaveTextContent("76%");
+  });
+
   it("reports a load failure with a retry", async () => {
     mockFetch({}, 500);
     mount(<FundDeploymentSection />);

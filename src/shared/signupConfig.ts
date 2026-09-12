@@ -50,7 +50,7 @@ export { DOCUMENT_STATUSES, type DocumentStatus };
  *     un-asserting it would leave the audit trail claiming something nobody
  *     said. A mis-verified item is corrected by waiving it with a reason, or by
  *     adding a fresh item — both of which stay on the record. Recorded as a
- *     decision in the plan's §8 (Q51) with the alternative named.
+ *     decision in the plan's §8 (Q56) with the alternative named.
  *
  * A no-op (`x → x`) is not a transition and is refused too: the bulk verify
  * advances only the items that CAN advance, so an idempotent PATCH would only

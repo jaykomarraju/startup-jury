@@ -523,6 +523,12 @@ signupConfig.put("/documents", async (c) => {
  * withdraws nothing. A mandatory new item lands at `awaiting` (it is being
  * asked for now); an optional one lands at `not_requested`, matching `0034`'s
  * own back-fill.
+ *
+ * Each sign-up is resynced against the checklist that governs IT, resolved from
+ * its own deck's programme and cohort — **not** against the list just saved.
+ * Saving the edition default with "All startups" must not push default items
+ * onto a sign-up in a programme that has authored its own list; that programme
+ * turned those items off on purpose.
  */
 async function resyncOpenSignups(
   c: Context<AppEnv>,
@@ -539,19 +545,32 @@ async function resyncOpenSignups(
     binds.push(scope.cohortId);
   }
   const { results: signups } = await c.env.DB.prepare(
-    "SELECT s.id AS id FROM signups s JOIN decks d ON d.id = s.deck_id " +
+    "SELECT s.id AS id, d.program_id AS program_id, d.cohort_id AS cohort_id " +
+      "FROM signups s JOIN decks d ON d.id = s.deck_id " +
       `WHERE d.edition = ? AND s.status IN ('initiated', 'progress')${where}`,
   )
     .bind(...binds)
-    .all<{ id: string }>();
+    .all<{ id: string; program_id: string | null; cohort_id: string | null }>();
   if (signups.length === 0) return 0;
 
-  const { rows } = await loadChecklist(c, scope.programId, scope.cohortId);
-  const live = rows.filter((r) => r.active === 1);
-  const liveIds = new Set(live.map((r) => r.id));
+  // One resolution per distinct scope rather than per sign-up — a cohort's
+  // whole intake shares a checklist.
+  const byScope = new Map<string, RequiredRow[]>();
+  async function checklistFor(programId: string | null, cohortId: string | null) {
+    const key = `${programId ?? ""}/${cohortId ?? ""}`;
+    let live = byScope.get(key);
+    if (!live) {
+      const { rows } = await loadChecklist(c, programId, cohortId);
+      live = rows.filter((r) => r.active === 1);
+      byScope.set(key, live);
+    }
+    return live;
+  }
 
   const statements = [];
   for (const signup of signups) {
+    const live = await checklistFor(signup.program_id, signup.cohort_id);
+    const liveIds = new Set(live.map((r) => r.id));
     const { results: held } = await c.env.DB.prepare(
       "SELECT id, required_document_id, status FROM signup_documents WHERE signup_id = ?",
     )

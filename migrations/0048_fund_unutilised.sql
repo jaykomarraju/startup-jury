@@ -20,7 +20,7 @@
 --                   and summed by `loadFundTotals` in routes/analytics.ts.
 --
 -- Reading *allotted* as `fund_allocated` rather than as `fund_size` is what
--- keeps the section and that report agreeing about the same number; see §8 Q52.
+-- keeps the section and that report agreeing about the same number; see §8 Q57.
 --
 -- Nullable, like the three columns beside it: the incubator edition has no
 -- funds, and 0012 deliberately leaves Deep Tech Fund's figures NULL because it
