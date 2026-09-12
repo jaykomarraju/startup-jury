@@ -37,7 +37,9 @@ import { CrmSyncSection } from "./CrmSync";
 import { NotificationsSection } from "./Notifications";
 import { PriceConfigurationSection } from "./PriceConfiguration";
 import { QuestionBankSection } from "./QuestionBank";
+import { RequiredDocumentsSection } from "./RequiredDocuments";
 import { RubricAnchorsSection } from "./RubricAnchors";
+import { FundDeploymentSection, SeatCapacitySection } from "./SeatCapacity";
 import { ScoringFrameworkSection } from "./ScoringFramework";
 import { TeamRolesSection } from "./TeamRoles";
 import { UserAccessSection } from "./UserAccess";
@@ -54,11 +56,11 @@ export const SECTION_COMPONENTS: Record<string, ComponentType | undefined> = {
   bl: CreditsBillingSection, //      W4-C · Credits & billing
   pc: PriceConfigurationSection, //  W4-D · Price configuration
   // Sign-up (admin + superuser only)
-  sudocs: undefined, //              W5-A · Required documents
+  sudocs: RequiredDocumentsSection, // W5-A · Required documents
   suagr: undefined, //               W5-B · Agreements library
   susign: undefined, //              W5-B · Authorised signatories
-  suseat: undefined, //              W5-A · Seat capacity      (incubator)
-  sufund: undefined, //              W5-A · Fund Deployment    (VC)
+  suseat: SeatCapacitySection, //    W5-A · Seat capacity      (incubator)
+  sufund: FundDeploymentSection, //  W5-A · Fund Deployment    (VC)
   // System
   nt: NotificationsSection, //       W3-B · Notifications
   al: AuditLogSection, //            W3-C · Audit log
