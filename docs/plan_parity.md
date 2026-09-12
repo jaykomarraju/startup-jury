@@ -1265,8 +1265,7 @@ BUILD
      That is a ruling on the catalogue, not on metering** — a deck still costs one credit, because
      that is usage accounting. What must not appear anywhere you render is a per-deck rate, a
      derived "₹X per deck" column, or a saving computed against one. An evaluation writes exactly
-     one debit; a refund
-     reverses it. This is the half of the session that is real money, so it is the half that must
+     one debit; a refund reverses it. This is the half of the session that is real money, so it is the half that must
      be exactly right.
   3. **Payment is interface-complete, provider-stubbed (§1.3), and §1.2 is absolute: card data must
      never reach this application.** No PAN or CVV field exists, at any point, in any state. A
