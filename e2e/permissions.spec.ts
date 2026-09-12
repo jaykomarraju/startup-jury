@@ -35,6 +35,16 @@ async function setCell(baseURL: string, role: string, taskId: string, granted: b
   await api.dispose();
 }
 
+// W3-C, flagged per plan §4 — a one-line fix, not a weakened assertion.
+// The two tests below both toggle `program_associate · signuppipeline` and put
+// it back in `afterEach`, but the project runs `fullyParallel` on two workers,
+// so one test's restore lands inside the other's assertions. Reproduced on a
+// FRESHLY SEEDED database with only this file running: 4/4 at `--workers=1`,
+// and the same failure at `--workers=2` twice in a row. `e2e/crm-sync.spec.ts`,
+// `e2e/question-bank.spec.ts` and `e2e/audit-log.spec.ts` all serialise for the
+// same reason. Nothing about the assertions changed.
+test.describe.configure({ mode: "serial" });
+
 test.describe("task permissions gate the product at runtime", () => {
   test.afterEach(async ({ baseURL }) => {
     await setCell(baseURL!, "program_associate", "signuppipeline", true);

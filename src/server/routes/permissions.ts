@@ -17,6 +17,8 @@ import { ROLE_LABELS, type Edition, type Role } from "../../shared/roles";
 import { PERMISSION_ROLES, permissionTasksFor } from "../../shared/types";
 import { can, isMatrixRole, isMatrixTask } from "../../shared/permissions";
 import { loadEditionOverrides } from "../auth/permissions";
+// W3-C — an authorisation change is the one event an audit trail most needs.
+import { auditPermissionCells } from "../audit/events";
 
 const permissions = new Hono<AppEnv>();
 permissions.use("*", requireAuth);
@@ -94,6 +96,12 @@ permissions.put("/", requireConsole, async (c) => {
           "granted = excluded.granted, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
       ).bind(edition, cell.role as Role, cell.taskId, cell.granted ? 1 : 0, actorId),
     ),
+  );
+
+  await auditPermissionCells(
+    c,
+    cells,
+    new Map(permissionTasksFor(edition).map((t) => [t.id, t.label])),
   );
 
   const overrides = await loadEditionOverrides(c.env.DB, edition);

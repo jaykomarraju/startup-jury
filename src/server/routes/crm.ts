@@ -24,6 +24,10 @@ import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { requireAuth, requireTask } from "../auth/middleware";
+// W3-C — the prototype's own first two Config rows are CRM rows ("Updated
+// Salesforce filter rule trigger value…", "CRM sync write-back enabled…").
+import { auditConfig } from "../audit/events";
+import { changedFragment } from "../audit/log";
 import { isCredentialRef } from "../crm/provider";
 import {
   listConnections,
@@ -35,6 +39,7 @@ import {
 } from "../crm/store";
 import { runPull } from "../crm/sync";
 import {
+  CRM_PROVIDER_LABELS,
   describeMappingError,
   isCrmDirection,
   isCrmProvider,
@@ -159,6 +164,10 @@ crm.post("/:provider/connect", async (c) => {
     )
     .run();
 
+  await auditConfig(c, "crm_connected", `${CRM_PROVIDER_LABELS[row.provider as CrmProvider]} connected`, {
+    targetType: "crm_connection",
+    targetId: row.id,
+  });
   return connectionsResponse(c);
 });
 
@@ -182,6 +191,12 @@ crm.post("/:provider/disconnect", async (c) => {
     .bind(now, found.row.id)
     .run();
 
+  await auditConfig(
+    c,
+    "crm_disconnected",
+    `${CRM_PROVIDER_LABELS[found.row.provider as CrmProvider]} disconnected — credential reference cleared`,
+    { targetType: "crm_connection", targetId: found.row.id },
+  );
   return connectionsResponse(c);
 });
 
@@ -289,6 +304,26 @@ crm.put("/:provider", async (c) => {
     )
     .run();
 
+  // The prototype's sentences name the field that moved, so the audit row does
+  // too — a whole-form "settings updated" would be useless to an auditor.
+  const provider = CRM_PROVIDER_LABELS[row.provider as CrmProvider];
+  const changes = [
+    changedFragment("trigger value", row.trigger_value ?? "—", triggerValue ?? "—"),
+    changedFragment("trigger field", row.trigger_field ?? "—", triggerField ?? "—"),
+    changedFragment("sync direction", row.sync_direction, syncDirection),
+    changedFragment("sync schedule", row.sync_schedule, syncSchedule),
+    changedFragment("score write-back field", row.score_writeback_field ?? "—", scoreWritebackField ?? "—"),
+    row.write_back_scores === (writeBackScores ? 1 : 0)
+      ? null
+      : `write-back ${writeBackScores ? "enabled" : "disabled"}`,
+  ].filter(Boolean);
+  if (changes.length > 0) {
+    await auditConfig(c, "crm_settings_updated", `${provider} sync: ${changes.join(", ")}`, {
+      targetType: "crm_connection",
+      targetId: row.id,
+      detail: { changes },
+    });
+  }
   return connectionsResponse(c);
 });
 

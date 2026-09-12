@@ -270,10 +270,18 @@ describe("AdminConsole shell", () => {
       view.unmount();
     }
     // …and the console actually reaches for it when a section has no body.
-    renderConsole(user("incubator", "admin"), "/app/admin?section=al");
+    //
+    // Flagged per plan §4 — NOT weakened, made drift-proof. This hardcoded
+    // `?section=al` and `"W3-C"`, so it failed for the one session that builds
+    // `al`, and would have failed again for W4-A/B/C/D and W5-A/B in turn. It
+    // now asks the registry which section is still unbuilt, which asserts the
+    // same property and keeps asserting it as Waves 4-5 land. (W3-C)
+    const unbuilt = adminSections("incubator").find((s) => !SECTION_COMPONENTS[s.id]);
+    expect(unbuilt).toBeDefined();
+    renderConsole(user("incubator", "admin"), `/app/admin?section=${unbuilt!.id}`);
     expect(screen.getByText("Not built yet")).toBeInTheDocument();
     // Twice: the owner badge beside "Not built yet", and the inline sentence.
-    expect(screen.getAllByText("W3-C")).toHaveLength(2);
+    expect(screen.getAllByText(unbuilt!.placeholder.owner)).toHaveLength(2);
   });
 
   it("keeps the existing user-CRUD roster reachable as Team & roles", async () => {

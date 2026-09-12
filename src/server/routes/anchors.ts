@@ -21,6 +21,9 @@ import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { RUBRIC_BANDS } from "../../shared/types";
 import { requireAuth, requireTask } from "../auth/middleware";
+// W3-C — "Rubric anchor updated for Traction & validation — 7–8 band text
+// revised" is one of the prototype's own Config rows (`admin/s-al.html`).
+import { auditConfig } from "../audit/events";
 
 const anchors = new Hono<AppEnv>();
 anchors.use("*", requireAuth);
@@ -148,10 +151,10 @@ anchors.put("/:parameterId", requireTask("adminconsole", "admin"), async (c) => 
   const body = (await c.req.json().catch(() => ({}))) as Partial<AnchorWriteBody>;
 
   const param = await c.env.DB.prepare(
-    "SELECT id FROM parameters WHERE id = ? AND edition = ? AND active = 1",
+    "SELECT id, name FROM parameters WHERE id = ? AND edition = ? AND active = 1",
   )
     .bind(parameterId, edition)
-    .first<{ id: string }>();
+    .first<{ id: string; name: string }>();
   if (!param) return c.json({ error: "not_found" }, 404);
 
   const blank = (v: unknown): string | null => {
@@ -208,6 +211,18 @@ anchors.put("/:parameterId", requireTask("adminconsole", "admin"), async (c) => 
     ).bind(edition),
   );
   await c.env.DB.batch(statements);
+
+  const bandNames = (Array.isArray(body.bands) ? body.bands : [])
+    .map((b) => RUBRIC_BANDS.find((spec) => spec.index === b?.index)?.label)
+    .filter(Boolean);
+  await auditConfig(
+    c,
+    bandNames.length > 0 ? "rubric_anchor_updated" : "ai_prompt_updated",
+    bandNames.length > 0
+      ? `Rubric anchor updated for ${param.name} — ${bandNames.join(", ")} band text revised`
+      : `AI guidance prompt updated for ${param.name}`,
+    { targetType: "parameter", targetId: parameterId, detail: { bands: bandNames } },
+  );
 
   const parameters = await loadEdition(c, edition);
   const saved = parameters.find((p) => p.id === parameterId);

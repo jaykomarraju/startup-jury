@@ -30,6 +30,15 @@ import {
 import { requireAuth, requireRole, requireTask } from "../auth/middleware";
 import { rescoreEdition } from "../config/rescore";
 import { loadScoringSettings } from "../config/scoringSettings";
+// W3-C — the audit trail. Every mutation below records what changed; the
+// writer swallows its own errors so a trail failure never fails a save.
+import { money, packPriceMinor, recordCreditMovement } from "../audit/log";
+import {
+  auditConfig,
+  auditScoringFramework,
+  auditThresholds,
+  auditWeightChange,
+} from "../audit/events";
 
 const config = new Hono<AppEnv>();
 config.use("*", requireAuth);
@@ -223,6 +232,7 @@ config.put("/parameters", requireRole("admin"), async (c) => {
 
   stmts.push(bumpCriteriaVersion(c, edition));
   await c.env.DB.batch(stmts);
+  await auditWeightChange(c, existing, updates);
 
   const rescored = await rescoreEdition(c.env, edition);
   const params = await loadParams(c, edition);
@@ -298,6 +308,11 @@ config.post("/additional-params", requireTask("configparams", "admin", "program_
     // Adding a parameter changes the scoring criteria set → allow a re-score.
     bumpCriteriaVersion(c, edition),
   ]);
+
+  await auditConfig(c, "additional_param_added", `Additional parameter "${name}" added for ${roleScope}`, {
+    targetType: "parameter",
+    targetId: id,
+  });
 
   return c.json({
     ok: true,
@@ -392,6 +407,14 @@ config.put("/additional-params/:id", async (c) => {
     c.env.DB.prepare("UPDATE parameters SET name = ?, prompt = ? WHERE id = ?").bind(name, prompt, id),
     bumpCriteriaVersion(c, edition),
   ]);
+  await auditConfig(
+    c,
+    "additional_param_updated",
+    name !== p.name
+      ? `Additional parameter renamed: ${p.name} → ${name}`
+      : `AI guidance prompt updated for ${name}`,
+    { targetType: "parameter", targetId: id, detail: { name: { from: p.name, to: name } } },
+  );
   return c.json({ ok: true, param: { id, name, prompt: prompt ?? undefined } });
 });
 
@@ -403,16 +426,20 @@ config.delete("/additional-params/:id", requireTask("configparams", "admin", "pr
   if (!s) return c.json({ error: "plan_required" }, 402);
   const id = c.req.param("id");
   const p = await c.env.DB.prepare(
-    "SELECT informational FROM parameters WHERE id = ? AND edition = ? AND active = 1",
+    "SELECT informational, name FROM parameters WHERE id = ? AND edition = ? AND active = 1",
   )
     .bind(id, edition)
-    .first<{ informational: number }>();
+    .first<{ informational: number; name: string }>();
   if (!p) return c.json({ error: "not_found" }, 404);
   if (p.informational !== 1) return c.json({ error: "core_param" }, 400); // never delete a core area
   await c.env.DB.batch([
     c.env.DB.prepare("UPDATE parameters SET active = 0 WHERE id = ?").bind(id),
     bumpCriteriaVersion(c, edition),
   ]);
+  await auditConfig(c, "additional_param_removed", `Additional parameter "${p.name}" removed`, {
+    targetType: "parameter",
+    targetId: id,
+  });
   return c.json({ ok: true });
 });
 
@@ -429,10 +456,10 @@ config.put("/additional-params/:id/permit", requireTask("configparams", "admin",
   const body = await readBody<{ permitted: boolean }>(c);
   if (typeof body.permitted !== "boolean") return c.json({ error: "invalid_permitted" }, 400);
   const p = await c.env.DB.prepare(
-    "SELECT informational FROM parameters WHERE id = ? AND edition = ? AND active = 1",
+    "SELECT informational, name, role_scope FROM parameters WHERE id = ? AND edition = ? AND active = 1",
   )
     .bind(id, edition)
-    .first<{ informational: number }>();
+    .first<{ informational: number; name: string; role_scope: string | null }>();
   if (!p) return c.json({ error: "not_found" }, 404);
   // Only the role-scoped additional parameters carry the delegation — the core
   // 13 are the org's rubric and are never delegated to one role.
@@ -440,6 +467,12 @@ config.put("/additional-params/:id/permit", requireTask("configparams", "admin",
   await c.env.DB.prepare("UPDATE parameters SET config_permitted = ? WHERE id = ?")
     .bind(body.permitted ? 1 : 0, id)
     .run();
+  await auditConfig(
+    c,
+    "config_permission_changed",
+    `Configuration of "${p.name}" ${body.permitted ? "permitted for" : "withdrawn from"} ${p.role_scope ?? "its owning role"}`,
+    { targetType: "parameter", targetId: id, detail: { permitted: body.permitted } },
+  );
   return c.json({ ok: true, id, permitted: body.permitted });
 });
 
@@ -583,6 +616,8 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
   if (recompute) stmts.push(bumpCriteriaVersion(c, edition));
   await c.env.DB.batch(stmts);
 
+  await auditScoringFramework(c, before, after);
+
   const rescored = recompute ? await rescoreEdition(c.env, edition) : { decks: 0, evaluations: 0 };
   return c.json({ ok: true, scoring: after, rescored });
 });
@@ -598,11 +633,17 @@ config.put("/thresholds", requireTask("adminconsole", "admin"), async (c) => {
     return c.json({ error: "invalid_threshold" }, 400);
   }
   if (best <= mediocre) return c.json({ error: "best_below_mediocre" }, 400);
+  const previous = await loadSettings(c, edition);
   await c.env.DB.prepare(
     "UPDATE org_settings SET threshold_best = ?, threshold_mediocre = ? WHERE edition = ?",
   )
     .bind(best, mediocre, edition)
     .run();
+  await auditThresholds(
+    c,
+    { best: previous?.threshold_best ?? best, mediocre: previous?.threshold_mediocre ?? mediocre },
+    { best, mediocre },
+  );
   return c.json({ ok: true, thresholdBest: best, thresholdMediocre: mediocre });
 });
 
@@ -620,6 +661,12 @@ config.put("/ai-prompt", requireTask("adminconsole", "admin"), async (c) => {
     // The prompt is part of the scoring criteria → allow a re-score.
     bumpCriteriaVersion(c, edition),
   ]);
+  await auditConfig(
+    c,
+    "ai_prompt_updated",
+    prompt ? "AI system prompt updated" : "AI system prompt cleared — the built-in default applies",
+    { targetType: "org_settings", targetId: edition },
+  );
   return c.json({ ok: true, aiSystemPrompt: prompt });
 });
 
@@ -632,6 +679,11 @@ config.put("/branding", requireTask("adminconsole", "admin"), async (c) => {
   await c.env.DB.prepare("UPDATE org_settings SET branding_json = ? WHERE edition = ?")
     .bind(JSON.stringify(branding), edition)
     .run();
+  await auditConfig(c, "branding_updated", `Branding updated: ${Object.keys(branding).join(", ") || "cleared"}`, {
+    targetType: "org_settings",
+    targetId: edition,
+    detail: branding,
+  });
   return c.json({ ok: true, branding });
 });
 
@@ -641,9 +693,17 @@ config.put("/plan", requireTask("upgrade", "admin"), async (c) => {
   const edition = c.var.user.edition;
   const body = await readBody<{ plan: string }>(c);
   if (!isPlan(body.plan)) return c.json({ error: "invalid_plan" }, 400);
+  const current = await loadSettings(c, edition);
   await c.env.DB.prepare("UPDATE org_settings SET plan = ? WHERE edition = ?")
     .bind(body.plan, edition)
     .run();
+  if (current && current.plan !== body.plan) {
+    await auditConfig(c, "plan_changed", `Plan changed from ${current.plan} to ${body.plan}`, {
+      targetType: "org_settings",
+      targetId: edition,
+      detail: { from: current.plan, to: body.plan },
+    });
+  }
   return c.json({ ok: true, plan: body.plan, additionalEnabled: planAllowsAdditional(body.plan) });
 });
 
@@ -654,9 +714,22 @@ config.post("/credits", requireTask("upgrade", "admin"), async (c) => {
   const body = await readBody<{ credits: number }>(c);
   const credits = Number(body.credits);
   if (!Number.isInteger(credits) || credits < 0) return c.json({ error: "invalid_credits" }, 400);
+  const settings = await loadSettings(c, edition);
   await c.env.DB.prepare("UPDATE org_settings SET credits_balance = ? WHERE edition = ?")
     .bind(credits, edition)
     .run();
+  // F0054 — the balance is a mutable integer; the ledger is what explains it.
+  // An admin SET is recorded as the signed movement it actually performed.
+  const delta = credits - (settings?.credits_balance ?? 0);
+  if (delta !== 0) {
+    await recordCreditMovement(c, {
+      delta,
+      reason: "adjustment",
+      note: "Administrator adjustment",
+      action: "credits_adjusted",
+      summary: `Credit balance set to ${credits} by an administrator (${delta > 0 ? "+" : ""}${delta})`,
+    });
+  }
   return c.json({ ok: true, creditsBalance: credits });
 });
 
@@ -686,6 +759,25 @@ config.post("/credits/purchase", requireTask("upgrade", "admin"), async (c) => {
   )
     .bind(edition)
     .first<{ credits_balance: number }>();
+  // F0054 — "Purchased 50-credit pack · ₹20,000 · Transaction ID: RZP…" is made
+  // of ledger columns, so the ledger row and the Billing audit row are written
+  // together. The price comes from the master catalogue (0033); a pack size the
+  // catalogue does not carry is still recorded, just without an amount.
+  const pack = await packPriceMinor(c.env.DB, credits);
+  const reference = `SIM${Date.now().toString(36).toUpperCase()}`;
+  await recordCreditMovement(c, {
+    delta: credits,
+    reason: "purchase",
+    amountMinor: pack?.amountMinor ?? null,
+    currency: pack ? pack.currency : null,
+    reference,
+    note: pack?.name ?? `${credits}-unit pack`,
+    action: "credits_purchased",
+    summary:
+      `Purchased ${pack?.name ?? `${credits}-credit pack`}` +
+      (pack ? ` · ${money(pack.amountMinor, pack.currency)}` : "") +
+      ` · Transaction ID: ${reference}`,
+  });
   return c.json({ ok: true, purchased: credits, creditsBalance: row?.credits_balance ?? 0 });
 });
 
