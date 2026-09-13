@@ -39,6 +39,15 @@ import { evaluatorNoun } from "../../shared/notifications";
 // and the console's Audit log section ONE store rather than two; F0052 is
 // the score-override half.
 import { listAudit, recordScoreOverrides, toAuditView } from "../audit/log";
+// W7-E — a deck may carry several evaluators (migration 0058).
+import {
+  ASSIGNEE_PAIRS_SQL,
+  assigneeIdsOf,
+  clearAssignments,
+  isAssignedEvaluator,
+  upsertAssignment,
+} from "../decks/assignments";
+import { capacityFor } from "../../shared/assignment";
 
 const pipeline = new Hono<AppEnv>();
 // Scope auth to this router's own prefixes (not "*"): mounted at /api, a "*"
@@ -105,9 +114,9 @@ function eventId(deckId: string): string {
  * The prototype's fourth alert ("All jury complete") assumes a panel; the two
  * editions express one differently, so the question is asked differently:
  *
- *   • **incubator** — a deck is assigned to exactly ONE evaluator
- *     (`decks.assigned_to`, set by `assign_jury`). The panel is complete when
- *     that person has an `evaluations` row.
+ *   • **incubator** — a deck is assigned to one OR MORE evaluators
+ *     (`deck_assignments`, W7-E; `decks.assigned_to` is the first of them).
+ *     The panel is complete when every one of them has an `evaluations` row.
  *   • **VC** — there is no assignee. The deal is scored as it walks
  *     analyst → associate → partner, so the panel is complete when all three of
  *     those roles have scored it.
@@ -120,13 +129,16 @@ async function allEvaluatorsHaveScored(
   deck: DeckRow,
 ): Promise<boolean> {
   if (deck.edition === "incubator") {
-    if (!deck.assigned_to) return false;
-    const row = await c.env.DB.prepare(
-      "SELECT 1 AS n FROM evaluations WHERE deck_id = ? AND evaluator_id = ?",
-    )
-      .bind(deck.id, deck.assigned_to)
-      .first<{ n: number }>();
-    return Boolean(row);
+    const assignees = await assigneeIdsOf(c.env.DB, deck.id);
+    if (assignees.length === 0) return false;
+    const scored = new Set(
+      (
+        await c.env.DB.prepare("SELECT evaluator_id FROM evaluations WHERE deck_id = ? AND evaluator_id IS NOT NULL")
+          .bind(deck.id)
+          .all<{ evaluator_id: string }>()
+      ).results.map((r) => r.evaluator_id),
+    );
+    return assignees.every((id) => scored.has(id));
   }
   const scored = (
     await c.env.DB.prepare(
@@ -392,6 +404,10 @@ pipeline.post(
       c.env.DB.prepare(
         "INSERT INTO pipeline_events (id, deck_id, actor_id, from_stage, to_stage, action, note, created_at) VALUES (?, ?, ?, ?, ?, 'assign_jury', ?, ?)",
       ).bind(eventId(deck.id), deck.id, user.id, deck.status, to, `Assigned to ${assignee.name}`, ts),
+      // W7-E — the join table is the authority on who may score; a single-member
+      // assignment is the one-row case of the Assign screen's cross product.
+      clearAssignments(c.env.DB, deck.id),
+      upsertAssignment(c.env.DB, { deckId: deck.id, evaluatorId: assignee.id, assignedBy: user.id, assignedAt: ts }),
     ]);
     return c.json({ ok: true, status: to, assignedTo: assignee.id, assignedToName: assignee.name });
   },
@@ -425,8 +441,9 @@ pipeline.post(
     const deck = await loadDeck(c, c.req.param("id"));
     if (!deck) return c.json({ error: "not_found" }, 404);
     // A jury member may only score the decks assigned to them (staff — PM/admin —
-    // may score any). Keeps AI-vs-jury drift analytics attributable.
-    if (user.role === "jury" && deck.assigned_to !== user.id) {
+    // may score any). Keeps AI-vs-jury drift analytics attributable. W7-E: "assigned
+    // to them" means ANY of the deck's evaluators, not only the first.
+    if (user.role === "jury" && !(await isAssignedEvaluator(c.env.DB, deck.id, user.id))) {
       return c.json({ error: "not_assigned" }, 403);
     }
     // VC evaluators score only while the deal is in a scoring stage — not after it
@@ -1036,6 +1053,10 @@ pipeline.get("/activity", async (c) => {
  * GET /evaluators — assignable evaluators grouped by role (Assign screen, panel
  * 2 + 3). Each member carries their current open workload so the assigner can
  * balance, and their alias title (issue 1) where one is set.
+ *
+ * W7-E / F0258 — and the load bar's denominator: `capacity` is the user's own
+ * `evaluation_capacity`, else the role default. `openDecks` counts every deck the
+ * member is ANY evaluator on, not only the ones they are first on.
  */
 pipeline.get(
   "/evaluators",
@@ -1046,8 +1067,9 @@ pipeline.get(
     const placeholders = assignable.map(() => "?").join(", ");
     const rows = (
       await c.env.DB.prepare(
-        "SELECT u.id, u.name, u.initials, u.role, u.title, " +
-          "(SELECT COUNT(*) FROM decks d WHERE d.assigned_to = u.id AND d.status IN ('assigned', 'jury_evaluation', 'analyst_scoring', 'associate_review', 'partner_review')) AS open_decks " +
+        "SELECT u.id, u.name, u.initials, u.role, u.title, u.evaluation_capacity, " +
+          `(SELECT COUNT(DISTINCT d.id) FROM decks d JOIN (${ASSIGNEE_PAIRS_SQL}) ap ON ap.deck_id = d.id ` +
+          "WHERE ap.evaluator_id = u.id AND d.status IN ('assigned', 'jury_evaluation', 'analyst_scoring', 'associate_review', 'partner_review')) AS open_decks " +
           `FROM users u WHERE u.edition = ? AND u.active = 1 AND u.role IN (${placeholders}) ORDER BY u.name`,
       )
         .bind(edition, ...assignable)
@@ -1057,6 +1079,7 @@ pipeline.get(
           initials: string;
           role: string;
           title: string | null;
+          evaluation_capacity: number | null;
           open_decks: number;
         }>()
     ).results;
@@ -1073,6 +1096,7 @@ pipeline.get(
           role: r.role,
           title: r.title ?? undefined,
           openDecks: r.open_decks ?? 0,
+          capacity: capacityFor(r.role, r.evaluation_capacity),
         })),
     }));
     return c.json({ groups });

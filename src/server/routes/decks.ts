@@ -76,6 +76,8 @@ const DECK_DERIVED =
   // assignee has actually submitted their evaluation yet.
   "(SELECT MAX(pe.created_at) FROM pipeline_events pe WHERE pe.deck_id = d.id AND pe.action = 'assign_jury') AS assigned_at, " +
   "(SELECT COUNT(*) FROM evaluations ev WHERE ev.deck_id = d.id AND ev.evaluator_id IS NOT NULL AND ev.evaluator_id = d.assigned_to) AS assignee_submitted, " +
+  // W7-E — every evaluator on the deck (migration 0058), first assignee included.
+  "(SELECT GROUP_CONCAT(da.evaluator_id, '||') FROM deck_assignments da WHERE da.deck_id = d.id) AS assignee_ids, " +
   // Issue 27/29 — the intro call's schedule + status.
   "(SELECT ca.scheduled_at FROM calls ca WHERE ca.deck_id = d.id AND ca.status != 'cancelled' ORDER BY ca.scheduled_at DESC LIMIT 1) AS call_at, " +
   "(SELECT ca.status FROM calls ca WHERE ca.deck_id = d.id AND ca.status != 'cancelled' ORDER BY ca.scheduled_at DESC LIMIT 1) AS call_status, " +
@@ -121,6 +123,7 @@ interface DeckRow {
   missing_sections?: string | null;
   assigned_at?: string | null;
   assignee_submitted?: number | null;
+  assignee_ids?: string | null;
   call_at?: string | null;
   call_status?: string | null;
   exit_from?: string | null;
@@ -259,6 +262,7 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role) {
     uploadedAt: row.created_at ?? undefined,
     assignedTo: row.assigned_to ?? undefined,
     assignedToName: row.assigned_to_name ?? undefined,
+    assigneeIds: [...new Set([...(row.assigned_to ? [row.assigned_to] : []), ...splitList(row.assignee_ids)])],
     programName: row.program_name ?? undefined,
     cohortName: row.cohort_name ?? undefined,
     actions: actionsFor(edition, row.status, role),

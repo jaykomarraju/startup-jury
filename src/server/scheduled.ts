@@ -8,6 +8,7 @@ import type { Env } from "./types";
 import type { Edition } from "../shared/roles";
 import { sendEmail, buildReminderEmail, emitNotification } from "./email/outbox";
 import { sweepStuckEvaluations, type SweepResult } from "./ai/health";
+import { ASSIGNEE_PAIRS_SQL } from "./decks/assignments";
 
 /** One assigned-but-unscored deck row (assignee + deck). */
 export interface PendingAssignment {
@@ -49,13 +50,16 @@ export function selectReminders(rows: PendingAssignment[]): EvaluatorReminder[] 
  * Run the reminder sweep: find decks parked at `assigned` with an assignee, group
  * per evaluator, and send one reminder each. Returns the reminders sent (for
  * tests / observability).
+ *
+ * W7-E — "an assignee" is every evaluator on the deck (`deck_assignments`), not
+ * only the first, so the second and third juror are reminded too.
  */
 export async function runReminders(env: Env): Promise<EvaluatorReminder[]> {
   const rows = (
     await env.DB.prepare(
       "SELECT d.id AS deck_id, d.name AS deck_name, u.id AS eid, u.name AS ename, u.email AS eemail " +
-        "FROM decks d JOIN users u ON u.id = d.assigned_to " +
-        "WHERE d.status = 'assigned' AND d.assigned_to IS NOT NULL AND u.active = 1",
+        `FROM decks d JOIN (${ASSIGNEE_PAIRS_SQL}) ap ON ap.deck_id = d.id JOIN users u ON u.id = ap.evaluator_id ` +
+        "WHERE d.status = 'assigned' AND u.active = 1",
     ).all<{ deck_id: string; deck_name: string; eid: string; ename: string; eemail: string }>()
   ).results;
 
