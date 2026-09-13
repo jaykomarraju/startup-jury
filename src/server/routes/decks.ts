@@ -18,7 +18,7 @@ import {
 import { loadScoringSettings } from "../config/scoringSettings";
 import { missingIntakeFields, parseMissingFields, type IntakeMatch } from "../../shared/intake";
 import { denyMentor, requireAuth, requireTask } from "../auth/middleware";
-import { detectIntakeFlags, intakeFlagStatement } from "../intake";
+import { detectIntakeFlags, intakeFlagStatement, resolveIntakeContext } from "../intake";
 import { emitNotification } from "../email/outbox";
 import { evaluateDeck } from "../ai/evaluate";
 import {
@@ -1256,6 +1256,8 @@ decks.post("/upload", async (c) => {
   if (!(await reserveCredits(c, 1))) return c.json({ error: "no_credits" }, 402);
 
   const meta = metaFromForm(form);
+  // W7-B — programme/cohort validated, sector resolved from the workspace.
+  Object.assign(meta, await resolveIntakeContext(c.env, c.var.user.edition, meta));
   let id: string;
   try {
     id = await storeDeck(c, file, meta);
@@ -1391,6 +1393,10 @@ decks.post("/bulk", async (c) => {
     return c.json({ error: "pdf_required", count: 0, deckIds: [], results: rows }, 400);
   }
 
+  // W7-B (F0223) — the operator's programme, cohort and workspace sector apply
+  // to EVERY deck in the batch; only per-deck details are left to the AI.
+  const context = await resolveIntakeContext(c.env, c.var.user.edition, metaFromForm(form));
+
   if (!(await reserveCredits(c, accepted.length))) {
     return c.json({ error: "no_credits" }, 402);
   }
@@ -1399,15 +1405,15 @@ decks.post("/bulk", async (c) => {
   try {
     for (const file of accepted) {
       const name = file.name.replace(/\.pdf$/i, "");
-      // No meta on a bulk upload — the file name is only a PROVISIONAL label
-      // (storeDeck marks it name_auto), replaced by the startup name the AI
-      // reads off the deck (issue 12).
-      const id = await storeDeck(c, file, {});
+      // No per-deck meta on a bulk upload — the file name is only a PROVISIONAL
+      // label (storeDeck marks it name_auto), replaced by the startup name the
+      // AI reads off the deck (issue 12).
+      const id = await storeDeck(c, file, context);
       await c.env.EVAL_QUEUE.send({ deckId: id });
       deckIds.push(id);
       // Filename-only match up front (cost-driven); evaluateDeck re-checks with
       // the extracted founder details once the queue consumer scores the deck.
-      const matches = await flagIntake(c, id, { name }, name);
+      const matches = await flagIntake(c, id, { name, cohortId: context.cohortId }, name);
       rows.push({
         file: file.name,
         ok: true,

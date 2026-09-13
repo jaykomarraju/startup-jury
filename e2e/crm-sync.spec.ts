@@ -179,11 +179,14 @@ test("the Upload screen sends an admin to the CRM section instead of raising a t
   await login(page, "nisha.kapoor@demo.startupjury.ai");
   await page.goto("/app/upload");
 
-  const card = page.locator("li").filter({ hasText: "Pull decks from your CRM" }).first();
-  await expect(card.getByRole("link", { name: "Set up CRM sync" })).toBeVisible();
-  await expect(card.getByRole("button", { name: "Request this" })).toHaveCount(0);
+  // W7-B: CRM is the wizard's third method (`#up-um-crm`); for an admin each
+  // provider tile opens the section where the connection is really configured.
+  await page.getByRole("radio", { name: /Upload from CRM/ }).click();
+  const grid = page.getByTestId("up-crm-grid");
+  await expect(grid.getByRole("link")).toHaveCount(4);
+  await expect(grid.getByRole("button", { name: "Request this" })).toHaveCount(0);
 
-  await card.getByRole("link", { name: "Set up CRM sync" }).click();
+  await grid.getByRole("link", { name: "Salesforce" }).click();
   await expect(page.getByTestId("admin-section-title")).toHaveText("CRM sync");
 });
 

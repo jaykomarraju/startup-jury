@@ -165,7 +165,7 @@ const EXPECTED: Record<string, Screen> = {
     title: "All decks",
     tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "SECTOR", "STATUS"]],
   },
-  "incubator/superuser/upload": { title: "Upload pitch decks", tables: [] },
+  "incubator/superuser/upload": { title: "Upload your first pitchdecks", tables: [] },
   "incubator/superuser/query": {
     title: "Founder queries",
     tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
@@ -240,7 +240,7 @@ const EXPECTED: Record<string, Screen> = {
     title: "All decks",
     tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "SECTOR", "STATUS"]],
   },
-  "incubator/admin/upload": { title: "Upload pitch decks", tables: [] },
+  "incubator/admin/upload": { title: "Upload your first pitchdecks", tables: [] },
   "incubator/admin/query": {
     title: "Founder queries",
     tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
@@ -306,7 +306,7 @@ const EXPECTED: Record<string, Screen> = {
     title: "All decks",
     tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "SECTOR", "STATUS"]],
   },
-  "incubator/program_manager/upload": { title: "Upload pitch decks", tables: [] },
+  "incubator/program_manager/upload": { title: "Upload your first pitchdecks", tables: [] },
   "incubator/program_manager/query": {
     title: "Founder queries",
     tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
@@ -368,7 +368,7 @@ const EXPECTED: Record<string, Screen> = {
     title: "All decks",
     tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "SECTOR", "STATUS"]],
   },
-  "incubator/program_associate/upload": { title: "Upload pitch decks", tables: [] },
+  "incubator/program_associate/upload": { title: "Upload your first pitchdecks", tables: [] },
   "incubator/program_associate/query": {
     title: "Founder queries",
     tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
@@ -459,7 +459,7 @@ const EXPECTED: Record<string, Screen> = {
     title: "All decks",
     tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
   },
-  "vc/superuser/upload": { title: "Upload pitch decks", tables: [] },
+  "vc/superuser/upload": { title: "Upload your first pitchdecks", tables: [] },
   "vc/superuser/query": {
     title: "Founder queries",
     tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
@@ -538,7 +538,7 @@ const EXPECTED: Record<string, Screen> = {
     title: "All decks",
     tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
   },
-  "vc/admin/upload": { title: "Upload pitch decks", tables: [] },
+  "vc/admin/upload": { title: "Upload your first pitchdecks", tables: [] },
   "vc/admin/query": {
     title: "Founder queries",
     tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
@@ -617,7 +617,7 @@ const EXPECTED: Record<string, Screen> = {
     title: "All decks",
     tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
   },
-  "vc/partner/upload": { title: "Upload pitch decks", tables: [] },
+  "vc/partner/upload": { title: "Upload your first pitchdecks", tables: [] },
   "vc/partner/evaluate": { title: "Evaluate", tables: [] },
   "vc/partner/introcalls": {
     title: "Intro calls",
@@ -724,7 +724,7 @@ const EXPECTED: Record<string, Screen> = {
     title: "All decks",
     tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
   },
-  "vc/associate/upload": { title: "Upload pitch decks", tables: [] },
+  "vc/associate/upload": { title: "Upload your first pitchdecks", tables: [] },
   "vc/associate/query": {
     title: "Founder queries",
     tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
@@ -766,7 +766,7 @@ const EXPECTED: Record<string, Screen> = {
     title: "All decks",
     tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
   },
-  "vc/analyst/upload": { title: "Upload pitch decks", tables: [] },
+  "vc/analyst/upload": { title: "Upload your first pitchdecks", tables: [] },
   "vc/analyst/query": {
     title: "Founder queries",
     tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],

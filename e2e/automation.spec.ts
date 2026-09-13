@@ -61,13 +61,18 @@ test("upload collects the required founder details and explains the Incomplete r
   await login(page, "sunita.rao@demo.startupjury.ai"); // inc_pa
   await page.goto("/app/upload");
 
-  await expect(page.getByRole("heading", { name: "Upload pitch decks" })).toBeVisible();
-  await expect(page.getByText("Required founder details")).toBeVisible();
+  // W7-B: the prototype's heading, and the founder columns folded under a
+  // disclosure. Sector is no longer one of them — it is a select beside Cohort,
+  // taken from the workspace, and never marks a deck Incomplete (F0227).
+  await expect(page.getByRole("heading", { name: "Upload your first pitchdecks" })).toBeVisible();
+  await page.getByRole("button", { name: /Required founder details/ }).click();
 
-  // All five required intake columns are on the form.
-  for (const label of ["Founder name *", "Founder email *", "Phone *", "City *", "Sector *"]) {
+  // All four extracted intake columns are on the form.
+  for (const label of ["Founder name *", "Founder email *", "Phone *", "City *"]) {
     await expect(page.getByLabel(label)).toBeVisible();
   }
+  await expect(page.getByLabel("Sector *")).toHaveCount(0);
+  await expect(page.getByLabel("Sector", { exact: true })).toBeVisible();
 
   // With the form empty, the page says the AI will look for them and what
   // happens when it can't find them.
@@ -79,6 +84,6 @@ test("upload collects the required founder details and explains the Incomplete r
   await expect(page.getByText(/The AI will look for founder email/)).toBeVisible();
 
   // Bulk mode has no per-deck form — the AI extracts every detail.
-  await page.getByRole("button", { name: /Bulk upload/ }).click();
+  await page.getByRole("radio", { name: /Bulk upload/ }).click();
   await expect(page.getByText(/No per-deck form on a bulk upload/)).toBeVisible();
 });
