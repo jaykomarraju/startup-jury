@@ -3497,7 +3497,9 @@ CONSTRAINTS
 TEST
   - Client: each screen's exact header set, legend and footer; the DD tab renders its checklist.
   - E2E: open a DD row's checklist tab and move one item.
-  - Re-capture the changed `e2e/parity.spec.ts` rows (replace obsolete sets).
+  - Re-capture the changed `e2e/parity.spec.ts` rows per the CONSTRAINTS rule above: **union your
+    own rows into `EXPECTED`; replace only a row you own whose set is obsolete.** Never delete a row
+    you did not capture.
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
   The whole gate is about five minutes on a quiet box (W7-F: 1608 unit/worker/client in ~20 s).
   `uptime` before you start; never run it while a sibling runs theirs; never conclude anything from
