@@ -2634,75 +2634,6 @@ FINISH
   Commit to parity/W7-C. Do not merge to main.
 ```
 
-### `W9-A` — the Query half *(written by `W7-C`)*
-
-> `W9-A` owns four VC screens (§6); this is the **Query** part only. `W7-A`, `W7-B` and `W7-D` own
-> the incubator All decks, Upload and Evaluate and are the right authors of the other three parts —
-> Wave 7 or Wave 8 integration should fold the four into one prompt. Two things only integration
-> knows: the base commit, and whether `W7-C`'s two §9 patches were applied (the prompt assumes yes —
-> if not, applying them is step zero, because the VC partner has no Query screen without them).
-> The VC branch of Query is still the SAME component: `App.tsx` renders `QueryPage` for both
-> editions and there is no VC-only code in it yet.
-
-```
-You are running session W9-A (Query part) — the VC Query screen to prototype parity — of the
-ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
-
-SETUP
-  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
-  git worktree add ../sj-W9-A -b parity/W9-A <BASE-BRANCH>
-  cd ../sj-W9-A && npm ci
-  python3 docs/prototype/tools/split-prototypes.py
-
-READ FIRST (in this order, and nothing else)
-  1. docs/plan_parity.md — §1, §2, §4, the Wave 9 row in §6, and §8 Q80–Q82 (W7-C's decisions on
-     this screen: the flow view, the three status words, the partner's access).
-  2. Your worklist:
-       python3 docs/prototype/tools/findings.py --area "Deck intake" --edition vc --grep "query" --full
-     30 findings, most of them CLOSED by W7-C for both editions (the screen is shared) — §7's W7-C
-     row lists which. Verify each claimed closure on the VC edition rather than re-doing it; what is
-     left is VC-specific. Leave upload findings to the Upload part.
-  3. The prototype, from ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_VC_Superuser_V8/:
-       panel-query.html and _scripts.js (grep qFounders, qRenderList, openFounderPortal).
-     Diff its panel-query against AISJ_IC_SuserV15's — W0 found the VC panel byte-identical across
-     the six VC role files, so any difference is edition, not role.
-  4. src/client/routes/QueryPage.tsx and src/shared/queries.ts (QUERYABLE_STAGES,
-     AWAITING_REVIEW_STAGES, isQueryListed — the VC branches live there).
-
-BUILD
-  1. The VC row set. `isQueryListed` lists a VC deck at incomplete / analyst_scoring /
-     associate_review only when something is flagged or a query exists. Confirm those are the VC
-     stages a query is raised from, and decide what "awaiting review" means for VC, which has NO
-     `founder_response` transition (src/pipeline/vc.ts): today a VC founder's answer changes no
-     stage, so an answered VC query stays listed only while the deal is still in those stages.
-  2. Anything the VC panel shows that the incubator one does not — copy, meta line, status colours.
-  3. The flow view for a VC deal: the VC parameter set, and whether blind scoring
-     (`aiScoreWithheld`) hides the completion bar for an analyst who has not scored yet — it
-     degrades to "AI area scores are not available" today; make sure that is the right reading.
-
-CONSTRAINTS
-  - Own only the VC branches of QueryPage.tsx and src/shared/queries.ts. Anything in pipeline.ts,
-    outbox.ts, nav.ts or the founder surfaces is a §9 request with an exact diff — W7-C left
-    verified `git apply` patches under docs/parity-requests/ as the pattern.
-  - Email is recorded, not sent (§1.4): the send button says "Query recorded for N founders" unless
-    the server reports `delivered`. Keep it that way.
-  - F0471 (no VC founder role or portal at all) is not a Query-screen build. Record, do not start.
-
-TEST
-  - Unit: every VC branch you add to isQueryListed / queryStatusOf.
-  - Client: the list and the flow view under a VC user (`useAuth` mocked with edition "vc").
-  - E2E: one VC role walks list → compose → send; one test per role. The seeded VC flagged deck is
-    Northbeam Robotics (incomplete, with an open query). Create your own decks for anything that
-    mutates, as e2e/query.spec.ts does — never query a seeded deck whose resubmit link another
-    spec opens.
-  - `npm run roles` against a server you proved you own; `parity.spec.ts` re-captured if a VC header
-    set moves.
-  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
-
-FINISH
-  §2.4 exit checklist: §7, §8, §9, then the next prompt(s) into §10. Commit to parity/W9-A.
-```
-
 ### `W5-A` — required documents, seat capacity / fund deployment *(written by `W4-C`)*
 
 > Written here because **Seat capacity is where `W4-C` stopped**. The Credits & billing tile now
@@ -2889,63 +2820,6 @@ FINISH
   Commit to parity/W7-B. Do not merge to main.
 ```
 
-### `W9-A` — the Upload quarter *(written by `W7-B`; `W7-A` / `W7-C` may write the All decks / Query quarters — integration unions them into one prompt)*
-
-> `W7-B` built Upload for BOTH editions: the VC findings under `--grep upload` are the same ids the
-> incubator closed (F0221 F0222 F0223 F0224 F0226 F0227 F0296 … F0347). The three VC-only rows the
-> filter adds — F0274, F0286, F0288 — are Query's and `nav.ts`'s, not Upload's. So `W9-A`'s Upload
-> work is VERIFICATION on the VC seed plus the prototype details that differ by role, not a rebuild.
-
-```
-You are running session W9-A (Upload quarter) — prove the VC Upload screen against the four VC role
-prototypes — of the ai.STARTUPJURY parity programme. You have no prior context. Everything you need
-is in the repo.
-
-SETUP
-  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
-  git worktree add ../sj-W9-A -b parity/W9-A main
-  cd ../sj-W9-A && npm ci
-  python3 docs/prototype/tools/split-prototypes.py
-
-READ FIRST (in this order, and nothing else)
-  1. docs/plan_parity.md — §1, §2, §4, §8 Q1 and Q80–Q83, the Wave 9 table row for W9-A in §6, and
-     the `W7-B` rows in §7 and §9.
-  2. Your worklist: python3 docs/prototype/tools/findings.py --area "Deck intake" --edition vc --grep "upload" --full
-     Most rows are already closed by W7-B (§7). F0274 / F0286 / F0288 are Query's — leave them to
-     the Query quarter.
-  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_VC_Superuser_V8/panel-upload.html, and `diff` it against
-     AISJ_VC_Partner_V1, _Associate_V1, _Analyst_V1, _IC_member_V2 (line 165: Buy credits is deleted
-     for those roles — already honoured by `canAccessNav(…, "billing", can)`).
-  4. src/client/routes/UploadPage.tsx and src/client/routes/upload/** (W7-B's), READ first.
-
-BUILD
-  1. An e2e walk per VC upload role (admin, partner, associate, analyst) on the VC seed: the wizard
-     renders, the credits bar shows the balance, Buy credits appears for admin ONLY, and no link in
-     the screen body resolves to "Not available for your role" (copy the link walk in
-     e2e/upload.spec.ts).
-  2. An analyst stages two decks, uploads one, flags one VC parameter (the VC rubric's names come from
-     GET /api/parameters — assert one by name) and sends it to Query; assert the query row via the API.
-  3. Anything in the VC panel that differs from the incubator one beyond line 165 — diff first; if
-     nothing differs, say so in §7 and add no code.
-  4. If `W7-C` widened the VC Query filter (F0274), assert the Upload-raised query appears on /app/query.
-
-CONSTRAINTS
-  - Own only the VC branches of src/client/routes/UploadPage.tsx and src/client/routes/upload/**, and
-    your own new e2e spec. The sector rule (§8 Q82) and the staging model (§8 Q80) are decided — do
-    not re-open them without a new spec or issue-log line.
-  - No per-deck price anywhere (§8 Q1): the preview counts credits.
-  - Nothing on this screen spends except "Upload selected decks"; `reserveCredits` stays where it is.
-
-TEST
-  - E2E as above, VC seed only; pin anything a sibling spec mutates (credit balances especially).
-  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
-
-FINISH
-  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
-  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
-  Commit to parity/W9-A. Do not merge to main.
-```
-
 ### `W8-B` — Core Parameters and My Parameters, and the scale rule they inherit *(written by `W7-D`)*
 
 > **Wave 8 is two parallel sessions (`W8-A` reports, `W8-B` parameters) and this is the second.** It
@@ -3069,80 +2943,6 @@ FINISH
   Commit to parity/W8-B. Do not merge to main.
 ```
 
-### `W9-E` — VC calls: intro · partner · alignment *(written by `W7-E`)*
-
-> Wave 9 is five sessions and, when `W7-E` finished, had no prompts. This is `W9-E`'s, written because
-> `W7-E`'s work reaches it: the intro call's AI-questions block is built and its placement in the
-> VC call configs is this session's. **`W9-A`, `W9-B`, `W9-C` and `W9-D` still need prompts, and so
-> do Wave 8's `W8-A` and `W8-B`** — the Wave 7 and Wave 8 integration sessions write them. Two things
-> only integration can fill in are marked `<…>`: the base commit and Wave 9's migration allotment.
-
-```
-You are running session W9-E — the VC call screens (intro · partner · alignment) and the call
-modal — of the ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in
-the repo.
-
-SETUP
-  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
-  git worktree add ../sj-W9-E -b parity/W9-E <main after Wave 8 integration>
-  cd ../sj-W9-E && npm ci
-  python3 docs/prototype/tools/split-prototypes.py
-
-READ FIRST (in this order, and nothing else)
-  1. docs/plan_parity.md — §1, §2, §4, then ONLY your row in §6's Wave 9 table, and these §9 rows:
-     `Wave 2 integration`'s `calls.ts:604` row (addressed "W7-E / W9-E"), and `W7-E`'s row on
-     `CallsPage.tsx` — it says where the AI-questions block was placed for the incubator configs and
-     how it was proven. Also §8 Q38 and Q80 (a deck now has one OR MORE evaluators).
-  2. Your worklist:
-       python3 docs/prototype/tools/findings.py --area "Pipeline" --edition vc \
-         --screen "introcalls|partnercall|alignmentcall|call modal" --full
-     37 findings. The grep is loose — F0651's parameter matrix spans jurypipeline/partnerpipeline,
-     which are `W9-B`'s; claim only what is on a call screen or the call modal.
-  3. The prototype, from ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_VC_Superuser_V8/:
-       panel-introcalls.html · panel-partnercall.html · panel-alignmentcall.html, and each one's
-       renderer in `_scripts.js` — those functions ONLY.
-  4. src/client/routes/CallsPage.tsx (the VC configs — the incubator configs were `W7-F`'s),
-     src/server/routes/calls.ts, and src/client/components/IntroCallQuestions.tsx.
-  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
-
-BUILD
-  1. The three VC call screens to the Wave 7 pattern: toolbar, filters, the exact column set and
-     headers, the status vocabulary, the legend, the row actions and the empty state.
-  2. The call modal (schedule / reschedule) to the prototype's shape.
-  3. **The AI questions on VC calls.** `<IntroCallQuestions callId=… />` renders the three fields of
-     `GET /api/calls/:id/prompts` and renders NOTHING when Admin console → Scoring framework →
-     "Intro call AI question prompts enabled" is off — do not wrap it in a guard of your own. Place it
-     wherever the incubator configs placed it. The route answers for ANY call kind; the toggle's copy
-     says "intro call". Decide whether partner and alignment calls show it, record the decision in
-     §8, and test the kinds that must NOT show it as an absence.
-  4. `calls.ts` is yours this wave. Do not change the `/prompts` contract — it is tested by
-     `test/worker/scoring-framework.test.ts` and relied on by the incubator screen.
-
-CONSTRAINTS
-  - Own only: src/client/routes/CallsPage.tsx (VC configs), src/server/routes/calls.ts. Need
-    something else changed? Record it in §9; do not edit it.
-  - You own migration <Wave 9 allotment> and only that number — you probably need none.
-  - §2.2 hazard files as usual: `index.css`, `nav.ts`, `roles.ts`, `App.tsx`.
-  - A call's participants are not its evaluators. `deck_assignments` (0058) is who SCORES a deck;
-    do not derive call invitees from it, and do not write to it.
-
-TEST
-  - Client: each screen's exact header set, the status vocabulary, the legend, the empty state.
-  - Client / E2E: the AI-questions block on a VC intro call with the toggle on, and its ABSENCE on
-    the kinds you decided must not show it — assert the absence after the request has settled.
-  - Worker: any `calls.ts` change — happy path, an allowed role and a forbidden one (403).
-  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
-  Check `uptime` first and do not run the gate while a sibling runs theirs. Two hook traps Wave 7 hit:
-  `beforeEach(() => vi.mocked(fn).mockReset())` RETURNS the mock and vitest runs it as teardown
-  (use braces); and gate client assertions on a populated element, never on a heading the loading
-  branch also renders.
-
-FINISH
-  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
-  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
-  Commit to parity/W9-E. Do not merge to main.
-```
-
 ### Wave 9 — `W9-B`, `W9-C`, `W9-E` *(written by `W7-F`)*
 
 > All three build on what `W7-F` landed: `StageConfig`'s `toolbar` / `subTabs` / `legend` + `footer`
@@ -3152,7 +2952,384 @@ FINISH
 > unchanged — not a bespoke page. `W9-B` and `W9-C` both edit `StagePage.tsx` (different configs) —
 > keep to your own config entries and any new key you add must default to "draws nothing".
 
-#### `W9-B` — Submit, Associate pipeline, Partner pipeline
+#### `W9-A` — the VC deck-intake quartet: All decks · Upload · Query · Evaluate *(two partial prompts by `W7-B` and `W7-C`, merged and completed at Wave 8 integration)*
+
+> **This session had two prompts and neither was whole.** `W7-C` wrote the Query half and `W7-B` the
+> Upload quarter; §6 gives `W9-A` **four** screen families and the other two — All decks and Evaluate —
+> had no prompt at all. Merged and completed here, the way Wave 5 integration merged the two `W6-A`
+> prompts and Wave 7 integration merged the `W9-E` pair. Both originals also cited §8 Q80–Q83, which
+> the Wave 7 renumber had reassigned to `W7-A`; repointed to their authors' real questions.
+>
+> **The shape of the session: most of this is verification, not construction.** `W7-A`–`W7-F` rebuilt
+> these four screens for the incubator and three of the four files are SHARED between editions. Your
+> job is to prove the VC edition against the VC prototypes and build only what genuinely differs.
+> Where nothing differs, say so in §7 and add no code — that is a result, not an omission.
+
+```
+You are running session W9-A — the VC deck-intake quartet (All decks · Upload · Query · Evaluate) —
+of the ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W9-A -b parity/W9-A main
+  cd ../sj-W9-A && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, your row in §6's Wave 9 table, then the questions your
+     predecessors settled on these exact screens:
+       §8 Q1            — RULED: no per-deck pricing anywhere. The Upload cost preview counts CREDITS.
+       §8 Q84–Q87       — `W7-B`'s Upload decisions: where "Send to Query" lives when staging spends
+                          nothing (Q84), ZIP/CSV bulk intake (Q85), the sector resolution order (Q86),
+                          the drop-zone limits (Q87).
+       §8 Q88–Q90       — `W7-C`'s Query decisions: `#qview-founder` is dead markup in the prototype
+                          (Q88), the app's fourth status the prototype lacks (Q89), and
+                          `vc/partner · role-gap query` recorded as DELIBERATE in parity-nav (Q90).
+       §8 Q80–Q83       — `W7-A`'s All decks decisions. Read them: they are the screen you inherit.
+       §8 Q91–Q95       — `W7-D`'s Evaluate decisions, including the stage-aware report.
+     Then the `W7-A`, `W7-B`, `W7-C` and `W7-D` rows in §7 — each lists what it closed FOR BOTH
+     EDITIONS versus what it left VC-specific. That list is the actual worklist.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Deck intake" --edition vc --full
+     68 findings across four screens. **Most are already closed** by Wave 7 for both editions,
+     because three of your four files are shared. Verify each claimed closure ON THE VC EDITION
+     rather than re-doing it; what survives is genuinely VC-specific.
+  3. The prototypes, from ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_VC_Superuser_V8/:
+       panel-alldecks.html · panel-upload.html · panel-query.html · panel-evaluate.html
+     and their renderers in `_scripts.js` (grep the panel's ids; read only those functions).
+     **Diff each against AISJ_IC_SuserV15's** — `W0` found the VC panels byte-identical across the
+     six VC role files, so any difference you find is EDITION, not role. Then diff
+     AISJ_VC_{Partner_V1,Associate_V1,Analyst_V1,IC_member_V2} for the role-trimmed variants
+     (panel-upload.html line 165: Buy credits is deleted for those roles — already honoured by
+     `canAccessNav(…, "billing", can)`).
+  4. The files. `VcEvaluatePage.tsx` is yours outright; the other three are SHARED and you own only
+     their VC branches:
+       src/client/routes/VcEvaluatePage.tsx          (yours)
+       src/client/routes/DashboardPage.tsx           (VC branch only — `W7-A`'s file)
+       src/client/routes/UploadPage.tsx + upload/**  (VC branch only — `W7-B`'s)
+       src/client/routes/QueryPage.tsx + src/shared/queries.ts (VC branches — `W7-C`'s)
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD — four screens, in this order, because the later ones depend on the earlier
+  1. **All decks (VC).** The prototype's exact column set, status vocabulary, filters, legend and
+     drawer for the VC edition. `W7-A` rebuilt this screen for the incubator and threaded
+     `aiWeightPct` through the shortlist hint — verify the VC branch gets the same treatment, and
+     that the VC status vocabulary (deal stages, not cohort stages) is what renders.
+  2. **Upload (VC).** Mostly a proof, not a build: an e2e walk per VC upload role (admin, partner,
+     associate, analyst) on the VC seed — the wizard renders, the credits bar shows the balance,
+     **Buy credits appears for admin ONLY**, and no link in the screen body resolves to "Not
+     available for your role" (copy the link walk in e2e/upload.spec.ts). Then: an analyst stages two
+     decks, uploads one, flags one VC parameter (VC rubric names come from `GET /api/parameters` —
+     assert one BY NAME) and sends it to Query; assert the query row through the API.
+     Anything in the VC panel that differs beyond line 165 — diff first; if nothing differs, say so
+     in §7 and add no code.
+  3. **Query (VC).** `isQueryListed` lists a VC deck at incomplete / analyst_scoring /
+     associate_review only when something is flagged or a query exists. Confirm those are the VC
+     stages a query is raised from, and decide what "awaiting review" means for VC, **which has no
+     `founder_response` transition at all** (src/pipeline/vc.ts): a VC founder's answer changes no
+     stage today, so an answered VC query stays listed only while the deal is still in those stages.
+     Then the flow view for a VC deal — the VC parameter set, and whether blind scoring
+     (`aiScoreWithheld`) should hide the completion bar for an analyst who has not scored yet. It
+     degrades to "AI area scores are not available" today; confirm that is the right reading.
+  4. **Evaluate (VC).** `VcEvaluatePage.tsx` is the one file here nobody else owns. The workbench to
+     the VC prototype: toolbar, filters, exact columns and headers, status vocabulary, legend, row
+     actions, drawer, empty state. `W7-D` made the evaluation report **stage-aware**
+     (`GET /api/decks/:id/report?stage=`) and fixed three display-scale defects — read its §7 row
+     before you touch a score, a band colour or a threshold, and reuse `toDisplayScale` /
+     `formatScore` rather than writing a second conversion.
+
+CONSTRAINTS
+  - Own only: `src/client/routes/VcEvaluatePage.tsx` outright, and the **VC branches** of
+    `DashboardPage.tsx`, `UploadPage.tsx` + `upload/**`, `QueryPage.tsx` and `src/shared/queries.ts`.
+    **Touching an incubator branch of a shared file is how you break a screen four Wave 7 sessions
+    just finished.** If a fix must live in a shared path, it is a §9 request with an exact diff —
+    `W7-C` left verified `git apply` patches under docs/parity-requests/ as the pattern.
+  - Anything in `pipeline.ts`, `outbox.ts`, `nav.ts` or the founder surfaces is a §9 request.
+  - **No per-deck price anywhere (§8 Q1).** The Upload preview counts credits. Nothing on that screen
+    spends except "Upload selected decks"; `reserveCredits` stays exactly where it is.
+  - Email is recorded, not sent (§1.4): the send button says "Query recorded for N founders" unless
+    the server reports `delivered`. Keep it that way.
+  - **F0471 — there is no VC founder role or portal at all.** That is not a Query-screen build.
+    Record it; do not start it.
+  - You own migration **0061** and only 0061 (`main` ends at 0060; Wave 9 is 0061–0065 in letter
+    order). You almost certainly need none. If you DO add one, raise `ALLOTMENT_CEILING` in
+    test/worker/migrations-w1b.test.ts from 60 to match, in the SAME commit.
+  - `src/client/index.css`, `src/shared/nav.ts`, `src/shared/roles.ts`, `src/client/App.tsx` are
+    §2.2 serialisation-hazard files.
+
+TEST
+  - Unit: every VC branch you add to `isQueryListed` / `queryStatusOf`.
+  - Client: each of the four screens under a VC user (`useAuth` mocked with edition "vc") — the exact
+    header set, the status vocabulary, the empty state.
+  - Worker: any route you touch — happy path, validation, an allowed role AND a forbidden one (403).
+  - E2E: one VC role per test walks each screen. The seeded VC flagged deck is **Northbeam Robotics**
+    (incomplete, with an open query). **Create your own decks for anything that mutates** — never
+    query a seeded deck whose resubmit link another spec opens (`e2e/query.spec.ts` shows the shape).
+  - `e2e/parity.spec.ts`: if a VC header set moves, re-capture ONLY your own rows (`PARITY_CAPTURE=1`,
+    union into `EXPECTED`) and never delete a row you did not capture — four other Wave 9 sessions
+    are re-capturing theirs at the same moment.
+  - `npm run roles` if you touch a gate — probes in scripts/role-matrix.ts in the SAME commit,
+    against a server you PROVED you own with `lsof`. It defaults to :5173 and **exits 0 even when it
+    reaches nothing** (§8 Q28). Wave 8 integration measured **1022/1022**; read the live number off
+    `main` and confirm your run moves it by exactly the probes you added.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  **The gate is about six minutes on a quiet box, and the live baseline is on `main`, not here.**
+  Wave 8 integration measured **1886 passed / 1 skipped in 52 s** and **e2e 201 passed · 0 flaky ·
+  0 failed in 5.7 min** — the first run of the programme with no flaky leg at all. Read the number
+  off `main`; never match one written in a prompt. `uptime` BEFORE you start, and do NOT run your
+  gate while a sibling session runs theirs (`ps -eo args | grep -E "playwright test|vitest"`).
+  Never conclude anything from a red run at load 40+ without re-running the file alone AND running a
+  spec your change never touched as a control.
+  Traps earlier waves hit, all real:
+    • `describe.configure({ mode: "serial" })` orders tests WITHIN a file only — two workers share
+      one dev-server D1, so never assert a value another spec mutates; PIN what you assert.
+    • `reuseExistingServer` is `false`. Leave it. `e2e:serve` begins `rm -rf .wrangler/state`, so
+      stop any dev server of your own in the worktree before a Playwright run.
+    • gate client assertions on a POPULATED element, never a heading the loading branch also renders;
+    • never locate an element by the attribute your click is about to change;
+    • one sign-in per test — `/login` redirects an authenticated session straight back to `/app`;
+    • guard a draft against its own mount fetch: StrictMode runs that effect twice and the second
+      response lands after the first keystroke.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  **Number your §8 questions from Q121.** §8 ends at Q120; the Wave 9 partition is `W9-A` Q121,
+  `W9-B` Q131, `W9-C` Q141, `W9-D` Q151, `W9-E` Q161. Wave 8 was the first wave to use a partition
+  and the first to need no renumber — a renumber silently invalidates every prompt already written
+  against the old numbers, which is exactly what happened to the two prompts THIS one was merged from.
+  Commit to parity/W9-A. Do not merge to main.
+```
+
+### `W9-D` — the six VC reports *(written by Wave 8 integration)*
+
+> The one Wave 9 session that had no prompt from anybody. Written here from §6, from `W8-A`'s §7 row
+> (it rebuilt the incubator reports one wave earlier and left this session a kit and two warnings),
+> and from the §9 rows that name `W9-D`.
+>
+> **Read `W8-A`'s §7 row before you plan the session.** It shares `AnalyticsKit.tsx` with you, and
+> `FunnelPage` — which renders BOTH editions — lives in a file `W8-A` owns outright.
+
+```
+You are running session W9-D — the six VC reports — of the ai.STARTUPJURY parity programme.
+You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W9-D -b parity/W9-D main
+  cd ../sj-W9-D && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, your row in §6's Wave 9 table, then **`W8-A`'s §7 row in
+     full**. `W8-A` rebuilt the seven incubator reports one wave ago; it owns `AnalyticsKit.tsx`
+     jointly with you, it derived the drift bands from `RUBRIC_BANDS`, and it changed the INCUBATOR
+     funnel's columns while deliberately leaving the VC ones alone. Its §8 questions are Q106–Q111
+     and several are about report format generally, not only the incubator's — read them.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Reports" --edition vc --full
+     49 findings.
+  3. The prototype panels AND their renderers — the panels are thin shells; the KPI tiles, chart
+     series and table columns live in JS:
+       ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_VC_Superuser_V8/panel-*.html for the six report
+       screens, and each one's renderer in that build's `_scripts.js`, grepped by the panel's ids.
+     Read only those functions and their seed arrays; `_scripts.js` is 2,900+ lines.
+     Diff the VC report panels against AISJ_VC_{Partner_V1,Associate_V1,Analyst_V1,IC_member_V2} —
+     a report a role cannot see is a nav question, not a rendering one.
+  4. src/client/routes/analytics/VcReports.tsx (yours), AnalyticsKit.tsx (SHARED with `W8-A`),
+     src/shared/analytics.ts (`W8-A`'s — read, do not edit), and
+     src/client/routes/analytics/IncubatorReports.tsx ONLY for `FunnelPage`, which renders both
+     editions (see CONSTRAINTS).
+
+BUILD
+  1. The six VC reports to the prototype: every KPI tile with its sub-label, every chart's TYPE,
+     axes and series names, every legend, and the **exact table column headers**. Report format is
+     what the client named specifically — `W8-A` asserted the incubator's headers as literals copied
+     from the prototype renderer, and yours should be asserted the same way.
+  2. Adopt the kit `W8-A` left rather than rebuilding one: `AnalyticsKit.tsx` carries the tiles,
+     chart frames and `<PanelFrame>`. **Change a kit component's PROPS additively or not at all** —
+     `W8-A`'s seven incubator reports render through the same components and a required new prop
+     breaks all of them.
+  3. Every report's empty state AND its disabled state where a Scoring-framework toggle gates it
+     (`show_score_drift` is the precedent `W8-A` wired), each with the prototype's copy where it has
+     one. "Turned off" and "no data" are different states and must not render the same.
+  4. Scores render in the org's display scale via `toDisplayScale` / `formatScore` from
+     `src/shared/scoring.ts` — `W7-D` fixed three defects that were exactly this, and `W8-A` a
+     fourth. Do not write a second conversion or a second band table; every cut-point comes from
+     `RUBRIC_BANDS`.
+
+CONSTRAINTS
+  - Own only: `src/client/routes/analytics/VcReports.tsx`, and PROPS-additive changes to
+    `AnalyticsKit.tsx`. `src/shared/analytics.ts` and `IncubatorReports.tsx` are `W8-A`'s.
+  - **`FunnelPage` renders BOTH editions and lives in `IncubatorReports.tsx`, which you do not own.**
+    `App.tsx` routes `funnel` to it for VC too, under the comment "Funnel is shared". `W8-A` changed
+    the incubator columns and left the four VC rows in `e2e/parity.spec.ts` untouched — that is the
+    contract. If the VC funnel must change, it is a **§9 request with the exact diff**, not an edit.
+  - `src/shared/scoring.ts` is not yours. If a report needs a helper it does not have, §9 it rather
+    than writing a local copy — two copies of a cut-point is the defect Waves 2, 7 and 8 spent four
+    §9 rows removing.
+  - You own migration **0064** and only 0064 (Wave 9 is 0061–0065 in letter order; `main` ends at
+    0060). A reports session almost certainly needs none. If you DO add one, raise
+    `ALLOTMENT_CEILING` in test/worker/migrations-w1b.test.ts in the SAME commit.
+  - `src/client/index.css`, `src/shared/nav.ts`, `src/shared/roles.ts`, `src/client/App.tsx` are
+    §2.2 files. A report that needs a new nav item is a §9 request.
+  - Chart colours come from index.css tokens (`var(--olive)`, `--amber`, `--red`, `--blue`,
+    `--green`) — the prototype's primary is olive, not gold.
+
+TEST
+  - Client: for each of the six reports, the exact table header set AND the chart series names,
+    asserted as literals copied from the prototype renderer — not imported from the screen, so a
+    renamed column FAILS the test. Empty and disabled states for anything a toggle gates.
+  - Worker: each report route with an allowed role AND a forbidden one (→ 403), and the disabled
+    payload where a toggle is off.
+  - E2E: two VC roles each open two reports and see their headers — one sign-in per test.
+  - `e2e/parity.spec.ts`: re-capture ONLY your own VC report rows (`PARITY_CAPTURE=1`, union into
+    `EXPECTED`); never delete a row you did not capture. **The four `vc/*/funnel` rows are NOT
+    yours** — `FunnelPage` is `W8-A`'s file.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  **The gate is about six minutes on a quiet box, and the live baseline is on `main`, not here.**
+  Wave 8 integration measured **1886 passed / 1 skipped in 52 s** and **e2e 201 passed · 0 flaky ·
+  0 failed in 5.7 min** — the first run of the programme with no flaky leg at all. Read the number
+  off `main`; never match one written in a prompt. `uptime` BEFORE you start, and do NOT run your
+  gate while a sibling session runs theirs (`ps -eo args | grep -E "playwright test|vitest"`).
+  Never conclude anything from a red run at load 40+ without re-running the file alone AND running a
+  spec your change never touched as a control.
+  Traps earlier waves hit, all real:
+    • `describe.configure({ mode: "serial" })` orders tests WITHIN a file only — two workers share
+      one dev-server D1, so never assert a value another spec mutates; PIN what you assert.
+    • `reuseExistingServer` is `false`. Leave it. `e2e:serve` begins `rm -rf .wrangler/state`, so
+      stop any dev server of your own in the worktree before a Playwright run.
+    • gate client assertions on a POPULATED element, never a heading the loading branch also renders;
+    • never locate an element by the attribute your click is about to change;
+    • one sign-in per test — `/login` redirects an authenticated session straight back to `/app`;
+    • guard a draft against its own mount fetch: StrictMode runs that effect twice and the second
+      response lands after the first keystroke.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  **Number your §8 questions from Q151.** §8 ends at Q120; the Wave 9 partition is `W9-A` Q121,
+  `W9-B` Q131, `W9-C` Q141, `W9-D` Q151, `W9-E` Q161.
+  Commit to parity/W9-D. Do not merge to main.
+```
+
+### `W9-E` — VC calls: intro · partner · alignment *(two prompts by `W7-E` and `W7-F`, merged at Wave 8 integration)*
+
+> **Both Wave 7 sessions wrote this one, and each wrote a different half** — the same thing that
+> happened to `W6-A` and to `W9-A`. `W7-E` built the intro-call AI-questions block and wrote the
+> screen-parity half; `W7-F` built the `StagePage`/`CallsPage` config extension and wrote the
+> declare-your-config half. Neither alone is complete: `W7-E`'s would have you rebuild screens the
+> config extension already renders, and `W7-F`'s would leave the AI questions unwired for a second
+> wave running. Merged rather than chosen between. Both originals cited §8 Q80–Q84, which the Wave 7
+> renumber had reassigned; repointed to their authors' real questions.
+
+```
+You are running session W9-E — the three VC call screens (intro · partner · alignment) and the call
+model behind them — of the ai.STARTUPJURY parity programme. You have no prior context.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W9-E -b parity/W9-E main
+  cd ../sj-W9-E && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, your row in §6's Wave 9 table, then:
+       §8 Q96       — `W7-E`'s: round-robin or every deck × every member? **A deck now has one OR
+                      MORE evaluators** (`deck_assignments`, migration 0058), which is why a call's
+                      participant list and a deck's evaluator list are different things.
+       §8 Q102–Q105 — `W7-F`'s: the "Assign scheduler" delegation model nobody has specified (Q102 —
+                      **decide it with the user or record it**), who closes an intro call out (Q103),
+                      the prototype's Intro calls table having no Action column (Q104), and the Jury
+                      build disagreeing with itself (Q105).
+     Then the `W7-E` and `W7-F` rows in §7 — between them they built everything you are wiring.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Pipeline" --edition vc \
+         --screen "introcalls|partnercall|alignmentcall" --full
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_VC_Superuser_V8/panel-{introcalls,partnercall,alignmentcall}.html
+     and their renderers in that build's `_scripts.js` — those functions only.
+  4. **`src/client/routes/CallsPage.tsx` — read `INCUBATOR_CALLS_CONFIG.introcalls` as the worked
+     example.** `W7-F` extended the config to carry `toolbar`, `footer`, `subTabs`, `juryStack` and
+     a legend precisely so these screens could reach parity by DECLARING rather than by being
+     rewritten as bespoke pages. Its §9 row records the extension's shape.
+  5. `<IntroCallQuestions callId=… />` — `W7-E` built it and wired it on the incubator side. It
+     renders the three fields of `GET /api/calls/:id/prompts` and renders NOTHING when the response
+     says `enabled:false`. You are placing it, not writing it.
+  6. src/server/routes/calls.ts — yours this wave.
+
+BUILD
+  1. **Declare, per VC call screen, rather than build**: `toolbar`, `footer`, `subTabs`, `juryStack`
+     and the prototype's legend, through `W7-F`'s extended config. If a screen needs a key the config
+     does not have, ADD the key optionally — a required new key breaks every screen already
+     declaring one, incubator included.
+  2. The three screens to the Wave 7 pattern: the exact column set and headers, the status
+     vocabulary, the legend, the row actions and the empty state. The incubator Intro calls screen
+     must render **identically** after your change — it is the regression this session is most
+     likely to cause.
+  3. The call modal (schedule / reschedule) to the prototype's shape.
+  4. **Place `<IntroCallQuestions>` on the VC calls that should carry it**, and assert its ABSENCE on
+     the kinds that should not — after the request has settled, not before. The endpoint has been
+     built, tested and unreachable since Wave 2; `W7-E` gave it a caller on one edition and this is
+     the other.
+  5. **A participant may set `status` on their own call** (§9, `W7-F`) — and only `status`, and only
+     on a call they are on. Any other field, or another person's call, is refused.
+  6. Decided rows the prototype keeps with their outcome (F0627) — decide and record.
+
+CONSTRAINTS
+  - Own only: `src/client/routes/CallsPage.tsx` (the **VC configs**, plus any new OPTIONAL config
+    key) and `src/server/routes/calls.ts`. The incubator configs are `W7-F`'s.
+  - **Do not change `GET /api/calls/:id/prompts`'s contract.** It is tested, and the incubator pane
+    calls it.
+  - **A call's participants are not its evaluators.** `deck_assignments` (0058) is who SCORES a deck;
+    a call's participant list is who ATTENDS. Conflating them is the defect §8 Q96 exists to prevent.
+  - §1.3: no calendar vendor SDK. The composers are URLs and the invite is the `.ics` the app already
+    generates.
+  - You own migration **0065** and only 0065 (Wave 9 is 0061–0065 in letter order; `main` ends at
+    0060). If you DO add one, raise `ALLOTMENT_CEILING` in test/worker/migrations-w1b.test.ts in the
+    SAME commit.
+  - §2.2 hazard files as usual: `index.css`, `nav.ts`, `roles.ts`, `App.tsx`.
+
+TEST
+  - Client: each VC screen's exact headers, footer and legend — **and that the incubator Intro calls
+    screen is unchanged**. That second assertion is the one that catches a config change leaking.
+  - Client / E2E: the AI-questions block on a VC intro call with the toggle on, and its ABSENCE on
+    the kinds you decided must not show it — assert the absence after the request has settled.
+  - Worker: the participant PATCH — 200 on their own call's `status`, 403 on another's, 403 for any
+    other field. Plus happy path, an allowed role and a forbidden one for anything else in calls.ts.
+  - `e2e/parity.spec.ts`: re-capture ONLY your own rows (`PARITY_CAPTURE=1`, union into `EXPECTED`),
+    replacing obsolete sets; never delete a row you did not capture — four other Wave 9 sessions are
+    re-capturing theirs at the same moment.
+  - `npm run roles` if you touch a gate — probes in scripts/role-matrix.ts in the SAME commit,
+    against a server you PROVED you own with `lsof` (it exits 0 when it reaches nothing, §8 Q28).
+    Wave 8 integration measured **1022/1022**; read the live number off `main` first.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  **The gate is about six minutes on a quiet box, and the live baseline is on `main`, not here.**
+  Wave 8 integration measured **1886 passed / 1 skipped in 52 s** and **e2e 201 passed · 0 flaky ·
+  0 failed in 5.7 min** — the first run of the programme with no flaky leg at all. Read the number
+  off `main`; never match one written in a prompt. `uptime` BEFORE you start, and do NOT run your
+  gate while a sibling session runs theirs (`ps -eo args | grep -E "playwright test|vitest"`).
+  Never conclude anything from a red run at load 40+ without re-running the file alone AND running a
+  spec your change never touched as a control.
+  Traps earlier waves hit, all real:
+    • `describe.configure({ mode: "serial" })` orders tests WITHIN a file only — two workers share
+      one dev-server D1, so never assert a value another spec mutates; PIN what you assert.
+    • `reuseExistingServer` is `false`. Leave it. `e2e:serve` begins `rm -rf .wrangler/state`, so
+      stop any dev server of your own in the worktree before a Playwright run.
+    • gate client assertions on a POPULATED element, never a heading the loading branch also renders;
+    • never locate an element by the attribute your click is about to change;
+    • one sign-in per test — `/login` redirects an authenticated session straight back to `/app`;
+    • guard a draft against its own mount fetch: StrictMode runs that effect twice and the second
+      response lands after the first keystroke.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  **Number your §8 questions from Q161.** §8 ends at Q120; the Wave 9 partition is `W9-A` Q121,
+  `W9-B` Q131, `W9-C` Q141, `W9-D` Q151, `W9-E` Q161.
+  Commit to parity/W9-E. Do not merge to main.
+```
+
+### `W9-B` — Submit, Associate pipeline, Partner pipeline
 
 ```
 You are running session W9-B — the VC associate and partner pipeline screens — of the
@@ -3190,7 +3367,13 @@ CONSTRAINTS
   - Own only: the `jurypipeline` and `partnerpipeline` entries of VC_STAGE_CONFIG in StagePage.tsx,
     and any new optional StageConfig key you need (default: draws nothing, with a test saying so).
   - `W9-C` edits other VC_STAGE_CONFIG entries in the same file this wave.
-  - Migration: none expected; if you need one, take the number integration allots and say so loudly.
+  - You own migration **0062** and only 0062 (Wave 9 is 0061–0065 in letter order; `main` ends at
+    0060). None expected on a stage-config session. If you DO add one, raise `ALLOTMENT_CEILING` in
+    test/worker/migrations-w1b.test.ts from 60 to match, in the SAME commit.
+  - **`e2e/parity.spec.ts`**: re-capture ONLY your own rows (`PARITY_CAPTURE=1`, union into
+    `EXPECTED`) and never delete a row you did not capture — four sibling sessions are re-capturing
+    theirs at the same moment. Wave 8 integration hit exactly this collision and resolved it by
+    OWNERSHIP: the row belongs to whoever owns the screen, not to whoever captured last.
 
 TEST
   - Client: each screen's exact header set, legend and footer sentence, from the real config.
@@ -3210,6 +3393,10 @@ TEST
 FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  **Number your §8 questions from Q131.** §8 ends at Q120; the Wave 9 partition is `W9-A` Q121,
+  `W9-B` Q131, `W9-C` Q141, `W9-D` Q151, `W9-E` Q161. Wave 8 was the first wave to use one and the
+  first to need no renumber — a renumber silently invalidates every prompt already written against
+  the old numbers.
   Commit to parity/W9-B. Do not merge to main.
 ```
 
@@ -3250,6 +3437,13 @@ CONSTRAINTS
   - Own only: IcVotePage.tsx and the five VC_STAGE_CONFIG entries above. `W9-B` edits two others.
   - Any new StageConfig key defaults to drawing nothing, with a test saying so.
   - `signup_documents` and its router are `W5-A`'s, complete and tested — give them a surface.
+  - You own migration **0063** and only 0063 (Wave 9 is 0061–0065 in letter order; `main` ends at
+    0060). If you DO add one, raise `ALLOTMENT_CEILING` in test/worker/migrations-w1b.test.ts from
+    60 to match, in the SAME commit.
+  - **`e2e/parity.spec.ts`**: re-capture ONLY your own rows (`PARITY_CAPTURE=1`, union into
+    `EXPECTED`) and never delete a row you did not capture — four sibling sessions are re-capturing
+    theirs at the same moment. Wave 8 integration hit exactly this collision and resolved it by
+    OWNERSHIP: the row belongs to whoever owns the screen, not to whoever captured last.
 
 TEST
   - Client: each screen's exact header set, legend and footer; the DD tab renders its checklist.
@@ -3269,70 +3463,12 @@ TEST
 FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  **Number your §8 questions from Q141.** §8 ends at Q120; the Wave 9 partition is `W9-A` Q121,
+  `W9-B` Q131, `W9-C` Q141, `W9-D` Q151, `W9-E` Q161. Wave 8 was the first wave to use one and the
+  first to need no renumber — a renumber silently invalidates every prompt already written against
+  the old numbers.
   Commit to parity/W9-C. Do not merge to main.
 ```
-
-#### `W9-E` — VC calls: intro · partner · alignment
-
-```
-You are running session W9-E — the VC call screens — of the ai.STARTUPJURY parity programme.
-You have no prior context. Everything you need is in the repo.
-
-SETUP
-  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
-  git worktree add ../sj-W9-E -b parity/W9-E main
-  cd ../sj-W9-E && npm ci
-  python3 docs/prototype/tools/split-prototypes.py
-
-READ FIRST (in this order, and nothing else)
-  1. docs/plan_parity.md — §1, §2, §4, your row in §6's Wave 9 table, §8 Q81–Q84, and the `W7-F`
-     rows in §9 — two of them are addressed to you (`calls.ts`).
-  2. Your worklist:
-       python3 docs/prototype/tools/findings.py --area "Pipeline" --edition vc \
-         --screen "introcalls|partnercall|alignmentcall|call modal" --full
-     Thirty-seven findings. Several are already closed by W7-F's shared renderer (the grouped
-     roster, Cancel/Reopen, the calendar composers, one-decimal scores) — verify, then claim.
-  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_VC_Superuser_V8/panel-{introcalls,partnercall,alignmentcall}.html,
-     and the IC-member / analyst builds' `panel-introcalls.html`; their renderers only.
-  4. src/client/routes/CallsPage.tsx (read `INCUBATOR_CALLS_CONFIG.introcalls` as the worked example),
-     StageKit.tsx, and src/server/routes/calls.ts.
-  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
-
-BUILD
-  1. Declare, per VC call screen: `toolbar`, `footer`, `subTabs`, `juryStack` and the prototype's
-     column set — "Analyst Score" not "Jury score", Partner call's Sponsorship outcome select,
-     Alignment call's term-sheet capture. A per-screen column set is a new optional CallsConfig key
-     (the incubator's is `participantColumns: "jury"`); a config that omits it must stay as it is.
-  2. `calls.ts` (yours this wave): let a call's participant set `status` on their own call (§9,
-     F0571 / F0611) and surface the flag the client reads; decide §8 Q81 with the user or record it.
-  3. Decided rows that the prototype keeps with their outcome (F0627) — decide and record.
-
-CONSTRAINTS
-  - Own only: CallsPage.tsx (VC configs + any new optional key), src/server/routes/calls.ts.
-  - Do not change `GET /api/calls/:id/prompts`'s contract; the incubator pane calls it.
-  - §1.3: no calendar vendor SDK — the composers are URLs, the invite is the `.ics`.
-
-TEST
-  - Client: each VC screen's exact headers, footer and legend; the incubator Intro calls unchanged.
-  - Worker: participant PATCH status 200 on their own call, 403 on another, 403 for any other field.
-  - Re-capture the changed `e2e/parity.spec.ts` rows (replace obsolete sets).
-  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
-  The whole gate is about five minutes on a quiet box (W7-F: 1608 unit/worker/client in ~20 s).
-  `uptime` before you start; never run it while a sibling runs theirs; never conclude anything from
-  a red run at load 40+ without re-running the file alone and a spec you never touched as a control.
-  Run e2e on YOUR port (`E2E_PORT`), and point `TMPDIR` at your scratchpad before a
-  `PARITY_CAPTURE=1` run — the capture file is otherwise shared with every sibling.
-  Flakes earlier waves wrote: gate client assertions on a POPULATED row, never a heading the loading
-  branch renders; never locate an element by the attribute your click changes; one sign-in per
-  test; guard a draft against its own StrictMode double mount; and a new button whose name CONTAINS
-  an existing one's ("Cancel call" vs "Cancel") breaks page-wide locators elsewhere — scope them.
-
-FINISH
-  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
-  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
-  Commit to parity/W9-E. Do not merge to main.
-```
-
 
 `W9-A` and `W9-D` still have no prompt; neither depends on this session's work.
 
