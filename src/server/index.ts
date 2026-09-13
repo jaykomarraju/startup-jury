@@ -17,6 +17,7 @@ import pricing from "./routes/pricing";
 import resubmit from "./routes/resubmit";
 import notifications from "./routes/notifications";
 import signupConfig from "./routes/signup-config";
+import seats from "./routes/seats"; // W6-C · purchased seats (Set up → Team)
 import esign from "./esign/routes";
 import { tickets, messages, issues } from "./routes/support";
 import { calls } from "./routes/calls";
@@ -58,6 +59,7 @@ app.route("/api/audit", audit);
 app.route("/api/pricing", pricing);
 app.route("/api/notifications", notifications);
 app.route("/api/signup-config", signupConfig);
+app.route("/api/seats", seats);
 app.route("/api/esign", esign); // W5-B · agreements library, signatories, signing method
 app.route("/api/tickets", tickets);
 app.route("/api/issues", issues);

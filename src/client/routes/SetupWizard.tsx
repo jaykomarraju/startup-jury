@@ -4,6 +4,13 @@
 // Program/Cohort hierarchy API; the Select step writes the active context shared
 // with the dashboard toolbar filters and the upload form.
 //
+// W6-C — step 4 is the real team step (`./setup/TeamStep.tsx`): the owner card,
+// the super-user gate, per-member plan tiers, the seat bar and the buy-seats
+// sub-flow. "Seat" in the Session 4 note below is a PERMISSION word (how much of
+// the wizard a role may edit); the purchased seat lives in `src/shared/seats.ts`.
+// Non-admin roles see three steps, not four — the prototype drops Org type for
+// every role file that is not an Admin or Super User build (F1069).
+//
 // Session 4 — role-scoped seats. admin/superuser get full editing. A program
 // MANAGER can manage cohorts for the programs they LEAD (owner-scoped; sectors +
 // programs stay org-admin-owned). A program ASSOCIATE is read-only ("Standard
@@ -24,7 +31,8 @@ import {
   Target,
   Lock,
 } from "lucide-react";
-import { Card, Button, Badge, EmptyState } from "../components";
+import { Card, Button, Badge } from "../components";
+import { TeamStep } from "./setup/TeamStep";
 import { useAuth } from "../auth/useAuth";
 import { useActiveContext } from "../activeContext";
 import { editionLabel, type Role } from "../../shared/roles";
@@ -45,10 +53,15 @@ import {
 
 const STEPS = ["Org type", "Configure", "Select", "Team"] as const;
 
+/** The steps a seat walks: Org type is an Admin / Super User step only. */
+function stepsFor(seat: Seat): { labels: readonly string[]; first: number } {
+  return seat === "full" ? { labels: STEPS, first: 0 } : { labels: STEPS.slice(1), first: 1 };
+}
+
 const ORG_TYPES = [
-  { id: "consulting", label: "Consulting Firm", icon: Briefcase, blurb: "Advisory practice — evaluate decks and advise clients." },
-  { id: "incubator", label: "Incubator / Accelerator", icon: Building2, blurb: "Run cohort programs, assign jury and mentors across sectors and batches." },
-  { id: "investor", label: "Investor", icon: TrendingUp, blurb: "VC firm or angel network — manage deal flow, analysts and the IC pipeline." },
+  { id: "consulting", label: "Consulting Firm", icon: Briefcase, blurb: "Advisory or consulting practice — evaluate decks and advise clients. Suits individual-plan users working solo." },
+  { id: "incubator", label: "Incubator / Accelerator", icon: Building2, blurb: "Run cohort programs, assign jury and mentors, manage multiple sectors and batches." },
+  { id: "investor", label: "Investor", icon: TrendingUp, blurb: "VC firm or angel network — manage deal flow, analysts, IC pipeline and LP reporting." },
 ] as const;
 
 /** How much of the wizard a role may edit. */
@@ -80,7 +93,9 @@ export function SetupWizard() {
   const [, setCtx] = useActiveContext(edition);
   const seat = seatFor(user?.role);
 
-  const [step, setStep] = useState(0);
+  const { labels: stepLabels, first: firstStep } = stepsFor(seat);
+  const [step, setStep] = useState(firstStep);
+  const [buying, setBuying] = useState(false);
   const [data, setData] = useState<ProgramsResponse | null>(null);
   const [branding, setBranding] = useState<Record<string, unknown>>({});
   const [orgName, setOrgName] = useState("");
@@ -135,11 +150,11 @@ export function SetupWizard() {
         </Link>
       </div>
 
-      <Stepper step={step} />
+      {!buying && <Stepper labels={stepLabels} step={step - firstStep} />}
 
       {seat === "readonly" && <StandardSeatBanner />}
 
-      {step === 0 && (
+      {step === 0 && seat === "full" && (
         <OrgTypeStep
           edition={edition}
           orgType={orgType}
@@ -160,28 +175,31 @@ export function SetupWizard() {
           edition={edition}
           seat={seat}
           userId={user.id}
-          onBack={() => setStep(0)}
+          onBack={seat === "full" ? () => setStep(0) : undefined}
           onNext={() => setStep(2)}
         />
       )}
       {step === 2 && (
-        <SelectStep data={data} edition={edition} setCtx={setCtx} onBack={() => setStep(1)} onNext={() => setStep(3)} />
+        <SelectStep data={data} setCtx={setCtx} onBack={() => setStep(1)} onNext={() => setStep(3)} />
       )}
       {step === 3 && (
         <TeamStep
-          ownerName={user.name}
-          onBack={() => setStep(2)}
+          user={user}
+          edition={edition}
+          seat={seat}
+          programs={data?.programs ?? []}
           onFinish={() => navigate("/app/alldecks")}
+          onFlowChange={setBuying}
         />
       )}
     </div>
   );
 }
 
-function Stepper({ step }: { step: number }) {
+function Stepper({ labels, step }: { labels: readonly string[]; step: number }) {
   return (
     <ol className="flex items-center gap-2 overflow-x-auto">
-      {STEPS.map((label, i) => (
+      {labels.map((label, i) => (
         <li key={label} className="flex items-center gap-2">
           <span
             className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
@@ -199,7 +217,7 @@ function Stepper({ step }: { step: number }) {
           <span className={`whitespace-nowrap text-sm ${i === step ? "font-medium text-fg" : "text-fg-muted"}`}>
             {label}
           </span>
-          {i < STEPS.length - 1 && <span className="mx-1 h-px w-6 bg-line sm:w-10" />}
+          {i < labels.length - 1 && <span className="mx-1 h-px w-6 bg-line sm:w-10" />}
         </li>
       ))}
     </ol>
@@ -288,7 +306,8 @@ function ConfigureStep({
   edition: "incubator" | "vc";
   seat: Seat;
   userId: string;
-  onBack: () => void;
+  /** Absent when Configure is the seat's first step (no Org type step to return to). */
+  onBack?: () => void;
   onNext: () => void;
 }) {
   if (!data) return <Card><p className="text-sm text-fg-muted">Loading…</p></Card>;
@@ -305,9 +324,13 @@ function ConfigureStep({
       <ProgramsEditor data={data} reload={reload} edition={edition} readOnly={!orgEditable} />
       <CohortsEditor data={data} reload={reload} seat={seat} userId={userId} />
       <div className="flex justify-between">
-        <Button variant="ghost" onClick={onBack}>
-          <ArrowLeft className="h-4 w-4" /> Back
-        </Button>
+        {onBack ? (
+          <Button variant="ghost" onClick={onBack}>
+            <ArrowLeft className="h-4 w-4" /> Back
+          </Button>
+        ) : (
+          <span />
+        )}
         <Button onClick={onNext}>
           Continue <ArrowRight className="h-4 w-4" />
         </Button>
@@ -701,13 +724,11 @@ function CohortsEditor({
 
 function SelectStep({
   data,
-  edition,
   setCtx,
   onBack,
   onNext,
 }: {
   data: ProgramsResponse | null;
-  edition: "incubator" | "vc";
   setCtx: (ctx: { programId: string | null; cohortId: string | null }) => void;
   onBack: () => void;
   onNext: () => void;
@@ -777,7 +798,7 @@ function SelectStep({
           <Target className="h-4 w-4 text-accent" /> Your active context
         </div>
         <div className="mt-2 flex flex-col gap-1 text-sm text-fg-muted">
-          <span>Edition — <span className="text-fg">{editionLabel(edition)}</span></span>
+          <span>Sector — <span className="text-fg">{sector || "All sectors"}</span></span>
           <span>Program — <span className="text-fg">{activeProgram?.name ?? "All programs"}</span></span>
           <span>
             Cohort —{" "}
@@ -800,46 +821,4 @@ function SelectStep({
   );
 }
 
-// ── Step 4: Team ──────────────────────────────────────────────────────────────
-
-function TeamStep({
-  ownerName,
-  onBack,
-  onFinish,
-}: {
-  ownerName: string;
-  onBack: () => void;
-  onFinish: () => void;
-}) {
-  return (
-    <Card>
-      <div className="u-label">Team</div>
-      <p className="mt-1 text-sm text-fg-muted">Invite colleagues and assign their role and plan.</p>
-      <div className="mt-4 flex items-center gap-3 rounded-lg border border-line px-4 py-3">
-        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-accent/15 text-sm font-semibold text-accent">
-          {ownerName.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase()}
-        </span>
-        <div>
-          <div className="text-sm font-medium text-fg">{ownerName}</div>
-          <div className="text-xs text-fg-muted">You — account owner</div>
-        </div>
-        <Badge tone="positive" className="ml-auto">Owner</Badge>
-      </div>
-      <div className="mt-4">
-        <EmptyState
-          icon="Users"
-          title="Add the rest of your team in the Admin console"
-          description="Creating users — jurors, mentors and staff — and assigning their roles happens in Settings → Admin console. New members are emailed a sign-in link and a one-time password."
-        />
-      </div>
-      <div className="mt-2 flex justify-between">
-        <Button variant="ghost" onClick={onBack}>
-          <ArrowLeft className="h-4 w-4" /> Back
-        </Button>
-        <Button onClick={onFinish}>
-          Confirm &amp; go to dashboard <ArrowRight className="h-4 w-4" />
-        </Button>
-      </div>
-    </Card>
-  );
-}
+// ── Step 4: Team — `./setup/TeamStep.tsx` (W6-C) ─────────────────────────────

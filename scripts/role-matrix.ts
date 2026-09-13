@@ -648,6 +648,24 @@ const PROBES: Probe[] = [
   { id: "esign.countersign", label: "POST /api/esign/signups/:id/countersign", kind: "write", method: "POST", path: "/api/esign/signups/__ghost__/countersign", body: {},
     allow: ["admin", "program_manager", "program_associate", "partner", "associate", "analyst"] },
 
+  // ── W6-C · Purchased seats (`/api/seats`) ─────────────────────────────────
+  // The Set up wizard's Team step and its buy-seats sub-flow. One gate for the
+  // whole router — `requireTask("addmembers", "admin")`, the cell
+  // `POST /api/users` checks — so the expectation is `admin` (+ the implicit
+  // superuser) and 403 for everyone else. NOT the cohort seat: `signupcfg.seats`
+  // above is a batch's places for startups and is a different router.
+  // Every write body 400s before it could persist anything for an admin: an
+  // unknown tier is `invalid_tier`, and an empty order is `no_seats_selected`,
+  // which is refused before a payment intent is recorded.
+  { id: "seats.read", label: "GET /api/seats (team step: seats, members, prices)", kind: "read", method: "GET", path: "/api/seats",
+    allow: ["admin"] },
+  { id: "seats.member.add", label: "POST /api/seats/members (add a member into a seat)", kind: "write", method: "POST", path: "/api/seats/members", body: { tier: "__not_a_tier__" },
+    allow: ["admin"] },
+  { id: "seats.member.tier", label: "PUT /api/seats/members/:id/tier (move a member's seat)", kind: "write", method: "PUT", path: "/api/seats/members/__ghost__/tier", body: { tier: "__not_a_tier__" },
+    allow: ["admin"] },
+  { id: "seats.purchase", label: "POST /api/seats/purchase (record a seat order)", kind: "write", method: "POST", path: "/api/seats/purchase", body: { quantities: {} },
+    allow: ["admin"] },
+
   // ── Contract: analytics delegate to the nav manifest by design ────────────
   ...analyticsProbes(),
 ];
