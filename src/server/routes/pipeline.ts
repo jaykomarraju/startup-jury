@@ -19,6 +19,9 @@ import {
   composite,
   signalTag,
   decisionScore,
+  deltaToDisplayScale,
+  formatPoints,
+  formatScore,
   fromDisplayScale,
   toDisplayScale,
   overrideNeedsRationale,
@@ -55,6 +58,8 @@ pipeline.use("/parameters", requireAuth, denyMentor);
 // roster (issue 22) are authed like every other pipeline route.
 pipeline.use("/activity", requireAuth, denyMentor);
 pipeline.use("/evaluators", requireAuth, denyMentor);
+// W7-D — the Evaluate screen's per-deck recommendations (0057).
+pipeline.use("/recommendations", requireAuth, denyMentor);
 
 interface DeckRow {
   id: string;
@@ -293,12 +298,20 @@ async function checkShortlistFloor(
   // stricter reading flips this one condition.
   const blocked = score === null ? source === "program" : score < minimum;
   const who = source === "program" && row.program_name ? row.program_name : "This workspace";
+  // W7-D (§9): the comparison above is canonical 0–10 and stays so — `minimum`
+  // and `score` go back on the wire canonical too. The SENTENCE is read by an
+  // evaluator looking at the org's display scale, so it speaks that scale: a
+  // 1–5 workspace is told "at least 3.8", not a 7.0 it has never seen. On the
+  // default 0–10 scale these strings are byte-identical to what they were.
+  const scale = scoring.scoreScale;
+  const onScale = (v: number, decimals: number) =>
+    scale === "0-10" ? v.toFixed(decimals) : formatScore(v, scale);
   const message =
     score === null
-      ? `This deck has no score yet. ${who} requires at least ${minimum.toFixed(1)} to shortlist.`
+      ? `This deck has no score yet. ${who} requires at least ${onScale(minimum, 1)} to shortlist.`
       : source === "program"
-        ? `Below the program's shortlist minimum — ${who} requires at least ${minimum.toFixed(1)}, this deck scores ${score.toFixed(2)}.`
-        : `Below the organisation's shortlist threshold — at least ${minimum.toFixed(1)} is required, this deck scores ${score.toFixed(2)}.`;
+        ? `Below the program's shortlist minimum — ${who} requires at least ${onScale(minimum, 1)}, this deck scores ${onScale(score, 2)}.`
+        : `Below the organisation's shortlist threshold — at least ${onScale(minimum, 1)} is required, this deck scores ${onScale(score, 2)}.`;
   return { blocked, score, minimum, source, programName: row.program_name, message };
 }
 
@@ -493,12 +506,16 @@ pipeline.post(
       .filter((s) => overrideNeedsRationale(s.value, aiByParam.get(s.parameterId), scoring))
       .map((s) => params.find((p) => p.id === s.parameterId)?.key ?? s.parameterId);
     if (needRationale.length > 0) {
+      // W7-D (§9): enforced canonically (above), explained on the org's scale.
+      // `delta` stays canonical for API consumers; `deltaDisplay` is the number
+      // the evaluator's own inputs are on — 0.8 on a 1–5 workspace, not 2.
       return c.json(
         {
           error: "rationale_required",
           parameters: needRationale,
           delta: scoring.overrideRationaleDelta,
-          message: `Explain any score more than ${scoring.overrideRationaleDelta} points from the AI's.`,
+          deltaDisplay: deltaToDisplayScale(scoring.overrideRationaleDelta, scoring.scoreScale),
+          message: `Explain any score more than ${formatPoints(scoring.overrideRationaleDelta, scoring.scoreScale)} from the AI's.`,
         },
         400,
       );
@@ -841,6 +858,75 @@ pipeline.post(
   },
 );
 
+// ── Incubator Evaluate: per-deck recommendations (W7-D, 0057) ────────────────
+//
+// The status select beside each deck on the Evaluate screen —
+// `AISJ_IC_SuserV15` `EV_STATUS_OPTS`. It records the evaluator's
+// RECOMMENDATION and moves nothing: Shortlist and Reject as decisions remain
+// the workbench's buttons and `performAction`'s transitions. See 0057's header.
+
+const RECOMMENDATIONS = ["shortlist", "hold", "need_more_info", "reject", "evaluated"] as const;
+type Recommendation = (typeof RECOMMENDATIONS)[number];
+
+/** The incubator roles that work the Evaluate screen (nav `evaluate` / `jassigned`). */
+const RECOMMENDING_ROLES = ["jury", "program_manager", "program_associate", "admin"] as const;
+
+/**
+ * GET /recommendations — the caller's own recommendation per deck, and the
+ * decks they have already submitted scores for (the screen's "Evaluated"
+ * badge), in one round trip rather than one per row.
+ */
+pipeline.get("/recommendations", requireTask("evaluate", ...RECOMMENDING_ROLES), async (c) => {
+  const user = c.var.user;
+  const [recs, evaluated] = await Promise.all([
+    c.env.DB.prepare(
+      "SELECT r.deck_id, r.status FROM evaluation_recommendations r JOIN decks d ON d.id = r.deck_id " +
+        "WHERE r.user_id = ? AND d.edition = ?",
+    )
+      .bind(user.id, user.edition)
+      .all<{ deck_id: string; status: Recommendation }>(),
+    c.env.DB.prepare(
+      "SELECT DISTINCT e.deck_id FROM evaluations e JOIN decks d ON d.id = e.deck_id " +
+        "WHERE e.evaluator_id = ? AND d.edition = ?",
+    )
+      .bind(user.id, user.edition)
+      .all<{ deck_id: string }>(),
+  ]);
+  return c.json({
+    recommendations: Object.fromEntries(recs.results.map((r) => [r.deck_id, r.status])),
+    evaluated: evaluated.results.map((r) => r.deck_id),
+  });
+});
+
+/** PUT /decks/:id/recommendation — set (or replace) the caller's recommendation. */
+pipeline.put(
+  "/decks/:id/recommendation",
+  requireTask("evaluate", ...RECOMMENDING_ROLES),
+  async (c) => {
+    const user = c.var.user;
+    const deck = await loadDeck(c, c.req.param("id"));
+    if (!deck) return c.json({ error: "not_found" }, 404);
+    if (deck.edition !== "incubator") return c.json({ error: "not_incubator" }, 400);
+    // The same rule scoring applies: a jury member works only the decks
+    // assigned to them. Staff may recommend on any deck in the edition.
+    if (user.role === "jury" && deck.assigned_to !== user.id) {
+      return c.json({ error: "not_assigned" }, 403);
+    }
+    const body = await readBody<{ status: string }>(c);
+    const status = body.status as Recommendation;
+    if (!RECOMMENDATIONS.includes(status)) return c.json({ error: "invalid_status" }, 400);
+
+    const ts = new Date().toISOString();
+    await c.env.DB.prepare(
+      "INSERT INTO evaluation_recommendations (deck_id, user_id, status, updated_at) VALUES (?, ?, ?, ?) " +
+        "ON CONFLICT (deck_id, user_id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at",
+    )
+      .bind(deck.id, user.id, status, ts)
+      .run();
+    return c.json({ ok: true, deckId: deck.id, status });
+  },
+);
+
 // ── VC: Investment Committee voting ───────────────────────────────────────────
 
 const IC_VOTES = ["invest", "hold", "need_more_info", "pass"] as const;
@@ -1099,7 +1185,7 @@ pipeline.get("/parameters", async (c) => {
   const edition = c.var.user.edition;
   const paramRows = (
     await c.env.DB.prepare(
-      "SELECT id, key, name, weight, informational, role_scope, prompt FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
+      "SELECT id, key, name, weight, informational, role_scope, prompt, description FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
     )
       .bind(edition)
       .all<{
@@ -1110,6 +1196,7 @@ pipeline.get("/parameters", async (c) => {
         informational: number;
         role_scope: string | null;
         prompt: string | null;
+        description: string | null;
       }>()
   ).results;
   // W2-B — the rubric bands the parameter detail panel shows.
@@ -1142,15 +1229,30 @@ pipeline.get("/parameters", async (c) => {
         description: string | null;
       }>()
   ).results;
+  // W7-D — the parameter detail panel's "AI clarification questions (asked when
+  // signals are weak)" (`AISJ_IC_SuserV15` `evOpenParam`, F0442). The bank is
+  // `question_bank` (0028); only active questions, in the area's Q order.
+  const questionRows = (
+    await c.env.DB.prepare(
+      "SELECT q.parameter_id, q.text FROM question_bank q JOIN parameters p ON p.id = q.parameter_id " +
+        "WHERE p.edition = ? AND p.active = 1 AND q.active = 1 ORDER BY q.seq",
+    )
+      .bind(edition)
+      .all<{ parameter_id: string; text: string }>()
+  ).results;
   const parameters = paramRows.map((p) => ({
     key: p.key,
     name: p.name,
     weight: p.weight,
     informational: p.informational === 1,
     roleScope: p.role_scope ?? undefined,
+    questions: questionRows.filter((q) => q.parameter_id === p.id).map((q) => q.text),
     // Aug-2026 issue 19 — the Evaluate screen's third panel shows the evaluation
     // prompt for whichever parameter is clicked in the second panel.
     prompt: p.prompt ?? undefined,
+    // W7-D — the scorer-facing description (0025, spec §6.2) the prototype's
+    // "My additional parameters at a glance" card shows under each name.
+    description: p.description ?? undefined,
     bands: bandRows
       .filter((b) => b.parameter_id === p.id)
       .map((b) => ({

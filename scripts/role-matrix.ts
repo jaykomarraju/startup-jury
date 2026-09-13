@@ -570,6 +570,12 @@ const PROBES: Probe[] = [
     allow: ["admin", "program_manager", "program_associate", "associate", "analyst"] },
   { id: "ic.vote", label: "POST /api/decks/:id/ic-vote", kind: "write", method: "POST", path: `/api/decks/${GHOST_DECK}/ic-vote`, body: {},
     editions: ["vc"], allow: ["admin", "ic_member", "partner"] },
+  // W7-D — the incubator Evaluate screen's per-deck recommendation (0057).
+  // The write targets the ghost deck, so an allowed role gets the handler's 404.
+  { id: "evaluate.recommendations", label: "GET /api/recommendations (Evaluate status select)", kind: "read", method: "GET", path: "/api/recommendations",
+    editions: ["incubator"], allow: ["admin", "program_manager", "program_associate", "jury"] },
+  { id: "evaluate.recommend", label: "PUT /api/decks/:id/recommendation", kind: "write", method: "PUT", path: `/api/decks/${GHOST_DECK}/recommendation`, body: {},
+    editions: ["incubator"], allow: ["admin", "program_manager", "program_associate", "jury"] },
 
   { id: "permissions.read", label: "GET /api/permissions (task matrix)", kind: "read", method: "GET", path: "/api/permissions",
     allow: ["admin"] },

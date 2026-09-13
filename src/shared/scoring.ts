@@ -215,6 +215,45 @@ export function scaleMax(scale: ScoreScale = "0-10"): number {
   return SCORE_SCALE_BOUNDS[scale].max;
 }
 
+// ── Differences between scores — the override delta ──────────────────────────
+//
+// W7-D (§9, Wave 2 integration): `overrideRationaleDelta` and
+// `shortlistThreshold` were ENFORCED in canonical 0–10 but authored and
+// captioned as if they were on the org's display scale, so a 1–5 organisation
+// that typed "2 points" was held to a canonical 2 — 0.8 of its own points.
+//
+// Settled by converting at the boundary, never by changing what is stored:
+// both stay canonical 0–10 (so they survive a scale switch exactly as the
+// cohort thresholds and every stored score do), and every surface that shows
+// or accepts one converts. A threshold is a POSITION on the scale and goes
+// through `toDisplayScale` / `fromDisplayScale`. A delta is a DISTANCE between
+// two positions: it scales by the span and has no offset — 2 canonical points
+// is 0.8 on 1–5 (not 1.8) and 20 on 0–100.
+
+/** A canonical 0–10 distance between two scores, on the org's display scale. */
+export function deltaToDisplayScale(delta: number, scale: ScoreScale): number {
+  const b = SCORE_SCALE_BOUNDS[scale];
+  return round2((delta / 10) * (b.max - b.min));
+}
+
+/** A distance typed on the org's display scale, back to canonical 0–10. */
+export function deltaFromDisplayScale(delta: number, scale: ScoreScale): number {
+  const b = SCORE_SCALE_BOUNDS[scale];
+  return round2((delta / (b.max - b.min)) * 10);
+}
+
+/** Render a canonical distance on the org's scale ("2", "0.8", "20"). */
+export function formatDelta(delta: number, scale: ScoreScale = "0-10"): string {
+  const shown = deltaToDisplayScale(delta, scale);
+  return Number.isInteger(shown) ? String(shown) : String(round2(shown));
+}
+
+/** The delta as the copy says it — "2 points", "0.8 points", "1 point". */
+export function formatPoints(delta: number, scale: ScoreScale = "0-10"): string {
+  const shown = formatDelta(delta, scale);
+  return `${shown} ${shown === "1" ? "point" : "points"}`;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // The org scoring framework — the shared view of `org_scoring_settings`
 // ═══════════════════════════════════════════════════════════════════════════
@@ -289,6 +328,10 @@ export function isWeakSignal(value: number): boolean {
  * `admin/s-fw.html`: "Jury must explain overrides greater than 2 points from AI
  * score". Strictly greater — a delta of exactly the threshold is fine. With no
  * AI score to override there is nothing to explain.
+ *
+ * All three numbers are canonical 0–10 — `human` and `ai` as stored, the delta
+ * as stored. Callers that show the delta to a person convert it with
+ * `formatDelta` (see "Differences between scores" above).
  */
 export function overrideNeedsRationale(
   human: number,

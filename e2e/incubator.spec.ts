@@ -38,10 +38,11 @@ test("jury member scores an assigned deck and shortlists it", async ({ page }) =
   await page.goto("/app/jassigned");
 
   await expect(page.getByRole("heading", { name: "Evaluate" })).toBeVisible();
-  // Issue 19 — panel 1 lists the startups; Score opens the workbench.
+  // Issue 19 — panel 1 lists the startups. W7-D: clicking the deck opens the
+  // workbench, as the prototype's row does; there is no Score button (§4).
   await page
     .locator("li", { hasText: "InsureFlow" })
-    .getByRole("button", { name: "Score", exact: true })
+    .getByTitle("Open evaluation report")
     .click();
 
   // The evaluator workbench opens with the AI · My · Average tiles.

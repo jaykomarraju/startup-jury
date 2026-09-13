@@ -48,10 +48,11 @@ test("the evaluator workbench shows the program's shortlist minimum", async ({ p
   await expect(page.getByRole("heading", { name: "Evaluate" })).toBeVisible();
 
   // TaxPilot sits in Climate Cohort, whose seeded floor is 5.5 (migration 0016).
-  // Aug-2026 issue 19 — the workbench opens from panel 1's Score button.
+  // Aug-2026 issue 19 — the workbench opens from panel 1. W7-D: from the deck
+  // itself, as the prototype's row does; the Score button is gone (§4).
   await page
     .locator("li", { hasText: "TaxPilot" })
-    .getByRole("button", { name: "Score", exact: true })
+    .getByTitle("Open evaluation report")
     .click();
   await expect(page.getByRole("heading", { name: "TaxPilot" })).toBeVisible();
   await expect(page.getByText(/Shortlist minimum 5\.5 · this deck \d\.\d\d/)).toBeVisible();

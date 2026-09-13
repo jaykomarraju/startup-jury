@@ -1,11 +1,28 @@
 import { useEffect, useState } from "react";
-import { X, Lock, Sparkles } from "lucide-react";
+import { useParams } from "react-router-dom";
+import { X, Lock, Sparkles, CheckCircle2, PencilLine } from "lucide-react";
 import { Badge } from "./Badge";
 import { Button } from "./Button";
-import { getDeckReport, type DeckReportMatrix, type ReportColumn, type ReportRow } from "../api";
+import { scoreColor } from "./ScoreBars";
+import {
+  getDeckReport,
+  type DeckReportMatrix,
+  type ReportColumn,
+  type ReportGroup,
+  type ReportRow,
+} from "../api";
+import { formatScore, scaleMax } from "../../shared/scoring";
+import type { ScoreScale } from "../../shared/types";
+import {
+  REPORT_STAGE_LABELS,
+  reportStageForScreen,
+  type ReportSectionMode,
+  type ReportStage,
+} from "../../shared/reportStage";
 
 /**
- * The consolidated evaluation report (Aug-2026 issues 20, 21, 23 and 24).
+ * The consolidated evaluation report (Aug-2026 issues 20, 21, 23 and 24), made
+ * stage-aware by W7-D (incubator spec §8.4).
  *
  * • 20 — one COLUMN PER EVALUATOR. The AI column is always there; a new column
  *        appears each time the deck passes into another pair of hands, so the
@@ -15,23 +32,21 @@ import { getDeckReport, type DeckReportMatrix, type ReportColumn, type ReportRow
  *        associate can see that the report is not the whole picture without
  *        seeing the numbers.
  * • 23 — the "Core Parameters" tab: the weighted core areas.
- * • 24 — the "Addl. parameters" tab: each owning role's three parameters.
+ * • 24 — the "Addl. parameters" tab: the role sections.
+ * • §8.4 — WHICH role sections that tab carries depends on the screen the
+ *        report was opened from: Assign → Program associate + Program manager;
+ *        Intro calls → PA + PM + Jury (the jury's read-only, "completed");
+ *        anywhere else → the viewer's own role. The screen is read from the
+ *        route, exactly as the prototype reads it from the visible panel — a
+ *        caller never has to remember to pass it. `stage` overrides that.
+ *
+ * Every number is stored canonical 0–10 and printed on the org's scale, and
+ * coloured by its rubric band (`scoreColor`, derived from `RUBRIC_BANDS`).
  */
-
-function fmt(n: number): string {
-  return Number.isInteger(n) ? String(n) : n.toFixed(1);
-}
-
-function scoreColor(v: number): string {
-  if (v >= 8) return "var(--color-signal-strong)";
-  if (v >= 5) return "var(--color-signal-moderate)";
-  if (v >= 2) return "var(--color-signal-weak)";
-  return "var(--color-signal-absent)";
-}
 
 type Tab = "core" | "additional";
 
-function ColumnHead({ col }: { col: ReportColumn }) {
+function ColumnHead({ col, scale }: { col: ReportColumn; scale: ScoreScale }) {
   return (
     <th className="min-w-[7.5rem] px-3 py-2 text-center align-bottom">
       <div className="flex flex-col items-center gap-1">
@@ -53,7 +68,7 @@ function ColumnHead({ col }: { col: ReportColumn }) {
             className="font-mono text-xs font-semibold"
             style={{ color: scoreColor(col.total) }}
           >
-            {fmt(col.total)}/10
+            {formatScore(col.total, scale)}/{scaleMax(scale)}
           </span>
         )}
       </div>
@@ -61,7 +76,17 @@ function ColumnHead({ col }: { col: ReportColumn }) {
   );
 }
 
-function Matrix({ columns, rows, showWeight }: { columns: ReportColumn[]; rows: ReportRow[]; showWeight: boolean }) {
+function Matrix({
+  columns,
+  rows,
+  showWeight,
+  scale,
+}: {
+  columns: ReportColumn[];
+  rows: ReportRow[];
+  showWeight: boolean;
+  scale: ScoreScale;
+}) {
   if (rows.length === 0) {
     return <p className="px-4 py-6 text-sm text-fg-muted">No parameters in this section.</p>;
   }
@@ -79,7 +104,7 @@ function Matrix({ columns, rows, showWeight }: { columns: ReportColumn[]; rows: 
               </th>
             )}
             {columns.map((c) => (
-              <ColumnHead key={c.id} col={c} />
+              <ColumnHead key={c.id} col={c} scale={scale} />
             ))}
           </tr>
         </thead>
@@ -101,7 +126,7 @@ function Matrix({ columns, rows, showWeight }: { columns: ReportColumn[]; rows: 
                         className="font-mono text-sm font-semibold"
                         style={{ color: scoreColor(cell.value) }}
                       >
-                        {fmt(cell.value)}
+                        {formatScore(cell.value, scale)}
                       </span>
                     ) : (
                       <span className="text-sm text-fg-muted">—</span>
@@ -117,30 +142,90 @@ function Matrix({ columns, rows, showWeight }: { columns: ReportColumn[]; rows: 
   );
 }
 
+/** The small print beside a section title — the prototype's `<small>` copy, per mode. */
+function SectionMode({ mode, submitted }: { mode: ReportSectionMode; submitted: boolean }) {
+  if (mode === "completed") {
+    return (
+      <span className="flex items-center gap-1.5 text-[11px] text-fg-muted">
+        3 additional parameters · completed by jury
+        {submitted && (
+          <Badge tone="positive">
+            <CheckCircle2 className="mr-1 inline h-3 w-3" />
+            Submitted
+          </Badge>
+        )}
+      </span>
+    );
+  }
+  if (mode === "read_only") {
+    return (
+      <span className="flex items-center gap-1 text-[11px] text-fg-muted">
+        <Lock className="h-3 w-3" aria-hidden="true" />3 additional parameters · read only
+      </span>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1 text-[11px] text-olive-dk">
+      <PencilLine className="h-3 w-3" aria-hidden="true" />3 additional parameters · yours to score
+    </span>
+  );
+}
+
+function RoleSection({
+  group,
+  columns,
+  scale,
+}: {
+  group: ReportGroup;
+  columns: ReportColumn[];
+  scale: ScoreScale;
+}) {
+  const mode = group.mode ?? "read_only";
+  const submitted = group.rows.some((r) => Object.keys(r.cells).some((id) => id !== "ai"));
+  return (
+    <section
+      className="border-b border-line last:border-0"
+      aria-label={`${group.roleLabel} parameters`}
+      data-mode={mode}
+    >
+      <div className="flex flex-wrap items-center gap-2 bg-surface-2 px-4 py-2">
+        <span className="u-label">{group.roleLabel} parameters</span>
+        <SectionMode mode={mode} submitted={submitted} />
+      </div>
+      <Matrix columns={columns} rows={group.rows} showWeight={false} scale={scale} />
+    </section>
+  );
+}
+
 export function EvaluationReportModal({
   deckId,
   deckName,
   onClose,
   initialTab = "core",
+  stage,
 }: {
   deckId: string;
   deckName: string;
   onClose: () => void;
   initialTab?: Tab;
+  /** The stage to lay the report out for. Omitted, it is the screen it opens on. */
+  stage?: ReportStage;
 }) {
+  const { navId } = useParams();
+  const effectiveStage = stage ?? reportStageForScreen(navId);
   const [tab, setTab] = useState<Tab>(initialTab);
   const [data, setData] = useState<DeckReportMatrix | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let live = true;
-    getDeckReport(deckId)
+    getDeckReport(deckId, effectiveStage)
       .then((r) => live && setData(r))
       .catch(() => live && setFailed(true));
     return () => {
       live = false;
     };
-  }, [deckId]);
+  }, [deckId, effectiveStage]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -149,6 +234,8 @@ export function EvaluationReportModal({
   }, [onClose]);
 
   const columns = data?.columns ?? [];
+  const scale: ScoreScale = data?.scoring?.scoreScale ?? "0-10";
+  const shownStage = data?.stage ?? effectiveStage;
 
   return (
     <div
@@ -161,7 +248,17 @@ export function EvaluationReportModal({
       <div className="relative flex max-h-[86vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-xl">
         <header className="flex items-start justify-between gap-3 border-b border-line px-5 py-4">
           <div>
-            <div className="u-label">Evaluation report</div>
+            <div className="flex items-center gap-2">
+              <span className="u-label">Evaluation report</span>
+              {data?.stageAware !== false && (
+                <span
+                  className="inline-flex items-center rounded-full bg-surface-2 px-[7px] py-px text-meta font-medium text-fg-muted ring-1 ring-line"
+                  data-testid="report-stage"
+                >
+                  {REPORT_STAGE_LABELS[shownStage]} stage
+                </span>
+              )}
+            </div>
             <h2 className="mt-0.5 text-lg font-semibold text-fg">{deckName}</h2>
             <p className="mt-0.5 text-xs text-fg-muted">
               One column per evaluator — the report widens as the deck passes hands.
@@ -224,9 +321,9 @@ export function EvaluationReportModal({
 
               {tab === "core" ? (
                 /* Issue 23 — the Core Parameters tab. */
-                <Matrix columns={columns} rows={data.core} showWeight />
+                <Matrix columns={columns} rows={data.core} showWeight scale={scale} />
               ) : (
-                /* Issue 24 — the Addl. parameters tab, grouped by owning role. */
+                /* Issue 24 + §8.4 — the role sections this stage carries. */
                 <div className="flex flex-col">
                   {data.additional.length === 0 && (
                     <p className="px-4 py-6 text-sm text-fg-muted">
@@ -234,13 +331,7 @@ export function EvaluationReportModal({
                     </p>
                   )}
                   {data.additional.map((group) => (
-                    <section key={group.role} className="border-b border-line last:border-0">
-                      <div className="flex items-center gap-2 bg-surface-2 px-4 py-2">
-                        <span className="u-label">{group.roleLabel}</span>
-                        <Badge tone="neutral">{group.rows.length} parameters</Badge>
-                      </div>
-                      <Matrix columns={columns} rows={group.rows} showWeight={false} />
-                    </section>
+                    <RoleSection key={group.role} group={group} columns={columns} scale={scale} />
                   ))}
                 </div>
               )}
@@ -250,8 +341,8 @@ export function EvaluationReportModal({
 
         <footer className="flex items-center justify-between gap-3 border-t border-line px-5 py-3">
           <span className="text-xs text-fg-muted">
-            Hover a score to read the evaluator&rsquo;s remark. Additional parameters are configured
-            under My Parameters.
+            Hover a score to read the evaluator&rsquo;s remark. Your own parameters are scored in the
+            evaluation workbench; additional parameters are configured under My Parameters.
           </span>
           <Button size="sm" variant="secondary" onClick={onClose}>
             Done
