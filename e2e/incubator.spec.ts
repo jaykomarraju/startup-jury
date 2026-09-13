@@ -80,7 +80,8 @@ test("staff query an incomplete deck; it records a sent query", async ({ page })
   await body.fill("Please share MRR, churn, and team size.");
   await page.getByRole("button", { name: "Send query" }).click();
 
-  await expect(page.getByText(/Query sent to 1 founder/)).toBeVisible();
+  // W7-C: "sent" only when the outbox delivers — local dev records (§1.4).
+  await expect(page.getByRole("button", { name: "Query recorded for 1 founder" })).toBeVisible();
 
   // The drill-down records it against the startup.
   await page.getByRole("tab", { name: /Founder queries/ }).click();

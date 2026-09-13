@@ -1,0 +1,195 @@
+diff --git a/e2e/parity.spec.ts b/e2e/parity.spec.ts
+index c150daa..76b9bbc 100644
+--- a/e2e/parity.spec.ts
++++ b/e2e/parity.spec.ts
+@@ -611,12 +611,16 @@ const EXPECTED: Record<string, Screen> = {
+     tables: [["ISSUE", "AREA", "SEVERITY", "STATUS", "OWNER", "RAISED", "AGE"]],
+   },
+ 
+-  // ── vc/partner · 23 screens ──
++  // ── vc/partner · 24 screens ──
+   "vc/partner/alldecks": {
+     title: "All decks",
+     tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
+   },
+   "vc/partner/upload": { title: "Upload pitch decks", tables: [] },
++  "vc/partner/query": {
++    title: "Founder queries",
++    tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
++  },
+   "vc/partner/evaluate": { title: "Evaluate", tables: [] },
+   "vc/partner/introcalls": {
+     title: "Intro calls",
+diff --git a/e2e/query.spec.ts b/e2e/query.spec.ts
+index 1a4a0ff..ea8d800 100644
+--- a/e2e/query.spec.ts
++++ b/e2e/query.spec.ts
+@@ -204,3 +204,12 @@ test.describe.serial("an operator emails two flagged founders", () => {
+     }
+   });
+ });
++
++test("a VC partner reaches the Query screen from the sidebar (F0218)", async ({ page }) => {
++  await login(page, "ishaan.sethi@demo.startupjury.ai"); // vc_partner
++  await page.getByRole("link", { name: "Query", exact: true }).click();
++  await page.waitForURL("**/app/query");
++  // Northbeam Robotics seeds Incomplete with an open query.
++  await expect(page.getByRole("checkbox", { name: "Select Northbeam Robotics" })).toBeVisible();
++  await expect(page.getByRole("heading", { name: "Founder queries" })).toBeVisible();
++});
+diff --git a/migrations/0056_vc_partner_query.sql b/migrations/0056_vc_partner_query.sql
+new file mode 100644
+index 0000000..39191b1
+--- /dev/null
++++ b/migrations/0056_vc_partner_query.sql
+@@ -0,0 +1,19 @@
++-- W7-C · migration 0056 — the VC partner reaches the Query screen.
++--
++-- F0218 / F0286 / F0288. `0029` seeded `role_permissions` by derivation from
++-- `nav.ts`, and `VC_NAV` withheld Query from the partner, so the partner's
++-- `query` cell was seeded 0. Three things say it should be 1:
++--
++--   • the Partner prototype's own sidebar carries `si-query`
++--     (AISJ_VC_Partner_V1 — only the IC member omits it);
++--   • the VC admin console's `permDefaults['Partner']` includes `query`;
++--   • the written spec maps Partner / Principal ↔ Program Manager, and the
++--     incubator programme manager has held Query since Phase 1.
++--
++-- STILL A GATE, NOT A GRANT (§8 Q8): paired with `partner` added to the VC
++-- `query` nav item, to `POST /api/decks/:id/queries` and to
++-- `GET /api/questions/draft/:deckId`. `0029`'s INSERT is ON CONFLICT DO NOTHING,
++-- so this is an UPDATE — a workspace that already ran 0029 must change too.
++
++UPDATE role_permissions SET granted = 1, updated_at = datetime('now')
++ WHERE edition = 'vc' AND role = 'partner' AND task_id = 'query';
+diff --git a/scripts/parity-nav.ts b/scripts/parity-nav.ts
+index 375dd47..c63f7ff 100644
+--- a/scripts/parity-nav.ts
++++ b/scripts/parity-nav.ts
+@@ -208,7 +208,6 @@ const EXPECTED_GAPS: ReadonlyMap<string, string> = new Map([
+   // as decided, not as work.
+   ...gap(
+     "DELIBERATE — untrimmed prototype sidebar. The spec's role matrix outranks it (§1.1) and `npm run roles` locks it at 526/526.",
+-    "vc/partner · role-gap query",
+     "vc/partner · role-gap assign",
+     "vc/partner · role-gap jurypipeline",
+     "vc/associate · role-gap partnerpipeline",
+diff --git a/scripts/role-matrix.ts b/scripts/role-matrix.ts
+index c210c73..35d514a 100644
+--- a/scripts/role-matrix.ts
++++ b/scripts/role-matrix.ts
+@@ -567,7 +567,7 @@ const PROBES: Probe[] = [
+   { id: "decks.version", label: "POST /api/decks/:id/version (re-upload)", kind: "write", method: "POST", path: `/api/decks/${GHOST_DECK}/version`, body: {},
+     allow: ["admin", "program_manager", "program_associate", "founder", "associate", "analyst"] },
+   { id: "decks.query", label: "POST /api/decks/:id/queries (ask the founder)", kind: "write", method: "POST", path: `/api/decks/${GHOST_DECK}/queries`, body: {},
+-    allow: ["admin", "program_manager", "program_associate", "associate", "analyst"] },
++    allow: ["admin", "program_manager", "program_associate", "partner", "associate", "analyst"] },
+   { id: "ic.vote", label: "POST /api/decks/:id/ic-vote", kind: "write", method: "POST", path: `/api/decks/${GHOST_DECK}/ic-vote`, body: {},
+     editions: ["vc"], allow: ["admin", "ic_member", "partner"] },
+ 
+diff --git a/src/server/routes/pipeline.ts b/src/server/routes/pipeline.ts
+index 5f439cf..0310ce3 100644
+--- a/src/server/routes/pipeline.ts
++++ b/src/server/routes/pipeline.ts
+@@ -668,7 +668,7 @@ pipeline.get(
+  */
+ pipeline.post(
+   "/decks/:id/queries",
+-  requireTask("query", "program_associate", "program_manager", "admin", "analyst", "associate"),
++  requireTask("query", "program_associate", "program_manager", "admin", "analyst", "associate", "partner"),
+   async (c) => {
+     const user = c.var.user;
+     const deck = await loadDeck(c, c.req.param("id"));
+diff --git a/src/server/routes/questions.ts b/src/server/routes/questions.ts
+index 739b58c..e00ec81 100644
+--- a/src/server/routes/questions.ts
++++ b/src/server/routes/questions.ts
+@@ -62,6 +62,7 @@ const requireQuerier = requireTask(
+   "admin",
+   "analyst",
+   "associate",
++  "partner",
+ );
+ 
+ /** Longest question the accordion will store. The prototype's longest is 84. */
+diff --git a/src/shared/nav.ts b/src/shared/nav.ts
+index 011308c..5a911c2 100644
+--- a/src/shared/nav.ts
++++ b/src/shared/nav.ts
+@@ -164,7 +164,10 @@ const VC_NAV: NavItem[] = [
+   { id: "alldecks", label: "All decks", icon: "Layers", section: "Workflows", roles: ["admin", "partner", "ic_member", "associate", "analyst"] },
+   // Evaluation
+   { id: "upload", label: "Upload", icon: "Upload", section: "Evaluation", roles: ["admin", "partner", "associate", "analyst"], task: "upload" },
+-  { id: "query", label: "Query", icon: "MessageSquare", section: "Evaluation", roles: ["admin", "associate", "analyst"], task: "query" },
++  // W7-C · F0218 / F0286 / F0288 — the Partner prototype's sidebar carries Query,
++  // its admin console's permDefaults grants Partner `query`, and the spec maps
++  // Partner ↔ Program Manager, who has held Query all along (§8).
++  { id: "query", label: "Query", icon: "MessageSquare", section: "Evaluation", roles: ["admin", "partner", "associate", "analyst"], task: "query" },
+   { id: "evaluate", label: "Evaluate", icon: "ClipboardCheck", section: "Evaluation", roles: ["admin", "partner", "ic_member", "associate", "analyst"], task: "evaluate" },
+   { id: "assign", label: "Submit", icon: "Send", section: "Evaluation", roles: ["admin", "associate", "analyst"], task: "assign" },
+   { id: "jurypipeline", label: "Assoc. Pipeline", icon: "GitBranch", section: "Evaluation", roles: ["admin", "associate"], task: "assocpipeline" },
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index 297d539..ab9a50e 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -185,7 +185,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Edition, Record<string, readonly R
+     assign: ["superuser", "admin", "associate", "analyst"],
+     reassign: ["superuser", "partner", "associate"],
+     remind: ["superuser", "partner", "associate", "analyst"],
+-    query: ["superuser", "admin", "associate", "analyst"],
++    // W7-C — the partner raises founder queries (0056).
++    query: ["superuser", "admin", "partner", "associate", "analyst"],
+     introcall: ["superuser", "admin", "partner", "ic_member", "associate", "analyst"],
+     assocpipeline: ["superuser", "admin", "associate"],
+     partnerpipeline: ["superuser", "admin", "partner", "ic_member"],
+diff --git a/test/worker/migrations-w1b.test.ts b/test/worker/migrations-w1b.test.ts
+index 95dd24c..95b28e9 100644
+--- a/test/worker/migrations-w1b.test.ts
++++ b/test/worker/migrations-w1b.test.ts
+@@ -22,11 +22,12 @@ const BLOCK_SIZE = LAST - FIRST + 1;
+  * ownership table. Wave 2 was 0038–0040; Wave 3 was 0040–0043; Wave 4 was
+  * 0044–0047 (W4-A 0044, W4-B 0045, W4-C 0046, W4-D 0047); Wave 5 was
+  * 0048–0049 (W5-A 0048, W5-B 0049); **Wave 6 is 0050–0053** (Wx-PWD 0050,
+- * W6-A 0051, W6-C 0052, and W6-B 0053 — unallotted, declared in §9). Each wave raises this line, and every
++ * W6-A 0051, W6-C 0052, and W6-B 0053 — unallotted, declared in §9); **Wave 7
++ * is 0054–0059**, one per session in letter order (W7-C 0056). Each wave raises this line, and every
+  * parallel session in the wave hits it — expect a one-line merge conflict here
+  * and take the highest value.
+  */
+-const ALLOTMENT_CEILING = 53;
++const ALLOTMENT_CEILING = 59;
+ 
+ const MIGRATIONS = env.TEST_MIGRATIONS;
+ 
+diff --git a/test/worker/pipeline.test.ts b/test/worker/pipeline.test.ts
+index 27be692..f792621 100644
+--- a/test/worker/pipeline.test.ts
++++ b/test/worker/pipeline.test.ts
+@@ -390,3 +390,27 @@ describe("deck list exposes per-role actions + status id", () => {
+     expect(actions).toEqual(expect.arrayContaining(["shortlist", "reject"]));
+   });
+ });
++
++// W7-C · F0218 / F0286 / F0288 — the VC partner raises founder queries; the IC
++// member, who has no Query screen in any prototype, still cannot.
++describe("VC founder queries: the partner may raise one, the IC member may not", () => {
++  const VC_PARTNER = "ishaan.sethi@demo.startupjury.ai";
++  const VC_IC = "rajesh.kumar.vc@demo.startupjury.ai";
++
++  it("lets the partner draft and raise a query", async () => {
++    const id = "pipe_vc_partner_query";
++    await seedDeck(id, "associate_review", { edition: "vc", uploadedBy: "vc_analyst" });
++    const partner = await login(VC_PARTNER);
++    expect((await get(`/api/questions/draft/${id}`, partner)).status).toBe(200);
++    const res = await post(`/api/decks/${id}/queries`, partner, { questions: "What is your net revenue retention?" });
++    expect(res.status).toBe(200);
++  });
++
++  it("refuses the IC member (403) on both", async () => {
++    const id = "pipe_vc_ic_query";
++    await seedDeck(id, "associate_review", { edition: "vc", uploadedBy: "vc_analyst" });
++    const ic = await login(VC_IC);
++    expect((await get(`/api/questions/draft/${id}`, ic)).status).toBe(403);
++    expect((await post(`/api/decks/${id}/queries`, ic, { questions: "?" })).status).toBe(403);
++  });
++});

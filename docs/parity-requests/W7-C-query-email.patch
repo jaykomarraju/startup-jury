@@ -1,0 +1,305 @@
+diff --git a/e2e/query.spec.ts b/e2e/query.spec.ts
+index 1a4a0ff..5a427bb 100644
+--- a/e2e/query.spec.ts
++++ b/e2e/query.spec.ts
+@@ -187,13 +187,6 @@ test.describe.serial("an operator emails two flagged founders", () => {
+   });
+ 
+   test("the recorded email is the letter verbatim, under the operator's subject, with the response link", async () => {
+-    // EXPECTED TO FAIL until integration places §9's `W7-C` server change
+-    // (`docs/parity-requests/W7-C-query-email.patch`): today POST
+-    // /api/decks/:id/queries ignores `subject`, wraps the letter in its own
+-    // greeting (F0216), and mints no link (F0217). The patch deletes this
+-    // `test.fail()` in the same commit — Playwright reports an unexpected pass
+-    // otherwise, so the gap cannot quietly close without being recorded.
+-    test.fail();
+     const rows = recordedQueryEmails([alpha.deckId, beta.deckId]);
+     expect(rows).toHaveLength(2);
+     for (const mail of rows) {
+diff --git a/src/server/email/outbox.ts b/src/server/email/outbox.ts
+index f4551cb..4fc2811 100644
+--- a/src/server/email/outbox.ts
++++ b/src/server/email/outbox.ts
+@@ -24,6 +24,7 @@ import type { Env } from "../types";
+ import type { Edition, Role } from "../../shared/roles";
+ import { isMentor } from "../../shared/roles";
+ import { describeMissingFields, type IntakeField } from "../../shared/intake";
++import { withResponseLink } from "../../shared/queries";
+ import {
+   NOTIFICATION_DEFAULTS,
+   type NotificationChannel,
+@@ -235,12 +236,28 @@ export async function sendEmail(
+   return { ...email, id, status, createdAt, providerId, error };
+ }
+ 
+-/** Compose the founder-clarification email for a query. Pure (testable). */
++/**
++ * Compose the founder-clarification email for a query. Pure (testable).
++ *
++ * W7-C: given the operator's `subject`, `questions` is the whole letter as the
++ * Query screen's compose card showed it, and is sent verbatim under that
++ * subject — the only change is the response `link` put where the letter's
++ * placeholder stands (F0216 / F0217). Without a subject it is the older
++ * wrapped form, which still carries the link.
++ */
+ export function buildQueryEmail(args: {
+   deckName: string;
+   founderName?: string | null;
+   questions: string;
++  /** The Subject the operator typed; blank falls back to the default. */
++  subject?: string | null;
++  /** The founder's tokenized response link (`resubmitLink`). */
++  link?: string | null;
+ }): { subject: string; body: string } {
++  const subject = args.subject?.trim();
++  if (subject) {
++    return { subject, body: args.link ? withResponseLink(args.questions, args.link) : args.questions };
++  }
+   const greeting = args.founderName ? `Hi ${args.founderName},` : "Hi,";
+   return {
+     subject: `Action needed: a few questions about ${args.deckName}`,
+@@ -248,7 +265,9 @@ export function buildQueryEmail(args: {
+       `${greeting}\n\nThanks for submitting ${args.deckName} to the programme. ` +
+       "Before we can complete the review, our team needs a little more detail:\n\n" +
+       `${args.questions}\n\n` +
+-      "Please reply through your founder portal and we'll pick the review back up.\n\n" +
++      (args.link
++        ? `Respond online: ${args.link}\n\n`
++        : "Please reply through your founder portal and we'll pick the review back up.\n\n") +
+       "— The ai.STARTUPJURY team",
+   };
+ }
+diff --git a/src/server/routes/pipeline.ts b/src/server/routes/pipeline.ts
+index 5f439cf..4519303 100644
+--- a/src/server/routes/pipeline.ts
++++ b/src/server/routes/pipeline.ts
+@@ -35,6 +35,7 @@ import {
+   emitNotification,
+ } from "../email/outbox";
+ import { evaluatorNoun } from "../../shared/notifications";
++import { mintResubmitToken, resubmitLink } from "../resubmit";
+ // W3-C — the audit store. `listAudit` is what makes the Activity card below
+ // and the console's Audit log section ONE store rather than two; F0052 is
+ // the score-override half.
+@@ -659,12 +660,24 @@ pipeline.get(
+   },
+ );
+ 
++/** Longest subject the Query screen may set — a subject line, not a paragraph. */
++const MAX_QUERY_SUBJECT = 200;
++
+ /**
+  * POST /decks/:id/queries — raise a founder query and email it.
+  *
+  * Session 7 opened this to the VC roles that own the Query screen (`analyst`,
+  * `associate` — see `VC_NAV`). The VC edition raises exactly the same
+  * clarification loop against the same table; only the roles differ.
++ *
++ * W7-C (F0216 / F0217): `questions` is the letter the compose card showed and
++ * `subject` the Subject the operator typed. With a subject, the email IS that
++ * letter under that subject — no second greeting, no server-minted subject.
++ * Every query email carries a freshly minted resubmit link, substituted for
++ * the letter's `[your secure response link]` placeholder; the stored query keeps
++ * the placeholder, so no raw token is ever persisted outside the outbox.
++ * `delivered` reports what the outbox actually did, so the screen can say
++ * "recorded" rather than "sent" while no sending domain is configured.
+  */
+ pipeline.post(
+   "/decks/:id/queries",
+@@ -674,9 +687,14 @@ pipeline.post(
+     const deck = await loadDeck(c, c.req.param("id"));
+     if (!deck) return c.json({ error: "not_found" }, 404);
+ 
+-    const body = await readBody<{ questions: string }>(c);
++    const body = await readBody<{ questions: string; subject?: string }>(c);
+     const questions = typeof body.questions === "string" ? body.questions.trim() : "";
+     if (!questions) return c.json({ error: "questions_required" }, 400);
++    const subject = typeof body.subject === "string" ? body.subject.trim() : "";
++    // A line break in a subject is a header injection, not a typo.
++    if (/[\r\n]/.test(subject) || subject.length > MAX_QUERY_SUBJECT) {
++      return c.json({ error: "invalid_subject" }, 400);
++    }
+ 
+     const ts = new Date().toISOString();
+     const queryId = `qry_${crypto.randomUUID()}`;
+@@ -707,24 +725,28 @@ pipeline.post(
+           .bind(deck.uploaded_by)
+           .first<{ email: string; name: string }>()
+       : null;
+-    const { subject, body: emailBody } = buildQueryEmail({
++    // Prefer the founder's own address (captured at intake in Session 5) over
++    // the uploader's — a staff bulk upload would otherwise mail the analyst.
++    const toEmail = deck.founder_email ?? uploader?.email ?? "founder@portal.local";
++    const { token } = await mintResubmitToken(c.env, { deckId: deck.id, edition: deck.edition, toEmail });
++    const email = buildQueryEmail({
+       deckName: deck.name,
+       founderName: deck.founder ?? uploader?.name ?? null,
+       questions,
++      subject,
++      link: resubmitLink(c.env, token),
+     });
+-    await sendEmail(c.env, {
++    const sent = await sendEmail(c.env, {
+       kind: "founder_query",
+-      // Prefer the founder's own address (captured at intake in Session 5) over
+-      // the uploader's — a staff bulk upload would otherwise mail the analyst.
+-      toEmail: deck.founder_email ?? uploader?.email ?? "founder@portal.local",
++      toEmail,
+       toName: deck.founder ?? uploader?.name ?? null,
+-      subject,
+-      body: emailBody,
++      subject: email.subject,
++      body: email.body,
+       deckId: deck.id,
+       queryId,
+     });
+ 
+-    return c.json({ ok: true, queryId, emailStatus: "sent" });
++    return c.json({ ok: true, queryId, emailStatus: sent.status, delivered: sent.status === "sent" });
+   },
+ );
+ 
+diff --git a/test/worker/outbox.test.ts b/test/worker/outbox.test.ts
+index 74af667..fad5d5d 100644
+--- a/test/worker/outbox.test.ts
++++ b/test/worker/outbox.test.ts
+@@ -117,6 +117,30 @@ describe("buildQueryEmail (pure)", () => {
+     const { body } = buildQueryEmail({ deckName: "GreenGrid", founderName: null, questions: "q" });
+     expect(body).toContain("Hi,");
+   });
++
++  it("sends the Query screen's letter verbatim under the operator's subject (W7-C, F0216)", () => {
++    const letter = "Dear Founder,\n\nPlease add a team slide.\n\n→ [your secure response link]\n\nWarm regards,";
++    const { subject, body } = buildQueryEmail({
++      deckName: "GreenGrid",
++      founderName: "Meera",
++      questions: letter,
++      subject: "About your team slide",
++      link: "https://app.example/resubmit/tok123",
++    });
++    expect(subject).toBe("About your team slide");
++    expect(body).toBe(letter.replace("[your secure response link]", "https://app.example/resubmit/tok123"));
++    expect(body).not.toContain("Hi Meera");
++  });
++
++  it("puts the response link in the default wrapper too (F0217)", () => {
++    const { body } = buildQueryEmail({
++      deckName: "GreenGrid",
++      questions: "What is your MRR?",
++      link: "https://app.example/resubmit/tok123",
++    });
++    expect(body).toContain("Respond online: https://app.example/resubmit/tok123");
++    expect(body).not.toContain("Please reply through your founder portal");
++  });
+ });
+ 
+ describe("buildSignupEmail (pure)", () => {
+diff --git a/test/worker/pipeline.test.ts b/test/worker/pipeline.test.ts
+index 27be692..ac0dea3 100644
+--- a/test/worker/pipeline.test.ts
++++ b/test/worker/pipeline.test.ts
+@@ -226,6 +226,104 @@ describe("founder query loop: incomplete → query → founder response → uplo
+   });
+ });
+ 
++// W7-C (F0216 / F0217) — the Query screen's letter reaches the founder as it
++// was composed: under the operator's subject, with a live response link.
++describe("founder query email: the letter verbatim, the subject typed, a working link", () => {
++  const LETTER = [
++    "Dear Founder,",
++    "",
++    "Thank you for submitting TestCo. Please add your team slide.",
++    "",
++    "→ [your secure response link]",
++    "",
++    "Warm regards,",
++    "The Evaluation Team",
++  ].join("\n");
++
++  async function mailFor(id: string, queryId: string) {
++    return env.DB.prepare("SELECT subject, body, status FROM email_outbox WHERE deck_id = ? AND query_id = ?")
++      .bind(id, queryId)
++      .first<{ subject: string; body: string; status: string }>();
++  }
++
++  it("sends the composed letter under the typed subject, swapping in a link that opens the resubmit page", async () => {
++    const id = "pipe_query_letter";
++    await seedDeck(id, "incomplete", { complete: 0 });
++    const pa = await login(PA);
++
++    const res = await post(`/api/decks/${id}/queries`, pa, {
++      questions: LETTER,
++      subject: "  Two quick questions about TestCo  ",
++    });
++    expect(res.status).toBe(200);
++    const json = (await res.json()) as { queryId: string; emailStatus: string; delivered: boolean };
++    // Miniflare has no send_email binding: recorded, and the response says so.
++    expect(json).toMatchObject({ emailStatus: "recorded", delivered: false });
++
++    const mail = await mailFor(id, json.queryId);
++    expect(mail!.subject).toBe("Two quick questions about TestCo");
++    expect(mail!.body.startsWith("Dear Founder,")).toBe(true);
++    expect(mail!.body).not.toContain("Hi Ada");
++    expect(mail!.body).not.toContain("[your secure response link]");
++    const link = mail!.body.match(/→ (\S+\/resubmit\/([A-Za-z0-9_-]+))/);
++    expect(link).not.toBeNull();
++    expect(mail!.body).toBe(LETTER.replace("[your secure response link]", link![1]));
++
++    // The stored query keeps the placeholder — the raw token lives only in the mail.
++    const stored = await env.DB.prepare("SELECT questions FROM queries WHERE id = ?")
++      .bind(json.queryId)
++      .first<{ questions: string }>();
++    expect(stored!.questions).toBe(LETTER);
++
++    // And the link is live: the public resubmit page opens for this deck.
++    const page = await SELF.fetch(`${BASE}/api/resubmit/${link![2]}`);
++    expect(page.status).toBe(200);
++  });
++
++  it("still carries a link when the operator deleted the placeholder, or sent no subject", async () => {
++    const id = "pipe_query_nolink";
++    await seedDeck(id, "incomplete", { complete: 0 });
++    const pa = await login(PA);
++
++    const edited = (await (
++      await post(`/api/decks/${id}/queries`, pa, { questions: "Please share your MRR.", subject: "MRR?" })
++    ).json()) as { queryId: string };
++    expect((await mailFor(id, edited.queryId))!.body).toMatch(/^Please share your MRR\.\n\nRespond online: \S+\/resubmit\/\S+$/);
++
++    const legacy = (await (await post(`/api/decks/${id}/queries`, pa, { questions: "What is your churn?" })).json()) as {
++      queryId: string;
++    };
++    const mail = await mailFor(id, legacy.queryId);
++    expect(mail!.subject).toBe("Action needed: a few questions about TestCo");
++    expect(mail!.body).toMatch(/Respond online: \S+\/resubmit\/\S+/);
++  });
++
++  it("rejects a subject that would break the header, or runs past a subject line", async () => {
++    const id = "pipe_query_badsubject";
++    await seedDeck(id, "incomplete", { complete: 0 });
++    const pa = await login(PA);
++    for (const subject of ["Hello\r\nBcc: everyone@example.com", "x".repeat(201)]) {
++      const res = await post(`/api/decks/${id}/queries`, pa, { questions: LETTER, subject });
++      expect(res.status).toBe(400);
++      expect(await res.json()).toMatchObject({ error: "invalid_subject" });
++    }
++    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM queries WHERE deck_id = ?").bind(id).first<{ n: number }>();
++    expect(count!.n).toBe(0);
++  });
++
++  it("refuses a role outside the query screen (403) and mints nothing", async () => {
++    const id = "pipe_query_jury";
++    await seedDeck(id, "incomplete", { complete: 0 });
++    const jury = await login(JURY);
++    const res = await post(`/api/decks/${id}/queries`, jury, { questions: LETTER, subject: "Hi" });
++    expect(res.status).toBe(403);
++    const tokens = await env.DB.prepare("SELECT COUNT(*) AS n FROM resubmit_tokens WHERE deck_id = ?")
++      .bind(id)
++      .first<{ n: number }>();
++    expect(tokens!.n).toBe(0);
++  });
++});
++
+ describe("per-stage authorization", () => {
+   it("jury cannot assign at the AI gate (403)", async () => {
+     const id = "authz_assign";

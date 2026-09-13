@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { queryStatusOf } from "../../src/client/routes/QueryPage";
+import { queryStatusOf } from "../../src/shared/queries";
 import { DeckRow } from "../../src/client/components";
 import type { QueryView } from "../../src/client/api";
 import type { DeckView } from "../../src/client/types";
@@ -19,8 +19,12 @@ function query(overrides: Partial<QueryView> = {}): QueryView {
 }
 
 describe("queryStatusOf", () => {
-  it("is 'not asked' before anyone raises a query", () => {
-    expect(queryStatusOf([])).toBe("not_asked");
+  // W7-C: the prototype's `qStatusLabel` has three words — Pending, Overdue,
+  // Responded. A flagged deck nobody has emailed yet is Pending (its
+  // `upSendToQuery` lists a deck as `pending` before any email goes out), so
+  // the old fourth status, "not asked", is gone rather than reworded.
+  it("is 'pending' before anyone raises a query", () => {
+    expect(queryStatusOf([])).toBe("pending");
   });
 
   it("is 'pending' while a recent query is unanswered", () => {
@@ -28,7 +32,8 @@ describe("queryStatusOf", () => {
   });
 
   it("is 'overdue' once an unanswered query passes the window", () => {
-    const old = new Date(Date.now() - 6 * 86_400_000).toISOString();
+    // Eight calendar days always span at least five working days (F0341).
+    const old = new Date(Date.now() - 8 * 86_400_000).toISOString();
     expect(queryStatusOf([query({ created_at: old })])).toBe("overdue");
   });
 
