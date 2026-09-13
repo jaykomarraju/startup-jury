@@ -21,6 +21,8 @@ import { denyMentor, requireAuth, requireTask } from "../auth/middleware";
 import { detectIntakeFlags, intakeFlagStatement, resolveIntakeContext } from "../intake";
 import { emitNotification } from "../email/outbox";
 import { evaluateDeck } from "../ai/evaluate";
+// W7-D — incubator spec §8.4: which role sections the report carries.
+import { parseReportStage, reportLayout } from "../../shared/reportStage";
 import {
   classifyEvalError,
   clearEvalFailure,
@@ -739,11 +741,23 @@ interface ReportParamRow {
   role_scope: string | null;
 }
 
-/** GET /api/decks/:id/report — the evaluation report, hierarchy-filtered. */
+/**
+ * GET /api/decks/:id/report?stage=assign|intro — the evaluation report,
+ * hierarchy-filtered and stage-aware (incubator spec §8.4 / §13).
+ *
+ * `stage` is the screen the report was opened FROM. It decides which role
+ * sections the Addl. parameters tab carries and whether each is the viewer's
+ * own (editable) or someone else's (read-only / completed) — see
+ * `shared/reportStage.ts`, which is the rule. Absent or unrecognised, the
+ * report is single-role. Stage-awareness only ever REMOVES sections: the
+ * issue-21 hierarchy and peer-visibility filtering of columns below is
+ * untouched, so no stage can reveal a score the viewer could not already see.
+ */
 decks.get("/:id/report", async (c) => {
   const { id: viewerId, edition, role } = c.var.user;
   if (role === "founder") return c.json({ error: "forbidden" }, 403);
   const id = c.req.param("id");
+  const layout = reportLayout(edition, parseReportStage(c.req.query("stage")), role);
 
   const deckRow = await c.env.DB.prepare(
     `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} WHERE d.id = ? AND d.edition = ?`,
@@ -921,23 +935,41 @@ decks.get("/:id/report", async (c) => {
 
   const core = params.filter((p) => p.informational === 0).map(toRow);
 
-  // Additional parameters grouped by the role that owns them (issue 24).
-  const groups = new Map<string, { role: string; roleLabel: string; rows: ReturnType<typeof toRow>[] }>();
+  // Additional parameters grouped by the role that owns them (issue 24), in
+  // the stage's section order, carrying the stage's mode (§8.4). A role the
+  // stage does not name is left out entirely — rows and cells both.
+  const groups = new Map<
+    string,
+    {
+      role: string;
+      roleLabel: string;
+      mode: (typeof layout.sections)[number]["mode"];
+      readOnly: boolean;
+      rows: ReturnType<typeof toRow>[];
+    }
+  >();
+  for (const section of layout.sections) {
+    groups.set(section.role, {
+      role: section.role,
+      roleLabel: roleLabel(edition, section.role),
+      mode: section.mode,
+      readOnly: section.mode !== "editable",
+      rows: [],
+    });
+  }
   for (const p of params) {
     if (p.informational === 0 || !p.role_scope) continue;
-    const key = p.role_scope;
-    const group =
-      groups.get(key) ??
-      { role: key, roleLabel: roleLabel(edition, key as Role), rows: [] };
-    group.rows.push(toRow(p));
-    groups.set(key, group);
+    groups.get(p.role_scope)?.rows.push(toRow(p));
   }
 
   return c.json({
     deck: toDeckView(edition, deckRow, role, scoring),
     columns,
     core,
-    additional: [...groups.values()],
+    // A section whose role has no parameters configured has nothing to show.
+    additional: [...groups.values()].filter((g) => g.rows.length > 0),
+    stage: layout.stage,
+    stageAware: layout.stageAware,
     // How many evaluators exist above the viewer in the hierarchy. The screen
     // says so plainly rather than pretending nobody has scored.
     hiddenEvaluators: hidden,

@@ -163,7 +163,11 @@ describe("EvalScorecard", () => {
     );
     // AI 8 vs my 4 is a delta of 4 — over the 2-point threshold.
     expect(screen.getByText(/Rationale required/)).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Rationale for Traction & Validation"), {
+    // W7-D: the rationale is the prototype's per-parameter "My remarks for this
+    // parameter" field (`jr-pexp`), forced open when an override needs it, so
+    // its accessible name moved with it. Restated per §4 — the behaviour under
+    // test (the box appears, and what is typed reaches the page) is unchanged.
+    fireEvent.change(screen.getByLabelText("My remarks for Traction & Validation"), {
       target: { value: "Retention data contradicts the AUM headline." },
     });
     expect(seen.traction).toBe("Retention data contradicts the AUM headline.");

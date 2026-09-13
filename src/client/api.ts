@@ -5,6 +5,8 @@ import type { ExtractionSlide, ParamScoreView } from "./components";
 import type { Plan } from "../shared/plans";
 import type { IntakeField, IntakeFlag } from "../shared/intake";
 import type { CallKind } from "../shared/roles";
+import type { ReportSectionMode, ReportStage } from "../shared/reportStage";
+import type { ScoreScale } from "../shared/types";
 import type {
   FunnelReport,
   CohortSummary,
@@ -130,6 +132,9 @@ export interface ReportRow {
 export interface ReportGroup {
   role: string;
   roleLabel: string;
+  /** W7-D — spec §8.4: the viewer's own lens, another role's, or the jury's finished work. */
+  mode?: ReportSectionMode;
+  readOnly?: boolean;
   rows: ReportRow[];
 }
 
@@ -140,10 +145,16 @@ export interface DeckReportMatrix {
   additional: ReportGroup[];
   /** Evaluators above the caller in the hierarchy, withheld per issue 21. */
   hiddenEvaluators: number;
+  /** W7-D — the stage the report was laid out for (spec §8.4 / §13). */
+  stage?: ReportStage;
+  stageAware?: boolean;
+  scoring?: { scoreScale: ScoreScale };
 }
 
-export function getDeckReport(id: string): Promise<DeckReportMatrix> {
-  return fetch(`/api/decks/${id}/report`).then((r) => json(r));
+/** `stage` is the screen the report was opened from — spec §13 `?stage=assign|intro`. */
+export function getDeckReport(id: string, stage: ReportStage = "default"): Promise<DeckReportMatrix> {
+  const query = stage === "default" ? "" : `?stage=${stage}`;
+  return fetch(`/api/decks/${id}/report${query}`).then((r) => json(r));
 }
 
 // ── Workspace activity log (issue 8) ─────────────────────────────────────────
@@ -503,6 +514,12 @@ export interface RubricParameter {
   roleScope?: string;
   /** The configurable AI evaluation prompt (shown in the parameter detail panel). */
   prompt?: string;
+  /** W2-B's per-parameter anchor text (`parameter_rubric_bands`), highest band first. */
+  bands?: { index: number; label: string; name: string; description: string | null }[];
+  /** W7-D — the area's clarification question bank (`question_bank`). */
+  questions?: string[];
+  /** The scorer-facing description (spec §6.2) — shown while scoring. */
+  description?: string;
 }
 
 /** A 0–10 rubric band the AI scores against (parameter detail panel). */
@@ -511,6 +528,25 @@ export interface RubricAnchor {
   min: number;
   max: number;
   label: string;
+}
+
+// ── W7-D — the Evaluate screen's per-deck recommendation (0057) ─────────────
+
+export type EvaluateRecommendation = "shortlist" | "hold" | "need_more_info" | "reject" | "evaluated";
+
+export function listRecommendations(): Promise<{
+  recommendations: Record<string, EvaluateRecommendation>;
+  evaluated: string[];
+}> {
+  return fetch("/api/recommendations").then((r) => json(r));
+}
+
+export function setRecommendation(deckId: string, status: EvaluateRecommendation) {
+  return fetch(`/api/decks/${deckId}/recommendation`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ status }),
+  }).then((r) => json<{ ok: true; deckId: string; status: EvaluateRecommendation }>(r));
 }
 
 export function listParameters(): Promise<{

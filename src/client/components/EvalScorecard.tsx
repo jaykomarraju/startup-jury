@@ -1,15 +1,17 @@
 import { useState, type ReactNode } from "react";
-import { ChevronLeft, ChevronRight, Sparkles, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, FileBarChart, Sparkles, RefreshCw } from "lucide-react";
 import { Button } from "./Button";
 import { Badge } from "./Badge";
 import { SignalTag } from "./SignalTag";
 import { DeckPdfViewer } from "./DeckPdfViewer";
 import { ResearchMenu } from "./ResearchMenu";
+import { scoreColor } from "./ScoreBars";
 import {
   DEFAULT_SCORING_SETTINGS,
   SCORE_SCALE_BOUNDS,
   blendScore,
   composite,
+  formatPoints,
   formatScore,
   fromDisplayScale,
   overrideNeedsRationale,
@@ -32,7 +34,11 @@ interface EvalScorecardProps {
   /** The caller's own role-scoped additional params (assistive; own average,
    *  NOT folded into the core-13 composite). Empty when the caller owns none. */
   additionalParams?: RubricParameter[];
-  /** The juror's live 0–10 values, keyed by parameter key. */
+  /**
+   * The juror's live canonical 0–10 values, keyed by parameter key. A key that
+   * is ABSENT is unscored — the input shows "–" and submit stays locked until
+   * every parameter carries a value (spec §8.1; the prototype's `jrSubmit`).
+   */
   values: Record<string, number>;
   onChangeValue: (key: string, value: number) => void;
   remarks: string;
@@ -61,6 +67,8 @@ interface EvalScorecardProps {
   nav?: { index: number; total: number; onPrev: () => void; onNext: () => void };
   /** Called after a successful re-score so the page can reload. */
   onRescored?: () => void;
+  /** Opens the consolidated, stage-aware evaluation report for this deck. */
+  onOpenReport?: () => void;
   /** Edition-specific decision buttons (Shortlist/Reject, or VC advance actions). */
   actions?: ReactNode;
   busy?: boolean;
@@ -68,18 +76,6 @@ interface EvalScorecardProps {
   onSave: () => void;
 }
 
-/** Format a 0–10 score compactly: whole numbers plain, else one decimal. */
-function fmtScore(n: number): string {
-  return Number.isInteger(n) ? String(n) : n.toFixed(1);
-}
-
-/** Colour a score by its rubric band (matches the signal hues). */
-function scoreColor(v: number): string {
-  if (v >= 8) return "var(--color-signal-strong)";
-  if (v >= 5) return "var(--color-signal-moderate)";
-  if (v >= 2) return "var(--color-signal-weak)";
-  return "var(--color-signal-absent)";
-}
 
 const RESCORE_MESSAGES: Record<string, string> = {
   already_scored:
@@ -90,20 +86,39 @@ const RESCORE_MESSAGES: Record<string, string> = {
   error: "Couldn’t re-score. Try again.",
 };
 
-/** Column headers — the AI and Avg columns vanish with the 3-score view. */
+/** The row grid — Parameter · Weight · AI · My score · Avg. · (remarks). */
+function gridCols(threeScore: boolean): string {
+  return threeScore
+    ? "grid-cols-[1fr_3rem_3rem_7rem_3.5rem_1.5rem]"
+    : "grid-cols-[1fr_3rem_7rem_1.5rem]";
+}
+
+/**
+ * Column headers — the prototype report's parameter table (`jr-ptbl`):
+ * Parameter · Weight · AI · My score · (chevron), plus Avg. with the 3-score
+ * view. The AI and Avg. columns vanish when the 3-score view is off.
+ */
 function ScoreHeader({ threeScore }: { threeScore: boolean }) {
   return (
     <div
-      className={`grid items-center gap-x-4 border-b border-line bg-surface-2 px-3 py-2 ${
-        threeScore ? "grid-cols-[1fr_auto_auto_auto]" : "grid-cols-[1fr_auto]"
-      }`}
+      data-testid="score-header"
+      className={`grid items-center gap-x-3 border-b border-line bg-surface-2 px-3 py-2 ${gridCols(threeScore)}`}
     >
       <span className="u-label">Parameter</span>
-      {threeScore && <span className="u-label w-12 text-center">AI</span>}
-      <span className="u-label w-32 text-center">My</span>
-      {threeScore && <span className="u-label w-14 text-center">Avg</span>}
+      <span className="u-label text-center">Weight</span>
+      {threeScore && <span className="u-label text-center">AI</span>}
+      <span className="u-label text-center">My score</span>
+      {threeScore && <span className="u-label text-center">Avg.</span>}
+      <span aria-hidden="true" />
     </div>
   );
+}
+
+/** The header labels, exported so a test can pin the set against the prototype. */
+export function scoreHeaderLabels(threeScore: boolean): string[] {
+  return threeScore
+    ? ["Parameter", "Weight", "AI", "My score", "Avg."]
+    : ["Parameter", "Weight", "My score"];
 }
 
 /**
@@ -121,6 +136,7 @@ function ScoreHeader({ threeScore }: { threeScore: boolean }) {
  */
 function ScoreRow({
   param,
+  badge,
   ai,
   value,
   onChangeValue,
@@ -128,37 +144,47 @@ function ScoreRow({
   onChangeComment,
   scoring,
   threeScore,
-  showWeight,
+  weightLabel,
 }: {
   param: RubricParameter;
+  /** The prototype's row number pill — "1"…"13", or "C1"…"C3" for additional. */
+  badge?: string;
   ai?: AiParamScore;
-  value: number;
+  /** Canonical 0–10, or undefined while unscored. */
+  value: number | undefined;
   onChangeValue: (key: string, value: number) => void;
   comment: string;
   onChangeComment?: (key: string, value: string) => void;
   scoring: ScoringSettings;
   threeScore: boolean;
-  showWeight?: boolean;
+  /** What the Weight cell says — "8%" for a core area, "Info" for an additional one. */
+  weightLabel: string;
 }) {
+  const [open, setOpen] = useState(false);
   const bounds = SCORE_SCALE_BOUNDS[scoring.scoreScale];
-  const shown = snapToScale(value, scoring.scoreScale);
-  const avg = ai != null ? blendScore(ai.value, value, scoring.aiWeightPct) : null;
+  const scored = value != null;
+  const shown = scored ? snapToScale(value, scoring.scoreScale) : null;
+  const avg = ai != null && scored ? blendScore(ai.value, value, scoring.aiWeightPct) : null;
   const needsRationale =
     onChangeComment != null &&
+    scored &&
     !comment.trim() &&
     overrideNeedsRationale(value, ai?.value, scoring);
+  // The remarks row is the prototype's expandable `jr-pexp`. A score that needs
+  // a rationale forces it open — it is the same field.
+  const expanded = onChangeComment != null && (open || needsRationale);
 
   return (
     <div className="px-3 py-2.5">
-      <div
-        className={`grid items-center gap-x-4 ${
-          threeScore ? "grid-cols-[1fr_auto_auto_auto]" : "grid-cols-[1fr_auto]"
-        }`}
-      >
+      <div className={`grid items-center gap-x-3 ${gridCols(threeScore)}`}>
         <div className="min-w-0">
           <div className="flex items-center gap-1.5 text-sm text-fg">
+            {badge && (
+              <span className="flex h-[19px] min-w-[19px] shrink-0 items-center justify-center rounded-full bg-surface-2 px-1 text-[9px] font-bold text-fg-muted">
+                {badge}
+              </span>
+            )}
             {param.name}
-            {showWeight && <span className="text-[10px] text-fg-muted">·{param.weight}%</span>}
           </div>
           {threeScore && ai?.comment && (
             <div className="mt-0.5 flex items-start gap-1 text-xs text-fg-muted">
@@ -167,55 +193,75 @@ function ScoreRow({
             </div>
           )}
         </div>
+        <span className="text-center font-mono text-[11px] text-fg-muted">{weightLabel}</span>
         {threeScore && (
           <span
-            className="w-12 text-center font-mono text-sm font-semibold"
+            className="text-center font-mono text-sm font-semibold"
             style={{ color: ai != null ? scoreColor(ai.value) : undefined }}
           >
             {ai != null ? formatScore(ai.value, scoring.scoreScale) : "–"}
           </span>
         )}
-        <div className="flex w-32 items-center gap-2">
+        <div className="flex items-center justify-center">
+          {/* The prototype's `jr-myin`: a number input on the org's scale in
+              its step (half-points on 0–10 and 1–5), empty — "–" — until the
+              evaluator types. The value this reports is canonical 0–10. */}
           <input
-            type="range"
+            type="number"
+            inputMode="decimal"
             min={bounds.min}
             max={bounds.max}
             step={bounds.step}
-            value={shown}
-            onChange={(e) =>
-              onChangeValue(param.key, fromDisplayScale(Number(e.target.value), scoring.scoreScale))
-            }
-            className="w-24 accent-[var(--color-accent)]"
+            value={shown ?? ""}
+            placeholder="–"
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === "") return;
+              const n = Number(raw);
+              if (!Number.isFinite(n)) return;
+              onChangeValue(param.key, fromDisplayScale(n, scoring.scoreScale));
+            }}
+            className="sj-input w-[4.5rem] py-1 text-center font-mono text-sm"
             aria-label={`My score for ${param.name}`}
           />
-          <span className="w-7 text-right font-mono text-sm font-medium text-fg">
-            {fmtScore(shown)}
-          </span>
         </div>
         {threeScore && (
-          <span className="w-14 text-center font-mono text-sm font-medium text-fg">
+          <span className="text-center font-mono text-sm font-medium text-fg">
             {avg != null ? formatScore(avg, scoring.scoreScale) : "–"}
           </span>
         )}
+        {onChangeComment ? (
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={expanded}
+            aria-label={`Remarks for ${param.name}`}
+            className="flex items-center justify-center rounded p-0.5 text-fg-muted hover:bg-surface-2"
+          >
+            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${expanded ? "rotate-180" : ""}`} />
+          </button>
+        ) : (
+          <span aria-hidden="true" />
+        )}
       </div>
-      {onChangeComment && (comment.trim() || needsRationale) && (
+      {expanded && onChangeComment && (
         <label className="mt-2 flex flex-col gap-1">
           <span className="text-[11px] font-medium text-fg-muted">
             {needsRationale ? (
               <span className="text-signal-flagged">
-                Rationale required — your score is more than {scoring.overrideRationaleDelta} points
-                from the AI&apos;s.
+                Rationale required — your score is more than{" "}
+                {formatPoints(scoring.overrideRationaleDelta, scoring.scoreScale)} from the AI&apos;s.
               </span>
             ) : (
-              "Rationale"
+              "My remarks for this parameter"
             )}
           </span>
           <textarea
             className="sj-input min-h-[2.75rem] text-[12.5px]"
             value={comment}
-            aria-label={`Rationale for ${param.name}`}
+            aria-label={`My remarks for ${param.name}`}
             onChange={(e) => onChangeComment(param.key, e.target.value)}
-            placeholder="Why does your score differ from the AI's?"
+            placeholder={`Add your note on ${param.name}…`}
           />
         </label>
       )}
@@ -245,6 +291,7 @@ export function EvalScorecard({
   onChangeComment,
   nav,
   onRescored,
+  onOpenReport,
   actions,
   busy,
   saved,
@@ -269,6 +316,13 @@ export function EvalScorecard({
     scoring.compositeFormula,
   );
   const scoredCount = params.filter((p) => values[p.key] != null).length;
+  // Spec §8.1: "Submission is blocked until every applicable parameter has a
+  // score" — the core areas AND the evaluator's own additional parameters.
+  // The prototype's `jrSubmit` refuses with "Score all 13 parameters before
+  // submitting (n/13)"; this says the same thing before they click.
+  const applicable = [...params, ...additionalParams];
+  const applicableScored = applicable.filter((p) => values[p.key] != null).length;
+  const allScored = applicableScored === applicable.length;
   const hasAi = aiScores.size > 0 || aiTotal != null;
   // "Show 3-score view (AI · Mine · Average)". Off, the workbench shows the
   // evaluator their own score only.
@@ -328,6 +382,11 @@ export function EvalScorecard({
               </button>
             </div>
           )}
+          {onOpenReport && (
+            <Button variant="secondary" size="sm" onClick={onOpenReport}>
+              <FileBarChart className="mr-1 h-3.5 w-3.5" /> Evaluation report
+            </Button>
+          )}
           <ResearchMenu deck={{ name: deck.name, sector: deck.sector, stage: deck.stage, city: deck.city }} />
         </div>
       </div>
@@ -356,12 +415,13 @@ export function EvalScorecard({
               {aiTotal != null ? formatScore(aiTotal, scoring.scoreScale) : "–"}
               <span className="text-sm font-normal text-fg-muted">{denom}</span>
             </div>
+            <div className="text-[10px] text-fg-muted">Weighted across {params.length} parameters</div>
           </div>
         )}
         <div className="rounded-lg border border-accent/40 bg-accent/5 px-3 py-2.5">
           <div className="u-label">My Score</div>
           <div className="font-mono text-2xl font-bold text-accent">
-            {formatScore(myTotal, scoring.scoreScale)}
+            {scoredCount > 0 ? formatScore(myTotal, scoring.scoreScale) : "–"}
             <span className="text-sm font-normal text-fg-muted">{denom}</span>
           </div>
           <div className="text-[10px] text-fg-muted">
@@ -403,24 +463,27 @@ export function EvalScorecard({
         </div>
       )}
 
-      {/* AI · My · Average parameter table */}
-      <div className="overflow-hidden rounded-lg border border-line">
-        <ScoreHeader threeScore={threeScore} />
-        <div className="divide-y divide-line">
-          {params.map((p) => (
-            <ScoreRow
-              key={p.key}
-              param={p}
-              showWeight
-              ai={aiScores.get(p.key)}
-              value={values[p.key] ?? 5}
-              onChangeValue={onChangeValue}
-              comment={comments[p.key] ?? ""}
-              onChangeComment={onChangeComment}
-              scoring={scoring}
-              threeScore={threeScore}
-            />
-          ))}
+      {/* The parameter table — `jr-ptbl`: Parameter · Weight · AI · My score · Avg. */}
+      <div className="overflow-x-auto rounded-lg border border-line" aria-label="Parameter evaluation">
+        <div className="min-w-[34rem]">
+          <ScoreHeader threeScore={threeScore} />
+          <div className="divide-y divide-line">
+            {params.map((p, i) => (
+              <ScoreRow
+                key={p.key}
+                badge={String(i + 1)}
+                param={p}
+                weightLabel={`${p.weight}%`}
+                ai={aiScores.get(p.key)}
+                value={values[p.key]}
+                onChangeValue={onChangeValue}
+                comment={comments[p.key] ?? ""}
+                onChangeComment={onChangeComment}
+                scoring={scoring}
+                threeScore={threeScore}
+              />
+            ))}
+          </div>
         </div>
       </div>
 
@@ -432,21 +495,27 @@ export function EvalScorecard({
             <span className="u-label">Additional parameters · your lens</span>
             <span className="text-[10px] text-fg-muted">Assistive — not in the composite</span>
           </div>
-          <ScoreHeader threeScore={threeScore} />
-          <div className="divide-y divide-line">
-            {additionalParams.map((p) => (
-              <ScoreRow
-                key={p.key}
-                param={p}
-                ai={aiScores.get(p.key)}
-                value={values[p.key] ?? 5}
-                onChangeValue={onChangeValue}
-                comment={comments[p.key] ?? ""}
-                onChangeComment={onChangeComment}
-                scoring={scoring}
-                threeScore={threeScore}
-              />
-            ))}
+          <div className="overflow-x-auto" aria-label="My parameters evaluation">
+            <div className="min-w-[34rem]">
+              <ScoreHeader threeScore={threeScore} />
+              <div className="divide-y divide-line">
+                {additionalParams.map((p, i) => (
+                  <ScoreRow
+                    key={p.key}
+                    badge={`C${i + 1}`}
+                    param={p}
+                    weightLabel="Info"
+                    ai={aiScores.get(p.key)}
+                    value={values[p.key]}
+                    onChangeValue={onChangeValue}
+                    comment={comments[p.key] ?? ""}
+                    onChangeComment={onChangeComment}
+                    scoring={scoring}
+                    threeScore={threeScore}
+                  />
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -462,11 +531,17 @@ export function EvalScorecard({
       </label>
 
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Button variant="secondary" disabled={busy} onClick={onSave}>
-            {busy ? "Saving…" : "Save scores"}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" disabled={busy || !allScored} onClick={onSave}>
+            {busy ? "Submitting…" : "Submit my evaluation"}
           </Button>
-          {saved && <Badge tone="positive">Saved</Badge>}
+          {saved && <Badge tone="positive">Submitted</Badge>}
+          {!allScored && (
+            <span className="text-xs text-fg-muted" role="status">
+              Score all {applicable.length} parameters before submitting ({applicableScored}/
+              {applicable.length})
+            </span>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">{actions}</div>
       </div>

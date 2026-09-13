@@ -5,6 +5,11 @@ import { updateThresholds } from "../../api";
 import {
   DEFAULT_SCORING_SETTINGS,
   SCORE_SCALE_BOUNDS,
+  deltaFromDisplayScale,
+  deltaToDisplayScale,
+  formatPoints,
+  fromDisplayScale,
+  toDisplayScale,
   type ScoringSettings,
 } from "../../../shared/scoring";
 import {
@@ -247,20 +252,27 @@ export function ScoringFrameworkSection() {
           checked={settings.requireOverrideRationale}
           onChange={(v) => patch({ requireOverrideRationale: v })}
           label="Require override rationale"
-          sub={`Jury must explain overrides greater than ${settings.overrideRationaleDelta} points from AI score`}
+          sub={`Jury must explain overrides greater than ${formatPoints(settings.overrideRationaleDelta, settings.scoreScale)} from AI score`}
         />
         {settings.requireOverrideRationale && (
           <div className="mt-2.5 max-w-[14rem]">
             <Field label="Override threshold (points)">
+              {/* W7-D (§9): stored and enforced canonical 0–10, authored on the
+                  org's own scale — a 1–5 admin types "1 point" and means one of
+                  THEIR points. A delta is a distance: it converts by span. */}
               <input
                 className="sj-input"
                 type="number"
                 min={0}
-                max={10}
-                step={0.5}
+                max={deltaToDisplayScale(10, settings.scoreScale)}
+                step={SCORE_SCALE_BOUNDS[settings.scoreScale].step}
                 disabled={ro}
-                value={settings.overrideRationaleDelta}
-                onChange={(e) => patch({ overrideRationaleDelta: Number(e.target.value) })}
+                value={deltaToDisplayScale(settings.overrideRationaleDelta, settings.scoreScale)}
+                onChange={(e) =>
+                  patch({
+                    overrideRationaleDelta: deltaFromDisplayScale(Number(e.target.value), settings.scoreScale),
+                  })
+                }
               />
             </Field>
           </div>
@@ -323,15 +335,19 @@ export function ScoringFrameworkSection() {
             </select>
           </Field>
           <Field label="Shortlist threshold">
+            {/* W7-D (§9): a position on the scale — canonical 0–10 stored, the
+                org's scale shown and typed. Identity on the default 0–10. */}
             <input
               className="sj-input"
               type="number"
-              min={0}
-              max={10}
-              step={0.1}
+              min={SCORE_SCALE_BOUNDS[settings.scoreScale].min}
+              max={SCORE_SCALE_BOUNDS[settings.scoreScale].max}
+              step={settings.scoreScale === "0-100" ? 1 : 0.1}
               disabled={ro}
-              value={settings.shortlistThreshold}
-              onChange={(e) => patch({ shortlistThreshold: Number(e.target.value) })}
+              value={toDisplayScale(settings.shortlistThreshold, settings.scoreScale)}
+              onChange={(e) =>
+                patch({ shortlistThreshold: fromDisplayScale(Number(e.target.value), settings.scoreScale) })
+              }
             />
           </Field>
         </div>

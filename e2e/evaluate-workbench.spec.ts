@@ -19,12 +19,14 @@ test("incubator juror works a deck in the evaluator workbench", async ({ page })
   await expect(page.getByRole("heading", { name: "Evaluate" })).toBeVisible();
 
   // Aug-2026 issue 19 — Evaluate is three panels (startups · parameters ·
-  // parameter detail); the workbench opens from the row's Score button.
+  // parameter detail). W7-D: the prototype has no Score button — clicking the
+  // deck opens its evaluation workbench ("Click a deck to open its evaluation
+  // report"), so the locator follows the row, not a retired button (§4).
   await page
     .locator("li", { hasText: "TaxPilot" })
-    .getByRole("button", { name: "Score", exact: true })
+    .getByTitle("Open evaluation report")
     .click();
-  const workbench = page.getByRole("dialog", { name: /Score TaxPilot/ });
+  const workbench = page.getByRole("dialog", { name: /Evaluate TaxPilot/ });
   await expect(workbench.getByRole("heading", { name: "TaxPilot" })).toBeVisible();
 
   // AI · My · Average summary tiles.
