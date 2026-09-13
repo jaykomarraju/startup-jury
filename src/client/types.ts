@@ -52,6 +52,8 @@ export interface DeckView {
   aiAttempts?: number;
   assignedTo?: string;
   assignedToName?: string;
+  /** W7-E — every evaluator assigned to this deck (`assignedTo` is the first). */
+  assigneeIds?: string[];
   /** The program / cohort this deck sits under (Session 2 hierarchy). */
   programName?: string;
   cohortName?: string;

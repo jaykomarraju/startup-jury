@@ -41,6 +41,7 @@ export type EmailKind =
   | "founder_query"
   | "signup_invite"
   | "evaluator_reminder"
+  | "evaluator_assignment"
   | "incomplete_resubmit"
   | "call_invite"
   | "account_invite"
@@ -267,6 +268,35 @@ export function buildReminderEmail(args: {
       `You have ${n} deck${n === 1 ? "" : "s"} assigned and awaiting your score:\n\n` +
       `${list}\n\n` +
       "Please open your pipeline in ai.STARTUPJURY to complete the evaluation.\n\n" +
+      "— The ai.STARTUPJURY team",
+  };
+}
+
+/**
+ * W7-E / F0256 — Assign → "Notify N jury members by email". One message per
+ * evaluator per confirmation, listing every deck they were given, the deadline,
+ * and the assigner's "Instructions to evaluators" when one was written.
+ */
+export function buildAssignmentEmail(args: {
+  evaluatorName: string;
+  assignedByName?: string | null;
+  deckNames: string[];
+  /** Pre-formatted deadline, e.g. "19 Sep 2026". */
+  dueLabel: string;
+  note?: string | null;
+}): { subject: string; body: string } {
+  const n = args.deckNames.length;
+  const list = args.deckNames.map((d) => `  • ${d}`).join("\n");
+  const by = args.assignedByName ? ` by ${args.assignedByName}` : "";
+  const note = args.note?.trim() ? `Instructions from the assigner:\n${args.note.trim()}\n\n` : "";
+  return {
+    subject: `${n} deck${n === 1 ? "" : "s"} assigned to you for evaluation`,
+    body:
+      `Hi ${args.evaluatorName},\n\n` +
+      `You have been assigned ${n} deck${n === 1 ? "" : "s"}${by} for evaluation, due ${args.dueLabel}:\n\n` +
+      `${list}\n\n` +
+      note +
+      "The evaluation report is attached to each deck in ai.STARTUPJURY — open your pipeline to score it.\n\n" +
       "— The ai.STARTUPJURY team",
   };
 }

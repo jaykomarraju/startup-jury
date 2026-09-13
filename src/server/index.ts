@@ -23,6 +23,7 @@ import esign from "./esign/routes";
 import signups, { esignWorkspaceGate } from "./routes/signups";
 import { tickets, messages, issues } from "./routes/support";
 import { calls } from "./routes/calls";
+import { assignments } from "./routes/assignments"; // W7-E · Assign: board + cross-product confirm
 import { handleQueue } from "./queue";
 import { runMonthlyUsageSummary, runReminders, runStuckSweep } from "./scheduled";
 import { withSecurityHeaders } from "./security";
@@ -70,6 +71,7 @@ app.route("/api/tickets", tickets);
 app.route("/api/issues", issues);
 app.route("/api/messages", messages);
 app.route("/api/calls", calls);
+app.route("/api/assignments", assignments);
 app.route("/api/decks", decks);
 // PUBLIC (no requireAuth): the tokenized founder resubmit loop. The link in the
 // Incomplete-deck email is the credential — see src/server/routes/resubmit.ts.
