@@ -308,12 +308,15 @@ export function StaffReportFrame({
   title,
   subtitle,
   scope = "All cohorts",
+  scopeTitle = "Reports cover every cohort in this workspace",
   children,
 }: {
   title: string;
   subtitle: string;
   /** The `ti-calendar` scope chip. There is no cohort picker yet (F0800, §9), so it states the scope rather than pretending to change it. */
   scope?: string;
+  /** W9-D — the chip's hover text. The default is the incubator's; a VC report states what ITS chip covers (a fund, a slate). */
+  scopeTitle?: string;
   children: ReactNode;
 }) {
   return (
@@ -323,7 +326,7 @@ export function StaffReportFrame({
       flush
       actions={
         <>
-          <span className="tbb cursor-default" title="Reports cover every cohort in this workspace">
+          <span className="tbb cursor-default" title={scopeTitle}>
             <Calendar className="h-3.5 w-3.5" aria-hidden />
             {scope}
           </span>
@@ -402,16 +405,27 @@ export function RepTwoCol({ children }: { children: ReactNode }) {
  */
 export function RepBars({
   rows,
+  max,
+  valueWidth,
 }: {
   rows: Array<{ label: string; magnitude: number; value: string; color?: string }>;
+  /**
+   * W9-D — the magnitude a FULL track stands for. Omitted, widths are relative
+   * to the largest row (the incubator panels). The VC panels draw some bars
+   * against a fixed whole instead: a mix against 100 %, capital against the fund.
+   */
+  max?: number;
+  /** W9-D — the value column's width in px (default 40, `.rep-bar-row`'s). "₹140 Cr" does not fit in 40. */
+  valueWidth?: number;
 }) {
-  const peak = Math.max(0, ...rows.map((r) => Math.abs(r.magnitude)));
+  const peak = max ?? Math.max(0, ...rows.map((r) => Math.abs(r.magnitude)));
   return (
     <div className="flex flex-col gap-[11px]" data-testid="rep-bars">
       {rows.map((r) => (
         <div
           key={r.label}
           className="grid grid-cols-[130px_1fr_40px] items-center gap-[11px] text-[12px] text-fg-2"
+          style={valueWidth === undefined ? undefined : { gridTemplateColumns: `130px 1fr ${valueWidth}px` }}
           data-testid="rep-bar-row"
         >
           <span>{r.label}</span>
@@ -419,7 +433,7 @@ export function RepBars({
             <div
               className="h-full rounded-md"
               style={{
-                width: `${peak === 0 ? 0 : Math.round((Math.abs(r.magnitude) / peak) * 100)}%`,
+                width: `${peak === 0 ? 0 : Math.min(100, Math.round((Math.abs(r.magnitude) / peak) * 100))}%`,
                 background: r.color ?? "var(--olive)",
               }}
             />
@@ -432,7 +446,16 @@ export function RepBars({
 }
 
 /** `.rep-table` — 10.5px uppercase headers; `.nm` first column in ink. */
-export function RepTable({ cols, rows }: { cols: string[]; rows: ReactNode[][] }) {
+export function RepTable({
+  cols,
+  rows,
+  nameCol = 0,
+}: {
+  cols: string[];
+  rows: ReactNode[][];
+  /** W9-D — which column is `.nm`. The Decision log leads with the date and names the company second. */
+  nameCol?: number;
+}) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse text-[12.5px]">
@@ -452,7 +475,7 @@ export function RepTable({ cols, rows }: { cols: string[]; rows: ReactNode[][] }
           {rows.map((r, i) => (
             <tr key={i} className="border-b border-stone last:border-b-0">
               {r.map((cell, j) => (
-                <td key={j} className={`px-2.5 py-2.5 ${j === 0 ? "font-semibold text-fg" : "text-fg-2"}`}>
+                <td key={j} className={`px-2.5 py-2.5 ${j === nameCol ? "font-semibold text-fg" : "text-fg-2"}`}>
                   {cell}
                 </td>
               ))}
@@ -493,10 +516,26 @@ export function RepPill({ kind, children }: { kind: "go" | "hold" | "no"; childr
 }
 
 /** `.rep-note` — the offwhite reading note with a bold lead-in. */
-export function RepNote({ lead, children }: { lead: string; children: ReactNode }) {
+export function RepNote({
+  lead,
+  icon: Icon,
+  children,
+}: {
+  /** The incubator panels open every note with a bold lead; the VC panels do not. */
+  lead?: string;
+  /** W9-D — the VC panels' leading glyph: `ti-info-circle` for a reading, `ti-alert-triangle` for a warning. */
+  icon?: LucideIcon;
+  children: ReactNode;
+}) {
   return (
     <p className="mt-1 rounded-[10px] bg-offwhite px-[15px] py-[13px] text-[12px] leading-[1.6] text-fg-2">
-      <strong>{lead}</strong> {children}
+      {Icon && <Icon className="mr-1.5 inline h-3.5 w-3.5 align-[-2px]" aria-hidden />}
+      {lead !== undefined && (
+        <>
+          <strong>{lead}</strong>{" "}
+        </>
+      )}
+      {children}
     </p>
   );
 }
