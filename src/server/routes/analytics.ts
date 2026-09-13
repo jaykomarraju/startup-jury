@@ -377,6 +377,10 @@ analytics.get("/my/scores", guard("repscores"), async (c) => {
 });
 
 analytics.get("/my/drift", guard("repdrift"), async (c) => {
+  // W8-A — the same toggle `/drift` honours: a juror's own drift report is
+  // drift analysis in a report too (§9, Wave 2 integration).
+  const scoring = await loadScoringSettings(c.env.DB, c.var.user.edition);
+  if (!scoring.showScoreDrift) return c.json({ ...scoreDrift([]), disabled: true });
   const rows = await myEvals(c).then((rs) => rs.filter((r) => r.ai !== null));
   const input: DriftInput[] = rows.map((r) => ({
     deckId: r.id,
