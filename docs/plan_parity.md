@@ -2504,8 +2504,8 @@ TEST
     reaches nothing (§8 Q28). And run `npm run test:e2e` with E2E_PORT=5273: Playwright's
     `reuseExistingServer` will otherwise happily reuse a SIBLING's server on :5173.
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
-  The whole gate is about four and a half minutes on a quiet machine (1450 unit/worker/client in
-  ~21 s, e2e ~4 min). `uptime` BEFORE you start, never run it while a sibling runs theirs (check
+  The whole gate is about four and a half minutes on a quiet machine (**1581** unit/worker/client
+  in ~21 s, e2e 180 passed / 4 flaky / 0 failed in ~6 min — Wave 6 integration's merged numbers). `uptime` BEFORE you start, never run it while a sibling runs theirs (check
   `ps aux | grep -E "vitest run|playwright test"`), and never conclude anything from a red run at
   load 40+ without re-running the file alone. `flaky` under `retries: 1` is information, not noise.
   Flakes earlier waves wrote — you will write at least one: gate client assertions on a POPULATED
