@@ -20,9 +20,14 @@ test("partner sponsors a deal from the partner call into IC", async ({ page }) =
   const row = page.getByRole("row", { name: /MedGrid/ });
   await expect(row).toBeVisible();
 
-  // Sponsoring advances the deck to investment DD, so it leaves the partner-call list.
-  await row.getByRole("button", { name: "Sponsor to IC" }).click();
-  await expect(page.getByRole("row", { name: /MedGrid/ })).toBeHidden();
+  // Sponsoring advances the deck to investment DD. W9-E (F0627, §9): the prototype
+  // KEEPS a decided deal on Partner call with its outcome (`pcData` keeps "Sponsor
+  // to IC" rows), so the row stays — its Sponsorship now reads the decision and can
+  // no longer be changed. This replaces "leaves the list", which the prototype contradicts.
+  const sponsorship = row.getByRole("combobox", { name: "Sponsorship for MedGrid" });
+  await sponsorship.selectOption("sponsor_to_ic");
+  await expect(sponsorship).toBeDisabled();
+  await expect(sponsorship).toHaveValue("sponsor_to_ic");
 });
 
 test("IC member casts a vote in the committee queue", async ({ page }) => {
