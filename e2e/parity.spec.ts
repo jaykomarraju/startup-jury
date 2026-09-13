@@ -459,8 +459,16 @@ const EXPECTED: Record<string, Screen> = {
 
   // ── vc/superuser · 32 screens ──
   "vc/superuser/alldecks": {
+    // W9-A re-captured: the VC deal funnel's six views (the default is Uploaded).
     title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
+    tables: [
+      ["STARTUP", "SECTOR", "CITY", "AI SCORE", "STAGE", "SUBMITTED"],
+      ["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "STATUS"],
+      ["STARTUP", "AI SCORE", "PARAMETER SCORES"],
+      ["STARTUP", "SECTOR", "AI SCORE", "DILIGENCE PROGRESS", "FLAGS", "LEAD"],
+      ["STARTUP", "AI SCORE", "AVG. SCORE", "ASK", "VALUATION", "RECOMMENDATION"],
+      ["STARTUP", "AI SCORE", "TERM SHEET", "LEGAL DD", "ONBOARDING"],
+    ],
   },
   "vc/superuser/upload": { title: "Upload your first pitchdecks", tables: [] },
   "vc/superuser/query": {
@@ -468,7 +476,7 @@ const EXPECTED: Record<string, Screen> = {
     tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
   },
   "vc/superuser/evaluate": { title: "Evaluate", tables: [] },
-  "vc/superuser/assign": { title: "Evaluate", tables: [] },
+  "vc/superuser/assign": { title: "Submit", tables: [] }, // W9-A re-captured (F0594)
   "vc/superuser/jurypipeline": {
     title: "Assoc. Pipeline",
     tables: [["STARTUP", "EVALUATORS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
@@ -541,8 +549,16 @@ const EXPECTED: Record<string, Screen> = {
 
   // ── vc/admin · 32 screens ──
   "vc/admin/alldecks": {
+    // W9-A re-captured: the VC deal funnel's six views (the default is Uploaded).
     title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
+    tables: [
+      ["STARTUP", "SECTOR", "CITY", "AI SCORE", "STAGE", "SUBMITTED"],
+      ["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "STATUS"],
+      ["STARTUP", "AI SCORE", "PARAMETER SCORES"],
+      ["STARTUP", "SECTOR", "AI SCORE", "DILIGENCE PROGRESS", "FLAGS", "LEAD"],
+      ["STARTUP", "AI SCORE", "AVG. SCORE", "ASK", "VALUATION", "RECOMMENDATION"],
+      ["STARTUP", "AI SCORE", "TERM SHEET", "LEGAL DD", "ONBOARDING"],
+    ],
   },
   "vc/admin/upload": { title: "Upload your first pitchdecks", tables: [] },
   "vc/admin/query": {
@@ -550,7 +566,7 @@ const EXPECTED: Record<string, Screen> = {
     tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
   },
   "vc/admin/evaluate": { title: "Evaluate", tables: [] },
-  "vc/admin/assign": { title: "Evaluate", tables: [] },
+  "vc/admin/assign": { title: "Submit", tables: [] }, // W9-A re-captured (F0594)
   "vc/admin/jurypipeline": {
     title: "Assoc. Pipeline",
     tables: [["STARTUP", "EVALUATORS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
@@ -623,8 +639,16 @@ const EXPECTED: Record<string, Screen> = {
 
   // ── vc/partner · 23 screens ──
   "vc/partner/alldecks": {
+    // W9-A re-captured: the VC deal funnel's six views (the default is Uploaded).
     title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
+    tables: [
+      ["STARTUP", "SECTOR", "CITY", "AI SCORE", "STAGE", "SUBMITTED"],
+      ["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "STATUS"],
+      ["STARTUP", "AI SCORE", "PARAMETER SCORES"],
+      ["STARTUP", "SECTOR", "AI SCORE", "DILIGENCE PROGRESS", "FLAGS", "LEAD"],
+      ["STARTUP", "AI SCORE", "AVG. SCORE", "ASK", "VALUATION", "RECOMMENDATION"],
+      ["STARTUP", "AI SCORE", "TERM SHEET", "LEGAL DD", "ONBOARDING"],
+    ],
   },
   "vc/partner/upload": { title: "Upload your first pitchdecks", tables: [] },
   "vc/partner/evaluate": { title: "Evaluate", tables: [] },
@@ -685,8 +709,16 @@ const EXPECTED: Record<string, Screen> = {
 
   // ── vc/ic_member · 19 screens ──
   "vc/ic_member/alldecks": {
-    title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
+    // W9-A re-captured: the IC member's six views (the default is Awaiting my vote).
+    title: "Awaiting my vote",
+    tables: [
+      ["STARTUP", "SECTOR", "AI SCORE", "IC AVG", "ASK", "MY VOTE"],
+      ["STARTUP", "SECTOR", "AI SCORE", "STAGE IN IC", "MY STATUS"],
+      ["STARTUP", "AI SCORE", "MY SCORE", "MY RECOMMENDATION", "IC OUTCOME"],
+      ["#", "STARTUP", "SECTOR", "AI SCORE", "SPONSOR", "ASK"],
+      ["STARTUP", "CLEARED", "STAGE", "STATUS", "ASK", "OWNER"],
+      ["STARTUP", "FINAL CHECK", "ROUND", "CLOSE DATE", "OWNERSHIP"],
+    ],
   },
   "vc/ic_member/evaluate": { title: "Evaluate", tables: [] },
   "vc/ic_member/introcalls": { title: "My Intro calls", tables: [] },
@@ -730,8 +762,16 @@ const EXPECTED: Record<string, Screen> = {
 
   // ── vc/associate · 19 screens ──
   "vc/associate/alldecks": {
+    // W9-A re-captured: the VC deal funnel's six views (the default is Uploaded).
     title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
+    tables: [
+      ["STARTUP", "SECTOR", "CITY", "AI SCORE", "STAGE", "SUBMITTED"],
+      ["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "STATUS"],
+      ["STARTUP", "AI SCORE", "PARAMETER SCORES"],
+      ["STARTUP", "SECTOR", "AI SCORE", "DILIGENCE PROGRESS", "FLAGS", "LEAD"],
+      ["STARTUP", "AI SCORE", "AVG. SCORE", "ASK", "VALUATION", "RECOMMENDATION"],
+      ["STARTUP", "AI SCORE", "TERM SHEET", "LEGAL DD", "ONBOARDING"],
+    ],
   },
   "vc/associate/upload": { title: "Upload your first pitchdecks", tables: [] },
   "vc/associate/query": {
@@ -739,7 +779,7 @@ const EXPECTED: Record<string, Screen> = {
     tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
   },
   "vc/associate/evaluate": { title: "Evaluate", tables: [] },
-  "vc/associate/assign": { title: "Evaluate", tables: [] },
+  "vc/associate/assign": { title: "Submit", tables: [] }, // W9-A re-captured (F0594)
   "vc/associate/jurypipeline": {
     title: "Assoc. Pipeline",
     tables: [["STARTUP", "EVALUATORS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
@@ -772,8 +812,16 @@ const EXPECTED: Record<string, Screen> = {
 
   // ── vc/analyst · 13 screens ──
   "vc/analyst/alldecks": {
+    // W9-A re-captured: the VC deal funnel's six views (the default is Uploaded).
     title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
+    tables: [
+      ["STARTUP", "SECTOR", "CITY", "AI SCORE", "STAGE", "SUBMITTED"],
+      ["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "STATUS"],
+      ["STARTUP", "AI SCORE", "PARAMETER SCORES"],
+      ["STARTUP", "SECTOR", "AI SCORE", "DILIGENCE PROGRESS", "FLAGS", "LEAD"],
+      ["STARTUP", "AI SCORE", "AVG. SCORE", "ASK", "VALUATION", "RECOMMENDATION"],
+      ["STARTUP", "AI SCORE", "TERM SHEET", "LEGAL DD", "ONBOARDING"],
+    ],
   },
   "vc/analyst/upload": { title: "Upload your first pitchdecks", tables: [] },
   "vc/analyst/query": {
@@ -781,7 +829,7 @@ const EXPECTED: Record<string, Screen> = {
     tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
   },
   "vc/analyst/evaluate": { title: "Evaluate", tables: [] },
-  "vc/analyst/assign": { title: "Evaluate", tables: [] },
+  "vc/analyst/assign": { title: "Submit", tables: [] }, // W9-A re-captured (F0594)
   "vc/analyst/introcalls": {
     title: "My Intro calls",
     tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
