@@ -397,13 +397,14 @@ describe("Diligence & Risk Status", () => {
   });
 
   it("with the §9 data: founder clarification rows with Answered / Pending pills", async () => {
-    vi.mocked(getDiligence).mockResolvedValue({
+    const payload: VcDiligencePayload = {
       ...DILIGENCE,
       clarificationRows: [
         { company: "SolarNest", question: "Churn definition", status: "Answered" },
         { company: "CreditBridge", question: "Client concentration", status: "Pending" },
       ],
-    });
+    };
+    vi.mocked(getDiligence).mockResolvedValue(payload);
     render(<DiligencePage />);
     const card = (await screen.findByRole("heading", { level: 2, name: "Founder clarifications" })).closest("section")!;
     expect(within(card).getByText("Churn definition")).toBeInTheDocument();
