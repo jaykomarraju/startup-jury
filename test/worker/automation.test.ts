@@ -454,7 +454,9 @@ describe("upload validation (required founder columns)", () => {
     expect(result.weightedTotal).toBe(9);
     expect(result.gatePassed).toBe(false);
     expect(result.status).toBe("incomplete");
-    expect(result.missingFields).toEqual(["founderPhone", "city", "sector"]);
+    // W7-B (F0227): sector is never read off the deck and never marks it
+    // Incomplete — it comes from the workspace — so it is not in this list.
+    expect(result.missingFields).toEqual(["founderPhone", "city"]);
 
     const row = await env.DB.prepare(
       "SELECT status, complete, missing_fields, founder_email FROM decks WHERE id = 'val_missing'",
@@ -462,7 +464,7 @@ describe("upload validation (required founder columns)", () => {
     expect(row).toMatchObject({
       status: "incomplete",
       complete: 0,
-      missing_fields: "founderPhone,city,sector",
+      missing_fields: "founderPhone,city",
       founder_email: "ada@testco.example",
     });
   });

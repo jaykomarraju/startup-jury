@@ -4,10 +4,17 @@
  * Two concerns from the Jul-24 demo (FINISH-PLAN §8):
  *
  *  1. **Upload validation.** Every submission needs the founder/contact columns —
- *     founder, email, phone, city, sector. A single upload collects them on the
- *     form; a bulk upload lets the AI extraction fill them in. Whatever is still
- *     missing after the merge marks the deck **Incomplete** (never a hard reject —
- *     the deck is stored and scored, then the founder is asked for the rest).
+ *     founder, email, phone, city. A single upload collects them on the form; a
+ *     bulk upload lets the AI extraction fill them in. Whatever is still missing
+ *     after the merge marks the deck **Incomplete** (never a hard reject — the
+ *     deck is stored and scored, then the founder is asked for the rest).
+ *
+ *     **Sector is not one of them** (`W7-B`, F0223/F0227). The prototype is
+ *     explicit — "Sector is taken from your workspace setup context — not scanned
+ *     from the deck" — and its `upDetailsComplete` can never fail on sector. It is
+ *     still a detail column every deck carries (the results table, CRM mapping),
+ *     but it comes from the operator: the programme they are working in, or the
+ *     workspace's sector taxonomy. `resolveIntakeSector` is that resolution.
  *
  *  2. **Duplicate / returning-company flags.** Matching a new submission against
  *     the decks already in the edition on name / founder / email / phone gives a
@@ -21,7 +28,8 @@
 
 // ── Required intake detail ───────────────────────────────────────────────────
 
-export const REQUIRED_INTAKE_FIELDS = [
+/** The founder/contact detail columns every deck carries, in display order. */
+export const INTAKE_DETAIL_FIELDS = [
   "founder",
   "founderEmail",
   "founderPhone",
@@ -29,9 +37,29 @@ export const REQUIRED_INTAKE_FIELDS = [
   "sector",
 ] as const;
 
-export type IntakeField = (typeof REQUIRED_INTAKE_FIELDS)[number];
+/**
+ * The detail columns an intake collects. Kept under its original name because
+ * `src/shared/crm.ts` spreads it into the CRM inbound mapping, where a sector a
+ * CRM supplies IS operator-supplied. It no longer means "missing marks the deck
+ * Incomplete" — that is `EXTRACTED_INTAKE_FIELDS`.
+ */
+export const REQUIRED_INTAKE_FIELDS = INTAKE_DETAIL_FIELDS;
 
-/** Human labels for the required columns (upload form + Incomplete surfaces). */
+export type IntakeField = (typeof INTAKE_DETAIL_FIELDS)[number];
+
+/**
+ * The columns the AI reads off the deck — and the only ones whose absence marks
+ * a deck Incomplete (prototype `upDetailsComplete`: founder, email, phone, city;
+ * sector is always supplied from the workspace context).
+ */
+export const EXTRACTED_INTAKE_FIELDS = [
+  "founder",
+  "founderEmail",
+  "founderPhone",
+  "city",
+] as const satisfies readonly IntakeField[];
+
+/** Human labels for the detail columns (upload form + Incomplete surfaces). */
 export const INTAKE_FIELD_LABELS: Record<IntakeField, string> = {
   founder: "Founder name",
   founderEmail: "Founder email",
@@ -39,6 +67,24 @@ export const INTAKE_FIELD_LABELS: Record<IntakeField, string> = {
   city: "City",
   sector: "Sector",
 };
+
+/**
+ * The Upload screen's "Uploaded decks — AI-extracted details" headers
+ * (`panel-upload.html:318`), which word two columns differently from the rest of
+ * the app (F0345). Scoped to that table so no other screen's columns move.
+ */
+export const INTAKE_RESULTS_LABELS: Record<IntakeField, string> = {
+  founder: "Founder name",
+  founderEmail: "Email ID",
+  founderPhone: "Phone number",
+  city: "City",
+  sector: "Sector",
+};
+
+/** The largest deck PDF intake accepts. `src/server/decks/versions.ts` enforces
+ *  its own `MAX_PDF_BYTES`; a worker test pins the two equal so the Upload
+ *  screen's "up to 24 MB" can never drift from the limit that rejects. */
+export const MAX_DECK_PDF_BYTES = 24 * 1024 * 1024;
 
 export interface IntakeDetails {
   founder?: string | null;
@@ -103,8 +149,10 @@ export function isValidPhone(v: string | null | undefined): boolean {
 }
 
 /**
- * The required intake columns still absent (or unusable) on a submission, in the
- * canonical order. An empty array means the deck has complete founder details.
+ * The extracted intake columns still absent (or unusable) on a submission, in
+ * the canonical order. An empty array means the deck has complete founder
+ * details. Sector is never reported: it is the workspace's to supply, not the
+ * founder's, so asking the founder for it would be asking the wrong person.
  */
 export function missingIntakeFields(d: IntakeDetails): IntakeField[] {
   const missing: IntakeField[] = [];
@@ -112,7 +160,6 @@ export function missingIntakeFields(d: IntakeDetails): IntakeField[] {
   if (!isValidEmail(d.founderEmail)) missing.push("founderEmail");
   if (!isValidPhone(d.founderPhone)) missing.push("founderPhone");
   if (!clean(d.city)) missing.push("city");
-  if (!clean(d.sector)) missing.push("sector");
   return missing;
 }
 
@@ -136,6 +183,12 @@ export function parseMissingFields(csv: string | null | undefined): IntakeField[
  * **supplied value always wins** — a human who filled the form is more reliable
  * than an extraction — and the extraction only fills the blanks (which is how a
  * bulk upload, where nothing is typed, gets its details).
+ *
+ * Sector is the exception: it is taken ONLY from what was supplied (the
+ * operator's pick, or the programme context the upload route resolved). An
+ * extracted sector is ignored outright, so a deck that states "Climate" can
+ * never overwrite the workspace's "CleanTech" — nor fill a blank the operator
+ * deliberately left.
  */
 export function mergeIntakeDetails(
   supplied: IntakeDetails,
@@ -147,8 +200,41 @@ export function mergeIntakeDetails(
     founderEmail: pick(supplied.founderEmail, extracted.founderEmail),
     founderPhone: pick(supplied.founderPhone, extracted.founderPhone),
     city: pick(supplied.city, extracted.city),
-    sector: pick(supplied.sector, extracted.sector),
+    sector: clean(supplied.sector),
   };
+}
+
+// ── Sector, from the workspace ───────────────────────────────────────────────
+
+export interface SectorContext {
+  /** What the operator picked on the form (or a CRM supplied). */
+  supplied?: string | null;
+  /** The sector of the programme the upload is tagged to. */
+  programSector?: string | null;
+  /** The workspace's active sector taxonomy (`sectors`, managed in Set up). */
+  sectors?: readonly string[];
+}
+
+/**
+ * The sector a new deck is recorded under — never read off the deck.
+ *
+ *  1. The operator's pick wins, spelled the way the taxonomy spells it when it
+ *     matches one ("fintech" → "FinTech"), so the Sector column and the sector
+ *     mix analytics group on one value. A value outside the taxonomy is kept as
+ *     typed: free text is the explicit fallback (F0298), not an error.
+ *  2. Otherwise the tagged programme's sector — the prototype's "workspace
+ *     setup context".
+ *  3. Otherwise, a workspace with exactly ONE active sector has only one answer.
+ *  4. Otherwise nothing. A blank sector is not a missing detail.
+ */
+export function resolveIntakeSector(ctx: SectorContext): string | null {
+  const taxonomy = (ctx.sectors ?? []).map((s) => clean(s)).filter((s): s is string => !!s);
+  const canonical = (v: string) => taxonomy.find((s) => s.toLowerCase() === v.toLowerCase()) ?? v;
+  const supplied = clean(ctx.supplied);
+  if (supplied) return canonical(supplied);
+  const program = clean(ctx.programSector);
+  if (program) return canonical(program);
+  return taxonomy.length === 1 ? taxonomy[0] : null;
 }
 
 // ── Duplicate / returning-company detection ──────────────────────────────────

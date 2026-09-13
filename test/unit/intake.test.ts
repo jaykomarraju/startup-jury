@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  REQUIRED_INTAKE_FIELDS,
+  EXTRACTED_INTAKE_FIELDS,
   classifyIntake,
   describeMissingFields,
   isValidEmail,
@@ -60,7 +60,8 @@ describe("required intake fields", () => {
   });
 
   it("lists every absent or unusable column in canonical order", () => {
-    expect(missingIntakeFields({})).toEqual([...REQUIRED_INTAKE_FIELDS]);
+    // W7-B: sector is the workspace's to supply, so it is never "missing".
+    expect(missingIntakeFields({})).toEqual([...EXTRACTED_INTAKE_FIELDS]);
     expect(missingIntakeFields({ ...full, founderEmail: "nope", founderPhone: null })).toEqual([
       "founderEmail",
       "founderPhone",

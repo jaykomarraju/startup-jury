@@ -271,7 +271,10 @@ test("the upload screen explains the founder details the AI will extract", async
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   await expectRealScreen(page);
 
-  // The five required intake columns (Session 5) drive Complete vs Incomplete.
+  // The founder columns (Session 5) drive Complete vs Incomplete; W7-B folds
+  // them under a disclosure, as the prototype's form has no room for them, and
+  // Sector sits beside Cohort because it comes from the workspace.
+  await page.getByRole("button", { name: /Required founder details/ }).click();
   for (const label of ["Founder", "Email", "Phone", "City", "Sector"]) {
     await expect(page.getByText(label, { exact: false }).first()).toBeVisible();
   }
