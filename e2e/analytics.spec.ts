@@ -21,7 +21,10 @@ test("incubator admin sees the cohort summary and pipeline funnel", async ({ pag
 
   await page.goto("/app/funnel");
   await expect(page.getByRole("heading", { name: "Pipeline funnel" })).toBeVisible();
-  await expect(page.getByText("Stage breakdown & conversion")).toBeVisible();
+  // W8-A — the prototype's card is "Stage breakdown" (`panel-funnel.html`); the
+  // old "Stage breakdown & conversion" was this application's wording, and it
+  // survives only on the VC funnel.
+  await expect(page.getByRole("heading", { name: "Stage breakdown", exact: true })).toBeVisible();
 });
 
 test("VC admin sees capital deployment and decision history", async ({ page }) => {

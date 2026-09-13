@@ -202,15 +202,15 @@ const EXPECTED: Record<string, Screen> = {
   },
   "incubator/superuser/evaluatorscores": {
     title: "Evaluator scores",
-    tables: [["EVALUATOR", "ROLE", "DECKS", "AVG GIVEN", "VS COHORT", "AGREEMENT"]],
+    tables: [["EVALUATOR", "ROLE", "DECKS SCORED", "AVG GIVEN", "VS COHORT", "AGREEMENT"]],
   },
   "incubator/superuser/scoredrift": {
     title: "Score drift",
-    tables: [["STARTUP", "AI PRE-SCORE", "FINAL (HUMAN)", "NET DRIFT"]],
+    tables: [["STARTUP", "AI PRE-SCORE", "AFTER CLARIFICATION", "FINAL (JUROR)", "NET DRIFT"]],
   },
   "incubator/superuser/funnel": {
     title: "Pipeline funnel",
-    tables: [["STAGE", "COUNT", "% OF TOP", "STEP CONVERSION"]],
+    tables: [["STAGE", "COUNT", "% OF UPLOADED", "STEP CONVERSION"]],
   },
   "incubator/superuser/coreparams": {
     title: "Configuration",
@@ -277,13 +277,13 @@ const EXPECTED: Record<string, Screen> = {
   },
   "incubator/admin/evaluatorscores": {
     title: "Evaluator scores",
-    tables: [["EVALUATOR", "ROLE", "DECKS", "AVG GIVEN", "VS COHORT", "AGREEMENT"]],
+    tables: [["EVALUATOR", "ROLE", "DECKS SCORED", "AVG GIVEN", "VS COHORT", "AGREEMENT"]],
   },
   "incubator/admin/scoredrift": {
     title: "Score drift",
-    tables: [["STARTUP", "AI PRE-SCORE", "FINAL (HUMAN)", "NET DRIFT"]],
+    tables: [["STARTUP", "AI PRE-SCORE", "AFTER CLARIFICATION", "FINAL (JUROR)", "NET DRIFT"]],
   },
-  "incubator/admin/funnel": { title: "Pipeline funnel", tables: [["STAGE", "COUNT", "% OF TOP", "STEP CONVERSION"]] },
+  "incubator/admin/funnel": { title: "Pipeline funnel", tables: [["STAGE", "COUNT", "% OF UPLOADED", "STEP CONVERSION"]] },
   "incubator/admin/coreparams": { title: "Configuration", tables: [["#", "EVALUATION AREA", "WEIGHT %", "VISUAL"]] },
   "incubator/admin/myparams": { title: "My Parameters", tables: [] },
   "incubator/admin/setup": { title: "Set up your workspace", tables: [] },
@@ -343,15 +343,15 @@ const EXPECTED: Record<string, Screen> = {
   },
   "incubator/program_manager/evaluatorscores": {
     title: "Evaluator scores",
-    tables: [["EVALUATOR", "ROLE", "DECKS", "AVG GIVEN", "VS COHORT", "AGREEMENT"]],
+    tables: [["EVALUATOR", "ROLE", "DECKS SCORED", "AVG GIVEN", "VS COHORT", "AGREEMENT"]],
   },
   "incubator/program_manager/scoredrift": {
     title: "Score drift",
-    tables: [["STARTUP", "AI PRE-SCORE", "FINAL (HUMAN)", "NET DRIFT"]],
+    tables: [["STARTUP", "AI PRE-SCORE", "AFTER CLARIFICATION", "FINAL (JUROR)", "NET DRIFT"]],
   },
   "incubator/program_manager/funnel": {
     title: "Pipeline funnel",
-    tables: [["STAGE", "COUNT", "% OF TOP", "STEP CONVERSION"]],
+    tables: [["STAGE", "COUNT", "% OF UPLOADED", "STEP CONVERSION"]],
   },
   "incubator/program_manager/myparams": { title: "My Parameters", tables: [] },
   "incubator/program_manager/setup": { title: "Set up your workspace", tables: [] },
@@ -397,15 +397,15 @@ const EXPECTED: Record<string, Screen> = {
   },
   "incubator/program_associate/evaluatorscores": {
     title: "Evaluator scores",
-    tables: [["EVALUATOR", "ROLE", "DECKS", "AVG GIVEN", "VS COHORT", "AGREEMENT"]],
+    tables: [["EVALUATOR", "ROLE", "DECKS SCORED", "AVG GIVEN", "VS COHORT", "AGREEMENT"]],
   },
   "incubator/program_associate/scoredrift": {
     title: "Score drift",
-    tables: [["STARTUP", "AI PRE-SCORE", "FINAL (HUMAN)", "NET DRIFT"]],
+    tables: [["STARTUP", "AI PRE-SCORE", "AFTER CLARIFICATION", "FINAL (JUROR)", "NET DRIFT"]],
   },
   "incubator/program_associate/funnel": {
     title: "Pipeline funnel",
-    tables: [["STAGE", "COUNT", "% OF TOP", "STEP CONVERSION"]],
+    tables: [["STAGE", "COUNT", "% OF UPLOADED", "STEP CONVERSION"]],
   },
   "incubator/program_associate/myparams": { title: "My Parameters", tables: [] },
   "incubator/program_associate/setup": { title: "Set up your workspace", tables: [] },
@@ -436,8 +436,8 @@ const EXPECTED: Record<string, Screen> = {
     title: "Archive",
     tables: [["STARTUP", "REASON", "STAGE REACHED", "ARCHIVED ON", "ARCHIVED BY", "ACTION"]],
   },
-  "incubator/jury/repdecks": { title: "My decks summary", tables: [["STARTUP", "YOUR SCORE", "STATUS"]] },
-  "incubator/jury/repscores": { title: "My Scores", tables: [["STARTUP", "AI", "YOU", "Δ"]] },
+  "incubator/jury/repdecks": { title: "My decks summary", tables: [["STARTUP", "STATUS", "MY SCORE", "AI SCORE", "SUBMITTED"]] },
+  "incubator/jury/repscores": { title: "My Scores", tables: [["STARTUP", "AI SCORE", "MY SCORE", "Δ (MY − AI)"]] },
   "incubator/jury/repdrift": { title: "My scores drift", tables: [] },
   "incubator/jury/myparams": { title: "My Parameters", tables: [] },
   "incubator/jury/account": { title: "My account", tables: [] },
