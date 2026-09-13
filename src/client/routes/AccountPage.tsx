@@ -1,17 +1,46 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Card, Button, Badge } from "../components";
 import { NotificationPreferences } from "./admin/Notifications";
 import { useAuth } from "../auth/useAuth";
+import { usePermissions } from "../auth/usePermissions";
 import { getConfigSummary, updateMyTitle } from "../api";
 import { roleLabel, editionLabel } from "../../shared/roles";
+import { canAccessNav } from "../../shared/nav";
 import { PLAN_LABELS, type Plan } from "../../shared/plans";
+import { AccountOverlay } from "./account/AccountOverlay";
 
 /**
- * My account (Session 4). Every signed-in team member sees their own profile —
+ * My account.
+ *
+ * W6-B — for anyone who may BUY (the `upgrade` task behind Buy credits: Admin
+ * and Super User in the shipped grid), this is the prototype's full-screen
+ * account overlay (`#acct-overlay`): Account → [Org type → Org details] → Plan →
+ * Payment → receipt. The prototype gives My account to exactly those two roles
+ * (F1073).
+ *
+ * Everyone else still reaches the profile below — name, role, alias title, their
+ * own notification mask (W3-B, §8 Q16(c)) and Sign out — because today's nav
+ * shows them My account and nothing else carries those controls yet. Whether the
+ * entry should leave their sidebar is `nav.ts`'s decision, not this file's.
+ * A buyer reaches the same profile with `?view=profile` (linked from the overlay).
+ */
+export function AccountPage() {
+  const { user } = useAuth();
+  const can = usePermissions();
+  const [params] = useSearchParams();
+  if (!user) return null;
+  const canBuy = canAccessNav(user.edition, user.role, "billing", can);
+  if (canBuy && params.get("view") !== "profile") return <AccountOverlay entry="account" />;
+  return <ProfilePage />;
+}
+
+/**
+ * The profile (Session 4). Every signed-in team member sees their own profile —
  * name, role, workspace and the org's current plan — and can sign out. Plan +
  * org name come from the safe config summary any authed user may read.
  */
-export function AccountPage() {
+function ProfilePage() {
   const { user, logout, updateUser } = useAuth();
   const [plan, setPlan] = useState<Plan | null>(null);
   const [orgName, setOrgName] = useState<string | null>(null);

@@ -7,6 +7,7 @@ import config from "./routes/config";
 import anchors from "./routes/anchors";
 import crm from "./routes/crm";
 import billing from "./routes/billing";
+import account from "./routes/account";
 import programs from "./routes/programs";
 import users from "./routes/users";
 import permissions from "./routes/permissions";
@@ -50,6 +51,7 @@ app.route("/api/config", config);
 app.route("/api/anchors", anchors);
 app.route("/api/crm", crm);
 app.route("/api/billing", billing);
+app.route("/api/account", account); // W6-B · My account — the purchase wizard
 app.route("/api/programs", programs);
 app.route("/api/users", users);
 app.route("/api/permissions", permissions);

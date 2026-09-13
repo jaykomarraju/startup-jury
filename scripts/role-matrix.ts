@@ -539,6 +539,15 @@ const PROBES: Probe[] = [
   // record anything.
   { id: "billing.purchase", label: "POST /api/billing/purchase", kind: "write", method: "POST", path: "/api/billing/purchase", body: {},
     allow: ["admin"] },
+  // W6-B — My account's purchase wizard (`/api/account`), gated on the `upgrade`
+  // task. The write probes send empty bodies, so an allowed role gets a 400
+  // (`invalid_profile`, `plan_required`) before anything could be saved or recorded.
+  { id: "account.read", label: "GET /api/account (my account)", kind: "read", method: "GET", path: "/api/account",
+    allow: ["admin"] },
+  { id: "account.profile", label: "PUT /api/account/profile", kind: "write", method: "PUT", path: "/api/account/profile", body: {},
+    allow: ["admin"] },
+  { id: "account.order", label: "POST /api/account/orders", kind: "write", method: "POST", path: "/api/account/orders", body: {},
+    allow: ["admin"] },
   { id: "programs.create", label: "POST /api/programs (create a program)", kind: "write", method: "POST", path: "/api/programs", body: {},
     allow: ["admin"] },
   { id: "programs.sector", label: "POST /api/programs/sectors", kind: "write", method: "POST", path: "/api/programs/sectors", body: {},
