@@ -3316,7 +3316,7 @@ CONSTRAINTS
     key) and `src/server/routes/calls.ts`. The incubator configs are `W7-F`'s.
   - **Do not change `GET /api/calls/:id/prompts`'s contract.** It is tested, and the incubator pane
     calls it.
-  - **You share TEN findings with `W9-E`, which runs in parallel** — F0562, F0595, F0596, F0625,
+  - **You share TEN findings with `W9-B`, which runs in parallel** — F0562, F0595, F0596, F0625,
     F0626, F0627, F0628, F0629, F0630, F0651, each scoped to *jurypipeline + partnerpipeline +
     partnercall*. F0627 (decided rows keeping their outcome) appears in BOTH prompts' build lists.
     Agree the split in §9 before you build, or you will each implement half of it differently.
