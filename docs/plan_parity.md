@@ -2496,7 +2496,8 @@ TEST
   - E2E: an operator selects two flagged decks, composes, sends — and each founder's recorded email
     names only their own areas and carries the response link. Mutating shared rows? Run serially and
     restore what you found.
-  - `npm run roles`: read the baseline off `main` first — `W6-C` left it at 879/879 (827 + 52 for
+  - `npm run roles`: read the baseline off `main` first — **Wave 6 integration measured the merged
+    baseline at 981/981** (`W6-C` alone left it at 879/879: 827 + 52 for
     `/api/seats`), and Wave 6 integration may have moved it again. Run it as
         ROLES_BASE=http://127.0.0.1:5273 npm run roles
     against a server you PROVED you own with `lsof` (port 5273 is yours) — it exits 0 even when it
