@@ -286,7 +286,7 @@ whichever of these levels apply, and a session that adds no test is presumed inc
 | **Worker** | `test/worker` | Every new or changed route: happy path, authZ (allowed role **and** a forbidden one → 403), validation, persistence. |
 | **Client** | `test/client` | Component rendering, the states the prototype shows (empty, loading, error, populated), and interactions. |
 | **E2E** | `e2e/` | The user-visible journey the prototype depicts, walked end to end for at least one role. |
-| **Roles** | `npm run roles` | Any change to nav or authZ. 526/526 must hold. |
+| **Roles** | `npm run roles` | Any change to nav or authZ. **Read the live number off `main` first** — it grows every wave as sessions add probes (526 at Wave 0, 566 at Wave 3, 827 at Wave 5, **1009 after Wave 7**). What must hold is that YOUR run moves it by exactly the probes you added, and that nothing already passing starts failing. |
 
 Three parity-specific rules:
 
@@ -1225,6 +1225,8 @@ session places it.
 | Wave 7 integration | `src/client/components/EvaluationDrawer.tsx` *(`W7-A`'s)* + `test/client/stagePage.test.tsx` *(`W7-F`'s)* — **already placed, flagged per §4** | **A defect that needed three sessions to exist.** `W7-D` made `/api/decks/:id/report` stage-aware and the drawer now calls it; `W7-A`'s rewritten drawer read `report.core` guarded only by `if (!report)`; `W7-F`'s mock answered **every** URL starting `/api/decks/` with a deck payload — including the report URL. The drawer got an object with no `core`, `report.core.map` threw, and React unmounted the drawer. Fixed on BOTH sides because each is wrong alone: the drawer now guards the SHAPE (`report?.core`, `report?.additional?`) — a production drawer must not white-screen on an unexpected payload — and the mock answers `/report` as itself. **The generalisable rule: a catch-all URL matcher in a fetch mock is a cross-session hazard**, because it silently swallows every endpoint a LATER session adds under the same prefix. |
 | Wave 7 integration | `docs/plan_parity.md` §10 — **three prompts the six-way merge left unclosed** | `W9-A` (Upload quarter), `W8-B` and `W9-E` each opened a fence and never closed one, so their bodies ran into `W7-F`'s Wave 9 block and their three FINISH lines collapsed onto three consecutive lines. Identical to the damage `Wx-PWD` took at Wave 5, three times over because six sessions edited §10 at once. Each now ends with its own FINISH naming its own branch. **Every prompt in the file is now fence-balanced and names the branch it belongs to** — worth re-checking after any wave of four or more. |
 | Wave 7 integration | `docs/plan_parity.md` §10 — **`W9-A` and `W9-E` each have TWO prompts** | Wave 9's `W9-A` covers four screen families (All decks · Upload · Query · Evaluate, 68 findings) and `W7-B` wrote the **Upload quarter** while `W7-C` wrote the **Query half** — two partial prompts for one session, neither complete. `W9-E` has one from `W7-E` and one inside `W7-F`'s block. **Wave 8 integration must merge each pair rather than choose**, the way Wave 5 integration merged the two `W6-A` prompts: either alone would send the session to rebuild the other's half. `W9-B`, `W9-C` and `W9-E` exist (`W7-F`); `W9-D` has none. |
+| Wave 7 integration | `docs/plan_parity.md` §10 Wave 8 prompts + §4 — **audited before hand-off; ten defects fixed** | Wave 5 and Wave 7 both shipped prompts carrying stale baselines that were caught only by reading closely, so this wave's two prompts were audited against the live repo before release. Ten confirmed defects, of which four mattered: **(1)** `W8-B` told the session the VC My Parameters panel has **four** role tabs — it has **three** (Investment Associate, Partner, IC member) in every VC build; the fourth is what §8 Q3 ASKS about, so the prompt stated the open question as settled fact. **(2)** `W8-B`'s migration fallback said take "the SECOND number above Wave 7's ceiling (0059 → 0061)" — 0061 fails the repo's own guard, which asserts `max(numbers) <= ALLOTMENT_CEILING` and is set to 59. Now `W8-A` 0059, `W8-B` 0060, each told to raise the ceiling if it uses one. **(3)** `e2e/parity.spec.ts` is a file BOTH sessions must re-capture into and only `W8-A` was told; a wholesale overwrite silently drops the other's rows. Both now carry the union rule. **(4)** Both preambles said "Wave 7 integration: fill in the base commit, the merged gate numbers and the migration number before handing this out" — **and integration had not.** Filled in. Also: `W8-B`'s reading list omitted **Q95**, which §8 assigns to `W8-B` by name (its author `W7-D` could not have named it — integration renumbered it after the prompt was written); `W8-A` claimed `W7-D`'s §7 row settles the 23 printable-report findings, which it never mentions; `W8-A` was told `AnalyticsKit.tsx` is its only shared surface, but `FunnelPage` lives in a file it owns outright and renders BOTH editions, so rewriting the funnel changes a screen `W9-D` is about to work on; two stale gate figures; and an instruction conditioned on what the sibling session did, which parallel worktrees cannot observe. **§4's roles row still demanded "526/526 must hold" — four waves stale** (live is 1009) and now states the rule instead of a number. |
+| Wave 7 integration | `docs/plan_parity.md` §10 — **the §8 numbering collision, finally partitioned instead of repaired** | Every wave so far has had all its sessions start numbering §8 questions at the same value, and every integration has renumbered afterwards — Wave 4 (four sessions from Q41), Wave 5 (two from Q56), Wave 6 (three from Q65), Wave 7 (six from Q80). The renumber is not free: it silently invalidates every prompt already written against the old numbers, which is how `W5-A` ended up citing Q45 for a question that had become Q50 and `W8-B` ended up not knowing Q95 existed. Wave 8 is the first wave told up front: **`W8-A` numbers from Q106, `W8-B` from Q116.** If it holds, give every later wave a partition in its prompts rather than a renumber in its integration. |
 
 | `W7-C` | `src/server/routes/pipeline.ts` (`POST /decks/:id/queries`) · `src/server/email/outbox.ts` (`buildQueryEmail`) · `test/worker/{pipeline,outbox}.test.ts` · `e2e/query.spec.ts` | **F0216 / F0277 / F0217 / F0466 — place in the SAME merge as `W7-C`, not later.** The Query screen now posts `{ questions: <the letter as shown>, subject: <as typed> }`, and every letter carries `→ [your secure response link]`. Until this lands the server still ignores `subject`, wraps the letter in a second greeting ("Hi Ada," above "Dear Founder,"), and mails the placeholder with no link — which also makes the *Link the founder receives* card's copy untrue. `git apply docs/parity-requests/W7-C-query-email.patch` (300 lines over five files; a table cell cannot carry it faithfully). It: rejects a subject with CR/LF or over 200 chars (`400 invalid_subject` — a line break in a subject is header injection); mints a resubmit token per query with `mintResubmitToken`, which by the resubmit module's own rule **revokes the deck's earlier live link** — the newest email's link wins, so the Incomplete email's stops working; sends the letter verbatim under the subject with the link substituted by `withResponseLink` (`src/shared/queries.ts`), appending it if the operator deleted the placeholder; keeps the old wrapper for a caller that sends no subject, now with the link; stores the letter WITH the placeholder, so the raw token lives only in the outbox body (as `buildIncompleteEmail` already does); answers `{ emailStatus: sent.status, delivered }` instead of a hard-coded `"sent"`. Deletes the `test.fail()` on `e2e/query.spec.ts`'s second test — Playwright reports an unexpected pass if it is left, so the gap cannot close unrecorded. Adds 4 worker tests (the verbatim letter and a live `/api/resubmit/:token`; the deleted placeholder and the no-subject path; a bad subject; jury → 403 minting nothing) and 2 pure `buildQueryEmail` tests. Verified: touched worker files 109/109; e2e query + resubmit + incubator 8/8 with it applied. | Wave 7 integration |
 | `W7-C` | `src/client/api.ts` | **Three dead exports, one with a wrong type.** `createQuery`, `fetchQueryDraft` and `QueryDraft` had one caller, the Query screen, which now uses `src/client/queryApi.ts` (`createQuery` cannot send a subject). `QueryDraft` declares `questions: {area, text}[]` and `areas: string[]` — a shape `GET /api/questions/draft/:deckId` has never returned (`AreaQuestions[]` / `ResponseArea[]`). Delete all three. | Wave 7 integration |
@@ -2920,8 +2922,9 @@ FINISH
 > **Wave 8 is two parallel sessions (`W8-A` reports, `W8-B` parameters) and this is the second.** It
 > inherits `W7-D`'s scale work: `W7-D` SETTLED how a score-shaped setting crosses the display-scale
 > boundary, so this session applies the rule to `ConfigPage`'s cohort thresholds rather than
-> re-deriving it. Wave 7 integration: fill in the base commit, the merged gate numbers and the migration
-> number before handing this out.
+> re-deriving it. **Wave 7 integration filled these in (2026-09-13):** base `main` at `359975d`; merged gate
+> baselines **1816 passed / 1 skipped in 27 s · roles 1009/1009 · parity:nav 63 known gaps ·
+> e2e 196 passed / 1 flaky / 0 failed in 5.3 min**; migration **0060** (see CONSTRAINTS).
 
 ```
 You are running session W8-B — Core Parameters and My Parameters to parity — of the ai.STARTUPJURY
@@ -2934,9 +2937,11 @@ SETUP
   python3 docs/prototype/tools/split-prototypes.py
 
 READ FIRST (in this order, and nothing else)
-  1. docs/plan_parity.md — §1, §2, §4, your entry for `W8-B` in §6, §8 **Q3** and **Q79**, and the
+  1. docs/plan_parity.md — §1, §2, §4, your entry for `W8-B` in §6, §8 **Q3**, **Q79** and **Q95**, and the
      §9 rows addressed to `W8-B` (grep the table for `W8-B`; there are at least two: `W6-C`'s per-member
-     plan gating, and `W7-D`'s display-scale row).
+     plan gating, and `W7-D`'s display-scale row). **Q95 is `W7-D`'s and it rules that core-prompt
+     editing belongs to YOUR screen** — it was renumbered at Wave 7 integration, which is why the
+     prompt that raised it did not name it.
   2. §7's `W7-D` row — ONLY the sentence starting "2(c) settled". It is the rule you apply; do not
      re-derive it.
   3. Your worklist:
@@ -2946,7 +2951,10 @@ READ FIRST (in this order, and nothing else)
      scoring", "Permissions") — and the VC spec's §6.2 for Q3. The spec OUTRANKS the prototype (§1.1).
   5. The prototype panels and their renderers, from ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/:
      panel-coreparams.html, panel-myparams.html, panel-settings.html — and each one's renderer in
-     `_scripts.js`, grepped by id. Then AISJ_VC_Superuser_V8's panel-myparams.html for the four VC tabs.
+     `_scripts.js`, grepped by id. Then AISJ_VC_Superuser_V8's panel-myparams.html for the **three** VC role tabs —
+     Investment Associate, Partner, IC member. (§8 Q3 asks whether there should be a FOURTH owner
+     role per spec §6.2; the prototype as drawn has three. Do not read the count off this prompt —
+     count the `role-tabs` children yourself and reconcile against §6.2.)
   6. Your files: src/client/routes/ConfigPage.tsx (565 lines), MyParamsPage.tsx (309 lines).
   Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
 
@@ -2983,8 +2991,15 @@ CONSTRAINTS
     not have, raise it in §9 rather than writing a local copy — two copies of a cut-point or a
     conversion is exactly the defect Waves 2 and 7 spent three §9 rows removing.
   - §1.2: the prototype's "Mentor can adjust composite" toggle is NOT built, anywhere.
-  - Migration: Wave 7 integration allots Wave 8's numbers (`W8-A` then `W8-B`); if this line still
-    says so, use the SECOND number above Wave 7's ceiling (0059 → 0061) and say so loudly.
+  - **`e2e/parity.spec.ts` is the one file you and the other Wave 8 session BOTH touch.** Its
+    `EXPECTED` map holds snapshot rows for every screen in the app, including both of yours. Re-capture
+    ONLY your own rows (`PARITY_CAPTURE=1`, then union the new rows into `EXPECTED`) and never delete a
+    row you did not capture — the other session is re-capturing theirs at the same moment, and a
+    wholesale overwrite silently drops their work. Expect a conflict there; the resolution is the union.
+  - **Migration: you own 0060 and only 0060** (`W8-A` holds 0059; `main` ends at 0058). You almost
+    certainly need none. If you DO add one, raise `ALLOTMENT_CEILING` in
+    test/worker/migrations-w1b.test.ts from 59 to 60 in the SAME commit — the guard asserts
+    `max(numbers) <= ALLOTMENT_CEILING`, so a migration above it fails the suite.
 
 TEST
   - Client: each role's tab set on My Parameters (incubator PM / PA / Jury; the VC set per Q3), the
@@ -2998,8 +3013,9 @@ TEST
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
   `npm run roles` if you touch a route's gate — probes in scripts/role-matrix.ts in the same commit,
   against a server you proved you own with `lsof`.
-  **The whole gate is ~5 minutes on a quiet box.** `W7-D` measured 1639 passed / 1 skipped in 65 s at
-  load 9 on its own branch — read the merged number off `main` first. `uptime` BEFORE you start; never
+  **The gate is about six minutes on a quiet box, and the live baseline is on `main`, not here.**
+  Wave 7 integration measured **1816 passed / 1 skipped in 27 s** and **e2e 196 passed / 1 flaky /
+  0 failed in 5.3 min**. Read the number off `main` first. `uptime` BEFORE you start; never
   run the gate while a sibling runs theirs; never conclude anything from a red run at load 40+
   without re-running the file alone AND a control spec. `flaky` is information, not noise.
   Traps earlier waves wrote and caught: gate client assertions on a POPULATED element; never locate
@@ -3012,6 +3028,10 @@ TEST
 FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  **Number your §8 questions from Q116.** §8 ends at Q105 today; `W8-A` has Q106–Q115 and you have
+  Q116 upward. Every wave so far has had all its sessions start at the same number and needed an
+  integration renumber — which silently invalidates every prompt already written against the old
+  numbers. This partition is how that stops.
   Commit to parity/W8-B. Do not merge to main.
 ```
 
@@ -3287,8 +3307,10 @@ FINISH
 ### `W8-A` — Incubator reports *(written by `W7-A`)*
 
 > Wave 8 is two sessions: `W8-A` (reports, this one) and `W8-B` (parameters, written by `W7-D`).
-> **Migration allotment is the integration session's to set** — write none unless you must, and if you
-> must, take the next number above anything merged and say so loudly in §9.
+> **Wave 7 integration set these (2026-09-13):** base `main` at `359975d`; migration **0059** and only
+> 0059 (`W8-B` holds 0060; `main` ends at 0058). You almost certainly need none — if you do add one,
+> raise `ALLOTMENT_CEILING` in test/worker/migrations-w1b.test.ts from 59 to 60 in the SAME commit,
+> because the guard asserts `max(numbers) <= ALLOTMENT_CEILING`.
 
 ```
 You are running session W8-A — Incubator reports — of the ai.STARTUPJURY parity programme.
@@ -3309,7 +3331,9 @@ READ FIRST (in this order, and nothing else)
          --screen "cohortsummary|evaluatorscores|scoredrift|funnel|repdecks|repscores|repdrift" --full
      The same filter WITHOUT --screen also returns the other 23 — "evaluate"/"jassigned" findings (the
      printable evaluation report, F0793 and friends). Those are the Evaluate workbench's report —
-     check `W7-D`'s §7 row before touching one; if `W7-D` left it open it is a §9 request, not yours.
+     **`W7-D`'s §7 row does NOT settle these** — it routes a different 23 (All decks → `W7-A` / `W9-A`,
+     VC Evaluate → `W9-A`) and never mentions the printable report. Treat it as UNOWNED: if you touch
+     it say so loudly in §9; if you do not, say that instead.
   3. The prototype panels AND their renderers — the panels are thin shells; the KPI tiles, chart
      series and table columns live in JS:
        ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/panel-{cohortsummary,evaluatorscores,scoredrift,funnel}.html
@@ -3343,6 +3367,20 @@ CONSTRAINTS
     src/shared/analytics.ts, and the `/drift` + `/my/drift` gating lines in
     src/server/routes/analytics.ts. VcReports.tsx is `W9-D`'s — AnalyticsKit.tsx is shared with it,
     so change a kit component's PROPS additively or not at all.
+  - **AnalyticsKit is not your only shared surface.** `FunnelPage` is exported from
+    `IncubatorReports.tsx` — a file you own outright — and renders BOTH editions: `App.tsx` routes
+    `funnel` to it for VC too, under the comment "Funnel is shared". Rewriting the Pipeline funnel
+    therefore changes a VC screen `W9-D` is about to work on. Keep the VC branch behaviourally
+    identical and record what you did in §9.
+  - **Migration: you own 0059 and only 0059** (`W8-B` holds 0060; `main` ends at 0058). You almost
+    certainly need none — this is a screens-and-reports session. If you DO add one, raise
+    `ALLOTMENT_CEILING` in test/worker/migrations-w1b.test.ts from 59 to 60 in the SAME commit: the
+    guard asserts `max(numbers) <= ALLOTMENT_CEILING`.
+  - **`e2e/parity.spec.ts` is the one file you and the other Wave 8 session BOTH touch.** Its
+    `EXPECTED` map holds snapshot rows for every screen in the app, including both of yours. Re-capture
+    ONLY your own rows (`PARITY_CAPTURE=1`, then union the new rows into `EXPECTED`) and never delete a
+    row you did not capture — the other session is re-capturing theirs at the same moment, and a
+    wholesale overwrite silently drops their work. Expect a conflict there; the resolution is the union.
   - `src/shared/scoring.ts` is not yours (`W7-D` had the scale work). If a report must show scores
     in the org's display scale, use `toDisplayScale` / `formatScore` from it; a change there is §9.
   - `src/client/index.css`, `src/shared/nav.ts`, `src/shared/roles.ts` and `src/client/App.tsx` are
@@ -3361,7 +3399,9 @@ TEST
     Re-capture the report rows in `e2e/parity.spec.ts` (PARITY_CAPTURE=1, union the new rows into
     EXPECTED) in the same commit as the column change.
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
-  The whole gate is ~5 min on a quiet box (unit/worker/client ~21 s; e2e ~4–6 min). `uptime`
+  The gate is about six minutes on a quiet box. Wave 7 integration measured **1816 passed / 1
+  skipped in 27 s** and **e2e 196 passed / 1 flaky / 0 failed in 5.3 min**; read the live number off
+  `main` rather than matching one written here. `uptime`
   BEFORE you start; do NOT run your gate while a sibling session runs theirs — `ps -eo args | grep
   -E "playwright test|vitest"` shows other worktrees' runs. Never conclude anything from a red run
   at load 40+ without re-running the file alone AND a spec your change never touched as a control.
@@ -3379,7 +3419,13 @@ TEST
 FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
-  Wave 8's integration prompt is the next one due — write it if `W8-B` has not.
+  **Number your §8 questions from Q106.** §8 ends at Q105 today; you have Q106–Q115 and `W8-B` has
+  Q116 upward. Every wave so far has had all its sessions start at the same number and needed an
+  integration renumber — which silently invalidates every prompt already written against the old
+  numbers. This partition is how that stops.
+  **You and `W8-B` run simultaneously in separate worktrees and cannot see each other**, so condition
+  nothing on what the other did. Write the Wave 8 integration prompt; if `W8-B` writes one too,
+  integration merges them — it has done exactly that twice already (`W6-A`, and the `W9-A` pair).
   Commit to parity/W8-A. Do not merge to main.
 ```
 
