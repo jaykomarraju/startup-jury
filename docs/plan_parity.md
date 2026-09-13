@@ -2905,6 +2905,13 @@ CONSTRAINTS
 TEST
   - E2E as above, VC seed only; pin anything a sibling spec mutates (credit balances especially).
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W9-A. Do not merge to main.
+```
+
 ### `W8-B` — Core Parameters and My Parameters, and the scale rule they inherit *(written by `W7-D`)*
 
 > **Wave 8 is two parallel sessions (`W8-A` reports, `W8-B` parameters) and this is the second.** It
@@ -2998,6 +3005,13 @@ TEST
   a client-test principal with no `permissions` array is granted NOTHING; and `W7-D`'s — a page-level
   `getByRole("region", { name: / parameters$/ })` also matches the Evaluate screen's own
   "Evaluation parameters" column behind a modal, so scope region queries to the dialog.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W8-B. Do not merge to main.
+```
+
 ### `W9-E` — VC calls: intro · partner · alignment *(written by `W7-E`)*
 
 > Wave 9 is five sessions and, when `W7-E` finished, had no prompts. This is `W9-E`'s, written because
@@ -3065,6 +3079,13 @@ TEST
   `beforeEach(() => vi.mocked(fn).mockReset())` RETURNS the mock and vitest runs it as teardown
   (use braces); and gate client assertions on a populated element, never on a heading the loading
   branch also renders.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W9-E. Do not merge to main.
+```
+
 ### Wave 9 — `W9-B`, `W9-C`, `W9-E` *(written by `W7-F`)*
 
 > All three build on what `W7-F` landed: `StageConfig`'s `toolbar` / `subTabs` / `legend` + `footer`
@@ -3252,13 +3273,9 @@ TEST
 FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
   requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
-  Commit to parity/W9-A. Do not merge to main.
-  Commit to parity/W8-B. Do not merge to main.
   Commit to parity/W9-E. Do not merge to main.
 ```
 
-  Commit to parity/W9-E. Do not merge to main.
-```
 
 `W9-A` and `W9-D` still have no prompt; neither depends on this session's work.
 
