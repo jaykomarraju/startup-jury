@@ -648,6 +648,37 @@ const PROBES: Probe[] = [
   { id: "esign.countersign", label: "POST /api/esign/signups/:id/countersign", kind: "write", method: "POST", path: "/api/esign/signups/__ghost__/countersign", body: {},
     allow: ["admin", "program_manager", "program_associate", "partner", "associate", "analyst"] },
 
+  // ── W6-A · The sign-up workspace (`/api/signups`) ─────────────────────────
+  // A new router, so its probes land in the same commit (§9's standing ask).
+  // Incubator only: the workspace is the Sign up Pipeline's (`signuppipeline`),
+  // a task the VC edition does not hold, and every route refuses the other
+  // edition. Staff = the roles that reach that screen; the founder reaches the
+  // read of their OWN record and the one founder verb.
+  //
+  // Every probe targets a ghost id, so an allowed role gets a 404 and nothing
+  // is written. That includes the unassigned Program Manager on the write
+  // verbs: the §8.3 read-only gate steps aside for an id it cannot resolve,
+  // leaving the role gate as the thing described here — the gate itself is
+  // `test/worker/signups.test.ts`'s to assert, on a real record.
+  { id: "signups.list", label: "GET /api/signups (sign-up records for the pipeline)", kind: "read", method: "GET", path: "/api/signups",
+    editions: ["incubator"], allow: ["admin", "program_manager", "program_associate"] },
+  { id: "signups.mine", label: "GET /api/signups/mine (the founder's own sign-ups)", kind: "read", method: "GET", path: "/api/signups/mine",
+    editions: ["incubator"], allow: ["founder"] },
+  { id: "signups.view", label: "GET /api/signups/:id (the workspace)", kind: "read", method: "GET", path: "/api/signups/__ghost__",
+    editions: ["incubator"], allow: ["admin", "program_manager", "program_associate", "founder"] },
+  { id: "signups.doc.file", label: "GET …/signups/:id/documents/:id/file (View)", kind: "read", method: "GET", path: "/api/signups/__ghost__/documents/__ghost__/file",
+    editions: ["incubator"], allow: ["admin", "program_manager", "program_associate", "founder"] },
+  { id: "signups.doc.submit", label: "POST …/signups/:id/documents/:id/file (founder attaches)", kind: "write", method: "POST", path: "/api/signups/__ghost__/documents/__ghost__/file", body: {},
+    editions: ["incubator"], allow: ["founder"] },
+  { id: "signups.verifyall", label: "POST …/signups/:id/documents/verify-all (workspace)", kind: "write", method: "POST", path: "/api/signups/__ghost__/documents/verify-all", body: {},
+    editions: ["incubator"], allow: ["admin", "program_manager", "program_associate"] },
+  { id: "signups.complete", label: "POST …/signups/:id/complete (onboard after countersign)", kind: "write", method: "POST", path: "/api/signups/__ghost__/complete", body: {},
+    editions: ["incubator"], allow: ["admin", "program_manager", "program_associate"] },
+  { id: "signups.seat", label: "POST …/signups/:id/seat (Allocate seat, from the pipeline)", kind: "write", method: "POST", path: "/api/signups/__ghost__/seat", body: {},
+    editions: ["incubator"], allow: ["admin", "program_manager", "program_associate"] },
+  { id: "signups.assignee", label: "PUT …/signups/:id/assignee (assign the PM)", kind: "write", method: "PUT", path: "/api/signups/__ghost__/assignee", body: { userId: null },
+    editions: ["incubator"], allow: ["admin"] },
+
   // ── Contract: analytics delegate to the nav manifest by design ────────────
   ...analyticsProbes(),
 ];

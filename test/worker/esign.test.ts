@@ -102,7 +102,9 @@ beforeEach(async () => {
     env.DB.prepare(
       "UPDATE signups SET status = 'initiated', signing_provider = NULL, sig_type = NULL, " +
         "in_app = 1, wet_ink = 0, authorised_signatory_role = NULL, " +
-        "authorised_signatory_user_id = NULL, founder_signed_at = NULL, completed_at = NULL WHERE id = ?",
+        "authorised_signatory_user_id = NULL, founder_signed_at = NULL, completed_at = NULL, " +
+        // W6-A: the §8.3 PM assignment gate reads this column.
+        "assigned_user_id = NULL WHERE id = ?",
     ).bind(SIGNUP),
     env.DB.prepare(
       "DELETE FROM signatures WHERE agreement_id IN (SELECT id FROM agreements WHERE signup_id = ?)",
@@ -808,6 +810,9 @@ describe("POST /api/esign/signups/:id/countersign", () => {
     const admin = await login(ADMIN);
     const pm = await login(PM);
     await put(`/api/esign/signups/${SIGNUP}/signatory`, admin, { userId: "inc_pm" });
+    // W6-A: a Program Manager acts on a sign-up only once assigned to it (§8.3);
+    // unassigned, the refusal would be `read_only` before the grant is consulted.
+    expect((await put(`/api/signups/${SIGNUP}/assignee`, admin, { userId: "inc_pm" })).status).toBe(200);
     await post(`/api/esign/signups/${SIGNUP}/founder-signature`, admin);
     // The console revokes the person who was already assigned.
     await put("/api/esign/signatories", admin, { users: { inc_pm: false } });

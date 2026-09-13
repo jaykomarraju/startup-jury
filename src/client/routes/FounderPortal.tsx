@@ -2,13 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, Button, Badge, SignalTag, ScoreChip, EmptyState } from "../components";
 import type { DeckView } from "../types";
+import { listDecks, listQueries, respondQuery, type QueryView } from "../api";
+import type { SigningMethodView } from "../../shared/agreements";
 import {
-  listDecks,
-  listQueries,
-  respondQuery,
-  transitionDeck,
-  type QueryView,
-} from "../api";
+  FounderSignupPanel,
+  SIGNUP_STATUS_LABELS,
+  listMySignups,
+  type SignupWorkspaceView,
+} from "./SignupWorkspace";
 
 function useFounderDecks() {
   const [decks, setDecks] = useState<DeckView[] | null>(null);
@@ -179,34 +180,51 @@ export function FounderQueriesPage() {
   );
 }
 
-/** founder-signup — complete sign-up on decks invited into onboarding. */
+/**
+ * founder-signup — the founder's side of the §8.3 workspace (`fpBuildSignup` /
+ * `suwFounder`): attach a file to each requested document, read "How you'll
+ * sign", and sign. The rows are the SAME document set staff verify on the
+ * workspace's Documents tab, rendered by the same `DocumentRows`.
+ *
+ * The old single "Complete sign-up" button (the unguarded `complete_signup`
+ * transition) is gone: a sign-up now completes when the team verifies and
+ * countersigns, and the deck moves to onboarding then.
+ */
 export function FounderSignupPage() {
-  const { decks, reload } = useFounderDecks();
-  const [busy, setBusy] = useState<string | null>(null);
+  const [signups, setSignups] = useState<SignupWorkspaceView[] | null>(null);
+  const [methods, setMethods] = useState<Record<string, SigningMethodView>>({});
   const [error, setError] = useState<string | null>(null);
 
-  const ready = (decks ?? []).filter((d) => d.statusId === "signup");
-  const done = (decks ?? []).filter((d) => d.statusId === "onboard_ready");
-
-  async function complete(deck: DeckView) {
-    setBusy(deck.id);
-    setError(null);
+  const load = useCallback(async () => {
     try {
-      await transitionDeck(deck.id, "complete_signup");
-      await reload();
+      const { signups: mine } = await listMySignups();
+      setSignups(mine);
+      const pairs = await Promise.all(
+        mine.map((s) =>
+          fetch(`/api/esign/signups/${s.signupId}/method`)
+            .then((r) => (r.ok ? (r.json() as Promise<{ method: SigningMethodView }>) : null))
+            .then((body) => [s.signupId, body?.method] as const)
+            .catch(() => [s.signupId, undefined] as const),
+        ),
+      );
+      setMethods(Object.fromEntries(pairs.filter((p) => p[1]) as [string, SigningMethodView][]));
+      setError(null);
     } catch {
-      setError("Couldn't complete sign-up. Try again.");
-    } finally {
-      setBusy(null);
+      setSignups((prev) => prev ?? []);
+      setError("Couldn't load your sign-up. Try again.");
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-5 p-5">
       <div>
         <h1 className="text-xl font-semibold text-fg">Sign up</h1>
         <p className="mt-0.5 text-sm text-fg-muted">
-          You've been shortlisted. Complete sign-up to move into onboarding.
+          You've been shortlisted. Attach your documents and sign your agreement to join the programme.
         </p>
       </div>
 
@@ -216,7 +234,7 @@ export function FounderSignupPage() {
         </div>
       )}
 
-      {ready.length === 0 && done.length === 0 ? (
+      {signups !== null && signups.length === 0 ? (
         <Card>
           <EmptyState
             icon="CircleCheck"
@@ -226,27 +244,41 @@ export function FounderSignupPage() {
         </Card>
       ) : (
         <div className="flex flex-col gap-3">
-          {ready.map((deck) => (
-            <Card key={deck.id}>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="font-semibold text-fg">{deck.name}</div>
-                  <div className="text-xs text-fg-muted">Invited to sign up</div>
+          {(signups ?? []).map((signup) => {
+            const awaitingTeam = signup.founderSignedAt !== null && signup.status === "progress";
+            return (
+              <Card key={signup.signupId}>
+                <div data-testid={`founder-signup-${signup.signupId}`}>
+                  <div className="mb-4 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="font-semibold text-fg">Sign-up · {signup.startup}</div>
+                      <div className="text-xs text-fg-muted">
+                        {[signup.programName, signup.cohortName].filter(Boolean).join(" · ") || "—"}
+                      </div>
+                    </div>
+                    <Badge tone={["completed", "onboarded"].includes(signup.status) ? "positive" : "info"}>
+                      {SIGNUP_STATUS_LABELS[signup.status] ?? signup.status}
+                    </Badge>
+                  </div>
+                  {awaitingTeam && (
+                    <div className="mb-4 rounded-lg border border-line bg-surface-2 px-3 py-2.5 text-sm text-fg-muted">
+                      <b className="text-fg">Signed &amp; submitted.</b> Your documents and signature are in. The
+                      team will countersign and email your completed agreement.
+                    </div>
+                  )}
+                  <FounderSignupPanel
+                    view={signup}
+                    method={methods[signup.signupId] ?? null}
+                    mode="founder"
+                    onChanged={(next) => {
+                      if (next) setSignups((list) => (list ?? []).map((s) => (s.signupId === next.signupId ? next : s)));
+                      else load();
+                    }}
+                  />
                 </div>
-                <Button variant="primary" size="sm" disabled={busy !== null} onClick={() => complete(deck)}>
-                  {busy === deck.id ? "…" : "Complete sign-up"}
-                </Button>
-              </div>
-            </Card>
-          ))}
-          {done.map((deck) => (
-            <Card key={deck.id}>
-              <div className="flex items-center justify-between gap-3">
-                <div className="font-semibold text-fg">{deck.name}</div>
-                <Badge tone="positive">Ready to onboard</Badge>
-              </div>
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </div>
       )}
     </div>

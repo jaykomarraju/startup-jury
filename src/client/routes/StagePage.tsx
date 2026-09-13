@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { FileBarChart } from "lucide-react";
+import { FileBarChart, Lock, Signature } from "lucide-react";
 import {
   Card,
   Button,
@@ -23,6 +23,13 @@ import {
   updateDeckOnboarding,
   type DeckVersionView,
 } from "../api";
+import {
+  SignupWorkspace,
+  SIGNUP_STATUS_LABELS,
+  listSignups,
+  type SignupSummary,
+  type WorkspaceTab,
+} from "./SignupWorkspace";
 
 /** Columns a stage screen can show. The design gives each screen its own set
  *  (Aug-2026 issues 25–31), so they are named here and composed per config. */
@@ -73,6 +80,12 @@ export interface StageConfig {
   capture?: { action: string; fields: { name: "valuation" | "ownership"; label: string }[] };
   /** Show the legend beneath the table. */
   legend?: { label: string; color: string }[];
+  /**
+   * W6-A — rows open the §8.3 sign-up workspace (`openSuWork`): a "Sign-up"
+   * action, the Documents column as a derived roll-up badge linking into it, and
+   * the Sign-up status read from the sign-up record rather than the deck.
+   */
+  workspace?: boolean;
 }
 
 // Actions handled by dedicated screens rather than inline buttons here.
@@ -112,10 +125,12 @@ const PAYMENT_OPTIONS = [
   { value: "waived", label: "Waived" },
 ];
 
+/** The Documents column's roll-up labels. The value is DERIVED from the
+ *  sign-up's document set (`rollUpDocumentsStatus`) — never hand-set (§9). */
 const DOCUMENT_OPTIONS = [
-  { value: "pending", label: "Docs missing" },
-  { value: "partial", label: "Docs partial" },
-  { value: "complete", label: "All docs" },
+  { value: "pending", label: "Docs missing", tone: "danger" as const },
+  { value: "partial", label: "Docs partial", tone: "amber" as const },
+  { value: "complete", label: "All docs", tone: "positive" as const },
 ];
 
 function fmtDate(iso?: string): string {
@@ -176,12 +191,25 @@ export function StagePage({ config }: { config: StageConfig }) {
   const [error, setError] = useState<string | null>(null);
   // Per-deck captured fields for the config's capture action (term-sheet details).
   const [captured, setCaptured] = useState<Record<string, { valuation?: string; ownership?: string }>>({});
+  // W6-A — the sign-up records behind these rows, and the one open in the workspace.
+  const [signups, setSignups] = useState<Record<string, SignupSummary>>({});
+  const [workspace, setWorkspace] = useState<{ signupId: string; tab: WorkspaceTab } | null>(null);
+
+  const loadSignups = useCallback(() => {
+    if (!config.workspace) return Promise.resolve();
+    return listSignups()
+      .then((r) => setSignups(Object.fromEntries(r.signups.map((s) => [s.deckId, s]))))
+      .catch(() => setSignups({}));
+  }, [config.workspace]);
 
   const load = useCallback(() => {
-    return listDecks()
-      .then((r) => setDecks(r.decks))
-      .catch(() => setDecks([]));
-  }, []);
+    return Promise.all([
+      listDecks()
+        .then((r) => setDecks(r.decks))
+        .catch(() => setDecks([])),
+      loadSignups(),
+    ]);
+  }, [loadSignups]);
 
   useEffect(() => {
     load();
@@ -349,8 +377,14 @@ export function StagePage({ config }: { config: StageConfig }) {
             {deck.callStatus === "completed" ? "Completed" : "—"}
           </Badge>
         );
-      case "signupStatus":
-        return <span className="text-sm text-fg-muted">{deck.status ?? "—"}</span>;
+      case "signupStatus": {
+        const signup = signups[deck.id];
+        return (
+          <span className="text-sm text-fg-muted">
+            {signup ? (SIGNUP_STATUS_LABELS[signup.status] ?? signup.status) : (deck.status ?? "—")}
+          </span>
+        );
+      }
       case "paymentStatus":
         return config.readOnly ? (
           <span className="text-sm text-fg-muted">
@@ -371,26 +405,26 @@ export function StagePage({ config }: { config: StageConfig }) {
             ))}
           </select>
         );
-      case "documentsStatus":
-        return config.readOnly ? (
-          <span className="text-sm text-fg-muted">
-            {DOCUMENT_OPTIONS.find((o) => o.value === (deck.documentsStatus ?? "pending"))?.label}
-          </span>
-        ) : (
-          <select
-            className="sj-input h-8 py-0 text-xs"
-            aria-label={`Documents status for ${deck.name}`}
-            value={deck.documentsStatus ?? "pending"}
-            disabled={busy !== null}
-            onChange={(e) => saveOnboarding(deck, { documentsStatus: e.target.value })}
+      case "documentsStatus": {
+        // Read-only: the roll-up is re-derived from the item rows on every
+        // move, so a hand-set "All docs" over three awaiting items is no longer
+        // possible. The badge opens the set it summarises.
+        const signup = signups[deck.id];
+        const value = signup?.documentsStatus ?? deck.documentsStatus ?? "pending";
+        const option = DOCUMENT_OPTIONS.find((o) => o.value === value) ?? DOCUMENT_OPTIONS[0];
+        return signup ? (
+          <button
+            type="button"
+            title="Open the document set"
+            aria-label={`Documents status for ${deck.name}: ${option.label}`}
+            onClick={() => setWorkspace({ signupId: signup.signupId, tab: "docs" })}
           >
-            {DOCUMENT_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+            <Badge tone={option.tone}>{option.label}</Badge>
+          </button>
+        ) : (
+          <Badge tone={option.tone}>{option.label}</Badge>
         );
+      }
       case "curationStage":
         return (
           <input
@@ -497,7 +531,12 @@ export function StagePage({ config }: { config: StageConfig }) {
             </thead>
             <tbody>
               {rows.map((deck) => {
-                const actions = (deck.actions ?? []).filter((a) => !EXCLUDED_ACTIONS.has(a.action));
+                // The workspace replaces the unguarded "Complete signup" button:
+                // a sign-up completes on the countersign, not on a click.
+                const actions = (deck.actions ?? []).filter(
+                  (a) => !EXCLUDED_ACTIONS.has(a.action) && !(config.workspace && a.action === "complete_signup"),
+                );
+                const signup = config.workspace ? signups[deck.id] : undefined;
                 return (
                   <tr key={deck.id} className="border-t border-line align-top">
                     {columns.map((c) => (
@@ -527,7 +566,22 @@ export function StagePage({ config }: { config: StageConfig }) {
                           </div>
                         )}
                         <div className="flex flex-wrap justify-end gap-2">
-                          {actions.length === 0 && <span className="text-xs text-fg-muted">—</span>}
+                          {signup && (
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              title={signup.readOnly ? "Read-only — a Super user or Admin must assign you" : undefined}
+                              onClick={() => setWorkspace({ signupId: signup.signupId, tab: "agr" })}
+                            >
+                              {signup.readOnly ? (
+                                <Lock className="mr-1 h-3.5 w-3.5" />
+                              ) : (
+                                <Signature className="mr-1 h-3.5 w-3.5" />
+                              )}
+                              Sign-up
+                            </Button>
+                          )}
+                          {actions.length === 0 && !signup && <span className="text-xs text-fg-muted">—</span>}
                           {actions.map((a) => (
                             <Button
                               key={a.action}
@@ -571,6 +625,15 @@ export function StagePage({ config }: { config: StageConfig }) {
           extraction={report?.extraction ?? []}
           versions={report?.versions ?? []}
           badges={selected.signal ? <SignalTag signal={selected.signal} /> : null}
+        />
+      )}
+
+      {workspace && (
+        <SignupWorkspace
+          signupId={workspace.signupId}
+          initialTab={workspace.tab}
+          onClose={() => setWorkspace(null)}
+          onChanged={() => void load()}
         />
       )}
 
@@ -720,6 +783,7 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
       "documentsStatus",
     ],
     minWidth: "82rem",
+    workspace: true,
     legend: [
       { label: "Paid / All docs", color: "var(--color-positive)" },
       { label: "Partial", color: "var(--color-signal-moderate)" },
@@ -737,6 +801,8 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
     statuses: ["onboard_ready"],
     columns: ["startup", "cohort", "curationStage", "lead", "progress"],
     minWidth: "56rem",
+    // The seat card (Seatless / Seat allocated) lives in the workspace.
+    workspace: true,
     emptyTitle: "No startups onboarded yet",
     emptyDescription: "Startups that complete sign-up land here, ready to onboard.",
   },
