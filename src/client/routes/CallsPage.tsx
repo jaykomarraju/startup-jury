@@ -342,6 +342,14 @@ function CalendarPopover({ call }: { call: CallView }) {
 
 const TH = "px-4 py-2.5 text-xs font-medium uppercase tracking-wide";
 
+/**
+ * Transitions this screen performs through its own controls. `schedule_intro`
+ * is what `POST /api/calls` does when it books the call (`advanced`), so a
+ * second "Schedule intro call" button in the row would move the deck without
+ * booking anything — and share a name with the toolbar's real one.
+ */
+const CALL_OWNED_ACTIONS = new Set(["schedule_intro"]);
+
 export function CallsPage({ config }: { config: CallsConfig }) {
   const { user } = useAuth();
   const { navId } = useParams();
@@ -881,7 +889,7 @@ export function CallsPage({ config }: { config: CallsConfig }) {
 
   /** The stage's own transitions (Send signup, Issue term sheet…) and any captured fields. */
   function actionCell(deck: DeckView) {
-    const actions = deck.actions ?? [];
+    const actions = (deck.actions ?? []).filter((a) => !CALL_OWNED_ACTIONS.has(a.action));
     if (actions.length === 0) return <span className="text-xs text-fg-muted">—</span>;
     return (
       <div className="flex flex-wrap items-center justify-end gap-1.5">
