@@ -298,10 +298,12 @@ test("the Set up wizard walks through Select and Team to the dashboard", async (
   await page.getByRole("button", { name: "Continue" }).click();
 
   // Step 4 used to claim user management was "coming to the Admin console" —
-  // it shipped in Session 4.
-  await expect(
-    page.getByRole("heading", { name: /Add the rest of your team in the Admin console/ }),
-  ).toBeVisible();
+  // it shipped in Session 4 — and then redirected there with an empty state.
+  // W6-C replaced that redirect with the prototype's own team step (`#sus-team`,
+  // F1032 / F1040 / F1057): this assertion named the empty state's heading,
+  // which contradicted the prototype, so it now waits on the populated seat bar.
+  await expect(page.getByTestId("seat-bar")).toContainText("seats left for nomination");
+  await expect(page.getByRole("heading", { name: "Add team members" })).toBeVisible();
   await expect(page.getByText("Team management is coming")).toHaveCount(0);
 
   await page.getByRole("button", { name: /Confirm & go to dashboard/ }).click();

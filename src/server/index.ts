@@ -18,6 +18,7 @@ import pricing from "./routes/pricing";
 import resubmit from "./routes/resubmit";
 import notifications from "./routes/notifications";
 import signupConfig from "./routes/signup-config";
+import seats from "./routes/seats"; // W6-C · purchased seats (Set up → Team)
 import esign from "./esign/routes";
 import signups, { esignWorkspaceGate } from "./routes/signups";
 import { tickets, messages, issues } from "./routes/support";
@@ -62,6 +63,7 @@ app.route("/api/pricing", pricing);
 app.route("/api/notifications", notifications);
 app.route("/api/signup-config", signupConfig);
 app.use("/api/esign/signups/:signupId/*", esignWorkspaceGate); // W6-A · §8.3 PM assignment gate
+app.route("/api/seats", seats);
 app.route("/api/esign", esign); // W5-B · agreements library, signatories, signing method
 app.route("/api/signups", signups); // W6-A · the three-tab sign-up workspace
 app.route("/api/tickets", tickets);
