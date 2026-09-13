@@ -317,18 +317,37 @@ test("the Set up wizard walks through Select and Team to the dashboard", async (
 
 test("an admin can edit an additional parameter's AI prompt", async ({ page }) => {
   // VC edition on purpose: the incubator config specs edit weights in parallel.
-  await login(page, VC_ADMIN);
+  //
+  // W8-B (§8 Q116): configuring the role parameters now needs the MEMBER's seat
+  // to be Premium as well as the workspace, and the seeded Client Admin holds a
+  // Pro seat (0052) — so the account that can edit here is the Super User.
+  await login(page, VC_SUPER);
   await page.goto("/app/myparams");
 
   await expect(page.getByRole("heading", { name: "My Parameters" })).toBeVisible();
   await expectRealScreen(page);
 
-  // All three VC owner roles are grouped on the page, 3 params each = 9.
-  for (const role of ["Investment Associate", "Partner", "IC Member"]) {
-    await expect(page.getByText(role, { exact: false }).first()).toBeVisible();
-  }
-  await expect(page.getByText("3/3").first()).toBeVisible();
+  // The three VC owner roles are the prototype's tabs, one role at a time, 3 params each.
+  await expect(page.getByRole("tablist", { name: "Owning roles" }).getByRole("tab")).toHaveText([
+    "Investment Associate",
+    "Partner",
+    "IC Member",
+  ]);
+  await expect(page.getByText("Investment Associate · 3 configurable parameters")).toBeVisible();
 
-  // Premium plan → the config controls are unlocked (Standard would 402).
-  await expect(page.getByText("need a Premium plan")).toHaveCount(0);
+  // Premium workspace and Premium seat → the config controls are unlocked.
+  await expect(page.getByText(/require the Premium plan/)).toHaveCount(0);
+  await expect(page.getByLabel("AI prompt for Thesis fit")).toBeEnabled();
+});
+
+test("a Client Admin on a Pro seat sees the role parameters read-only, and is told why", async ({ page }) => {
+  // The negative half of the test above (§8 Q116): same workspace, same screen,
+  // a Pro seat. The parameters stay visible — greyed, not replaced (F0509).
+  await login(page, VC_ADMIN);
+  await page.goto("/app/myparams");
+  await expectRealScreen(page);
+  await expect(page.getByRole("note")).toContainText(
+    "the 3 additional parameters require the Premium plan. Your current plan is Pro plan.",
+  );
+  await expect(page.getByLabel("AI prompt for Thesis fit")).toBeDisabled();
 });

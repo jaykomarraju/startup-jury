@@ -15,7 +15,9 @@ test("admin edits a core weight and the cohort thresholds", async ({ page }) => 
   await login(page, "nisha.kapoor@demo.startupjury.ai"); // inc_admin
   await page.goto("/app/coreparams");
 
-  await expect(page.getByRole("heading", { name: "Configuration" })).toBeVisible();
+  // W8-B (F0515 / F0519) — the screen carries the prototype's panel title now,
+  // not the application's old "Configuration" heading.
+  await expect(page.getByRole("heading", { name: "Core Parameters — Area weights" })).toBeVisible();
 
   // Edit two area weights and save — "Save changes" is unique to the weights
   // section, which then shows a Saved badge.

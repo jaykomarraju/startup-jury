@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { Target } from "lucide-react";
-import { Card, Button, Badge, EmptyState } from "../components";
+import { ChevronDown, Lock, Save, Target } from "lucide-react";
+import { Card, Button, Badge, EmptyState, PanelFrame, ToolbarButton } from "../components";
 import {
   getConfig,
   getConfigSummary,
-  updateWeights,
   updateThresholds,
   updateAiPrompt,
   updateBranding,
@@ -16,73 +15,320 @@ import {
   type ProgramView,
 } from "../api";
 import { PLANS, PLAN_LABELS, PLAN_PRIVILEGES, planAllowsCore, type Plan } from "../../shared/plans";
-import { REQUIRED_WEIGHT_TOTAL, weightTotalMessage } from "../../shared/scoring";
+import {
+  REQUIRED_WEIGHT_TOTAL,
+  SCORE_SCALE_BOUNDS,
+  formatScore,
+  fromDisplayScale,
+  toDisplayScale,
+  weightBarWidth,
+  weightTotal,
+  weightTotalMessage,
+} from "../../shared/scoring";
+import type { ScoreScale } from "../../shared/types";
 import { useAuth } from "../auth/useAuth";
+import { usePermissions } from "../auth/usePermissions";
 import { useActiveContext } from "../activeContext";
-import { editionLabel } from "../../shared/roles";
+import { editionLabel, type Edition } from "../../shared/roles";
+import { scoringSettings } from "./admin/scoringApi";
+import {
+  getParameterConfig,
+  saveCoreParams,
+  type ParamView,
+  type ParameterConfigView,
+} from "./parametersApi";
 
-/** Admin "Core Parameters" configuration screen (nav slug `coreparams`). Folds
- *  the prototype's Core Parameters / Settings (AI prompt) / Branding / Plans
- *  panels into one admin config surface: area weights (re-scores on save),
- *  cohort thresholds, the AI system prompt, branding, and plan tier + credits. */
+/**
+ * Core Parameters — Area weights (nav slug `coreparams`; prototype
+ * `panel-coreparams.html`, renderers `cpRender` / `cpUpdWt` / `cpApplyPlan`, and
+ * the VC Associate / Analyst builds' `cpApplyReadOnly`).
+ *
+ * The panel itself is the prototype's: the toolbar with Save changes and the
+ * plan badge, "Area weights", the Applies-to card and the five-column table with
+ * renameable area names, the Core chip, the ×3.3 bar and the remaining / over-by
+ * footer. It renders from `GET /api/config/parameters`, which any workspace
+ * member can read, so the read-only variant works for a role that may see the
+ * screen without changing it (§8 Q119 — who SEES it is `nav.ts`, a §9 request).
+ *
+ * Below it, for the workspace's administrators only, the configuration the
+ * application folds onto this screen — cohort thresholds, AI prompts (now with
+ * each area's extraction prompt, §8 Q95), branding, and plan & credits. Those
+ * need `GET /api/config` (console-gated) and are the prototype's Settings /
+ * Branding / account surfaces, not this panel (F0519 / F0538, §9).
+ */
 export function ConfigPage() {
+  const { user } = useAuth();
+  const can = usePermissions();
+  const edition: Edition = user?.edition ?? "incubator";
+  const isConfigAdmin = user?.role === "admin" || user?.role === "superuser";
+  const showAdminSections = isConfigAdmin && can("adminconsole");
+
+  const [view, setView] = useState<ParameterConfigView | null>(null);
+  const [viewError, setViewError] = useState(false);
   const [cfg, setCfg] = useState<FullConfig | null>(null);
-  const [loadError, setLoadError] = useState(false);
+  const [cfgError, setCfgError] = useState(false);
+  const [scale, setScale] = useState<ScoreScale>("0-10");
 
   useEffect(() => {
-    getConfig()
-      .then(setCfg)
-      .catch(() => setLoadError(true));
+    getParameterConfig()
+      .then(setView)
+      .catch(() => setViewError(true));
   }, []);
 
-  if (loadError) {
-    return (
-      <div className="p-5">
-        <h1 className="mb-5 text-xl font-semibold text-fg">Configuration</h1>
-        <EmptyState icon="SlidersHorizontal" title="Couldn't load configuration" description="Try reloading the page." />
-      </div>
-    );
-  }
-  if (!cfg) {
-    return (
-      <div className="p-5">
-        <h1 className="text-xl font-semibold text-fg">Configuration</h1>
-        <p className="mt-2 text-sm text-fg-muted">Loading…</p>
-      </div>
-    );
-  }
+  useEffect(() => {
+    if (!showAdminSections) return;
+    getConfig()
+      .then(setCfg)
+      .catch(() => setCfgError(true));
+  }, [showAdminSections]);
 
-  return (
-    <div className="flex flex-col gap-5 p-5">
-      <div>
-        <h1 className="text-xl font-semibold text-fg">Configuration</h1>
-        <p className="mt-0.5 max-w-2xl text-sm text-fg-muted">
-          Core Parameters, cohort thresholds, the AI prompt, branding, and plan &amp; credits — changes persist and
-          re-score the pipeline.
-        </p>
-      </div>
-      <AppliesToSection />
-      <WeightsSection cfg={cfg} onChange={setCfg} />
-      <ThresholdsSection cfg={cfg} />
-      <AiPromptSection cfg={cfg} />
-      <BrandingSection cfg={cfg} />
-      <PlanCreditsSection cfg={cfg} onChange={setCfg} />
-    </div>
+  // W7-D's 2(c) rule: thresholds are stored canonical 0–10 and shown on the
+  // organisation's scale. Until the framework answers, 0–10 is the identity.
+  useEffect(() => {
+    scoringSettings()
+      .then((s) => setScale(s.scoreScale))
+      .catch(() => undefined);
+  }, []);
+
+  return view ? (
+    <CoreParametersPanel edition={edition} view={view} onChange={setView}>
+      {showAdminSections && (
+        <AdminSections cfg={cfg} cfgError={cfgError} view={view} scale={scale} onCfg={setCfg} onView={setView} />
+      )}
+    </CoreParametersPanel>
+  ) : (
+    <PanelFrame title={CORE_TITLE} subtitle={CORE_SUBTITLE}>
+      {viewError ? (
+        <EmptyState icon="SlidersHorizontal" title="Couldn't load the core parameters" description="Try reloading the page." />
+      ) : (
+        <p className="text-sm text-fg-muted">Loading…</p>
+      )}
+      {showAdminSections && (
+        <AdminSections cfg={cfg} cfgError={cfgError} view={null} scale={scale} onCfg={setCfg} onView={setView} />
+      )}
+    </PanelFrame>
   );
 }
+
+const CORE_TITLE = "Core Parameters — Area weights";
+const CORE_SUBTITLE = "Configure the 13 core evaluation areas and their weights";
 
 function SavedBadge({ show }: { show: boolean }) {
   return show ? <Badge tone="positive">Saved</Badge> : null;
 }
 
+/** `.cp-plan-badge.tier-*` — Premium gold, Pro olive, Standard stone. */
+const PLAN_BADGE: Record<Plan, string> = {
+  premium: "bg-gold-lt text-gold-dk",
+  pro: "bg-olive-lt text-olive-dk",
+  standard: "bg-stone text-fg-muted",
+};
+
+// ── The prototype's panel ────────────────────────────────────────────────────
+
+function CoreParametersPanel({
+  edition,
+  view,
+  onChange,
+  children,
+}: {
+  edition: Edition;
+  view: ParameterConfigView;
+  onChange: (v: ParameterConfigView) => void;
+  children?: React.ReactNode;
+}) {
+  const [names, setNames] = useState<Record<string, string>>(
+    Object.fromEntries(view.coreParams.map((p) => [p.id, p.name])),
+  );
+  const [weights, setWeights] = useState<Record<string, number>>(
+    Object.fromEntries(view.coreParams.map((p) => [p.id, p.weight])),
+  );
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState<{ decks: number; evaluations: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const total = useMemo(
+    () => weightTotal(view.coreParams.map((p) => Number(weights[p.id]) || 0)),
+    [view.coreParams, weights],
+  );
+  const footer = weightTotalMessage(total);
+  const balanced = total === REQUIRED_WEIGHT_TOTAL;
+  // `cpApplyReadOnly` — a role that may see the weights but not change them (§8 Q6(a)).
+  const roleReadOnly = !view.coreEditor;
+  // `cpApplyPlan` — the plan that governs this member cannot configure the core 13.
+  const planLocked = !view.coreConfigEnabled;
+  const locked = roleReadOnly || planLocked;
+  const namesValid = view.coreParams.every((p) => (names[p.id] ?? "").trim());
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    setSaved(null);
+    try {
+      const res = await saveCoreParams(
+        view.coreParams.map((p) => ({
+          id: p.id,
+          weight: Number(weights[p.id]) || 0,
+          name: (names[p.id] ?? p.name).trim(),
+        })),
+      );
+      onChange({ ...view, coreParams: res.coreParams });
+      setSaved(res.rescored);
+    } catch {
+      setError("Couldn't save. Every area needs a name, each weight must be 0–100 and the total exactly 100%.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const note = roleReadOnly
+    ? `Read-only — Core Parameters are governed by the Super User. You can view the ${edition === "vc" ? "firm" : "organisation"}’s area weights but can’t change them.`
+    : planLocked
+      ? `Read-only — configuring core parameters requires the Pro or Premium plan. Your current plan is ${PLAN_LABELS[view.effectivePlan]} plan.`
+      : null;
+
+  return (
+    <PanelFrame
+      title={CORE_TITLE}
+      subtitle={
+        <>
+          {CORE_SUBTITLE}{" "}
+          <span
+            data-testid="plan-badge"
+            className={`ml-1 inline-block rounded-[10px] px-2 py-[2px] align-[1px] text-[10px] font-bold uppercase tracking-[0.04em] ${PLAN_BADGE[view.effectivePlan]}`}
+          >
+            {PLAN_LABELS[view.effectivePlan]} plan
+          </span>
+        </>
+      }
+      actions={
+        roleReadOnly ? undefined : (
+          <>
+            {saved && (
+              <Badge tone="positive">
+                Saved · re-scored {saved.decks} decks, {saved.evaluations} evaluations
+              </Badge>
+            )}
+            <ToolbarButton
+              primary
+              // W2-A / F0153 — the server refuses a rubric that does not total
+              // 100 %, so the button must not offer a save that cannot succeed.
+              disabled={busy || locked || !balanced || !namesValid}
+              title={balanced ? undefined : footer.text}
+              onClick={save}
+            >
+              <Save className="h-3 w-3" aria-hidden="true" />
+              {busy ? "Saving…" : "Save changes"}
+            </ToolbarButton>
+          </>
+        )
+      }
+    >
+      <div className="flex max-w-4xl flex-col">
+        <h2 className="mb-[3px] text-[18px] font-bold tracking-[-0.02em] text-fg">Area weights</h2>
+        <p className="mb-5 text-[12.5px] text-fg-muted">
+          Set the percentage weight of each of the {view.coreParams.length} evaluation areas in the final composite
+          score. Evaluation area names are configurable. Total must equal 100%.
+        </p>
+
+        {note && (
+          <p
+            role="note"
+            className="mb-3.5 flex items-center gap-[7px] rounded-[9px] border border-[#E8C77A] bg-[#FBF3E6] px-[13px] py-2.5 text-[11.5px] text-[#854F0B]"
+          >
+            <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>{note}</span>
+          </p>
+        )}
+        {error && <p className="mb-3 text-sm text-signal-flagged">{error}</p>}
+
+        <AppliesToSection edition={edition} />
+
+        <div className="mb-3 rounded-[10px] border border-line bg-surface p-4">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[34rem] border-collapse text-left">
+              <thead>
+                <tr>
+                  {["#", "Evaluation area", "Type", "Weight %", "Visual"].map((h) => (
+                    <th
+                      key={h}
+                      className="border-b-[1.5px] border-stone px-2 py-1.5 text-[9px] font-bold uppercase tracking-[0.07em] text-fg-muted"
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {view.coreParams.map((p, i) => (
+                  <tr key={p.id} className="border-b border-offwhite last:border-b-0 hover:bg-offwhite">
+                    <td className="px-2 py-[7px] font-mono text-[10px] text-fg-muted">{String(i + 1).padStart(2, "0")}</td>
+                    <td className="px-2 py-[7px]">
+                      <input
+                        className="w-full min-w-[170px] rounded-md border border-line bg-surface px-2 py-1.5 text-xs font-medium text-fg outline-none focus:border-gold-dk disabled:cursor-not-allowed disabled:opacity-70"
+                        aria-label={`${p.name} name`}
+                        disabled={locked}
+                        value={names[p.id] ?? p.name}
+                        onChange={(e) => {
+                          setSaved(null);
+                          setNames((n) => ({ ...n, [p.id]: e.target.value }));
+                        }}
+                      />
+                    </td>
+                    <td className="px-2 py-[7px]">
+                      <span className="whitespace-nowrap rounded-[3px] bg-olive-lt px-1.5 py-px text-[9px] font-bold text-olive-dk">
+                        Core
+                      </span>
+                    </td>
+                    <td className="px-2 py-[7px]">
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        disabled={locked}
+                        className="w-[50px] rounded-[5px] border border-line bg-surface px-1.5 py-1 text-center font-mono text-xs text-fg outline-none focus:border-gold-dk disabled:cursor-not-allowed disabled:opacity-70"
+                        aria-label={`${p.name} weight`}
+                        value={weights[p.id] ?? 0}
+                        onChange={(e) => {
+                          setSaved(null);
+                          setWeights((w) => ({ ...w, [p.id]: Number(e.target.value) }));
+                        }}
+                      />
+                    </td>
+                    <td className="px-2 py-[7px]">
+                      <div className="inline-block h-[5px] w-[70px] overflow-hidden rounded-[3px] bg-stone align-middle">
+                        <div
+                          className="h-full rounded-[3px] bg-olive transition-[width]"
+                          style={{ width: `${weightBarWidth(Number(weights[p.id]) || 0)}%` }}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {/* `#cp-wt-foot` — "Total: 100% ✓", "— N% remaining", "— over by N%". */}
+          <div
+            data-testid="core-weight-total"
+            className="mt-1.5 rounded-md bg-offwhite px-2.5 py-2 text-right font-mono text-[11.5px] font-semibold text-fg"
+          >
+            Total: <span className={footer.ok ? "text-green" : "text-red"}>{total}%</span>
+            {footer.text.slice(`Total: ${total}%`.length)}
+          </div>
+        </div>
+      </div>
+      {children}
+    </PanelFrame>
+  );
+}
+
 // ── Applies to (program / cohort scope) ──────────────────────────────────────
 
-/** Program + cohort selector at the top of the config screen (prototype's
- *  "Applies to" card). The core weights apply across the edition; this sets the
- *  admin's working context, shared with the dashboard toolbar filters. */
-function AppliesToSection() {
-  const { user } = useAuth();
-  const edition = user?.edition ?? "incubator";
+/** The prototype's "Applies to" card. The core weights are edition-wide (F0516 /
+ *  F0518 — per-programme weight sets are not built); this sets the member's
+ *  working programme & cohort view, shared with the decks toolbar. */
+function AppliesToSection({ edition }: { edition: Edition }) {
   const [ctx, setCtx] = useActiveContext(edition);
   const [programs, setPrograms] = useState<ProgramView[]>([]);
 
@@ -96,17 +342,13 @@ function AppliesToSection() {
   const cohortOptions = activeProgram?.cohorts ?? [];
 
   return (
-    <Card>
-      <div className="u-label flex items-center gap-1.5">
-        <Target className="h-3.5 w-3.5" /> Applies to
+    <div className="mb-3 rounded-[10px] border border-line bg-surface p-4">
+      <div className="mb-3 flex items-center gap-[5px] text-[10px] font-bold uppercase tracking-[0.06em] text-olive-dk">
+        <Target className="h-3.5 w-3.5" aria-hidden="true" /> Applies to
       </div>
-      <p className="mt-1 max-w-xl text-sm text-fg-muted">
-        The scope you're configuring. The core weights apply across the {editionLabel(edition)} edition; this sets your
-        working program &amp; cohort view (shared with the decks toolbar).
-      </p>
-      <div className="mt-4 grid max-w-xl gap-4 sm:grid-cols-2">
+      <div className="grid max-w-xl gap-2.5 sm:grid-cols-2">
         <label className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-fg-muted">Program</span>
+          <span className="text-[10px] font-bold uppercase tracking-[0.05em] text-fg-muted">Program</span>
           <select
             className="sj-input h-9"
             aria-label="Applies-to program"
@@ -115,12 +357,14 @@ function AppliesToSection() {
           >
             <option value="">All programs</option>
             {programs.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
             ))}
           </select>
         </label>
         <label className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-fg-muted">Cohort</span>
+          <span className="text-[10px] font-bold uppercase tracking-[0.05em] text-fg-muted">Cohort</span>
           <select
             className="sj-input h-9 disabled:opacity-50"
             aria-label="Applies-to cohort"
@@ -130,158 +374,116 @@ function AppliesToSection() {
           >
             <option value="">All cohorts</option>
             {cohortOptions.map((ch) => (
-              <option key={ch.id} value={ch.id}>{ch.name}</option>
+              <option key={ch.id} value={ch.id}>
+                {ch.name}
+              </option>
             ))}
           </select>
         </label>
       </div>
-    </Card>
+      <p className="mt-2 max-w-xl text-[11.5px] text-fg-muted">
+        The core weights apply across the whole {editionLabel(edition)} edition, not to one program or cohort; this sets
+        your working program &amp; cohort view (shared with the decks toolbar).
+      </p>
+    </div>
   );
 }
 
-// ── Core parameter weights ───────────────────────────────────────────────────
+// ── The administrators' folded sections ──────────────────────────────────────
 
-function WeightsSection({ cfg, onChange }: { cfg: FullConfig; onChange: (c: FullConfig) => void }) {
-  const [weights, setWeights] = useState<Record<string, number>>(
-    Object.fromEntries(cfg.coreParams.map((p) => [p.id, p.weight])),
-  );
-  const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const total = useMemo(() => Object.values(weights).reduce((s, w) => s + (Number(w) || 0), 0), [weights]);
-  const balanced = total === REQUIRED_WEIGHT_TOTAL;
-  const locked = !cfg.coreConfigEnabled; // Standard plan — read-only.
-
-  async function save() {
-    setBusy(true);
-    setError(null);
-    setSaved(false);
-    try {
-      const params = cfg.coreParams.map((p) => ({ id: p.id, weight: Number(weights[p.id]) || 0 }));
-      const res = await updateWeights(params);
-      onChange({ ...cfg, coreParams: res.coreParams });
-      setSaved(true);
-    } catch {
-      setError("Couldn't save weights. Each must be 0–100 and the total exactly 100 %.");
-    } finally {
-      setBusy(false);
-    }
+function AdminSections({
+  cfg,
+  cfgError,
+  view,
+  scale,
+  onCfg,
+  onView,
+}: {
+  cfg: FullConfig | null;
+  cfgError: boolean;
+  view: ParameterConfigView | null;
+  scale: ScoreScale;
+  onCfg: (c: FullConfig) => void;
+  onView: (v: ParameterConfigView) => void;
+}) {
+  if (cfgError) {
+    return (
+      <EmptyState icon="SlidersHorizontal" title="Couldn't load configuration" description="Try reloading the page." />
+    );
   }
-
+  if (!cfg) return null;
   return (
-    <Card>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="u-label">Core Parameters — Area weights</div>
-          <p className="mt-1 max-w-xl text-sm text-fg-muted">
-            Set the percentage weight of each of the {cfg.coreParams.length} evaluation areas in the final composite
-            score. Total should equal 100%.
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <SavedBadge show={saved} />
-          <Button
-            size="sm"
-            variant="primary"
-            // W2-A / F0153 — the server now refuses a rubric that does not total
-            // 100 %, so the button must not offer a save that cannot succeed.
-            disabled={busy || locked || !balanced}
-            title={balanced ? undefined : weightTotalMessage(total).text}
-            onClick={save}
-          >
-            {busy ? "Saving…" : "Save changes"}
-          </Button>
-        </div>
-      </div>
-
-      {locked && (
-        <p className="mt-3 rounded-md border border-line bg-surface-2 px-3 py-2 text-xs text-fg-muted">
-          Read-only — configuring core parameters requires the Pro or Premium plan. Your current plan is{" "}
-          {PLAN_LABELS[cfg.plan]}.
-        </p>
-      )}
-      {error && <p className="mt-3 text-sm text-signal-flagged">{error}</p>}
-
-      <div className="mt-4 overflow-x-auto">
-        <table className="w-full min-w-[32rem] text-left">
-          <thead>
-            <tr className="text-fg-muted">
-              <th className="py-2 pr-3 text-xs font-medium uppercase tracking-wide">#</th>
-              <th className="py-2 pr-3 text-xs font-medium uppercase tracking-wide">Evaluation area</th>
-              <th className="py-2 pr-3 text-xs font-medium uppercase tracking-wide">Weight %</th>
-              <th className="py-2 text-xs font-medium uppercase tracking-wide">Visual</th>
-            </tr>
-          </thead>
-          <tbody>
-            {cfg.coreParams.map((p, i) => (
-              <tr key={p.id} className="border-t border-line">
-                <td className="py-2.5 pr-3 font-mono text-xs text-fg-muted">{i + 1}</td>
-                <td className="py-2.5 pr-3 text-sm text-fg">{p.name}</td>
-                <td className="py-2.5 pr-3">
-                  <input
-                    type="number"
-                    min={0}
-                    max={100}
-                    disabled={locked}
-                    className="sj-input h-8 w-20 py-0 text-sm disabled:opacity-60"
-                    aria-label={`${p.name} weight`}
-                    value={weights[p.id] ?? 0}
-                    onChange={(e) => setWeights((w) => ({ ...w, [p.id]: Number(e.target.value) }))}
-                  />
-                </td>
-                <td className="py-2.5">
-                  <div className="h-2 w-40 max-w-full overflow-hidden rounded-full bg-surface-2">
-                    <div
-                      className="h-full rounded-full bg-accent"
-                      style={{ width: `${Math.min(100, Number(weights[p.id]) || 0)}%` }}
-                    />
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr className="border-t border-line">
-              <td />
-              <td className="py-2.5 pr-3 text-sm font-medium text-fg">Total</td>
-              <td className="py-2.5 pr-3">
-                <span className={`font-mono text-sm font-semibold ${total === 100 ? "text-positive" : "text-fg"}`}>
-                  {total}%
-                </span>
-              </td>
-              <td className="py-2.5 text-xs text-fg-muted">
-                {balanced ? "Balanced" : weightTotalMessage(total).text}
-              </td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-    </Card>
+    <div className="mt-5 flex max-w-4xl flex-col gap-5 border-t border-line pt-5">
+      <ThresholdsSection cfg={cfg} scale={scale} />
+      <AiPromptSection cfg={cfg} view={view} onView={onView} />
+      <BrandingSection cfg={cfg} />
+      <PlanCreditsSection cfg={cfg} onChange={onCfg} />
+    </div>
   );
 }
 
 // ── Cohort thresholds ─────────────────────────────────────────────────────────
 
-function ThresholdsSection({ cfg }: { cfg: FullConfig }) {
-  const [best, setBest] = useState(cfg.thresholdBest);
-  const [mediocre, setMediocre] = useState(cfg.thresholdMediocre);
+/**
+ * W7-D's 2(c) rule (§9, `W8-B`): both thresholds are stored canonical 0–10 and
+ * are POSITIONS on the scale, so they are shown and typed on the organisation's
+ * scale through `toDisplayScale` / `fromDisplayScale` and labelled with
+ * `formatScore`. On 0–10 every conversion is the identity.
+ */
+function ThresholdsSection({ cfg, scale }: { cfg: FullConfig; scale: ScoreScale }) {
+  const bounds = SCORE_SCALE_BOUNDS[scale];
+  // What the admin typed, ON `draft.scale`. Re-seeded when the scale arrives
+  // (the framework read is async) unless the admin has already typed.
+  const [stored, setStored] = useState({ best: cfg.thresholdBest, mediocre: cfg.thresholdMediocre });
+  const [draft, setDraft] = useState(() => ({
+    scale,
+    dirty: false,
+    best: toDisplayScale(cfg.thresholdBest, scale),
+    mediocre: toDisplayScale(cfg.thresholdMediocre, scale),
+  }));
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraft((d) => {
+      if (d.scale === scale) return d;
+      const best = d.dirty ? fromDisplayScale(d.best, d.scale) : stored.best;
+      const mediocre = d.dirty ? fromDisplayScale(d.mediocre, d.scale) : stored.mediocre;
+      return {
+        scale,
+        dirty: d.dirty,
+        best: toDisplayScale(best, scale),
+        mediocre: toDisplayScale(mediocre, scale),
+      };
+    });
+  }, [scale, stored]);
+
+  const bestCanonical = fromDisplayScale(Number(draft.best), draft.scale);
+  const mediocreCanonical = fromDisplayScale(Number(draft.mediocre), draft.scale);
+  // One display step below Best — the top of the Mediocre band as the org reads it.
+  const unit = 10 ** -bounds.decimals;
+  const mediocreTop = (toDisplayScale(bestCanonical, scale) - unit).toFixed(bounds.decimals);
 
   async function save() {
     setBusy(true);
     setError(null);
     setSaved(false);
     try {
-      await updateThresholds(Number(best), Number(mediocre));
+      const res = await updateThresholds(bestCanonical, mediocreCanonical);
+      setStored({ best: res.thresholdBest, mediocre: res.thresholdMediocre });
+      setDraft((d) => ({ ...d, dirty: false }));
       setSaved(true);
     } catch {
-      setError("Couldn't save. Best must be ≥ Mediocre, both between 0 and 10.");
+      setError(`Couldn't save. Best must be ≥ Mediocre, both between ${bounds.min} and ${bounds.max}.`);
     } finally {
       setBusy(false);
     }
+  }
+
+  function edit(field: "best" | "mediocre", value: string) {
+    setSaved(false);
+    setDraft((d) => ({ ...d, dirty: true, [field]: Number(value) }));
   }
 
   return (
@@ -289,7 +491,9 @@ function ThresholdsSection({ cfg }: { cfg: FullConfig }) {
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="u-label">Cohort rating thresholds</div>
-          <p className="mt-1 text-sm text-fg-muted">Score bands that classify a deck as Best, Mediocre or Poor.</p>
+          <p className="mt-1 text-sm text-fg-muted">
+            Score bands that classify a deck as Best, Mediocre or Poor, on your {bounds.min}–{bounds.max} scale.
+          </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <SavedBadge show={saved} />
@@ -304,36 +508,36 @@ function ThresholdsSection({ cfg }: { cfg: FullConfig }) {
           <span className="text-xs font-medium text-fg-muted">Best ≥</span>
           <input
             type="number"
-            min={0}
-            max={10}
-            step={0.1}
+            min={bounds.min}
+            max={bounds.max}
+            step={unit}
             className="sj-input h-9 w-24"
             aria-label="Best threshold"
-            value={best}
-            onChange={(e) => setBest(Number(e.target.value))}
+            value={draft.best}
+            onChange={(e) => edit("best", e.target.value)}
           />
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-xs font-medium text-fg-muted">Mediocre ≥</span>
           <input
             type="number"
-            min={0}
-            max={10}
-            step={0.1}
+            min={bounds.min}
+            max={bounds.max}
+            step={unit}
             className="sj-input h-9 w-24"
             aria-label="Mediocre threshold"
-            value={mediocre}
-            onChange={(e) => setMediocre(Number(e.target.value))}
+            value={draft.mediocre}
+            onChange={(e) => edit("mediocre", e.target.value)}
           />
         </label>
         <div className="flex flex-col gap-1">
           <span className="text-xs font-medium text-fg-muted">Preview</span>
-          <div className="flex items-center gap-2 pt-1.5 text-xs">
-            <Badge tone="positive">Best ≥ {best}</Badge>
+          <div className="flex items-center gap-2 pt-1.5 text-xs" data-testid="config-threshold-preview">
+            <Badge tone="positive">Best ≥ {formatScore(bestCanonical, scale)}</Badge>
             <Badge tone="info">
-              {mediocre} – {(Number(best) - 0.1).toFixed(1)}
+              {formatScore(mediocreCanonical, scale)} – {mediocreTop}
             </Badge>
-            <Badge tone="neutral">Poor &lt; {mediocre}</Badge>
+            <Badge tone="neutral">Poor &lt; {formatScore(mediocreCanonical, scale)}</Badge>
           </div>
         </div>
       </div>
@@ -341,9 +545,17 @@ function ThresholdsSection({ cfg }: { cfg: FullConfig }) {
   );
 }
 
-// ── AI system prompt ──────────────────────────────────────────────────────────
+// ── AI prompts ────────────────────────────────────────────────────────────────
 
-function AiPromptSection({ cfg }: { cfg: FullConfig }) {
+function AiPromptSection({
+  cfg,
+  view,
+  onView,
+}: {
+  cfg: FullConfig;
+  view: ParameterConfigView | null;
+  onView: (v: ParameterConfigView) => void;
+}) {
   const [prompt, setPrompt] = useState(cfg.aiSystemPrompt);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -388,7 +600,133 @@ function AiPromptSection({ cfg }: { cfg: FullConfig }) {
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
       />
+      {view && view.coreEditor && view.coreParams.length > 0 && <AreaPrompts view={view} onView={onView} />}
     </Card>
+  );
+}
+
+/**
+ * Each core area's AI extraction prompt (§8 Q95 — core-prompt editing belongs to
+ * Core Parameters), drawn as the prototype Settings panel's `.area-accordion`:
+ * number, name, Core chip, Customised / Not set, and the extraction prompt box.
+ * The signal-band text is the console's Rubric anchors; the clarification-trigger
+ * box has no storage and is not drawn (§7 `W8-B`).
+ */
+function AreaPrompts({ view, onView }: { view: ParameterConfigView; onView: (v: ParameterConfigView) => void }) {
+  const [open, setOpen] = useState<string | null>(null);
+  return (
+    <div className="mt-5">
+      <div className="u-label mb-2">Extraction prompts per evaluation area</div>
+      {view.coreParams.map((p, i) => (
+        <AreaPromptRow
+          key={p.id}
+          index={i + 1}
+          param={p}
+          view={view}
+          open={open === p.id}
+          onToggle={() => setOpen((o) => (o === p.id ? null : p.id))}
+          onView={onView}
+        />
+      ))}
+    </div>
+  );
+}
+
+function AreaPromptRow({
+  index,
+  param,
+  view,
+  open,
+  onToggle,
+  onView,
+}: {
+  index: number;
+  param: ParamView;
+  view: ParameterConfigView;
+  open: boolean;
+  onToggle: () => void;
+  onView: (v: ParameterConfigView) => void;
+}) {
+  const [prompt, setPrompt] = useState(param.prompt ?? "");
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const locked = !view.coreConfigEnabled;
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    setSaved(false);
+    try {
+      // The route takes the whole rubric; the stored weights already total 100.
+      const res = await saveCoreParams(
+        view.coreParams.map((p) => ({
+          id: p.id,
+          weight: p.weight,
+          ...(p.id === param.id ? { prompt: prompt.trim() } : {}),
+        })),
+      );
+      onView({ ...view, coreParams: res.coreParams });
+      setSaved(true);
+    } catch {
+      setError("Couldn't save the prompt. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mb-2 overflow-hidden rounded-[9px] border border-line">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={onToggle}
+        className={`flex w-full items-center gap-2.5 px-3.5 py-[11px] text-left ${open ? "border-b border-line bg-olive-lt" : "bg-offwhite"}`}
+      >
+        <span className="w-[22px] shrink-0 font-mono text-[10px] font-bold text-fg-muted">
+          {String(index).padStart(2, "0")}
+        </span>
+        <span className="flex-1 text-[12.5px] font-semibold text-fg">{param.name}</span>
+        <span className="rounded bg-olive-lt px-[7px] py-[2px] text-[9px] font-bold text-olive-dk">Core</span>
+        <span
+          className={`ml-auto rounded-[5px] px-2 py-[2px] text-[10px] font-semibold ${param.prompt ? "bg-[#FAEEDA] text-gold-dk" : "bg-offwhite text-fg-muted"}`}
+        >
+          {param.prompt ? "Customised" : "Not set"}
+        </span>
+        <ChevronDown className={`h-3.5 w-3.5 text-fg-muted transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="bg-surface px-3.5 py-4">
+          <div className="overflow-hidden rounded-[7px] border border-line">
+            <div className="border-b border-line bg-offwhite px-2.5 py-[5px] text-[9px] font-bold uppercase tracking-[0.05em] text-fg-muted">
+              System prompt for AI extraction
+            </div>
+            <textarea
+              className="block min-h-[70px] w-full resize-y border-0 bg-surface p-2.5 text-[11.5px] text-fg outline-none disabled:opacity-60"
+              aria-label={`Extraction prompt for ${param.name}`}
+              disabled={locked}
+              value={prompt}
+              onChange={(e) => {
+                setSaved(false);
+                setPrompt(e.target.value);
+              }}
+            />
+          </div>
+          {error && <p className="mt-2 text-sm text-signal-flagged">{error}</p>}
+          <div className="mt-2 flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={busy || locked || prompt.trim() === (param.prompt ?? "")}
+              onClick={save}
+            >
+              {busy ? "Saving…" : "Save prompts"}
+            </Button>
+            <SavedBadge show={saved} />
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

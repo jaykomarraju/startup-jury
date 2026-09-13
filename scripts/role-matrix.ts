@@ -508,6 +508,10 @@ const PROBES: Probe[] = [
     allow: ["admin", "program_manager", "program_associate", "jury", "founder", "partner", "ic_member", "associate", "analyst"] },
   { id: "config.read", label: "GET /api/config (org settings)", kind: "read", method: "GET", path: "/api/config",
     allow: ["admin"] },
+  // W8-B — the parameter-configuration view Core Parameters and My Parameters
+  // render from: every workspace member, never a founder (or a mentor).
+  { id: "config.paramview", label: "GET /api/config/parameters (what I may configure)", kind: "read", method: "GET", path: "/api/config/parameters",
+    allow: ["admin", "program_manager", "program_associate", "jury", "partner", "ic_member", "associate", "analyst"] },
   { id: "users.list", label: "GET /api/users (roster)", kind: "read", method: "GET", path: "/api/users",
     allow: ["admin"] },
   { id: "billing.read", label: "GET /api/billing (credits & billing)", kind: "read", method: "GET", path: "/api/billing",

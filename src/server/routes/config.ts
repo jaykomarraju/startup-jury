@@ -13,8 +13,9 @@ import {
   ADDITIONAL_PARAM_OWNERS,
   MAX_ADDITIONAL_PER_ROLE,
   isAdditionalParamOwner,
+  isMentor,
 } from "../../shared/roles";
-import { planAllowsAdditional, planAllowsCore, isPlan, type Plan } from "../../shared/plans";
+import { PLANS, planAllowsAdditional, planAllowsCore, isPlan, type Plan } from "../../shared/plans";
 import {
   REQUIRED_WEIGHT_TOTAL,
   weightTotal,
@@ -173,22 +174,130 @@ config.get("/", requireTask("adminconsole", "admin"), async (c) => {
   });
 });
 
+// ── The member's own plan (W8-B · §9 `W6-C`, §8 Q79 / Q116) ──────────────────
+//
+// `users.plan_tier` (0052) is the tier of the seat a member holds. Until W8-B it
+// gated nothing: every parameter route asked `org_settings.plan` alone, so a
+// Standard juror in a Premium workspace could configure what Premium allows.
+//
+// The rule (§8 Q116): the plan that governs what a member may configure is the
+// LOWER of their own seat's tier and the workspace plan, and it means what
+// `plans.ts` says a tier means — Pro configures the 13 core areas, Premium adds
+// the role parameters. That is the meaning Set up already shows on each member
+// card (`PLAN_PRIVILEGES`), the one the per-tier seat prices are sold against,
+// and the prototype's own `PLAN_META[CURRENT_PLAN]` check. The workspace plan is
+// the ceiling: a Premium seat cannot configure beyond a Standard workspace.
+//
+// Roles are unchanged. This only ever REMOVES access a role already had.
+
+/** The plan that governs what the signed-in member may configure. */
+async function memberPlan(
+  c: Context<AppEnv>,
+  orgPlan: Plan,
+): Promise<{ memberTier: Plan; effective: Plan }> {
+  const row = await c.env.DB.prepare("SELECT plan_tier FROM users WHERE id = ?")
+    .bind(c.var.user.id)
+    .first<{ plan_tier: string | null }>();
+  const memberTier: Plan = isPlan(row?.plan_tier) ? row.plan_tier : "standard";
+  // `PLANS` is ordered Standard → Pro → Premium; the lower of the two governs.
+  const effective = PLANS[Math.min(PLANS.indexOf(memberTier), PLANS.indexOf(orgPlan))];
+  return { memberTier, effective };
+}
+
+/**
+ * The editor set for the role-scoped parameters, as a role floor ANDed with the
+ * `configparams` cell (§8 Q6 / Q8 — see `PUT /additional-params/:id`).
+ */
+async function mayConfigureAdditional(c: Context<AppEnv>): Promise<boolean> {
+  const { edition, role } = c.var.user;
+  const configEditors = DEFAULT_ROLE_PERMISSIONS[edition].configparams ?? [];
+  return (
+    (isConfigAdmin(role) || configEditors.includes(role)) && (await c.var.perms.can("configparams"))
+  );
+}
+
+interface EditableParamRow extends ParamRow {
+  active: number;
+}
+
+/**
+ * GET /api/config/parameters — the parameter-configuration view for the
+ * signed-in member: both My Parameters and Core Parameters render from it.
+ *
+ * Unlike `/summary` it answers "what may *I* change": the org plan, the member's
+ * own tier, the plan that results, and per role parameter whether this member
+ * may edit it. It also lists a role parameter that has been SWITCHED OFF
+ * (0060 — `active = 0`, `retired = 0`), which every other read of `parameters`
+ * deliberately omits, so the toggle can be switched back on.
+ *
+ * Any authenticated member of the workspace; not a founder, not a mentor.
+ */
+config.get("/parameters", async (c) => {
+  const { edition, role } = c.var.user;
+  if (role === "founder" || isMentor(role)) return c.json({ error: "forbidden" }, 403);
+  const s = await loadSettings(c, edition);
+  if (!s) return c.json({ error: "not_found" }, 404);
+  const { memberTier, effective } = await memberPlan(c, s.plan);
+  const coreConfigEnabled = planAllowsCore(effective);
+  const additionalEnabled = planAllowsAdditional(effective);
+  const additionalEditor = await mayConfigureAdditional(c);
+
+  const rows = (
+    await c.env.DB.prepare(
+      "SELECT id, key, name, weight, informational, role_scope, prompt, description, config_permitted, sort_order, active " +
+        "FROM parameters WHERE edition = ? AND retired = 0 ORDER BY sort_order",
+    )
+      .bind(edition)
+      .all<EditableParamRow>()
+  ).results;
+
+  return c.json({
+    plan: s.plan,
+    memberTier,
+    effectivePlan: effective,
+    coreConfigEnabled,
+    additionalEnabled,
+    /** §8 Q6(a): the core 13 stay admin + superuser. */
+    coreEditor: isConfigAdmin(role),
+    /** The `configparams` editor set, before the plan is applied. */
+    additionalEditor,
+    coreParams: rows.filter((p) => p.informational === 0 && p.active === 1).map(toParamView),
+    additionalParams: rows
+      .filter((p) => p.informational === 1)
+      .map((p) => ({
+        ...toParamView(p),
+        enabled: p.active === 1,
+        editable:
+          additionalEnabled &&
+          (additionalEditor || (p.config_permitted === 1 && p.role_scope === role)),
+      })),
+  });
+});
+
 // ── Rubric: core weights (re-scores) ─────────────────────────────────────────
 
 interface WeightUpdate {
   id: string;
   weight: number;
   name?: string;
+  /**
+   * The area's AI extraction prompt (§8 Q95 — core-prompt editing belongs to
+   * Core Parameters). An empty string clears it; absent leaves it alone.
+   */
+  prompt?: string | null;
 }
 
 /** PUT /api/config/parameters — update core parameter weights (and optional
- *  renames), then re-score the whole edition. */
+ *  renames and extraction prompts), then re-score the whole edition. */
 config.put("/parameters", requireRole("admin"), async (c) => {
   const edition = c.var.user.edition;
   const settings = await loadSettings(c, edition);
   if (!settings) return c.json({ error: "not_found" }, 404);
   // Configuring the core 13 weights requires Pro or above (Standard = no config).
   if (!planAllowsCore(settings.plan)) return c.json({ error: "plan_required" }, 402);
+  // …and so does the member's own seat (§9 `W6-C`, §8 Q116).
+  const { effective } = await memberPlan(c, settings.plan);
+  if (!planAllowsCore(effective)) return c.json({ error: "plan_required", scope: "member" }, 402);
 
   const body = await readBody<{ params: WeightUpdate[] }>(c);
   const updates = Array.isArray(body.params) ? body.params : [];
@@ -198,6 +307,7 @@ config.put("/parameters", requireRole("admin"), async (c) => {
   const byId = new Map(existing.map((p) => [p.id, p]));
 
   const stmts: D1PreparedStatement[] = [];
+  const promptChanges: string[] = [];
   const nextWeights = new Map(
     existing.filter((p) => p.informational === 0).map((p) => [p.id, p.weight]),
   );
@@ -212,8 +322,18 @@ config.put("/parameters", requireRole("admin"), async (c) => {
     }
     nextWeights.set(u.id, weight);
     const name = typeof u.name === "string" && u.name.trim() ? u.name.trim() : p.name;
+    let prompt = p.prompt;
+    if (u.prompt !== undefined) {
+      prompt = typeof u.prompt === "string" && u.prompt.trim() ? u.prompt.trim() : null;
+      if (prompt !== p.prompt) promptChanges.push(name);
+    }
     stmts.push(
-      c.env.DB.prepare("UPDATE parameters SET weight = ?, name = ? WHERE id = ?").bind(weight, name, u.id),
+      c.env.DB.prepare("UPDATE parameters SET weight = ?, name = ?, prompt = ? WHERE id = ?").bind(
+        weight,
+        name,
+        prompt,
+        u.id,
+      ),
     );
   }
 
@@ -233,6 +353,11 @@ config.put("/parameters", requireRole("admin"), async (c) => {
   stmts.push(bumpCriteriaVersion(c, edition));
   await c.env.DB.batch(stmts);
   await auditWeightChange(c, existing, updates);
+  if (promptChanges.length > 0) {
+    await auditConfig(c, "core_prompt_updated", `AI extraction prompt updated for ${promptChanges.join(", ")}`, {
+      targetType: "parameter",
+    });
+  }
 
   const rescored = await rescoreEdition(c.env, edition);
   const params = await loadParams(c, edition);
@@ -264,8 +389,20 @@ function validOwner(edition: Edition, role: unknown): Role | null {
     : null;
 }
 
+/** Guard: the member's own seat must allow the role parameters too (§8 Q116). */
+async function memberAllowsAdditional(c: Context<AppEnv>, s: SettingsRow): Promise<boolean> {
+  return planAllowsAdditional((await memberPlan(c, s.plan)).effective);
+}
+
+/** A description / prompt body field: an empty string clears it, absent keeps it. */
+function optionalText(value: unknown, current: string | null): string | null {
+  if (value === undefined) return current;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 /** POST /api/config/additional-params — add a role-scoped additional param
- *  (Premium only). Body: { name, roleScope, prompt? }. Enforces ≤3 per role. */
+ *  (Premium only). Body: { name, roleScope, prompt?, description? }. Enforces ≤3
+ *  per role — a switched-off parameter still holds its slot (0060). */
 // Wave 3 integration. The role list must match the `configparams` seed that
 // migration 0040 widened to spec §10's editor set (superuser, admin,
 // program_manager / partner) — W3-A widened the SEED and the client, which shows
@@ -277,17 +414,20 @@ config.post("/additional-params", requireTask("configparams", "admin", "program_
   const s = await loadSettings(c, edition);
   if (!s) return c.json({ error: "not_found" }, 404);
   if (!planAllowsAdditional(s.plan)) return c.json({ error: "plan_required" }, 402);
+  if (!(await memberAllowsAdditional(c, s))) return c.json({ error: "plan_required", scope: "member" }, 402);
 
-  const body = await readBody<{ name: string; roleScope: string; prompt?: string }>(c);
+  const body = await readBody<{ name: string; roleScope: string; prompt?: string; description?: string }>(c);
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name) return c.json({ error: "name_required" }, 400);
   const roleScope = validOwner(edition, body.roleScope);
   if (!roleScope) return c.json({ error: "invalid_role" }, 400);
-  const prompt = typeof body.prompt === "string" && body.prompt.trim() ? body.prompt.trim() : null;
+  const prompt = optionalText(body.prompt, null);
+  const description = optionalText(body.description, null);
 
-  // Up to 3 additional params per owning role.
+  // Up to 3 additional params per owning role. A switched-off one keeps its
+  // slot (it still has its label, description and prompt); a removed one does not.
   const count = await c.env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM parameters WHERE edition = ? AND active = 1 AND informational = 1 AND role_scope = ?",
+    "SELECT COUNT(*) AS n FROM parameters WHERE edition = ? AND retired = 0 AND informational = 1 AND role_scope = ?",
   )
     .bind(edition, roleScope)
     .first<{ n: number }>();
@@ -303,8 +443,8 @@ config.post("/additional-params", requireTask("configparams", "admin", "program_
     .first<{ n: number }>();
   await c.env.DB.batch([
     c.env.DB.prepare(
-      "INSERT INTO parameters (id, edition, key, name, weight, informational, role_scope, prompt, sort_order, active) VALUES (?, ?, ?, ?, 0, 1, ?, ?, ?, 1)",
-    ).bind(id, edition, key, name, roleScope, prompt, nextOrder?.n ?? 101),
+      "INSERT INTO parameters (id, edition, key, name, weight, informational, role_scope, prompt, description, sort_order, active) VALUES (?, ?, ?, ?, 0, 1, ?, ?, ?, ?, 1)",
+    ).bind(id, edition, key, name, roleScope, prompt, description, nextOrder?.n ?? 101),
     // Adding a parameter changes the scoring criteria set → allow a re-score.
     bumpCriteriaVersion(c, edition),
   ]);
@@ -316,7 +456,17 @@ config.post("/additional-params", requireTask("configparams", "admin", "program_
 
   return c.json({
     ok: true,
-    param: { id, key, name, weight: 0, informational: true, roleScope, prompt: prompt ?? undefined },
+    param: {
+      id,
+      key,
+      name,
+      weight: 0,
+      informational: true,
+      roleScope,
+      prompt: prompt ?? undefined,
+      description: description ?? undefined,
+      enabled: true,
+    },
   });
 });
 
@@ -368,72 +518,111 @@ config.put("/additional-params/:id", async (c) => {
   // would have handed a jury member edit rights the role list never gave. The
   // floor is the same default editor set migration 0040 seeds — spec §10's, per
   // §8 Q6 — so the widening to program_manager / partner is preserved.
-  const configEditors = DEFAULT_ROLE_PERMISSIONS[edition].configparams ?? [];
-  const mayConfigure =
-    (isConfigAdmin(role) || configEditors.includes(role)) &&
-    (await c.var.perms.can("configparams"));
+  const mayConfigure = await mayConfigureAdditional(c);
   if (!mayConfigure && !isAdditionalParamOwner(edition, role)) {
     return c.json({ error: "forbidden" }, 403);
   }
   const s = await requirePremium(c, edition);
   if (!s) return c.json({ error: "plan_required" }, 402);
   const id = c.req.param("id");
+  // `retired = 0`, not `active = 1`: a switched-off parameter (0060) is still
+  // editable, and switching it back on is an edit.
   const p = await c.env.DB.prepare(
-    "SELECT informational, name, prompt, role_scope, config_permitted FROM parameters WHERE id = ? AND edition = ? AND active = 1",
+    "SELECT informational, name, prompt, description, role_scope, config_permitted, active FROM parameters WHERE id = ? AND edition = ? AND retired = 0",
   )
     .bind(id, edition)
     .first<{
       informational: number;
       name: string;
       prompt: string | null;
+      description: string | null;
       role_scope: string | null;
       config_permitted: number;
+      active: number;
     }>();
   if (!p) return c.json({ error: "not_found" }, 404);
   if (p.informational !== 1) return c.json({ error: "core_param" }, 400);
 
   const permitted = p.config_permitted === 1 && p.role_scope === role;
   if (!mayConfigure && !permitted) return c.json({ error: "forbidden" }, 403);
+  // Authorised by role — now the member's own seat (§9 `W6-C`, §8 Q116). After
+  // the 403s on purpose: who may edit is decided before what their plan allows.
+  if (!(await memberAllowsAdditional(c, s))) return c.json({ error: "plan_required", scope: "member" }, 402);
 
-  const body = await readBody<{ name?: string; prompt?: string | null }>(c);
+  const body = await readBody<{
+    name?: string;
+    prompt?: string | null;
+    description?: string | null;
+    enabled?: boolean;
+  }>(c);
+  if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
+    return c.json({ error: "invalid_enabled" }, 400);
+  }
   const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : p.name;
-  // prompt: an empty string clears it (falls back to the default), undefined keeps it.
-  let prompt = p.prompt;
-  if (body.prompt !== undefined) {
-    prompt = typeof body.prompt === "string" && body.prompt.trim() ? body.prompt.trim() : null;
+  // prompt / description: an empty string clears it, undefined keeps it.
+  const prompt = optionalText(body.prompt, p.prompt);
+  const description = optionalText(body.description, p.description);
+  const active = body.enabled === undefined ? p.active : body.enabled ? 1 : 0;
+
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        "UPDATE parameters SET name = ?, prompt = ?, description = ?, active = ? WHERE id = ?",
+      ).bind(name, prompt, description, active, id),
+      bumpCriteriaVersion(c, edition),
+    ]);
+  } catch {
+    // `idx_parameters_edition_key_active` (0038) is partial on `active = 1`, so
+    // switching a parameter back on can only fail if another live row took its
+    // key meanwhile. Added parameters get random keys; this is the guard, not a path.
+    return c.json({ error: "key_in_use" }, 409);
   }
 
-  await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE parameters SET name = ?, prompt = ? WHERE id = ?").bind(name, prompt, id),
-    bumpCriteriaVersion(c, edition),
-  ]);
+  const changes: string[] = [];
+  if (name !== p.name) changes.push(`renamed: ${p.name} → ${name}`);
+  if (description !== p.description) changes.push("scoring description updated");
+  if (prompt !== p.prompt) changes.push("AI extraction prompt updated");
+  if (active !== p.active) changes.push(active === 1 ? "switched on" : "switched off");
   await auditConfig(
     c,
     "additional_param_updated",
-    name !== p.name
-      ? `Additional parameter renamed: ${p.name} → ${name}`
-      : `AI guidance prompt updated for ${name}`,
-    { targetType: "parameter", targetId: id, detail: { name: { from: p.name, to: name } } },
+    `Additional parameter ${name} ${changes.length > 0 ? changes.join("; ") : "saved unchanged"}`,
+    {
+      targetType: "parameter",
+      targetId: id,
+      detail: { name: { from: p.name, to: name }, enabled: { from: p.active === 1, to: active === 1 } },
+    },
   );
-  return c.json({ ok: true, param: { id, name, prompt: prompt ?? undefined } });
+  return c.json({
+    ok: true,
+    param: {
+      id,
+      name,
+      prompt: prompt ?? undefined,
+      description: description ?? undefined,
+      enabled: active === 1,
+    },
+  });
 });
 
-/** DELETE /api/config/additional-params/:id — retire an additional param
- *  (Premium only; soft delete active=0, so historical scores stay referenced). */
+/** DELETE /api/config/additional-params/:id — remove an additional param
+ *  (Premium only). A soft delete — `active = 0, retired = 1` (0060) — so
+ *  historical scores stay referenced and the row never comes back as a toggle. */
 config.delete("/additional-params/:id", requireTask("configparams", "admin", "program_manager", "partner"), async (c) => {
   const edition = c.var.user.edition;
   const s = await requirePremium(c, edition);
   if (!s) return c.json({ error: "plan_required" }, 402);
+  if (!(await memberAllowsAdditional(c, s))) return c.json({ error: "plan_required", scope: "member" }, 402);
   const id = c.req.param("id");
   const p = await c.env.DB.prepare(
-    "SELECT informational, name FROM parameters WHERE id = ? AND edition = ? AND active = 1",
+    "SELECT informational, name FROM parameters WHERE id = ? AND edition = ? AND retired = 0",
   )
     .bind(id, edition)
     .first<{ informational: number; name: string }>();
   if (!p) return c.json({ error: "not_found" }, 404);
   if (p.informational !== 1) return c.json({ error: "core_param" }, 400); // never delete a core area
   await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE parameters SET active = 0 WHERE id = ?").bind(id),
+    c.env.DB.prepare("UPDATE parameters SET active = 0, retired = 1 WHERE id = ?").bind(id),
     bumpCriteriaVersion(c, edition),
   ]);
   await auditConfig(c, "additional_param_removed", `Additional parameter "${p.name}" removed`, {

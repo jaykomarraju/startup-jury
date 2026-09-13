@@ -642,6 +642,16 @@ describe("Permit configuration (F0077)", () => {
       "SELECT id FROM parameters WHERE edition = 'incubator' AND role_scope = 'jury' AND config_permitted = 0 AND active = 1 LIMIT 1",
     ).first<{ id: string }>();
 
+    // W8-B (§8 Q116) — a delegated edit is still configuration, so the juror's
+    // own seat must allow the role parameters. The seeded juror holds a Standard
+    // seat (0052): the grant alone is refused on plan, not on permission…
+    expect(
+      (await req("PUT", `/api/config/additional-params/${permitted!.id}`, jury, { name: "Moat" }))
+        .status,
+    ).toBe(402);
+    // …and with a Premium seat the delegation behaves exactly as before.
+    await env.DB.prepare("UPDATE users SET plan_tier = 'premium' WHERE email = ?").bind(JURY).run();
+
     expect(
       (await req("PUT", `/api/config/additional-params/${permitted!.id}`, jury, { name: "Moat" }))
         .status,
@@ -673,6 +683,7 @@ describe("Permit configuration (F0077)", () => {
     await req("PUT", `/api/config/additional-params/${permitted!.id}/permit`, admin, {
       permitted: true,
     });
+    await env.DB.prepare("UPDATE users SET plan_tier = 'standard' WHERE email = ?").bind(JURY).run();
   });
 
   it("granting is admin-only, and never applies to a core area", async () => {
