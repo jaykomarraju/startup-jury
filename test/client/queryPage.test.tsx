@@ -99,6 +99,8 @@ interface Api {
   release: Map<string, () => void>;
   delivered?: boolean;
   decksStatus?: number;
+  /** Decks whose POST fails. */
+  failPost?: Set<string>;
 }
 
 let api: Api;
@@ -118,6 +120,7 @@ function installFetch() {
         const m = url.match(/^\/api\/decks\/([^/]+)\/queries$/);
         if (m) {
           const body = JSON.parse(String(init!.body)) as Record<string, unknown>;
+          if (api.failPost?.has(decodeURIComponent(m[1]))) return ok({ error: "boom" }, 500);
           api.posts.push({ deckId: decodeURIComponent(m[1]), body });
           return ok({ ok: true, queryId: `qry_${api.posts.length}`, emailStatus: "recorded", delivered: api.delivered ?? false });
         }
@@ -362,6 +365,21 @@ describe("Email query compose (#qview-email)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Reset to the generated message" }));
     await waitFor(() => expect(body.value).not.toBe("My own words."));
+  });
+
+  it("on a partial failure, drops the founders already queried and keeps Send open for the rest", async () => {
+    api.failPost = new Set(["d_nimbus"]);
+    await composeFor(["PayRoute", "NimbusHR"]);
+    const body = screen.getByRole("textbox", { name: "Body" }) as HTMLTextAreaElement;
+    await waitFor(() => expect(body.value).toBe(draftFor(PAYROUTE)));
+    fireEvent.click(screen.getByRole("button", { name: "Send query" }));
+
+    expect(await screen.findByText(/Recorded 1 of 2 queries, then one failed/)).toBeInTheDocument();
+    expect(api.posts.map((p) => p.deckId)).toEqual(["d_pay"]);
+    // PayRoute has its letter; only NimbusHR is left, and it can be retried.
+    expect(screen.queryByRole("button", { name: "Remove PayRoute" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove NimbusHR" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send query" })).toBeEnabled());
   });
 
   it("shows the empty recipients copy and no send with nobody selected", async () => {

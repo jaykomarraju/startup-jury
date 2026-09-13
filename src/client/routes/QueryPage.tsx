@@ -272,13 +272,12 @@ export function QueryPage() {
           ? `Recorded ${done.length} of ${batch.length} queries, then one failed. The rest are still selected — try again.`
           : "Couldn't record the query. Try again.",
       );
-      // Never offer a second send to a founder who already has this letter.
+      // Never offer a second send to a founder who already has this letter;
+      // the rest stay selected, and Send stays enabled for them.
       setSelectedIds((ids) => ids.filter((id) => !done.includes(id)));
     }
-    if (done.length > 0) {
-      setResult({ count: done.length, delivered });
-      await load();
-    }
+    if (done.length === batch.length) setResult({ count: done.length, delivered });
+    if (done.length > 0) await load();
     setBusy(false);
   }
 
