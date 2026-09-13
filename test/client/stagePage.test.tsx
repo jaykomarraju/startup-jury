@@ -334,6 +334,18 @@ describe("the W5-A consumers", () => {
     expect(within(row).getByRole("combobox", { name: "Payment status for LedgerLite" })).toBeInTheDocument();
   });
 
+  it("no screen that reads sign-up records offers the unguarded Complete signup", async () => {
+    const complete = { action: "complete_signup", label: "Complete signup", to: "onboard_ready" };
+    mockApi(
+      [deck({ id: "d1", name: "LedgerLite", statusId: "signup", status: "Signup", actions: [complete] })],
+      [signup({ deckId: "d1" })],
+    );
+    render(<StagePage config={INCUBATOR_STAGE_CONFIG.pmpipeline} />);
+    const row = await screen.findByRole("row", { name: /LedgerLite/ });
+    expect(within(row).getByText("Sign-up in progress")).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: "Complete signup" })).not.toBeInTheDocument();
+  });
+
   it("the Sign-up tab draws the red Seatless card with Allocate seat, and allocates through the pipeline's verb", async () => {
     const calls = mockApi(
       [deck({ id: "d1", name: "LedgerLite", statusId: "signup", status: "Signup" })],

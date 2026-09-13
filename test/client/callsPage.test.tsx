@@ -127,9 +127,10 @@ function mockApi({ calls = [call({})], canSchedule = true, prompts = { enabled: 
     else if (url.startsWith("/api/calls/directory")) {
       body = {
         people: [
+          { id: "inc_mentor", name: "Anil Mehta", email: "anil@x.ai", role: "mentor" },
+          { id: "inc_jury", name: "Rajesh Kumar", email: "rajesh@x.ai", role: "jury" },
           { id: "inc_pm", name: "Raj Kumar", email: "raj@x.ai", role: "program_manager" },
           { id: "inc_pa", name: "Sunita Rao", email: "sunita@x.ai", role: "program_associate" },
-          { id: "inc_jury", name: "Rajesh Kumar", email: "rajesh@x.ai", role: "jury" },
         ],
       };
     } else if (/\/api\/calls\/[^/]+\/prompts$/.test(url)) body = prompts;
@@ -259,9 +260,10 @@ describe("Intro calls — the scheduler roles (panel-introcalls)", () => {
 
     const roster = await within(dialog).findByTestId("participant-roles");
     expect(within(roster).getAllByRole("group").map((g) => g.getAttribute("aria-label"))).toEqual([
-      "Program Manager",
-      "Program Associate",
-      "Jury Member",
+      "Program manager",
+      "Program associate",
+      "Jury member",
+      "Mentor",
     ]);
     fireEvent.click(within(roster).getByRole("checkbox", { name: "Invite Rajesh Kumar" }));
     const chips = within(dialog).getByTestId("participant-selected");

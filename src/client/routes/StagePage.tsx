@@ -196,7 +196,8 @@ function fmtDate(iso?: string): string {
   if (!iso) return "—";
   const ms = Date.parse(iso.includes("T") ? iso : `${iso.replace(" ", "T")}Z`);
   if (Number.isNaN(ms)) return iso;
-  return new Date(ms).toLocaleDateString(undefined, {
+  // "3 Jun 2026" — the prototype's date, whatever the browser's locale.
+  return new Date(ms).toLocaleDateString("en-GB", {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -534,8 +535,9 @@ export function StagePage({ config }: { config: StageConfig }) {
         );
       case "signupStatus": {
         const signup = signups[deck.id];
+        const key = signupStatusKey(deck, signup);
         return (
-          <LegendPill item={legendFor(config.legend, signupStatusKey(deck, signup))}>
+          <LegendPill item={legendFor(config.legend, key) ?? legendFor(SIGNUP_LIFECYCLE, key)}>
             {signupStatusLabel(deck, signup)}
           </LegendPill>
         );
@@ -713,8 +715,10 @@ export function StagePage({ config }: { config: StageConfig }) {
                     {rows.map((deck) => {
                       // The workspace replaces the unguarded "Complete signup" button:
                       // a sign-up completes on the countersign, not on a click.
+                      // Any screen that reads the sign-up records (Prog manager pipeline
+                      // lists `signup` decks too) must not offer the bypass either.
                       const actions = (deck.actions ?? []).filter(
-                        (a) => !EXCLUDED_ACTIONS.has(a.action) && !(config.workspace && a.action === "complete_signup"),
+                        (a) => !EXCLUDED_ACTIONS.has(a.action) && !(wantsSignups && a.action === "complete_signup"),
                       );
                       const signup = config.workspace ? signups[deck.id] : undefined;
                       return (
@@ -1020,8 +1024,9 @@ const JURY_LEGEND: LegendItem[] = [
   { label: "Pending", color: "var(--gold-dk)", statuses: ["jury_evaluation"] },
 ];
 
-// `panel-forsignup` legend — the sign-up lifecycle (`suSignupLabel`).
-const PM_LEGEND: LegendItem[] = [
+// `panel-forsignup` legend — the sign-up lifecycle (`suSignupLabel`), and the
+// `.su-sustat` tints every Sign-up status pill wears, legend drawn or not.
+const SIGNUP_LIFECYCLE: LegendItem[] = [
   { label: "Shortlisted", color: "var(--green)", statuses: ["shortlisted"] },
   { label: "Initiated", color: "var(--blue-dk)", statuses: ["initiated"] },
   { label: "In progress", color: "var(--gold-dk)", statuses: ["progress"] },
@@ -1029,6 +1034,8 @@ const PM_LEGEND: LegendItem[] = [
   { label: "Onboarded", color: "#6D28D9", statuses: ["onboarded", "onboard_ready"] },
   { label: "Rejected", color: "var(--red)", statuses: ["rejected"] },
 ];
+
+const PM_LEGEND = SIGNUP_LIFECYCLE;
 
 // `panel-incuration` legend — names the payment / document tints.
 const SIGNUP_LEGEND: LegendItem[] = [

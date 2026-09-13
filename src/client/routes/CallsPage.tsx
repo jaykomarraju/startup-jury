@@ -54,7 +54,7 @@ import {
   type DeckReportMatrix,
 } from "../api";
 import type { DeckView, DeckAction } from "../types";
-import { CALL_KIND_LABELS, ROLE_LABELS, type CallKind, type Role } from "../../shared/roles";
+import { CALL_KIND_LABELS, ROLE_LABELS, type CallKind } from "../../shared/roles";
 import { navItemById, navLabel } from "../../shared/nav";
 import { icsFilename } from "../../shared/ics";
 import { exportDecks } from "../exportCsv";
@@ -341,6 +341,16 @@ function CalendarPopover({ call }: { call: CallView }) {
 }
 
 const TH = "px-4 py-2.5 text-xs font-medium uppercase tracking-wide";
+
+/** `asRoles` — the prototype's roster groups, in its order and casing; anyone else follows. */
+const PICKER_ROLE_ORDER = ["program_manager", "program_associate", "jury", "partner", "associate", "analyst", "ic_member"];
+const PICKER_ROLE_LABELS: Record<string, string> = {
+  program_manager: "Program manager",
+  program_associate: "Program associate",
+  jury: "Jury member",
+  superuser: "Super user",
+  mentor: "Mentor",
+};
 
 /**
  * Transitions this screen performs through its own controls. `schedule_intro`
@@ -823,7 +833,13 @@ export function CallsPage({ config }: { config: CallsConfig }) {
     }
     if (state === "scheduled") {
       return manage ? (
-        <Button variant="secondary" size="sm" disabled={busy === call!.id} onClick={() => setCallStatus(call!, "completed")}>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="whitespace-nowrap"
+          disabled={busy === call!.id}
+          onClick={() => setCallStatus(call!, "completed")}
+        >
           Mark completed
         </Button>
       ) : (
@@ -1086,18 +1102,24 @@ export function CallsPage({ config }: { config: CallsConfig }) {
   // ── Participant picker (F0581–F0583) ──────────────────────────────────────
 
   const roleGroups = useMemo(() => {
-    const labels = user ? ROLE_LABELS[user.edition] : {};
+    const labels: Partial<Record<string, string>> = { ...(user ? ROLE_LABELS[user.edition] : {}), ...PICKER_ROLE_LABELS };
     const groups = new Map<string, DirectoryPerson[]>();
     for (const person of directory) {
       const list = groups.get(person.role) ?? [];
       list.push(person);
       groups.set(person.role, list);
     }
-    return [...groups.entries()].map(([role, people]) => ({
-      role,
-      label: labels[role as Role] ?? role,
-      people,
-    }));
+    const rank = (role: string) => {
+      const i = PICKER_ROLE_ORDER.indexOf(role);
+      return i === -1 ? PICKER_ROLE_ORDER.length : i;
+    };
+    return [...groups.entries()]
+      .sort(([a], [b]) => rank(a) - rank(b))
+      .map(([role, people]) => ({
+        role,
+        label: labels[role] ?? role.charAt(0).toUpperCase() + role.slice(1).replace(/_/g, " "),
+        people,
+      }));
   }, [directory, user]);
 
   const pickedPeople = directory.filter((p) => picked[p.id]);
