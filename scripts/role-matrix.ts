@@ -556,6 +556,13 @@ const PROBES: Probe[] = [
     allow: ["admin", "program_manager"] },
   { id: "calls.schedule", label: "POST /api/calls (schedule + ICS invite)", kind: "write", method: "POST", path: "/api/calls", body: {},
     allow: ["admin", "program_manager", "program_associate", "partner", "associate"] },
+  // W7-E — the Assign router (`/api/assignments`). The board is read by the
+  // staff who assign; the confirmation is gated like POST /decks/:id/assign. The
+  // empty body 400s (`no_decks`) for an allowed role before anything is read.
+  { id: "assignments.board", label: "GET /api/assignments/board (Assign column 1)", kind: "read", method: "GET", path: "/api/assignments/board",
+    editions: ["incubator"], allow: ["admin", "program_manager", "program_associate"] },
+  { id: "assignments.confirm", label: "POST /api/assignments (every deck × every member)", kind: "write", method: "POST", path: "/api/assignments", body: {},
+    editions: ["incubator"], allow: ["admin", "program_manager", "program_associate"] },
   { id: "issues.file", label: "POST /api/issues (file an issue)", kind: "write", method: "POST", path: "/api/issues", body: {},
     allow: ["admin", "program_manager", "program_associate", "jury", "partner", "ic_member", "associate", "analyst"] },
   { id: "issues.triage", label: "PATCH /api/issues/:id (triage)", kind: "write", method: "PATCH", path: "/api/issues/__ghost__", body: {},
