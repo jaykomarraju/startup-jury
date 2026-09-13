@@ -198,7 +198,7 @@ beforeEach(() => {
     verdict: "Advanced — AI gate passed",
     weightedTotal: 7.2,
   }));
-  vi.mocked(api.getDeckReport).mockImplementation(async (id: string) => ({
+  vi.mocked(api.getDeckReport).mockImplementation(async (id: string): Promise<api.DeckReportMatrix> => ({
     deck: DECKS.find((d) => d.id === id)!,
     columns: [
       { id: "ai", kind: "ai", name: "AI", rank: 0 },
