@@ -1,16 +1,16 @@
 diff --git a/src/client/routes/analytics/VcReports.tsx b/src/client/routes/analytics/VcReports.tsx
-index 1abdc67..9372fa6 100644
+index 931a81b..966d7bc 100644
 --- a/src/client/routes/analytics/VcReports.tsx
 +++ b/src/client/routes/analytics/VcReports.tsx
-@@ -49,6 +49,7 @@ import {
-   type DiligenceReport,
+@@ -50,6 +50,7 @@ import {
    type DecisionReport,
  } from "../../api";
+ import { getStage } from "../../../pipeline";
 +import { HIGH_DISAGREEMENT_SIGMA, MODERATE_DISAGREEMENT_SIGMA } from "../../../shared/analytics";
  import { formatDelta, formatScore } from "../../../shared/scoring";
  import { RUBRIC_BANDS, type ScoreScale } from "../../../shared/types";
  import { scoringSettings } from "../admin/scoringApi";
-@@ -498,10 +499,11 @@ const LEAN_PILL = { Invest: "go", Hold: "hold", "Need info": "hold", Pass: "no"
+@@ -499,10 +500,11 @@ const LEAN_PILL = { Invest: "go", Hold: "hold", "Need info": "hold", Pass: "no"
   * `panel-scoring.html` "Highest-variance deals": red at σ 1.4, gold at 0.9 and
   * 0.6, olive at 0.3. A standard deviation is not a score, so there is no rubric
   * band to read; these two steps are the narrowest rule that reproduces the
