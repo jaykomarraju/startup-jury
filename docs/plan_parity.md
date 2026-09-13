@@ -2020,6 +2020,392 @@ FINISH
   Commit to parity/W6-C. Do not merge to main.
 ```
 
+### `W7-A` — All decks, and the deck drawer *(written by Wave 6 integration)*
+
+> Wave 7 is six sessions and had two prompts (`W7-B` from `W6-B`, `W7-C` from `W6-C`). This is one of
+> the four Wave 6 integration wrote. Wave 7's migration allotment is **0054–0059**, one each in
+> letter order; this wave is screen parity and most sessions will need none.
+
+```
+You are running session W7-A — All decks and the deck drawer — of the ai.STARTUPJURY parity
+programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W7-A -b parity/W7-A main
+  cd ../sj-W7-A && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 Ground rules, §2 Session protocol, §4 Testing, the Wave 7 preamble in
+     §6 (it states the common pattern for all six sessions), then ONLY your row in §6's Wave 7 table,
+     and the **Wave 2 integration row in §9 addressed to `W7-A`** — it is a real defect and it is
+     yours.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Deck intake" \
+         --grep "alldecks|All decks" --edition incubator --full
+     Twenty-five findings.
+  3. The prototype panel **and its JS renderer** — the renderer is where the columns, the status
+     vocabulary and the row actions actually live:
+       ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/panel-alldecks.html
+       ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/_scripts.js — grep for the renderer that
+       fills that panel and read ONLY its function. The file is 2,900+ lines; do not read it whole.
+  4. src/client/routes/DashboardPage.tsx (575 lines), src/client/components/DeckCard.tsx and
+     EvaluationDrawer.tsx — the three files you own.
+  5. src/server/routes/decks.ts:204-207 — the defect in §9, below.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. The screen-parity pattern this whole wave follows: the toolbar, the filters, the **exact column
+     set and headers**, the status vocabulary, the legend, the row actions, the drawer and the empty
+     state. Assert the header set in a test — a column silently renamed is the failure mode this
+     wave exists to end.
+  2. **The shortlist hint lies, and it is yours to fix** (§9, Wave 2 integration). The client computes
+     `decisionScore` with the DEFAULT 50/50 split because the third argument is omitted, while the
+     server enforces the org's configured split (40/60 by default). A deck can render as
+     shortlistable and then be refused. Thread `aiWeightPct` through. There is a test to write here
+     that fails before the change.
+  3. The deck drawer: every field the prototype's drawer carries, in its order, with its empty state.
+
+CONSTRAINTS
+  - Own only: src/client/routes/DashboardPage.tsx, src/client/components/DeckCard.tsx,
+    src/client/components/EvaluationDrawer.tsx, and the one `decks.ts` fix named above.
+  - You own migration 0054 and only 0054 — you almost certainly need none.
+  - `src/client/index.css`, `src/shared/nav.ts`, `src/shared/roles.ts` and `src/client/App.tsx` are
+    §2.2 serialisation-hazard files. `EvaluationDrawer.tsx` renders inside a modal — if you touch
+    z-index, read §9's Wave 1 integration row about the console's tier first.
+  - `src/shared/scoring.ts` is NOT yours (`W7-D` has the scale work this wave). Read it; a change
+    there is a §9 request.
+
+TEST
+  - Client: the exact header set, the filters, the status vocabulary and both empty states.
+  - Worker: the shortlist hint agrees with what the server enforces at a NON-default split — that is
+    the assertion that would have caught the §9 defect.
+  - E2E: the list renders, a filter narrows it, and the drawer opens with its fields.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  **The whole gate takes about four and a half minutes on a quiet box** — measured at Wave 5/6
+  integration on both a busy and an idle machine, same commit, same code:
+      unit/worker/client   load 41-50 → 6 failed · load 4 → **1581 passed, 0 failed, 21 s**
+      e2e (retries 1)      load 40+   → 8 failed · load 4 → **180 passed, 4 flaky, 0 failed, 5.9 min**
+  If yours is taking forty minutes you are measuring the machine, not the code. `uptime` BEFORE you
+  start; do NOT run your gate while a sibling session runs theirs; never conclude anything from a red
+  run at load 40+ without re-running the file alone AND running a spec your change never touched as a
+  control. `--no-file-parallelism` is a diagnostic, not a setting. `retries: 1` is configured and
+  **`flaky` is information, not noise** — it means the dev server dropped a connection.
+  **Two traps Wave 6 integration hit, both real:**
+    • `describe.configure({ mode: "serial" })` orders tests WITHIN a file and does NOTHING across
+      files. With two workers, two specs share one dev-server D1 — so never assert a value another
+      spec deliberately mutates. PIN what you assert instead of inheriting it.
+    • `reuseExistingServer` is now `false`. If you set it back, a run that finds any server on its
+      port adopts it — a sibling's code against a sibling's mutated database, reported as a pass.
+  Four flakes earlier waves wrote and caught — you will write at least one:
+    • gate client assertions on a POPULATED element, never a heading the loading branch also renders;
+    • never locate an element by the attribute your click is about to change;
+    • never sign in as a second user on the same page — `/login` redirects an authenticated session
+      back to `/app` and you wait out the whole timeout. One test per role;
+    • if a screen keeps a draft, guard it against its own mount fetch: StrictMode runs that effect
+      twice and the second response lands after the first keystroke.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Wave 8 is two sessions and has no prompts — write `W8-A`.
+  Commit to parity/W7-A. Do not merge to main.
+```
+
+### `W7-D` — Evaluate, and the stage-aware evaluation report *(written by Wave 6 integration)*
+
+> **The heaviest session in the wave, and the one with the most §9 debt.** Three separate Wave 2
+> integration rows are addressed to it, all of them the same shape: a value computed on one scale and
+> captioned on another. Read them before you build anything.
+
+```
+You are running session W7-D — the Evaluate workbench and the evaluation report — of the
+ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W7-D -b parity/W7-D main
+  cd ../sj-W7-D && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, the Wave 7 preamble in §6 **including its first note, which
+     is about you**, your row in the Wave 7 table, and the **three Wave 2 integration rows in §9
+     addressed to `W7-D`**. Those three are the session's real subject; the screens are the rest.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Evaluation workbench" --full
+     Twenty-six findings.
+  3. docs/prototype/source/specs/incubator.html **§8.4** — stage-awareness. The written spec
+     OUTRANKS the prototype (§1.1) and this is the one part of the wave the prototype does not draw.
+  4. The prototype panel and its JS renderer:
+       ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/panel-evaluate.html, and the renderer for
+       it in `_scripts.js` — that function ONLY.
+  5. src/shared/scoring.ts — `RUBRIC_BANDS`, `composite_formula`, `score_scale`,
+     `overrideRationaleDelta`, `shortlistThreshold`. Then your four files:
+     EvaluatePage.tsx, EvalScorecard.tsx, EvaluationReport.tsx, DeckPdfViewer.tsx.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. **Spec §8.4 stage-awareness.** Which role sections appear in the evaluation report depends on
+     the screen it was opened FROM: Assign → PA + PM; Intro calls → PA + PM + Jury read-only;
+     otherwise single-role. The report is not stage-aware at all today. This is the session's
+     headline deliverable.
+  2. **Three scale defects, all §9, all the same mistake.** Fix them and assert each:
+     (a) `EvalScorecard.tsx:77-82` and `EvaluationReport.tsx:25-30` carry two more copies of the
+         RETIRED four-band cut-points in `scoreColor`, so a score is coloured on the old scale while
+         the pill beside it names the new band. Derive from `RUBRIC_BANDS`; do not re-type them.
+     (b) `ScoreBars.tsx:48` falls back to `weightedTotal(scores)`, ignoring the org's
+         `composite_formula` and `score_scale` — a median org sees a weighted average under a label
+         that says otherwise.
+     (c) `scoring.ts:293-301` + `pipeline.ts:425-431`: `overrideRationaleDelta` and
+         `shortlistThreshold` are ENFORCED in canonical 0–10 but authored and captioned in the org's
+         display scale, so on a 1–5 org an admin sets "2 points" and gets 4. Convert at the boundary
+         or caption them canonically — say which you chose and why.
+  3. The workbench itself to the wave's pattern: toolbar, filters, exact columns and headers, status
+     vocabulary, legend, row actions, drawer, empty state.
+
+CONSTRAINTS
+  - Own only: src/client/routes/EvaluatePage.tsx, src/client/components/EvalScorecard.tsx,
+    EvaluationReport.tsx, DeckPdfViewer.tsx, ScoreBars.tsx, and the scale boundary in
+    src/shared/scoring.ts + src/server/routes/pipeline.ts named in 2(c).
+  - **`src/shared/scoring.ts` is shared and several sessions read it.** You are changing a BOUNDARY,
+    not the formulas. Every existing assertion about canonical 0–10 must still hold; if one has to
+    move, flag it per §4 and say which.
+  - You own migration 0057 and only 0057 — you probably need none.
+  - `DeckPdfViewer` is `z-[60]`, above every other app modal. Do not raise anything else past it
+    without reading §9's Wave 1 integration row about the console's tier.
+
+TEST
+  - Unit: `scoreColor` derives from `RUBRIC_BANDS` (assert a band boundary moves the colour);
+    the composite honours `composite_formula` AND `score_scale`; the delta/threshold conversion is
+    correct on a 1–5 org and unchanged on a 0–10 one.
+  - Worker: the stage-aware report returns the right role sections per originating screen, and the
+    Jury section is READ-ONLY where the spec says so.
+  - Client: the workbench's header set, and the report in each of its three stage shapes.
+  - E2E: a juror works a deck end to end, and the report opened from Assign differs from the report
+    opened from Intro calls.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  **The whole gate takes about four and a half minutes on a quiet box** — measured at Wave 5/6
+  integration on both a busy and an idle machine, same commit, same code:
+      unit/worker/client   load 41-50 → 6 failed · load 4 → **1581 passed, 0 failed, 21 s**
+      e2e (retries 1)      load 40+   → 8 failed · load 4 → **180 passed, 4 flaky, 0 failed, 5.9 min**
+  If yours is taking forty minutes you are measuring the machine, not the code. `uptime` BEFORE you
+  start; do NOT run your gate while a sibling session runs theirs; never conclude anything from a red
+  run at load 40+ without re-running the file alone AND running a spec your change never touched as a
+  control. `--no-file-parallelism` is a diagnostic, not a setting. `retries: 1` is configured and
+  **`flaky` is information, not noise** — it means the dev server dropped a connection.
+  **Two traps Wave 6 integration hit, both real:**
+    • `describe.configure({ mode: "serial" })` orders tests WITHIN a file and does NOTHING across
+      files. With two workers, two specs share one dev-server D1 — so never assert a value another
+      spec deliberately mutates. PIN what you assert instead of inheriting it.
+    • `reuseExistingServer` is now `false`. If you set it back, a run that finds any server on its
+      port adopts it — a sibling's code against a sibling's mutated database, reported as a pass.
+  Four flakes earlier waves wrote and caught — you will write at least one:
+    • gate client assertions on a POPULATED element, never a heading the loading branch also renders;
+    • never locate an element by the attribute your click is about to change;
+    • never sign in as a second user on the same page — `/login` redirects an authenticated session
+      back to `/app` and you wait out the whole timeout. One test per role;
+    • if a screen keeps a draft, guard it against its own mount fetch: StrictMode runs that effect
+      twice and the second response lands after the first keystroke.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Wave 8 is two sessions and has no prompts — write `W8-B` (parameters), which inherits your scale
+  work; say in your handoff what you settled about 2(c) so it does not re-derive it.
+  Commit to parity/W7-D. Do not merge to main.
+```
+
+### `W7-E` — Assign, and the intro call's AI questions *(written by Wave 6 integration)*
+
+> Forty-six findings, the largest worklist in the wave. It also inherits a feature that has been
+> **built, tested and unreachable since Wave 2**: `GET /api/calls/:id/prompts` works and no screen
+> calls it. Two separate §9 rows have re-raised it; this session ends that.
+
+```
+You are running session W7-E — the Assign screen, and the intro call's AI questions — of the
+ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W7-E -b parity/W7-E main
+  cd ../sj-W7-E && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, the Wave 7 preamble in §6, your row in its table, and the
+     **§9 row addressed to `W7-E`** (`calls.ts:604`), plus the two earlier rows that re-raise it —
+     `W2-A`'s and `W3-B`'s, both addressed to "Wave 7".
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Deck intake" \
+         --grep "assign" --edition incubator --full
+     Forty-six findings — the largest in the wave. Read them before you plan the session.
+  3. The prototype panel and its JS renderer:
+       ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/panel-assign.html and its renderer in
+       `_scripts.js` — that function ONLY.
+  4. src/client/routes/AssignPage.tsx (340 lines — the smallest screen with the biggest worklist,
+     which tells you how much is missing rather than wrong).
+  5. `GET /api/calls/:id/prompts` in src/server/routes/calls.ts and its worker test. The route
+     returns `{enabled, prompts:[{topic, because, question}]}` for anyone who can see the call, and
+     `enabled:false` with an empty list when the admin has the toggle off — so the screen can DROP
+     the block rather than render an unexplained blank.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. Assign, to the wave's pattern: toolbar, filters, the exact column set and headers, the status
+     vocabulary, the legend, the row actions, the drawer and the empty state. Forty-six findings is
+     a rebuild, not a touch-up — plan it that way.
+  2. **Wire the AI questions into the intro-call surface.** The toggle is real, the endpoint is
+     tested, and the feature has been unreachable for five waves. Honour `enabled:false` by dropping
+     the block entirely.
+  3. If the call detail lives in `CallsPage.tsx` rather than yours, say so in your handoff and file
+     it to `W7-F` rather than editing their file — but check first: it may be reachable from Assign.
+
+CONSTRAINTS
+  - Own only: src/client/routes/AssignPage.tsx, plus the intro-call AI-questions block wherever it
+    lands IF that file is not another Wave 7 session's. `CallsPage.tsx` is `W7-F`'s this wave.
+  - You own migration 0058 and only 0058 — you probably need none.
+  - Do NOT change `calls.ts`'s route contract; it is tested. You are giving it a caller.
+  - §2.2 hazard files as usual: `index.css`, `nav.ts`, `roles.ts`, `App.tsx`.
+
+TEST
+  - Client: the exact header set, the filters, the status vocabulary, the legend, both empty states.
+  - Client: the AI-questions block renders its three fields, and renders NOTHING when
+    `enabled:false` — assert the absence, not just the presence.
+  - E2E: an assignment round trip, and the questions block appearing on a call whose admin toggle
+    is on.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  **The whole gate takes about four and a half minutes on a quiet box** — measured at Wave 5/6
+  integration on both a busy and an idle machine, same commit, same code:
+      unit/worker/client   load 41-50 → 6 failed · load 4 → **1581 passed, 0 failed, 21 s**
+      e2e (retries 1)      load 40+   → 8 failed · load 4 → **180 passed, 4 flaky, 0 failed, 5.9 min**
+  If yours is taking forty minutes you are measuring the machine, not the code. `uptime` BEFORE you
+  start; do NOT run your gate while a sibling session runs theirs; never conclude anything from a red
+  run at load 40+ without re-running the file alone AND running a spec your change never touched as a
+  control. `--no-file-parallelism` is a diagnostic, not a setting. `retries: 1` is configured and
+  **`flaky` is information, not noise** — it means the dev server dropped a connection.
+  **Two traps Wave 6 integration hit, both real:**
+    • `describe.configure({ mode: "serial" })` orders tests WITHIN a file and does NOTHING across
+      files. With two workers, two specs share one dev-server D1 — so never assert a value another
+      spec deliberately mutates. PIN what you assert instead of inheriting it.
+    • `reuseExistingServer` is now `false`. If you set it back, a run that finds any server on its
+      port adopts it — a sibling's code against a sibling's mutated database, reported as a pass.
+  Four flakes earlier waves wrote and caught — you will write at least one:
+    • gate client assertions on a POPULATED element, never a heading the loading branch also renders;
+    • never locate an element by the attribute your click is about to change;
+    • never sign in as a second user on the same page — `/login` redirects an authenticated session
+      back to `/app` and you wait out the whole timeout. One test per role;
+    • if a screen keeps a draft, guard it against its own mount fetch: StrictMode runs that effect
+      twice and the second response lands after the first keystroke.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Wave 9 has no prompts; write `W9-E` if your work reaches it, and say which others still need one.
+  Commit to parity/W7-E. Do not merge to main.
+```
+
+### `W7-F` — Pipeline stage screens, and the config that lets them scale *(written by Wave 6 integration)*
+
+> **Land the config extension early.** §6's second Wave 7 note says `W9-B` and `W9-C` depend on it,
+> and this session also inherits two consumers `W5-A` built and could not reach. If the extension
+> lands late, two later waves inherit bespoke pages instead of configured ones.
+
+```
+You are running session W7-F — the incubator pipeline stage screens — of the ai.STARTUPJURY parity
+programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W7-F -b parity/W7-F main
+  cd ../sj-W7-F && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, the Wave 7 preamble in §6 **including its second note, which
+     is about you**, your row in the Wave 7 table, and these §9 rows, all of which land in your
+     files: `W5-A`'s two StagePage consumers, `W3-A`'s casing row (`StagePage.tsx:690` + `nav.ts`),
+     and `W2-A`/`W3-B`'s twice-re-raised `CallsPage` row.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Pipeline" --edition incubator --full
+     Twenty-nine findings.
+  3. The prototype's stage panels and their shared renderer in
+     ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/ — the stage screens share one renderer;
+     read that function, not every panel.
+  4. src/client/routes/StagePage.tsx (821 lines) and CallsPage.tsx (821 lines), and the incubator
+     stage configs that drive them.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. **Extend `StagePage`'s config FIRST, and land it early.** It must carry a toolbar, sub-tabs and
+     a legend so the generic stage screens reach parity without being rewritten as bespoke pages.
+     `W9-B` and `W9-C` depend on this; note it in §9 the moment it lands so they can be written
+     against it rather than around it.
+  2. **The Documents column is derived now** (§9, `W5-A`). `StagePage.tsx:374-390` still renders
+     `deck_onboarding.documents_status` as a hand-set `<select>`, but `signup-config.ts` re-computes
+     that value from the item rows on every change. Make it a read-only roll-up badge linking into
+     the sign-up's document set. Leaving it editable lets a staff member set "All docs" over a set
+     with three items still awaiting.
+  3. **The seat card on `curation` (Onboard ready)** (§9, `W5-A`): the red "Seatless — no cohort seat
+     allocated yet" with its Allocate seat action, and the green "Seat allocated · founder access
+     provisioned". `POST /api/signup-config/signups/:id/seat` is the verb behind it and it exists.
+  4. **The casing pair** (§9, `W3-A`): the prototype says "Prog manager pipeline" and "My Scores";
+     the app says "Prog Manager Pipeline" and "My scores". `StagePage.tsx:690` hardcodes the heading
+     and `nav.ts` carries the sidebar label — **change both in ONE commit** (changing one makes the
+     sidebar and the `<h1>` disagree, which is worse than the casing) and delete the two
+     `EXPECTED_GAPS` rows in the parity harness, whose reasons name this precondition.
+     `nav.ts` is a §2.2 file and is yours THIS wave for exactly this one change; confirm in §6.
+  5. The stage screens themselves to the wave's pattern, and `CallsPage`'s AI-questions block if
+     `W7-E` has not taken it — coordinate in §9 rather than both building it.
+
+CONSTRAINTS
+  - Own only: src/client/routes/StagePage.tsx (incubator configs), src/client/routes/CallsPage.tsx
+    (incubator), and the two `nav.ts` labels in item 4.
+  - You own migration 0059 and only 0059 — you probably need none.
+  - Do NOT touch `src/server/routes/signup-config.ts` or `src/shared/signupConfig.ts` — `W5-A`'s,
+    complete and tested. You are giving them surfaces.
+  - `src/client/index.css`, `src/shared/roles.ts` and `src/client/App.tsx` are §2.2 files.
+
+TEST
+  - Client: the extended config renders a toolbar, sub-tabs and a legend for a stage that declares
+    them, and renders none of them for a stage that does not — the second half is what stops the
+    extension leaking into every screen.
+  - Client: the Documents column is read-only, and the seat card renders in both states.
+  - `npm run parity:nav` — the two casing gaps should DISAPPEAR from `EXPECTED_GAPS`, not be
+    re-listed. The count drops from 67; say the new number in your handoff.
+  - E2E: a stage screen with sub-tabs, and the seatless → allocated transition.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  **The whole gate takes about four and a half minutes on a quiet box** — measured at Wave 5/6
+  integration on both a busy and an idle machine, same commit, same code:
+      unit/worker/client   load 41-50 → 6 failed · load 4 → **1581 passed, 0 failed, 21 s**
+      e2e (retries 1)      load 40+   → 8 failed · load 4 → **180 passed, 4 flaky, 0 failed, 5.9 min**
+  If yours is taking forty minutes you are measuring the machine, not the code. `uptime` BEFORE you
+  start; do NOT run your gate while a sibling session runs theirs; never conclude anything from a red
+  run at load 40+ without re-running the file alone AND running a spec your change never touched as a
+  control. `--no-file-parallelism` is a diagnostic, not a setting. `retries: 1` is configured and
+  **`flaky` is information, not noise** — it means the dev server dropped a connection.
+  **Two traps Wave 6 integration hit, both real:**
+    • `describe.configure({ mode: "serial" })` orders tests WITHIN a file and does NOTHING across
+      files. With two workers, two specs share one dev-server D1 — so never assert a value another
+      spec deliberately mutates. PIN what you assert instead of inheriting it.
+    • `reuseExistingServer` is now `false`. If you set it back, a run that finds any server on its
+      port adopts it — a sibling's code against a sibling's mutated database, reported as a pass.
+  Four flakes earlier waves wrote and caught — you will write at least one:
+    • gate client assertions on a POPULATED element, never a heading the loading branch also renders;
+    • never locate an element by the attribute your click is about to change;
+    • never sign in as a second user on the same page — `/login` redirects an authenticated session
+      back to `/app` and you wait out the whole timeout. One test per role;
+    • if a screen keeps a draft, guard it against its own mount fetch: StrictMode runs that effect
+      twice and the second response lands after the first keystroke.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md — **and record the config extension's shape in §9 for `W9-B` and
+  `W9-C`** — then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W7-F. Do not merge to main.
+```
+
 ### `W7-C` — the Query screen *(written by `W6-C`)*
 
 > Wave 7 is six sessions (§6) and, at the time `W6-C` finished, had no prompts. This is `W7-C`'s.
@@ -2084,6 +2470,8 @@ BUILD
      and `npm run roles` moves once.
 
 CONSTRAINTS
+  - You own migration 0056 and only 0056 (Wave 7 is 0054-0059, one per session in letter
+    order) — this is a screen-parity wave and you almost certainly need none.
   - Own only: src/client/routes/QueryPage.tsx, src/shared/queries.ts, and your own new files (one
     line each in src/server/index.ts / src/client/App.tsx if you add a router or route). Need
     anything else? §9, do not edit.
@@ -2262,6 +2650,8 @@ BUILD
   5. The founder route must not reuse the staff screen's credits and CRM surfaces (F0302).
 
 CONSTRAINTS
+  - You own migration 0055 and only 0055 (Wave 7 is 0054-0059, one per session in letter
+    order) — this is a screen-parity wave and you almost certainly need none.
   - Own only: src/client/routes/UploadPage.tsx, src/server/intake.ts, src/shared/intake.ts, and
     your own new files. Anything else is a §9 request.
   - §8 Q1: the prototype's cost preview multiplies a per-deck rate. Show the CREDITS a batch will
@@ -2283,6 +2673,19 @@ TEST
   - E2E: a PA uploads, reviews and sends one deck to Query — and never sees a control that resolves
     to "Not available for your role". An admin's Buy credits lands on "Choose your plan".
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  **The whole gate takes about four and a half minutes on a quiet box** — measured at Wave 5/6
+  integration on both a busy and an idle machine, same commit, same code:
+      unit/worker/client   load 41-50 → 6 failed · load 4 → **1581 passed, 0 failed, 21 s**
+      e2e (retries 1)      load 40+   → 8 failed · load 4 → **180 passed, 4 flaky, 0 failed, 5.9 min**
+  If yours is taking forty minutes you are measuring the machine, not the code. `uptime` BEFORE you
+  start; do NOT run your gate while a sibling session runs theirs; never conclude anything from a red
+  run at load 40+ without re-running the file alone AND running a spec your change never touched as a
+  control. `retries: 1` is configured and **`flaky` is information, not noise**.
+  **Two traps Wave 6 integration hit:** `describe.configure({ mode: "serial" })` orders tests WITHIN
+  a file and does NOTHING across files — with two workers, two specs share one dev-server D1, so
+  never assert a value another spec deliberately mutates; PIN it. And `reuseExistingServer` is now
+  `false` — if you set it back, a run adopts whatever server sits on its port, a sibling's code
+  against a sibling's mutated database, reported as a pass.
   `npm run roles` if you add a router — probes in scripts/role-matrix.ts in the SAME commit, against
   a server you proved you own with `lsof` (it exits 0 when it reaches nothing). Wave 6 left it at
   **866/866** plus whatever `W6-A` and `W6-C` added; read the number off `main` first.
