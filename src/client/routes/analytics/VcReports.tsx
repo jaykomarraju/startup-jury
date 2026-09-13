@@ -49,6 +49,7 @@ import {
   type DiligenceReport,
   type DecisionReport,
 } from "../../api";
+import { getStage } from "../../../pipeline";
 import { formatDelta, formatScore } from "../../../shared/scoring";
 import { RUBRIC_BANDS, type ScoreScale } from "../../../shared/types";
 import { scoringSettings } from "../admin/scoringApi";
@@ -671,7 +672,7 @@ export function DiligencePage() {
                   cols={["Company", "Stage", "Signal", "Status"]}
                   rows={d.items.map((i) => [
                     i.company,
-                    <span className="capitalize">{i.stage.replace(/_/g, " ")}</span>,
+                    getStage("vc", i.stage)?.label ?? i.stage,
                     signalName(i.signal),
                     <RepPill kind={i.status === "Flagged" ? "no" : "hold"}>{i.status}</RepPill>,
                   ])}

@@ -393,6 +393,8 @@ describe("Diligence & Risk Status", () => {
     // The band NAME from RUBRIC_BANDS — never the stored key, and never a retired band.
     const credit = within(cardByTitle("Companies in diligence")).getByText("CreditBridge").closest("tr")!;
     expect(within(credit).getByText("Weak")).toBeInTheDocument();
+    // The pipeline's own stage label, not a title-cased status key ("Ic Review").
+    expect(within(credit).getByText("IC Review")).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/absent/i);
   });
 
