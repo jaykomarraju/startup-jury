@@ -358,13 +358,17 @@ const PARAMETERS: RubricParameter[] = [
   { key: "add_trl", name: "TRL stage", weight: 0, informational: true, roleScope: "program_manager" },
 ];
 
-function mountEvaluate(role: Role = "jury") {
+function mountEvaluate(role: Role = "jury", recommendations?: () => ReturnType<typeof listRecommendations>) {
   vi.mocked(listDecks).mockResolvedValue({ decks: DECKS } as never);
   vi.mocked(listParameters).mockResolvedValue({ parameters: PARAMETERS, anchors: [] });
-  vi.mocked(listRecommendations).mockResolvedValue({
-    recommendations: { inc_deck_insureflow: "hold" },
-    evaluated: ["inc_deck_insureflow"],
-  });
+  if (recommendations) {
+    vi.mocked(listRecommendations).mockImplementation(recommendations);
+  } else {
+    vi.mocked(listRecommendations).mockResolvedValue({
+      recommendations: { inc_deck_insureflow: "hold" },
+      evaluated: ["inc_deck_insureflow"],
+    });
+  }
   vi.mocked(setRecommendation).mockResolvedValue({ ok: true, deckId: "inc_deck_taxpilot", status: "shortlist" });
   vi.mocked(getDeck).mockResolvedValue({ scores: [], weightedTotal: undefined } as never);
   vi.mocked(getMyScores).mockResolvedValue({ scores: [] });
@@ -431,6 +435,23 @@ describe("Evaluate — the prototype's toolbar, columns and status vocabulary", 
     fireEvent.change(select, { target: { value: "shortlist" } });
     await waitFor(() => expect(setRecommendation).toHaveBeenCalledWith("inc_deck_taxpilot", "shortlist"));
     expect((screen.getByLabelText("Status for TaxPilot") as HTMLSelectElement).value).toBe("shortlist");
+  });
+
+  it("a choice made before the recommendations fetch lands is not overwritten by it", async () => {
+    // Found by the e2e: the list fetch is a mount effect, and on a busy dev
+    // server it resolved AFTER the juror picked Hold — resetting the select.
+    const pending: Array<(v: { recommendations: Record<string, never>; evaluated: string[] }) => void> = [];
+    mountEvaluate("jury", () => new Promise((resolve) => pending.push(resolve)));
+    const select = (await screen.findByLabelText("Status for TaxPilot")) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "hold" } });
+    await waitFor(() => expect(setRecommendation).toHaveBeenCalledWith("inc_deck_taxpilot", "hold"));
+    // The stale answers arrive (StrictMode may have asked twice): no stored
+    // recommendation, and TaxPilot already evaluated — which alone would say "evaluated".
+    expect(pending.length).toBeGreaterThan(0);
+    pending.forEach((resolve) => resolve({ recommendations: {}, evaluated: ["inc_deck_taxpilot"] }));
+    const row = select.closest("li") as HTMLElement;
+    await waitFor(() => expect(within(row).getAllByText("Evaluated").some((el) => el.tagName === "SPAN")).toBe(true));
+    expect((screen.getByLabelText("Status for TaxPilot") as HTMLSelectElement).value).toBe("hold");
   });
 
   it("opens on the caller's additional parameters at a glance; Review shows prompt, questions and anchors", async () => {

@@ -128,6 +128,13 @@ export function EvaluatePage() {
    * earlier load must never land on the current draft.
    */
   const loadToken = useRef(0);
+  /**
+   * Recommendations chosen on THIS screen since it mounted. The list fetch is
+   * a mount effect (run twice under StrictMode) and can land after the first
+   * choice; what the evaluator just picked must win over what the server said
+   * a moment before they picked it.
+   */
+  const chosen = useRef<Record<string, EvaluateRecommendation>>({});
 
   const load = useCallback(() => {
     return listDecks()
@@ -138,7 +145,7 @@ export function EvaluatePage() {
   const loadRecommendations = useCallback(() => {
     return listRecommendations()
       .then((r) => {
-        setRecs(r.recommendations);
+        setRecs({ ...r.recommendations, ...chosen.current });
         setEvaluated(new Set(r.evaluated));
       })
       .catch(() => {});
@@ -250,17 +257,6 @@ export function EvaluatePage() {
     setSelected(null);
   }
 
-  // Escape closes the workbench — unless the report is open over it, which
-  // handles its own Escape first.
-  useEffect(() => {
-    if (!selected || reportFor) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeDeck();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [selected, reportFor]);
-
   const selectedIndex = selected ? rows.findIndex((d) => d.id === selected.id) : -1;
 
   /**
@@ -341,11 +337,15 @@ export function EvaluatePage() {
 
   async function changeStatus(deck: DeckView, next: EvaluateRecommendation) {
     const before = recs[deck.id];
+    chosen.current = { ...chosen.current, [deck.id]: next };
     setRecs((r) => ({ ...r, [deck.id]: next }));
     try {
       await setRecommendation(deck.id, next);
       showToast(`${deck.name} → ${STATUS_LABEL[next]}`, "success");
     } catch {
+      const rest = { ...chosen.current };
+      delete rest[deck.id];
+      chosen.current = rest;
       setRecs((r) => {
         const copy = { ...r };
         if (before) copy[deck.id] = before;
