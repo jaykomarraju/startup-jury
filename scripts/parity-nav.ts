@@ -164,16 +164,6 @@ const EXPECTED_GAPS: ReadonlyMap<string, string> = new Map([
 
   // ── label ──────────────────────────────────────────────────────────────────
   ...gap(
-    'REASSIGNED (W3-A) → the Prog Manager Pipeline lane. Casing: prototype "Prog manager pipeline", app "Prog Manager Pipeline". W3-A owns the sidebar label but not the matching page heading (StagePage.tsx:690 hardcodes the same string); changing one without the other makes the sidebar and the heading disagree. Change both in one commit.',
-    "incubator/superuser · label pmpipeline",
-    "incubator/admin · label pmpipeline",
-    "incubator/program_manager · label pmpipeline",
-  ),
-  ...gap(
-    'REASSIGNED (W3-A) → the jury Reports lane. Casing: prototype "My Scores", app "My scores". Same reason as pmpipeline — the report screen carries its own heading.',
-    "incubator/jury · label repscores",
-  ),
-  ...gap(
     "DELIBERATE — §8 again: the analyst's read-only scoping is what the 'My Intro calls' label says. The prototype's generic label understates it.",
     "vc/analyst · label introcalls",
   ),

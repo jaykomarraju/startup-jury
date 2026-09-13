@@ -676,6 +676,9 @@ Two notes that apply across the wave:
 - **`W7-F` should extend `StagePage`'s config** to carry a toolbar, sub-tabs and a legend, so the
   generic stage screens can reach parity without being rewritten as bespoke pages. `W9-B` and `W9-C`
   depend on that extension, so land it early in the session and note it in §9.
+  **Landed by `W7-F`** (shape in §9). **`src/shared/nav.ts` was `W7-F`'s this wave for exactly two
+  label strings** — `pmpipeline` "Prog manager pipeline" and `repscores` "My Scores" — changed in one
+  commit with `StagePage`'s heading; nothing else in the file moved.
 
 ---
 
@@ -868,6 +871,7 @@ One row per session. The integration session fills the wave row.
 | `W7-C` | **done** | **Closed on this branch (18):** F0214, F0215, F0273, F0274, F0275, F0276, F0278, F0279, F0280, F0281, F0282 *(list scope; VC's missing `founder_response` transition is `src/pipeline/vc.ts`, not this screen)*, F0283, F0284, F0285, F0287, F0289, F0337, F0338, F0339, F0341 — plus **F0472** and **F0491** from W10-B's "Founder portal" worklist, which are the same two defects seen from the founder side. **F0219** closed for the staff half (the founder's own form is `W10-B`'s). **Closed the moment integration applies a §9 patch (7):** F0216 / F0277 / F0217 / **F0466** (`W7-C-query-email.patch`) and F0218 / F0286 / F0288 (`W7-C-partner-query.patch`). **Not this session's:** F0222 / F0223 / F0305 (`W7-B`), F0256 / F0272 (`W7-E`), F0254 (`W7-F`); F0228–F0230's founder side (`W10-B`, §9). | typecheck ✓ · lint ✓ · **1613 passed / 1 skipped** ✓ (1581 + 32: 15 unit · 17 client) · build ✓ · **e2e exit 0 — 186 passed · 0 flaky · 0 failed in 7.6 min** ✓ (184 + 2 in `e2e/query.spec.ts`; the second is a deliberate `test.fail()` that flips when the §9 email patch lands; siblings' suites started mid-run, load 12–16) · **roles 981/981** ✓ (port 5273, `lsof` showed this worktree's node) · `parity:tokens` 0 gaps ✓ · `parity:nav` 211/278 · 67 known gaps ✓ (unchanged until the partner patch: 212 · 66) | **All three views of `panel-query`, and a confidentiality fix first.** *List:* the `.qtbl` column set asserted in client + e2e, the prototype's three status words (a flagged, never-emailed deck is **Pending** — `upSendToQuery` lists it so — §8 Q89), overdue after five WORKING days, every area chip with the green Responded variant, the dark olive bulk bar with the gold button, the leaf glyph, topbar **Filter** (status menu) and **Export** (the shipped CSV helper, visible rows, list headers). The row set moved into `src/shared/queries.ts` as `isQueryListed`: a deck with query history stays listed through intake, so an ANSWERED query remains on screen as Responded (F0214), and a VC deal in scoring is listed only when something is flagged (F0274). *Email query:* **one letter per founder** — `composeFounderLetters` builds each from that deck's own areas and a "Letter for" selector shows each founder's copy; the send posts exactly the Subject and Body shown, per deck (F0215: the old path mailed every founder the union of every selected startup's areas). The bank draft (`W2-C`'s producer) replaces each letter unless the operator already edited it — this survives StrictMode's double mount, tested with a held fetch. The letter now carries the prototype's link line and "due within 5 working days"; the link is a placeholder the server swaps for a minted token (§9 patch). The confirmation says **"Query recorded for N founders"** unless the server reports delivery — never "sent" by default. The third card, *Link the founder receives*, opens the flow view. *Founder clarification flow* (`#qview-founder`, dead markup in the prototype — §8 Q88): startup card, deck-completion bar (`N of M areas sufficient`), flagged-area blocks with signal · weight · *What the AI found* · the bank's questions, the *Areas with sufficient signal* roster, the submit checklist, and — staff-only — every query on record with the founder's answer. Pure derivations (`clarificationFlow`, `queryStatusOf`, `addWorkingDays`, `queryListCsvRow`, `withResponseLink`) are unit-tested; `src/client/queryApi.ts` is new (api.ts's `createQuery` cannot send a subject, and its `QueryDraft` type is wrong — §9). **Server-side defects were found where they live and NOT edited:** subject/body/link are `pipeline.ts` + `outbox.ts`, the partner gate is `nav.ts` + `types.ts` + two routes + a migration — each is a verified, order-independent `git apply` patch under `docs/parity-requests/` (§9). With both applied on this tree: whole vitest **1620 passed / 1 skipped**, `parity:nav` 212/278 · **66** known gaps, **roles 981/981** against a proven-owned server, and the e2e specs they touch green. `W1-A`'s §9 row (amber tab underline) is closed the prototype's way — `.q-tab.on` is a **gold** underline under olive-dk text, not olive. Tests changed and flagged per §4: `test/client/session7.test.tsx` (the "not asked" status no longer exists; its overdue case moved from 6 to 8 calendar days, because six can be fewer than five working days), and `e2e/{incubator,calls}.spec.ts` (`Query sent to 1 founder` → the button's truthful `Query recorded for 1 founder`). Migration **0056** is used only inside the partner patch. |
 | `W7-D` | **done** | **Spec §8.4 stage-awareness** built (the session's headline, not a finding). The **three Wave 2 integration §9 rows** closed (two stale `scoreColor` copies; the composite ignoring `composite_formula`/`score_scale`; the delta/threshold scale boundary) and **W2-B's F0102 client half** (per-parameter anchors on Evaluate). Findings: **F0442** closed for the incubator Evaluate (evaluation prompt, the area's clarification questions from `question_bank`, per-parameter rubric anchors) — its VC half is `VcEvaluatePage` (`W9-A`); **F0453** closed in the shared scorecard (0–10 number input at the scale's half-step, per-parameter "My remarks") except the intro-call remarks field, which has no store; **F0454** closed for the incubator (nothing pre-scored, submit locked at "Score all N parameters before submitting (n/N)") — the gate is in the shared scorecard, but `VcEvaluatePage.tsx:92` still seeds 5s (§9, `W9-A`). **The other 23 findings filed under "Evaluation workbench" are not in this session's files**: 14 are All decks (`DashboardPage`/`deckStats` — `W7-A` for the incubator, `W9-A` for VC), 6 are the VC Evaluate screen (F0435/36/41/43/44/51/52 — `W9-A`), F0445 is the AI tool schema (§9), F0458 is a `roles.ts` decision (§8 Q3). | typecheck ✓ · lint ✓ · **1640 passed / 1 skipped, 0 failed** in 47 s (1581 + 59: 21 unit · 21 worker · 17 client) · build ✓ · **e2e 186 passed · 0 flaky · 0 failed** in 6.9 min at load 11 (184 inherited + 2 new, `e2e/evaluate-stage-report.spec.ts`) · **roles 995 / 995** (981 + 14: two new probes × seven incubator accounts; port 5274, `lsof`-verified as this worktree's) · `parity:nav` 67 known gaps ✓ · `parity:tokens` 0 gaps ✓ | **§8.4 lives in ONE pure rule, `src/shared/reportStage.ts`** (`reportLayout(edition, stage, viewer)` → ordered sections, each `editable` / `read_only` / `completed`), which the server applies to `GET /api/decks/:id/report?stage=assign\|intro` (spec §13's exact contract) and the client labels. **The modal reads the stage from the route** (`assign`, the jury's `jassigned` → Assign; `introcalls` → Intro calls; else single-role) — the prototype's `suevStage()` reads the visible panel and the spec says not to rely on call-site opts, so `CallsPage`, `StagePage` and a future `AssignPage` report button get the right report without a line changing (`stage` prop overrides). A stage only ever REMOVES sections; the issue-21 hierarchy and peer-visibility column filtering are untouched (worker-tested). **2(c) settled — convert at the boundary, never caption canonically**: storage and enforcement stay canonical 0–10 (so a value survives a scale switch exactly as stored scores and cohort bands do, and every existing canonical assertion holds — none moved), and every surface converts. A threshold is a POSITION (`toDisplayScale`); a delta is a DISTANCE — it scales by span with no offset (`deltaToDisplayScale`: 2 canonical = 0.8 on 1–5, 20 on 0–100; the tempting `toDisplayScale(2)` gives 1.8). Captioning canonically was rejected because the reader is a juror typing on 1–5 who would be told "2 points". Applied in: `pipeline.ts` (rationale and shortlist messages speak the org's scale; JSON `delta`/`minimum`/`score` stay canonical, plus `deltaDisplay`), `EvalScorecard` (caption), `admin/ScoringFramework.tsx` (the two inputs and the caption — flagged in §9). **Evaluate** is `AISJ_IC_SuserV15` `panel-evaluate` in a `PanelFrame`; clicking a deck opens the workbench (the prototype has no Score/Report buttons), and the report opens from inside it. The status select is a **recommendation store** (`0057`), not a stage move (§8 Q94). **The e2e found three real defects, all fixed**: the workbench's Close button sat under the Research button (`pt-11`); an Escape-to-close handler added here also fired when Escape dismissed the Research menu (removed — the existing `evaluate-workbench.spec.ts` caught it); and the recommendations list, a mount fetch, landed after the juror's first choice and overwrote it (screen choices now win; a client test pins the race and was proven to fail with the fix reverted). |
 | `W7-E` | **done** | **F0190 F0210 F0211 F0212 F0213 F0256 F0257 F0258 F0259 F0260 F0261 F0262 F0263 F0264 F0265 F0266 F0267 F0268 F0269 F0270 F0271 F0272 F0331 F0332 F0333 F0334 F0335 F0336** closed (28 — every `panel-assign` finding); the other 18 the grep returns are not Assign's (All decks → `W7-A`: F0189 F0192–F0196 F0234 F0238 F0241 F0326 · stage screens → `W7-F`: F0202 F0207 F0208 F0251 F0253 F0254 F0330 · `jassigned` → F0206) and are handed on in §9 with what this session built for them. **The intro call's AI questions: built, client- and e2e-tested, placement filed to `W7-F`** (§9) | typecheck ✓ · lint ✓ · **1632 passed / 1 skipped** ✓ (1581 + 51: 13 unit · 17 worker · 21 client) · build ✓ · **e2e 183 passed · 2 flaky · 1 skipped · 0 failed** ✓ (7.6 min, load ~9; the skip is `assign.spec.ts`'s intro-call test, `fixme` until §9 places the block; both flakes are dev-server `fetch failed` drops in `notifications.spec.ts` and the superuser parity walk, neither touched) · roles: 2 probes added (`assignments.board`, `assignments.confirm`), **995/995** ✓ (981 + 14 — the two probes × seven incubator roles; own server on port 5275, `lsof`-verified cwd `sj-W7-E`) · `parity:nav` / `parity:tokens` untouched (no nav slug, no token) · `e2e/parity.spec.ts` snapshot unchanged (Assign's first paint still has no `<table>`; its two tables appear only after an action) | **Migration `0058` — the allotted number — and it changes the assignment model.** Assign shipped round-robin (one deck, one evaluator, because `decks.assigned_to` holds one user); the prototype's `asConfirm` gives **every selected deck to every selected member** ("N decks × M jury members = nE evaluations"). §8 Q38 named the fix and addressed it to Assign's owner: `deck_assignments` (deck × evaluator, with `assigned_by`, `due_at`, `note`, `notified`) plus `users.evaluation_capacity`, backfilling every seeded assignee. `decks.assigned_to` is KEPT as the first assignee, so no existing reader changes meaning. **The reading is recorded as §8 Q96** — issue 22's developer comment calls round-robin deliberate, but the issue TEXT says "as per image5" and §1.1 lets only the text win. **Server:** new `src/server/routes/assignments.ts` — `GET /api/assignments/board` (per-deck AI core values for the sparkline and `#as-pov`, the AI+/AI++/AI+++ totals /30, assignees with due date and submitted; honours blind scoring exactly as `GET /api/decks` does) and `POST /api/assignments` (validates EVERY deck and member before writing ANY, one D1 batch, 7-day deadline, instructions, one `evaluator_assignment` email per member unless notify is off; already-assigned decks gain evaluators instead of 409-ing, F0211). **Every consumer that assumed one evaluator was taught otherwise, in files this session does not own, each flagged in §9:** the jury scoring guard (a SECOND juror could not score), `allEvaluatorsHaveScored` ("all complete" fired after the first), `/api/evaluators` workload + capacity, the reminder sweep, `DeckView.assigneeIds`. All read the union of the join table and `assigned_to` (`ASSIGNEE_PAIRS_SQL`), so seeds and tests that set `assigned_to` directly keep counting. **Client:** `AssignPage.tsx` rebuilt to the panel — the three views (assign · Assignment confirmed · Incomplete decks), the exact column widths and borders, every copy string from the renderers (`src/shared/assignment.ts` holds them and the arithmetic, unit-tested). `ParamSparkline.tsx` is a shared component because All decks draws the same pair (F0234). **⚠️ One gap integration must close before the feature is whole: `EvaluatePage.tsx:100` still filters the jury's list on `assignedTo`, so a second assigned juror may score but will not SEE the deck** — a one-line §9 request to `W7-D`. **The AI questions:** `IntroCallQuestions.tsx` renders topic, question and reason, and renders NOTHING — asserted as an empty host, and proven by mutation to fail if the `enabled` check is removed — when the toggle is off. It is not reachable from Assign in either the prototype or the app; the call detail is `CallsPage.tsx`, `W7-F`'s. Its e2e is written and `fixme`'d; **placed locally in the Reschedule modal it passed**, then was reverted — the §9 row names that exact line. **Two traps this session wrote and caught:** `beforeEach(() => vi.mocked(fn).mockReset())` RETURNS the mock, which vitest runs as teardown — calling it once more after every test (it hung 30 s on a pending promise and threw an "unhandled" rejection that the component had in fact caught); and the seeded decks already carry the associate's own evaluation, which lifts blind scoring, so a blind-scoring test on FinStack passes for the wrong reason. |
+| `W7-F` | **done** | **F0572, F0581, F0582, F0583, F0609, F0610, F0612, F0614, F0615, F0616, F0617, F0618, F0619, F0620, F0632, F0642, F0643, F0644, F0646, F0647, F0648, F0649** closed (22 of 29); **F0573, F0621, F0645** PARTIAL; **F0560, F0571, F0574, F0611** not closed — each needs a file this session does not own (§9) or a model the client has not specified (§8) | typecheck ✓ · lint ✓ · **1608 passed / 1 skipped, 0 failed** ✓ (1581 + 27: **14** `stagePage.test.tsx` · **13** `callsPage.test.tsx`) · build ✓ · `parity:nav` **63 known gaps** ✓ (was 67 — the four casing rows are DELETED, not re-listed) · `parity:tokens` untouched · **e2e 188 passed · 0 flaky · 0 failed** ✓ (184 inherited + 4 new in `e2e/pipeline-stages.spec.ts`; 12.5 min at load ~23 with sibling stacks running, on a private port with a fresh seed) · roles not run (no authZ change; `nav.ts` moved two label strings only) | **The config extension landed first** (`7430566`) and its shape is in §9 for `W9-B`/`W9-C`/`W9-E`. **"Sub-tabs" are the slide-over's tabs.** No pipeline panel in any of the eleven builds draws page-level tabs; what they draw is `su-stabs`/`nc-stabs` — Deck / All scores (/ Sign-up) in a 382px pane that pushes the table. That is what `subTabs` declares. **The W5-A consumers were already placed by `W6-A`** — the Documents column was a read-only roll-up badge and the seat card lived in the workspace, reached from Onboard ready's Sign-up button — so this session TESTED them rather than rebuilt them: the client suite asserts the badge is not a combobox while Payment still is, and `e2e/pipeline-stages.spec.ts` walks a sign-up that completes with no free seat to the red card and allocates it on screen. The pane's Sign-up tab carries the same seat card (the prototype's `cuTab('signup')` body does). **Prog manager pipeline is now `panel-forsignup`**, which is what issue 26's "as per image9" points at (`parity-nav` maps `forsignup → pmpipeline`): starts at Shortlisted, reads sign-up status, and no longer lists decks awaiting a jury decision — the PM's Shortlist/Reject is Jury Pipeline's Action, as in the prototype. §8 Q101. **Intro calls** took most of the worklist: the prototype's toolbar, footer sentence and legend, one decimal in band colour, Schedule in the Call scheduled cell, singular copy, a role-grouped roster with Selected chips, the Deck/All scores pane, a per-evaluator Jury score stack read from `GET /api/decks/:id/report` (the one read that already carries it, hierarchy-filtered), Cancel/Reopen reaching verbs that had no caller, Google Calendar and Outlook composers alongside the `.ics`, and the Jury build's thirteen columns. **`GET /api/calls/:id/prompts` has a caller** — the questions head the row's pane and render NOTHING when the toggle is off (asserted as absence in client and pinned to the route's own answer in e2e). **Three defects found by looking, not by the worklist:** (1) adding `signup` decks to Prog manager pipeline re-exposed the unguarded Complete signup W6-A had hidden — now hidden on any screen that reads sign-up records, with a test that fails without the fix; (2) shortlisted Intro-call rows rendered the `schedule_intro` transition as a second "Schedule intro call" that moved the deck without booking anything — `POST /api/calls` already applies it, so the call screen owns that verb; (3) the first e2e run caught (2) as a strict-mode collision, which is the only reason it was seen. **One flake shape written and caught, as the prompt predicted:** `calls.spec.ts`'s modal Cancel became ambiguous the moment rows gained "Cancel call" — scoped to the dialog. **Deliberate deviations:** the scheduler table keeps an **Action** column the prototype lacks (it carries Send signup, which is the associate's only surface for it, §8 Q104); "Assign scheduler" is still the read-only Scheduler (§8 Q102); the footer pluralises "1 shortlisted startup" where the prototype always says "startups". **Parity snapshot:** 28 rows re-captured against a fresh seed on this branch, each a column this session moved; obsolete sets REPLACED, not unioned, so a regression fails the walk. **Visual check** was by Playwright screenshot rather than the Browser pane (signing in there would mean typing a password). |
 
 ---
 
@@ -978,6 +982,11 @@ best reading and note it.
 | Q98 | `W7-E` (F0210) | **Is the 7-day deadline configurable, and is it 7?** The summary card and the results subtitle say 7 days; the Jury prototype's seeded due dates are 10 days out. | Fixed at `ASSIGNMENT_DEADLINE_DAYS = 7`, the number the Assign screen itself prints, stored per assignment in `deck_assignments.due_at` so a later setting changes new assignments without rewriting old ones. No admin control exists in either prototype. |
 | Q99 | `W7-E` | **"Jury members" when the members are not jurors.** The prototype's copy says "Notify 2 jury members by email", "1 deck → 2 jury members" and "Pick one or more jury members" even when a Program manager is among them — and it deliberately allows mixing roles. | Reproduced verbatim (§1.1: the prototype supplies the copy). "Evaluators" would be more accurate and is what the results subtitle already says; flag for the client rather than silently improving it. |
 | Q100 | `W7-E` (F0272) | **What does "Send to Query" do?** The prototype pushes the incomplete decks into the Query screen's list as `pending` and drops them from Assign's. In the app, incomplete decks are ALREADY on the Query screen, and a query is an email to a founder. | It navigates to Query with the decks as `location.state.deckIds` — it does not email anyone from Assign. Pre-selecting them on arrival is `QueryPage.tsx`'s half (§9, `W7-C`). |
+| Q101 | `W7-F` (issue 26) | **What is Prog manager pipeline?** Issue 26's text says "as per image9"; its developer comment describes a decision queue ("jury-scored decks awaiting sign-off plus shortlisted startups waiting on an intro call"). The prototype screen that became it (`panel-forsignup`, retitled "Prog manager pipeline") is "Shortlisted startups moving into onboarding — track sign-up status and action each one", with no jury-evaluation rows. | **The prototype, per §1.1** — the issue TEXT is "as per image9" and does not contradict it; the developer comment is not the issue. Stages `shortlisted · intro · signup · onboard_ready` plus the jury's own rejections (`exitAction = "reject"`); columns and legend from `panel-forsignup`. The PM loses nothing: Shortlist / Reject is on Jury Pipeline for the PM, exactly as in `AISJ_IC_PM_V5`. Reverting is one `statuses` line. |
+| Q102 | `W7-F` (F0570, F0574) | **"Assign scheduler" needs a delegation model nobody has specified.** The prototype's cell is role → user → Assign, then "<user> · <role>" with Change. Does the delegate gain scheduling rights on THAT call only? Can a jury member be the delegate (the prototype offers it) when jury is not a scheduler role? Is the delegation visible to the delegate as a task? | **Not built.** The column stays "Scheduler" (organiser + participant count). Needs `calls.assigned_scheduler_id` (or a deck-level field before a call exists), a `PUT` verb, and a rule for what the delegate may then do — a migration and `calls.ts`, both `W9-E`'s files. |
+| Q103 | `W7-F` (F0571, F0611) | **Who closes an intro call out?** The Jury build gives the JURY a Not yet / Completed control and the four scheduler builds a read-only pill; issue 27 gave schedulers Mark completed, and `calls.ts` 403s any non-scheduler PATCH. | **Both.** Schedulers keep Mark completed (issue 27, tested). The jury gains it when the server lets a call's participant set `status` on their own call — §9. The screen already renders the control from `call.canManage`, so it needs no client change beyond whichever flag the server adds. |
+| Q104 | `W7-F` (F0640, F0646) | **The prototype's Intro calls table has no Action column**, but the stage's transitions (Send signup) are the Programme Associate's only surface for them — the PA cannot reach Prog manager pipeline, where the prototype's lifecycle menu lives. | **Kept a trailing "Action" column** for transitions only; Schedule moved into Call scheduled, and Reschedule / Email invite / .ics / Cancel call sit under the date. Drop the column the day the PA gets another route to Send signup. |
+| Q105 | `W7-F` (F0645) | **The Jury build disagrees with itself**: its sidebar says "My Intro calls" and its panel title says "My intro calls". | **The heading follows the sidebar** (`navLabel`), on `W3-A`'s principle that a heading disagreeing with the item you clicked is worse than the casing. The subtitle half of F0645 is closed. |
 
 ---
 
@@ -1207,6 +1216,11 @@ session places it.
 | `W7-E` | **`src/server/routes/pipeline.ts`, `src/server/routes/decks.ts`, `src/server/scheduled.ts`, `src/server/email/outbox.ts`, `src/server/index.ts`, `src/client/api.ts`, `src/client/types.ts`, `scripts/role-matrix.ts`** *(unowned this wave)* | **Already placed — flagged loudly per §2.2.** A deck with several evaluators is a model change, and a model change lives where the model is read. `pipeline.ts`: the single-assign route also writes the join row; the jury scoring guard reads `isAssignedEvaluator`; `allEvaluatorsHaveScored` waits for EVERY assignee; `/evaluators` counts workload across the join table and returns `capacity`. `decks.ts`: one additive subquery → `DeckView.assigneeIds`. `scheduled.ts`: reminders reach every assignee. `outbox.ts`: the `evaluator_assignment` kind and `buildAssignmentEmail`. `index.ts`: mounts `/api/assignments`. `api.ts` / `types.ts`: additive exports and one field. `role-matrix.ts`: two probes for the new router. Each is covered in `test/worker/assignments.test.ts`. | placed by `W7-E` |
 | `W7-E` | `test/worker/migrations-w1b.test.ts` · `e2e/incubator.spec.ts` *(unowned)* | **Placed, restated, not weakened.** `ALLOTMENT_CEILING` 53 → 59 for Wave 7's allotment (every Wave 7 session that writes a migration hits this line — take the highest). `incubator.spec.ts`'s assign test still assigns FinStack to Rajesh Kumar and still asserts the confirmation; three selectors moved with the screen (the role row is "Jury member" in the prototype's sentence case; the preview is the summary card; the confirmation is the results table). | placed by `W7-E` |
 | `W7-E` | `e2e/*` *(every Wave 7 session)* | `e2e/assign.spec.ts` MUTATES **GreenGrid Energy** (`inc_deck_greengrid`, seeded `ai_evaluated`) — it assigns it to two evaluators. No other spec reads it today; do not start. | — |
+| `W7-F` | `src/client/routes/StagePage.tsx` *(VC configs — **`W9-B`, `W9-C`: write against this, not around it**)* | **The `StageConfig` extension has LANDED** (`parity/W7-F`, first commit). Four optional keys, each drawing nothing when omitted — `test/client/stagePage.test.tsx` asserts both halves. (1) **`toolbar?: { filters?: FilterOption<StageRow>[]; export?: boolean }`** — the `.tbr` Filter menu (single choice, "All" plus each option; the button relabels itself `Filter · <label>`) and Export (CSV of the rows SHOWN). `StageRow = { deck, signup? }`; `FilterOption = { id, label, match(row) }`. (2) **`subTabs?: ("deck" \| "scores" \| "signup" \| { id, label, render(row) })[]`** — these are the prototype's slide-over tabs (`su-stabs` / `nc-stabs`); **no prototype stage panel draws page-level tabs**, I checked every pipeline panel in all eleven builds. Declared → the startup name opens a 382px `<aside>` BESIDE the table (not an overlay) on the first tab; a single tab draws a label instead of a strip; a custom tab's `render` is how a DD checklist or term-sheet record gets in. Omitted → the name opens `EvaluationDrawer`, unchanged. (3) **`legend?: { label, color, statuses? }[]`** now pins in the `.tb-foot` beside (4) **`footer?: (rows: StageRow[]) => string`** — the `jpFoot`/`suFoot` sentence, counted over the whole stage not the filtered view. An entry with `statuses` tints the Status / Sign-up status pill whose key it lists, so legend and badges cannot disagree. Also new: `labels?: Partial<Record<StageColumn,string>>` (per-screen header overrides) and `include?: (deck) => boolean` (narrow `statuses`). The screen now renders in the `.sj-frame` + `PageToolbar` frame. **Every VC config carries `toolbar: VC_TOOLBAR` (`{ export: true }`)** — the one edit I made to VC configs, and only to keep the Export they already had; replace it per screen. The shared pieces are in the new `src/client/routes/StageKit.tsx` (`FilterMenu`, `StageFooter`, `LegendPill`, `DetailPane`, `DeckSlides`, `AllScores`, `BandScore`, `scoreColor`), which `CallsPage` uses too — `W9-E` gets them for free. **`CallsConfig` has the same opt-in shape** (each key draws nothing when omitted; `test/client/callsPage.test.tsx` asserts a bare config stays bare): `toolbar?: { schedule?: string; filter?: boolean; export?: boolean }` · `footer?: { noun }` (the three-dot legend + `N <noun>s · N scheduled · N completed`) · `subTabs?: PaneTabId[]` · `aiQuestions?: boolean` · `juryStack?: boolean` (one score per evaluator from `useReportMatrices`) · `participantColumns?: "jury"`. **Two shared-renderer changes DO reach the VC call screens, deliberately:** the modal copy is singular from `CALL_KIND_LABELS` ("Schedule partner call"), and the last column is "Action" with call verbs moved into the Call scheduled / Call date cells (the VC `parity.spec.ts` rows were re-captured). Also in `StageKit`: `useReportMatrices(deckIds, enabled)` and `Sparkline`. | `W9-B`, `W9-C`, `W9-E` — read, nothing to place |
+| `W7-F` | `src/client/routes/AssignPage.tsx` / `CallsPage.tsx` *(`W7-E` — coordination, not a change)* | **The intro-call AI questions are BUILT, in `CallsPage.tsx`** — `W7-E`'s prompt routed the call surface to this session. `CallQuestions` renders `{topic, question, because}` at the head of the Intro calls row pane and renders nothing on `enabled:false`; client and e2e cover both. If `W7-E` also built a block reachable from Assign, integration keeps ONE renderer — export `CallQuestions` from `CallsPage.tsx` rather than keeping two. **F0560** (Submit dispatches deck × member; needs a `deck_assignments` join table) is in this worklist's filter but is Assign's and the schema's, not a stage screen's. | Wave 7 integration |
+| `W7-F` | `src/server/routes/calls.ts` *(`W9-E`)* | **F0571 / F0611 — let a call's participant close it out.** `PATCH /api/calls/:id` 403s every non-scheduler (`calls.ts:462`), so the jury can never set `completed`, which the Jury build gives them (§8 Q103). Allow a participant of THAT call to PATCH `status` only (`completed` ⇄ `scheduled`), nothing else, and return a flag on `CallView` — the simplest is to set `canManage` for the status verb, or add `canComplete` and have `CallsPage.completedCell` read `call.canManage \|\| call.canComplete` (one line). Worker test: jury on the call 200, jury not on it 403, jury PATCHing `scheduledAt` 403. **F0570 / F0574 (Assign scheduler)** needs a model first — §8 Q102. | `W9-E` |
+| `W7-F` | `src/pipeline/incubator.ts` *(unowned)* | **F0573 — an intro call that is completed can be archived.** No transition leaves `intro` for `archived` today (archive exists only from `rejected`). Add `{ from: "intro", to: "archived", action: "archive_after_call", label: "Archive", roles: ["jury", "program_manager", "admin", "superuser"] }` and record the reason ("archived after completed call") in the event note. **No client change is needed:** the Jury build's Archive button on My Intro calls is already drawn, disabled until the call is completed, and enables itself when `deck.actions` offers any transition `to: "archived"`. Check `performAction`'s jury gate (jury may only act on decks assigned to them). | Wave 8 or whoever next owns the pipeline |
+| `W7-F` | `e2e/calls.spec.ts` *(unowned)* — **already placed, flagged per §4** | Two assertions followed deliberate copy/layout changes, neither weakened: the reschedule heading is `"Reschedule intro call"` exactly (F0649 made it singular — the old regex `/Reschedule intro calls/i` would have silently matched nothing new), and the modal's Cancel is scoped to the dialog because rows now carry "Cancel call" (F0620), which made the page-wide locator a strict-mode violation. `e2e/coverage.spec.ts` and `parity.spec.ts` follow the "Prog manager pipeline" casing. | placed by `W7-F` |
 
 | `W7-C` | `src/server/routes/pipeline.ts` (`POST /decks/:id/queries`) · `src/server/email/outbox.ts` (`buildQueryEmail`) · `test/worker/{pipeline,outbox}.test.ts` · `e2e/query.spec.ts` | **F0216 / F0277 / F0217 / F0466 — place in the SAME merge as `W7-C`, not later.** The Query screen now posts `{ questions: <the letter as shown>, subject: <as typed> }`, and every letter carries `→ [your secure response link]`. Until this lands the server still ignores `subject`, wraps the letter in a second greeting ("Hi Ada," above "Dear Founder,"), and mails the placeholder with no link — which also makes the *Link the founder receives* card's copy untrue. `git apply docs/parity-requests/W7-C-query-email.patch` (300 lines over five files; a table cell cannot carry it faithfully). It: rejects a subject with CR/LF or over 200 chars (`400 invalid_subject` — a line break in a subject is header injection); mints a resubmit token per query with `mintResubmitToken`, which by the resubmit module's own rule **revokes the deck's earlier live link** — the newest email's link wins, so the Incomplete email's stops working; sends the letter verbatim under the subject with the link substituted by `withResponseLink` (`src/shared/queries.ts`), appending it if the operator deleted the placeholder; keeps the old wrapper for a caller that sends no subject, now with the link; stores the letter WITH the placeholder, so the raw token lives only in the outbox body (as `buildIncompleteEmail` already does); answers `{ emailStatus: sent.status, delivered }` instead of a hard-coded `"sent"`. Deletes the `test.fail()` on `e2e/query.spec.ts`'s second test — Playwright reports an unexpected pass if it is left, so the gap cannot close unrecorded. Adds 4 worker tests (the verbatim letter and a live `/api/resubmit/:token`; the deleted placeholder and the no-subject path; a bad subject; jury → 403 minting nothing) and 2 pure `buildQueryEmail` tests. Verified: touched worker files 109/109; e2e query + resubmit + incubator 8/8 with it applied. | Wave 7 integration |
 | `W7-C` | `src/client/api.ts` | **Three dead exports, one with a wrong type.** `createQuery`, `fetchQueryDraft` and `QueryDraft` had one caller, the Query screen, which now uses `src/client/queryApi.ts` (`createQuery` cannot send a subject). `QueryDraft` declares `questions: {area, text}[]` and `areas: string[]` — a shape `GET /api/questions/draft/:deckId` has never returned (`AreaQuestions[]` / `ResponseArea[]`). Delete all three. | Wave 7 integration |
@@ -3050,6 +3064,189 @@ TEST
   `beforeEach(() => vi.mocked(fn).mockReset())` RETURNS the mock and vitest runs it as teardown
   (use braces); and gate client assertions on a populated element, never on a heading the loading
   branch also renders.
+### Wave 9 — `W9-B`, `W9-C`, `W9-E` *(written by `W7-F`)*
+
+> All three build on what `W7-F` landed: `StageConfig`'s `toolbar` / `subTabs` / `legend` + `footer`
+> / `labels` / `include`, `CallsConfig`'s matching opt-in keys, and `src/client/routes/StageKit.tsx`.
+> The shape is the `W7-F` rows in §9. **Declare; do not fork the renderer.** A VC screen that needs
+> something the config cannot say is a new optional key with a test that a screen omitting it is
+> unchanged — not a bespoke page. `W9-B` and `W9-C` both edit `StagePage.tsx` (different configs) —
+> keep to your own config entries and any new key you add must default to "draws nothing".
+
+#### `W9-B` — Submit, Associate pipeline, Partner pipeline
+
+```
+You are running session W9-B — the VC associate and partner pipeline screens — of the
+ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W9-B -b parity/W9-B main
+  cd ../sj-W9-B && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, your row in §6's Wave 9 table, and the `W7-F` rows in §9
+     (the StageConfig extension you build against).
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Pipeline" --edition vc \
+         --screen "assign|jurypipeline|partnerpipeline" --full
+     Twenty-six findings.
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_VC_Superuser_V8/panel-{jurypipeline,partnerpipeline}.html
+     and their renderers in `_scripts.js` (grep the tbody ids) — those functions only.
+  4. src/client/routes/StagePage.tsx — `VC_STAGE_CONFIG.jurypipeline` / `.partnerpipeline`, and
+     src/client/routes/StageKit.tsx. Read `INCUBATOR_STAGE_CONFIG.jurypipeline` as the worked example.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. Replace each screen's `toolbar: VC_TOOLBAR` with the prototype's Filter + Export, a `legend`
+     whose entries decode the Status pill, and the `footer` sentence from the renderer's foot function.
+  2. The exact column sets: "Analyst Score" / "Inv. Assoc." rather than "Jury score" (a `labels`
+     override — do not rename COLUMN_LABELS, the incubator uses it), "Submitted date", "Submit to".
+     A column the enum lacks is a new `StageColumn` plus its `cell` case.
+  3. `subTabs` only where the VC panel draws a slide-over; where it does not, leave it undeclared.
+  4. `assign` ("Submit") is `VcEvaluatePage.tsx` (W9-A's) — confirm and hand anything there to §9.
+
+CONSTRAINTS
+  - Own only: the `jurypipeline` and `partnerpipeline` entries of VC_STAGE_CONFIG in StagePage.tsx,
+    and any new optional StageConfig key you need (default: draws nothing, with a test saying so).
+  - `W9-C` edits other VC_STAGE_CONFIG entries in the same file this wave.
+  - Migration: none expected; if you need one, take the number integration allots and say so loudly.
+
+TEST
+  - Client: each screen's exact header set, legend and footer sentence, from the real config.
+  - Client: the incubator configs and the other VC configs still render exactly as before.
+  - Re-capture the changed `e2e/parity.spec.ts` rows (replace obsolete sets; do not union them).
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  The whole gate is about five minutes on a quiet box (W7-F: 1608 unit/worker/client in ~20 s).
+  `uptime` before you start; never run it while a sibling runs theirs; never conclude anything from
+  a red run at load 40+ without re-running the file alone and a spec you never touched as a control.
+  Run e2e on YOUR port (`E2E_PORT`), and point `TMPDIR` at your scratchpad before a
+  `PARITY_CAPTURE=1` run — the capture file is otherwise shared with every sibling.
+  Flakes earlier waves wrote: gate client assertions on a POPULATED row, never a heading the loading
+  branch renders; never locate an element by the attribute your click changes; one sign-in per
+  test; guard a draft against its own StrictMode double mount; and a new button whose name CONTAINS
+  an existing one's ("Cancel call" vs "Cancel") breaks page-wide locators elsewhere — scope them.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W9-B. Do not merge to main.
+```
+
+#### `W9-C` — IC pipeline, Investment DD, term sheet, Legal DD, onboard, archive
+
+```
+You are running session W9-C — the VC diligence-to-onboard screens — of the ai.STARTUPJURY parity
+programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W9-C -b parity/W9-C main
+  cd ../sj-W9-C && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, your row in §6's Wave 9 table, the `W7-F` rows in §9, and
+     `W5-A`'s F0090 note in §7 (the DD drawer's document model is `signup_documents`).
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Pipeline" --edition vc \
+         --screen "icpipeline|investmentdd|incuration|legaldd|curation|archive|DD" --full
+     Twenty-two findings.
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_VC_Superuser_V8/panel-{icpipeline,investmentdd,incuration,
+     legaldd,curation,archive}.html and their renderers in `_scripts.js` — those functions only.
+  4. src/client/routes/IcVotePage.tsx; StagePage.tsx's `investmentdd` / `incuration` / `legaldd` /
+     `curation` / `archive` VC configs; StageKit.tsx.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. Each StagePage screen's toolbar, legend, footer and exact columns, declared in its config
+     (Investment DD: MP approval · Diligence progress · Flags · Lead · Checklist; Legal DD: Legal DD
+     progress · Flags · Lead · Sign up; Term sheet: Partner · Schedule call · Term sheet status/doc).
+  2. **The DD checklist is a custom sub-tab**: `subTabs: [..., { id, label, render: (row) => … }]`
+     is exactly what that key exists for. Do not make a bespoke page for it.
+  3. IC pipeline stays `IcVotePage.tsx`; bring its header, columns and Recommendation select to parity.
+
+CONSTRAINTS
+  - Own only: IcVotePage.tsx and the five VC_STAGE_CONFIG entries above. `W9-B` edits two others.
+  - Any new StageConfig key defaults to drawing nothing, with a test saying so.
+  - `signup_documents` and its router are `W5-A`'s, complete and tested — give them a surface.
+
+TEST
+  - Client: each screen's exact header set, legend and footer; the DD tab renders its checklist.
+  - E2E: open a DD row's checklist tab and move one item.
+  - Re-capture the changed `e2e/parity.spec.ts` rows (replace obsolete sets).
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  The whole gate is about five minutes on a quiet box (W7-F: 1608 unit/worker/client in ~20 s).
+  `uptime` before you start; never run it while a sibling runs theirs; never conclude anything from
+  a red run at load 40+ without re-running the file alone and a spec you never touched as a control.
+  Run e2e on YOUR port (`E2E_PORT`), and point `TMPDIR` at your scratchpad before a
+  `PARITY_CAPTURE=1` run — the capture file is otherwise shared with every sibling.
+  Flakes earlier waves wrote: gate client assertions on a POPULATED row, never a heading the loading
+  branch renders; never locate an element by the attribute your click changes; one sign-in per
+  test; guard a draft against its own StrictMode double mount; and a new button whose name CONTAINS
+  an existing one's ("Cancel call" vs "Cancel") breaks page-wide locators elsewhere — scope them.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  Commit to parity/W9-C. Do not merge to main.
+```
+
+#### `W9-E` — VC calls: intro · partner · alignment
+
+```
+You are running session W9-E — the VC call screens — of the ai.STARTUPJURY parity programme.
+You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W9-E -b parity/W9-E main
+  cd ../sj-W9-E && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, your row in §6's Wave 9 table, §8 Q81–Q84, and the `W7-F`
+     rows in §9 — two of them are addressed to you (`calls.ts`).
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Pipeline" --edition vc \
+         --screen "introcalls|partnercall|alignmentcall|call modal" --full
+     Thirty-seven findings. Several are already closed by W7-F's shared renderer (the grouped
+     roster, Cancel/Reopen, the calendar composers, one-decimal scores) — verify, then claim.
+  3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_VC_Superuser_V8/panel-{introcalls,partnercall,alignmentcall}.html,
+     and the IC-member / analyst builds' `panel-introcalls.html`; their renderers only.
+  4. src/client/routes/CallsPage.tsx (read `INCUBATOR_CALLS_CONFIG.introcalls` as the worked example),
+     StageKit.tsx, and src/server/routes/calls.ts.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. Declare, per VC call screen: `toolbar`, `footer`, `subTabs`, `juryStack` and the prototype's
+     column set — "Analyst Score" not "Jury score", Partner call's Sponsorship outcome select,
+     Alignment call's term-sheet capture. A per-screen column set is a new optional CallsConfig key
+     (the incubator's is `participantColumns: "jury"`); a config that omits it must stay as it is.
+  2. `calls.ts` (yours this wave): let a call's participant set `status` on their own call (§9,
+     F0571 / F0611) and surface the flag the client reads; decide §8 Q81 with the user or record it.
+  3. Decided rows that the prototype keeps with their outcome (F0627) — decide and record.
+
+CONSTRAINTS
+  - Own only: CallsPage.tsx (VC configs + any new optional key), src/server/routes/calls.ts.
+  - Do not change `GET /api/calls/:id/prompts`'s contract; the incubator pane calls it.
+  - §1.3: no calendar vendor SDK — the composers are URLs, the invite is the `.ics`.
+
+TEST
+  - Client: each VC screen's exact headers, footer and legend; the incubator Intro calls unchanged.
+  - Worker: participant PATCH status 200 on their own call, 403 on another, 403 for any other field.
+  - Re-capture the changed `e2e/parity.spec.ts` rows (replace obsolete sets).
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  The whole gate is about five minutes on a quiet box (W7-F: 1608 unit/worker/client in ~20 s).
+  `uptime` before you start; never run it while a sibling runs theirs; never conclude anything from
+  a red run at load 40+ without re-running the file alone and a spec you never touched as a control.
+  Run e2e on YOUR port (`E2E_PORT`), and point `TMPDIR` at your scratchpad before a
+  `PARITY_CAPTURE=1` run — the capture file is otherwise shared with every sibling.
+  Flakes earlier waves wrote: gate client assertions on a POPULATED row, never a heading the loading
+  branch renders; never locate an element by the attribute your click changes; one sign-in per
+  test; guard a draft against its own StrictMode double mount; and a new button whose name CONTAINS
+  an existing one's ("Cancel call" vs "Cancel") breaks page-wide locators elsewhere — scope them.
 
 FINISH
   Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
@@ -3058,6 +3255,11 @@ FINISH
   Commit to parity/W8-B. Do not merge to main.
   Commit to parity/W9-E. Do not merge to main.
 ```
+
+  Commit to parity/W9-E. Do not merge to main.
+```
+
+`W9-A` and `W9-D` still have no prompt; neither depends on this session's work.
 
 ---
 

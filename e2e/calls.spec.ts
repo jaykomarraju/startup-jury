@@ -48,13 +48,15 @@ test("the scheduling modal opens prefilled from an existing call", async ({ page
   const row = page.getByRole("row", { name: /WealthOS/ });
   await row.getByRole("button", { name: "Reschedule" }).click();
 
-  await expect(page.getByRole("heading", { name: /Reschedule intro calls/i })).toBeVisible();
+  // W7-F (F0649) — one call is "an intro call": the heading is singular now.
+  await expect(page.getByRole("heading", { name: "Reschedule intro call", exact: true })).toBeVisible();
   await expect(page.getByLabel("Date and time")).toHaveValue(/2026-08-19/);
   await expect(page.getByLabel("Founder email")).toHaveValue("founder@wealthos.example");
   // The participant picker is populated from the edition directory.
   await expect(page.getByText(/participants selected/)).toBeVisible();
-  await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.getByRole("heading", { name: /Reschedule intro calls/i })).toHaveCount(0);
+  // Scoped to the dialog: the rows carry their own "Cancel call" (F0620).
+  await page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Reschedule intro call", exact: true })).toHaveCount(0);
 });
 
 test("a partner schedules an alignment call and downloads the invite", async ({ page }) => {
