@@ -82,7 +82,13 @@ function mockApi(decks: DeckView[], signups: SignupSummary[] = []) {
     let body: unknown = {};
     if (url === "/api/decks" || url.startsWith("/api/decks?")) body = { decks };
     else if (url.startsWith("/api/signups")) body = { signups };
-    else if (url.startsWith("/api/decks/")) {
+    // Wave 7 integration: `/api/decks/:id/report` is `W7-D`'s stage-aware
+    // endpoint and it ALSO starts with "/api/decks/", so the catch-all below
+    // was answering it with a deck payload. The drawer then read `report.core`
+    // off an object that has none. Answer it as itself.
+    else if (/^\/api\/decks\/[^/]+\/report/.test(url)) {
+      body = { core: [], additional: [] };
+    } else if (url.startsWith("/api/decks/")) {
       body = { deck: decks[0], scores: SCORES, extraction: EXTRACTION, versions: [] };
     }
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });

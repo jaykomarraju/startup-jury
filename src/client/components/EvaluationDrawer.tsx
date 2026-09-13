@@ -136,7 +136,12 @@ export function EvaluationDrawer({
 
   const mine = useMemo(() => {
     const byKey = new Map<string, MyCell>();
-    if (!report || !viewerId) return byKey;
+    // Wave 7 integration: `report` being truthy does NOT guarantee `core`.
+    // `W7-D` made /api/decks/:id/report stage-aware, and a response that is not
+    // the matrix — an error body, a stage that carries no core section — used to
+    // reach `report.core.map` and white-screen the whole drawer. Guard the SHAPE,
+    // not just the presence.
+    if (!report?.core || !viewerId) return byKey;
     for (const row of report.core) {
       const cell = row.cells[viewerId];
       if (cell) byKey.set(row.key, cell);
@@ -146,7 +151,7 @@ export function EvaluationDrawer({
 
   if (!open) return null;
 
-  const coreKeys = report ? new Set(report.core.map((r) => r.key)) : null;
+  const coreKeys = report?.core ? new Set(report.core.map((r) => r.key)) : null;
   const scored = coreParamScores(scores, coreKeys);
   const aiTotal = aiTotalProp ?? (scored.length > 0 ? weightedTotal(scored) : deck.aiScore);
   const weightSum = scored.reduce((sum, s) => sum + s.weight, 0);
@@ -155,7 +160,7 @@ export function EvaluationDrawer({
     return cell ? [{ weight: s.weight, value: cell.value }] : [];
   });
   const myTotal = myRows.length > 0 ? weightedTotal(myRows) : undefined;
-  const additional = report?.additional.find((g) => g.role === viewerRole)?.rows ?? [];
+  const additional = report?.additional?.find((g) => g.role === viewerRole)?.rows ?? [];
   const meta = deckMeta(deck);
 
   return (
