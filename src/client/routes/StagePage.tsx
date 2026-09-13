@@ -778,30 +778,32 @@ export function StagePage({ config }: { config: StageConfig }) {
           </div>
         )}
         {config.actionMenu ? (
-          <select
-            className="sj-input h-8 py-0 text-xs"
-            aria-label={`Action for ${deck.name}`}
-            value=""
-            disabled={busy !== null}
-            onChange={(e) => {
-              const value = e.target.value;
-              if (value === VIEW_DECK) {
-                const tab = paneTabs.includes("deck") ? "deck" : resolveTab(paneTabs[0]).id;
-                setPane({ deckId: deck.id, tab });
-                return;
-              }
-              const action = actions.find((a) => a.action === value);
-              if (action) void runAction(deck, action);
-            }}
-          >
-            <option value="">{busy?.startsWith(`${deck.id}:`) ? "…" : "Action ▾"}</option>
-            <option value={VIEW_DECK}>View deck</option>
-            {actions.map((a) => (
-              <option key={a.action} value={a.action}>
-                {config.actionMenu?.labels?.[a.action] ?? a.label}
-              </option>
-            ))}
-          </select>
+          <div className="flex justify-end">
+            <select
+              className="sj-input h-8 w-auto py-0 text-xs"
+              aria-label={`Action for ${deck.name}`}
+              value=""
+              disabled={busy !== null}
+              onChange={(e) => {
+                const value = e.target.value;
+                if (value === VIEW_DECK) {
+                  const tab = paneTabs.includes("deck") ? "deck" : resolveTab(paneTabs[0]).id;
+                  setPane({ deckId: deck.id, tab });
+                  return;
+                }
+                const action = actions.find((a) => a.action === value);
+                if (action) void runAction(deck, action);
+              }}
+            >
+              <option value="">{busy?.startsWith(`${deck.id}:`) ? "…" : "Action ▾"}</option>
+              <option value={VIEW_DECK}>View deck</option>
+              {actions.map((a) => (
+                <option key={a.action} value={a.action}>
+                  {config.actionMenu?.labels?.[a.action] ?? a.label}
+                </option>
+              ))}
+            </select>
+          </div>
         ) : (
           <div className="flex flex-wrap justify-end gap-2">
             {signup && (

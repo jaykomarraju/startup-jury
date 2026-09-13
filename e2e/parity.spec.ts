@@ -471,7 +471,7 @@ const EXPECTED: Record<string, Screen> = {
   "vc/superuser/assign": { title: "Evaluate", tables: [] },
   "vc/superuser/jurypipeline": {
     title: "Assoc. Pipeline",
-    tables: [["STARTUP", "EVALUATORS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "ANALYST SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "SUBMITTED DATE", "STATUS", "ACTION", "SUBMIT TO"]],
   },
   "vc/superuser/introcalls": {
     title: "Intro calls",
@@ -479,7 +479,7 @@ const EXPECTED: Record<string, Screen> = {
   },
   "vc/superuser/partnerpipeline": {
     title: "Partner Pipeline",
-    tables: [["STARTUP", "SECTOR", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "INV. ASSOC.", "AVG. SCORE", "ADDL. PARAMETER SCORES", "SUBMITTED DATE", "STATUS", "ACTION", "SUBMIT TO"]],
   },
   "vc/superuser/partnercall": {
     title: "Partner call",
@@ -553,7 +553,7 @@ const EXPECTED: Record<string, Screen> = {
   "vc/admin/assign": { title: "Evaluate", tables: [] },
   "vc/admin/jurypipeline": {
     title: "Assoc. Pipeline",
-    tables: [["STARTUP", "EVALUATORS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "ANALYST SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "SUBMITTED DATE", "STATUS", "ACTION", "SUBMIT TO"]],
   },
   "vc/admin/introcalls": {
     title: "Intro calls",
@@ -561,7 +561,7 @@ const EXPECTED: Record<string, Screen> = {
   },
   "vc/admin/partnerpipeline": {
     title: "Partner Pipeline",
-    tables: [["STARTUP", "SECTOR", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "INV. ASSOC.", "AVG. SCORE", "ADDL. PARAMETER SCORES", "SUBMITTED DATE", "STATUS", "ACTION", "SUBMIT TO"]],
   },
   "vc/admin/partnercall": {
     title: "Partner call",
@@ -634,7 +634,7 @@ const EXPECTED: Record<string, Screen> = {
   },
   "vc/partner/partnerpipeline": {
     title: "Partner Pipeline",
-    tables: [["STARTUP", "SECTOR", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "INV. ASSOC.", "AVG. SCORE", "ADDL. PARAMETER SCORES", "SUBMITTED DATE", "STATUS", "ACTION", "SUBMIT TO"]],
   },
   "vc/partner/partnercall": {
     title: "Partner call",
@@ -692,7 +692,7 @@ const EXPECTED: Record<string, Screen> = {
   "vc/ic_member/introcalls": { title: "My Intro calls", tables: [] },
   "vc/ic_member/partnerpipeline": {
     title: "Partner Pipeline",
-    tables: [["STARTUP", "SECTOR", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "INV. ASSOC.", "AVG. SCORE", "ADDL. PARAMETER SCORES", "SUBMITTED DATE", "STATUS", "ACTION", "SUBMIT TO"]],
   },
   "vc/ic_member/investmentdd": {
     title: "Investment DD",
@@ -742,7 +742,7 @@ const EXPECTED: Record<string, Screen> = {
   "vc/associate/assign": { title: "Evaluate", tables: [] },
   "vc/associate/jurypipeline": {
     title: "Assoc. Pipeline",
-    tables: [["STARTUP", "EVALUATORS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "ANALYST SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "SUBMITTED DATE", "STATUS", "ACTION", "SUBMIT TO"]],
   },
   "vc/associate/introcalls": {
     title: "Intro calls",
