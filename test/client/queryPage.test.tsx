@@ -279,7 +279,7 @@ describe("Founder queries list (#qview-list)", () => {
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Responded" }));
     fireEvent.click(screen.getByRole("button", { name: "Export" }));
     expect(csv.files).toHaveLength(1);
-    const lines = csv.files[0].content.replace(/^﻿/, "").trim().split("\r\n");
+    const lines = csv.files[0].content.replace(/^\uFEFF/, "").trim().split("\r\n");
     expect(lines[0]).toBe("Startup,Founder,Phone,Email,Status,Parameters needing response");
     expect(lines.slice(1)).toEqual(["WealthOS,Diya Kapoor,,diya@wealthos.app,Responded,Go-To-Market Strategy"]);
   });
