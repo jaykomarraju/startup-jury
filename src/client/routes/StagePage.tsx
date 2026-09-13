@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { FileBarChart, Lock, Signature } from "lucide-react";
+import { Armchair, Download, FileBarChart, Lock, Signature, TriangleAlert } from "lucide-react";
 import {
   Card,
   Button,
   Badge,
   SignalTag,
-  ScoreChip,
   EvaluationDrawer,
   EvaluationReportModal,
   EmptyState,
+  PageToolbar,
+  ToolbarButton,
   type ParamScoreView,
   type ExtractionSlide,
 } from "../components";
@@ -30,6 +31,22 @@ import {
   type SignupSummary,
   type WorkspaceTab,
 } from "./SignupWorkspace";
+import {
+  AllScores,
+  BandScore,
+  builtinTab,
+  DeckSlides,
+  DetailPane,
+  FilterMenu,
+  legendFor,
+  LegendPill,
+  StageFooter,
+  usePaneEvaluation,
+  type FilterOption,
+  type LegendItem,
+  type PaneTab,
+  type PaneTabId,
+} from "./StageKit";
 
 /** Columns a stage screen can show. The design gives each screen its own set
  *  (Aug-2026 issues 25–31), so they are named here and composed per config. */
@@ -59,11 +76,38 @@ export type StageColumn =
   | "archivedBy"
   | "status";
 
+/** One table row as a filter, footer or custom tab sees it. */
+export interface StageRow {
+  deck: DeckView;
+  /** The sign-up record behind the row, on screens that load them. */
+  signup?: SignupSummary;
+}
+
+/**
+ * W7-F — the toolbar strip's right-hand actions (`.tbr`). The prototype gives
+ * every stage screen `Filter` + `Export`; a screen declares which it has.
+ */
+export interface StageToolbar {
+  /** `Filter` — a single-choice menu; each option narrows the table. */
+  filters?: FilterOption<StageRow>[];
+  /** `Export` — CSV of the rows currently shown. */
+  export?: boolean;
+}
+
+/**
+ * W7-F — one tab of the row's slide-over. The built-ins are the prototype's
+ * `Deck`, `All scores` and `Sign-up` (`su-stabs` / `nc-stabs`); a screen with a
+ * tab of its own (a DD checklist, a term-sheet record) passes `render`.
+ */
+export type StageSubTab = PaneTabId | { id: string; label: string; render: (row: StageRow) => ReactNode };
+
 export interface StageConfig {
   title: string;
   subtitle: string;
   /** Raw stage ids this screen shows. */
   statuses: string[];
+  /** Narrow `statuses` further (e.g. only the jury's rejections, not the AI gate's). */
+  include?: (deck: DeckView) => boolean;
   /** Empty-state copy when no deck matches. */
   emptyTitle?: string;
   emptyDescription?: string;
@@ -73,13 +117,28 @@ export interface StageConfig {
   readOnly?: boolean;
   /** The exact columns, in order. Defaults to the pre-Aug-2026 layout. */
   columns?: StageColumn[];
+  /** Per-screen header overrides ("Jury members & status" vs "Evaluators & status"). */
+  labels?: Partial<Record<StageColumn, string>>;
   /** Minimum table width so wide layouts scroll rather than squash. */
   minWidth?: string;
   /** Optional inline fields captured for one action (e.g. term-sheet valuation /
    *  ownership on Issue term sheet), passed to the transition as extra body fields. */
   capture?: { action: string; fields: { name: "valuation" | "ownership"; label: string }[] };
-  /** Show the legend beneath the table. */
-  legend?: { label: string; color: string }[];
+  /** W7-F — Filter / Export. Omitted → the toolbar carries neither. */
+  toolbar?: StageToolbar;
+  /**
+   * W7-F — the row slide-over's tabs. Declared → the startup name opens the
+   * 382px pane beside the table on the first tab. Omitted → the name opens the
+   * shared Evaluation drawer, as it always has.
+   */
+  subTabs?: StageSubTab[];
+  /**
+   * The colour legend, pinned in the footer beside `footer`'s sentence. An
+   * entry with `statuses` also tints the matching Status / Sign-up status pill.
+   */
+  legend?: LegendItem[];
+  /** W7-F — the footer's count sentence (`jpFoot` / `suFoot` / `cuFoot`), over every row in the stage. */
+  footer?: (rows: StageRow[]) => string;
   /**
    * W6-A — rows open the §8.3 sign-up workspace (`openSuWork`): a "Sign-up"
    * action, the Documents column as a derived roll-up badge linking into it, and
@@ -144,10 +203,6 @@ function fmtDate(iso?: string): string {
   });
 }
 
-function fmtScore(n?: number): string {
-  return n === undefined ? "—" : n.toFixed(1);
-}
-
 /** Human label for the action that took a deck out of the active pipeline. */
 function exitReason(deck: DeckView): string {
   if (deck.exitNote) return deck.exitNote;
@@ -165,6 +220,38 @@ function exitReason(deck: DeckView): string {
   }
 }
 
+/** The sign-up statuses after which the seat question is live (`suSignupBody`). */
+const SEAT_STATUSES = ["completed", "onboarded", "archived"];
+
+/** The row's sign-up status in the prototype's words (`suSignupLabel`), falling
+ *  back to the deck's own stage before a sign-up record exists. */
+function signupStatusLabel(deck: DeckView, signup?: SignupSummary): string {
+  if (signup) return SIGNUP_STATUS_LABELS[signup.status] ?? signup.status;
+  switch (deck.statusId) {
+    case "shortlisted":
+    case "intro":
+      return "Shortlisted";
+    case "rejected":
+      return "Rejected";
+    case "archived":
+      return "Archived";
+    case "onboard_ready":
+      return "Onboarded";
+    default:
+      return deck.status ?? "—";
+  }
+}
+
+/** The key a legend entry's `statuses` is matched against for a row. */
+function signupStatusKey(deck: DeckView, signup?: SignupSummary): string | undefined {
+  if (signup) return signup.status;
+  return deck.statusId === "intro" ? "shortlisted" : deck.statusId;
+}
+
+function resolveTab(tab: StageSubTab): PaneTab {
+  return typeof tab === "string" ? builtinTab(tab) : { id: tab.id, label: tab.label };
+}
+
 /**
  * Generic pipeline-stage screen: a deck table filtered to a set of stages with
  * inline role-gated transition buttons and the shared Evaluation drawer.
@@ -172,6 +259,11 @@ function exitReason(deck: DeckView): string {
  * Aug-2026 issues 25–31 made each screen's columns match its design, so the
  * table is now column-driven (`config.columns`) rather than one fixed layout,
  * and the sign-up / curation state on issues 29 and 30 is editable in place.
+ *
+ * W7-F put it in the prototype's frame (`.tb` toolbar strip, scrolling body,
+ * pinned `.tb-foot`) and let a config declare the three things the stage panels
+ * add on top of a table — `toolbar`, `subTabs` and `legend` + `footer` — so a
+ * screen reaches parity by declaring them rather than by becoming bespoke.
  */
 export function StagePage({ config }: { config: StageConfig }) {
   const [decks, setDecks] = useState<DeckView[] | null>(null);
@@ -194,13 +286,34 @@ export function StagePage({ config }: { config: StageConfig }) {
   // W6-A — the sign-up records behind these rows, and the one open in the workspace.
   const [signups, setSignups] = useState<Record<string, SignupSummary>>({});
   const [workspace, setWorkspace] = useState<{ signupId: string; tab: WorkspaceTab } | null>(null);
+  // W7-F — the toolbar filter and the row slide-over.
+  const [filterId, setFilterId] = useState<string | null>(null);
+  const [pane, setPane] = useState<{ deckId: string; tab: string } | null>(null);
+
+  const secondary = config.secondary ?? { label: "Founder", field: "founder" as const };
+  const columns: StageColumn[] =
+    config.columns ?? ["startup", secondary.field, "ai", "avg", "status"];
+  const subTabs = config.subTabs ?? [];
+  const wantsSignups =
+    !!config.workspace ||
+    columns.includes("signupStatus") ||
+    columns.includes("documentsStatus") ||
+    subTabs.includes("signup");
+
+  // App renders one StagePage for every stage slug, so moving between two stage
+  // screens keeps this instance: a filter or an open pane must not follow.
+  useEffect(() => {
+    setFilterId(null);
+    setPane(null);
+    setSelected(null);
+  }, [config]);
 
   const loadSignups = useCallback(() => {
-    if (!config.workspace) return Promise.resolve();
+    if (!wantsSignups) return Promise.resolve();
     return listSignups()
       .then((r) => setSignups(Object.fromEntries(r.signups.map((s) => [s.deckId, s]))))
       .catch(() => setSignups({}));
-  }, [config.workspace]);
+  }, [wantsSignups]);
 
   const load = useCallback(() => {
     return Promise.all([
@@ -229,10 +342,25 @@ export function StagePage({ config }: { config: StageConfig }) {
     };
   }, [selected]);
 
-  const rows = useMemo(
-    () => (decks ?? []).filter((d) => d.statusId && config.statuses.includes(d.statusId)),
-    [decks, config.statuses],
+  /** Every row in the stage — what the footer counts. */
+  const stageRows = useMemo<StageRow[]>(
+    () =>
+      (decks ?? [])
+        .filter((d) => d.statusId && config.statuses.includes(d.statusId) && (!config.include || config.include(d)))
+        .map((deck) => ({ deck, signup: signups[deck.id] })),
+    [decks, signups, config],
   );
+
+  const activeFilter = config.toolbar?.filters?.find((f) => f.id === filterId);
+  /** The rows on screen — what the table draws and Export writes. */
+  const shown = useMemo(
+    () => (activeFilter ? stageRows.filter(activeFilter.match) : stageRows),
+    [stageRows, activeFilter],
+  );
+  const rows = useMemo(() => shown.map((r) => r.deck), [shown]);
+
+  const paneRow = pane ? stageRows.find((r) => r.deck.id === pane.deckId) : undefined;
+  const paneEval = usePaneEvaluation(paneRow ? paneRow.deck.id : null);
 
   async function runAction(deck: DeckView, action: DeckAction) {
     setBusy(`${deck.id}:${action.action}`);
@@ -275,9 +403,30 @@ export function StagePage({ config }: { config: StageConfig }) {
     }
   }
 
-  const secondary = config.secondary ?? { label: "Founder", field: "founder" as const };
-  const columns: StageColumn[] =
-    config.columns ?? ["startup", secondary.field, "ai", "avg", "status"];
+  /** The seat card's Allocate seat (`suAllocSeat`) — `POST /api/signups/:id/seat`. */
+  async function allocateSeat(signup: SignupSummary) {
+    setBusy(`${signup.signupId}:seat`);
+    setError(null);
+    try {
+      const res = await fetch(`/api/signups/${signup.signupId}/seat`, { method: "POST" });
+      if (!res.ok) throw new Error(String(res.status));
+      await load();
+    } catch {
+      setError(`Couldn't allocate a seat to ${signup.startup}. Try again.`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function openStartup(deck: DeckView) {
+    if (subTabs.length > 0) setPane({ deckId: deck.id, tab: resolveTab(subTabs[0]).id });
+    else setSelected(deck);
+  }
+
+  function header(c: StageColumn): string {
+    if (config.labels?.[c]) return config.labels[c]!;
+    return c === "founder" && config.secondary ? config.secondary.label : COLUMN_LABELS[c];
+  }
 
   function cell(column: StageColumn, deck: DeckView): ReactNode {
     switch (column) {
@@ -287,7 +436,8 @@ export function StagePage({ config }: { config: StageConfig }) {
             <button
               type="button"
               className="text-left font-medium text-fg hover:underline"
-              onClick={() => setSelected(deck)}
+              aria-expanded={subTabs.length > 0 ? pane?.deckId === deck.id : undefined}
+              onClick={() => openStartup(deck)}
             >
               {deck.name}
             </button>
@@ -318,14 +468,16 @@ export function StagePage({ config }: { config: StageConfig }) {
           <span className="text-sm text-fg-muted">Unassigned</span>
         );
       // Issue 23 — every score cell opens the report on its Core Parameters tab.
+      // The colour is the prototype's band (`jpColor`): ≥8 green, ≥6 olive, else amber.
       case "ai":
         return (
           <button
             type="button"
             title="Open the core parameter report"
+            className="underline-offset-2 hover:underline"
             onClick={() => setReportFor({ deck, tab: "core" })}
           >
-            <ScoreChip value={deck.aiScore} />
+            <BandScore value={deck.aiScore} suffix="/10" />
           </button>
         );
       case "jury":
@@ -333,10 +485,10 @@ export function StagePage({ config }: { config: StageConfig }) {
           <button
             type="button"
             title="Open the core parameter report"
-            className="font-mono text-sm text-fg underline-offset-2 hover:underline"
+            className="underline-offset-2 hover:underline"
             onClick={() => setReportFor({ deck, tab: "core" })}
           >
-            {fmtScore(deck.juryScore)}
+            <BandScore value={deck.juryScore} />
           </button>
         );
       case "avg":
@@ -344,10 +496,10 @@ export function StagePage({ config }: { config: StageConfig }) {
           <button
             type="button"
             title="Open the core parameter report"
-            className="font-mono text-sm font-medium text-fg underline-offset-2 hover:underline"
+            className="underline-offset-2 hover:underline"
             onClick={() => setReportFor({ deck, tab: "core" })}
           >
-            {fmtScore(deck.decisionScore)}
+            <BandScore value={deck.decisionScore} />
           </button>
         );
       case "addl":
@@ -365,24 +517,27 @@ export function StagePage({ config }: { config: StageConfig }) {
         return <span className="text-sm text-fg-muted">{fmtDate(deck.assignedAt)}</span>;
       case "callScheduled":
         return (
-          <Badge tone={deck.callScheduledAt ? "positive" : "neutral"}>
+          <Badge tone={deck.callScheduledAt ? "info" : "neutral"}>
             {deck.callScheduledAt ? "Scheduled" : "Not scheduled"}
           </Badge>
         );
       case "callDate":
         return <span className="text-sm text-fg-muted">{fmtDate(deck.callScheduledAt)}</span>;
       case "callCompleted":
-        return (
-          <Badge tone={deck.callStatus === "completed" ? "positive" : "neutral"}>
-            {deck.callStatus === "completed" ? "Completed" : "—"}
-          </Badge>
+        // `su-pill done` / `wait` / `no` — Completed, Not yet (scheduled), or a dash.
+        return deck.callStatus === "completed" ? (
+          <Badge tone="positive">Completed</Badge>
+        ) : deck.callScheduledAt ? (
+          <Badge tone="amber">Not yet</Badge>
+        ) : (
+          <span className="text-sm text-fg-muted">—</span>
         );
       case "signupStatus": {
         const signup = signups[deck.id];
         return (
-          <span className="text-sm text-fg-muted">
-            {signup ? (SIGNUP_STATUS_LABELS[signup.status] ?? signup.status) : (deck.status ?? "—")}
-          </span>
+          <LegendPill item={legendFor(config.legend, signupStatusKey(deck, signup))}>
+            {signupStatusLabel(deck, signup)}
+          </LegendPill>
         );
       }
       case "paymentStatus":
@@ -410,8 +565,7 @@ export function StagePage({ config }: { config: StageConfig }) {
         // move, so a hand-set "All docs" over three awaiting items is no longer
         // possible. The badge opens the set it summarises.
         const signup = signups[deck.id];
-        const value = signup?.documentsStatus ?? deck.documentsStatus ?? "pending";
-        const option = DOCUMENT_OPTIONS.find((o) => o.value === value) ?? DOCUMENT_OPTIONS[0];
+        const option = documentsOption(deck, signup);
         return signup ? (
           <button
             type="button"
@@ -474,146 +628,186 @@ export function StagePage({ config }: { config: StageConfig }) {
       case "archivedBy":
         return <span className="text-sm text-fg-muted">{deck.exitBy ?? "—"}</span>;
       case "status":
-        return <span className="text-sm text-fg-muted">{deck.status ?? "—"}</span>;
+        return <LegendPill item={legendFor(config.legend, deck.statusId)}>{deck.status ?? "—"}</LegendPill>;
     }
   }
 
+  function paneBody(row: StageRow, tab: string): ReactNode {
+    const custom = subTabs.find((t): t is Exclude<StageSubTab, PaneTabId> => typeof t !== "string" && t.id === tab);
+    if (custom) return custom.render(row);
+    if (tab === "scores") return <AllScores deck={row.deck} scores={paneEval?.scores ?? null} />;
+    if (tab === "signup") {
+      return (
+        <SignupPaneBody
+          row={row}
+          busy={busy !== null}
+          onOpenWorkspace={(t) => row.signup && setWorkspace({ signupId: row.signup.signupId, tab: t })}
+          onAllocate={() => row.signup && allocateSeat(row.signup)}
+        />
+      );
+    }
+    return <DeckSlides extraction={paneEval?.extraction ?? null} />;
+  }
+
+  const stat = config.footer?.(stageRows);
+  const toolbar = config.toolbar;
+
   return (
-    <div className="flex flex-col gap-5 p-5">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold text-fg">{config.title}</h1>
-          <p className="mt-0.5 max-w-2xl text-sm text-fg-muted">{config.subtitle}</p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Badge tone="info">{rows.length}</Badge>
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={rows.length === 0}
-            onClick={() => exportDecks(config.title, rows)}
-          >
-            Export
-          </Button>
-        </div>
-      </div>
+    <section className="sj-frame">
+      <PageToolbar
+        title={config.title}
+        subtitle={config.subtitle}
+        actions={
+          <>
+            {!config.footer && <Badge tone="info">{rows.length}</Badge>}
+            {toolbar?.filters && toolbar.filters.length > 0 && (
+              <FilterMenu options={toolbar.filters} value={activeFilter ? filterId : null} onChange={setFilterId} />
+            )}
+            {toolbar?.export && (
+              <ToolbarButton disabled={rows.length === 0} onClick={() => exportDecks(config.title, rows)}>
+                <Download className="h-3 w-3" aria-hidden="true" />
+                Export
+              </ToolbarButton>
+            )}
+          </>
+        }
+      />
 
-      {error && (
-        <div className="rounded-lg border border-signal-flagged/40 bg-signal-flagged/10 px-4 py-2.5 text-sm text-signal-flagged">
-          {error}
-        </div>
-      )}
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4">
+            {error && (
+              <div className="rounded-lg border border-signal-flagged/40 bg-signal-flagged/10 px-4 py-2.5 text-sm text-signal-flagged">
+                {error}
+              </div>
+            )}
 
-      <Card flush className="overflow-x-auto">
-        {decks !== null && rows.length === 0 ? (
-          <div className="p-6">
-            <EmptyState
-              icon="Layers"
-              title={config.emptyTitle ?? "Nothing here yet"}
-              description={config.emptyDescription ?? "Decks appear here as they reach this stage."}
-            />
-          </div>
-        ) : (
-          <table className="w-full text-left" style={{ minWidth: config.minWidth ?? "44rem" }}>
-            <thead>
-              <tr className="text-fg-muted">
-                {columns.map((c) => (
-                  <th key={c} className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">
-                    {c === "founder" && config.secondary
-                      ? config.secondary.label
-                      : COLUMN_LABELS[c]}
-                  </th>
-                ))}
-                {!config.readOnly && (
-                  <th className="px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">Action</th>
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((deck) => {
-                // The workspace replaces the unguarded "Complete signup" button:
-                // a sign-up completes on the countersign, not on a click.
-                const actions = (deck.actions ?? []).filter(
-                  (a) => !EXCLUDED_ACTIONS.has(a.action) && !(config.workspace && a.action === "complete_signup"),
-                );
-                const signup = config.workspace ? signups[deck.id] : undefined;
-                return (
-                  <tr key={deck.id} className="border-t border-line align-top">
-                    {columns.map((c) => (
-                      <td key={c} className="px-4 py-3">
-                        {cell(c, deck)}
-                      </td>
-                    ))}
-                    {!config.readOnly && (
-                      <td className="px-4 py-3">
-                        {config.capture && actions.some((a) => a.action === config.capture!.action) && (
-                          <div className="mb-2 flex justify-end gap-1.5">
-                            {config.capture.fields.map((f) => (
-                              <input
-                                key={f.name}
-                                className="sj-input h-8 w-24 py-0 text-xs"
-                                placeholder={f.label}
-                                aria-label={f.label}
-                                value={captured[deck.id]?.[f.name] ?? ""}
-                                onChange={(e) =>
-                                  setCaptured((cap) => ({
-                                    ...cap,
-                                    [deck.id]: { ...cap[deck.id], [f.name]: e.target.value },
-                                  }))
-                                }
-                              />
-                            ))}
-                          </div>
-                        )}
-                        <div className="flex flex-wrap justify-end gap-2">
-                          {signup && (
-                            <Button
-                              size="sm"
-                              variant="secondary"
-                              title={signup.readOnly ? "Read-only — a Super user or Admin must assign you" : undefined}
-                              onClick={() => setWorkspace({ signupId: signup.signupId, tab: "agr" })}
-                            >
-                              {signup.readOnly ? (
-                                <Lock className="mr-1 h-3.5 w-3.5" />
-                              ) : (
-                                <Signature className="mr-1 h-3.5 w-3.5" />
-                              )}
-                              Sign-up
-                            </Button>
-                          )}
-                          {actions.length === 0 && !signup && <span className="text-xs text-fg-muted">—</span>}
-                          {actions.map((a) => (
-                            <Button
-                              key={a.action}
-                              size="sm"
-                              variant={a.to === "rejected" || a.to === "archived" ? "secondary" : "primary"}
-                              disabled={busy !== null}
-                              onClick={() => runAction(deck, a)}
-                            >
-                              {busy === `${deck.id}:${a.action}` ? "…" : a.label}
-                            </Button>
+            <Card flush className="overflow-x-auto">
+              {decks !== null && rows.length === 0 ? (
+                <div className="p-6">
+                  <EmptyState
+                    icon="Layers"
+                    title={activeFilter ? "No startups match this filter" : (config.emptyTitle ?? "Nothing here yet")}
+                    description={
+                      activeFilter
+                        ? `Nothing in ${config.title} is "${activeFilter.label}" right now.`
+                        : (config.emptyDescription ?? "Decks appear here as they reach this stage.")
+                    }
+                  />
+                </div>
+              ) : (
+                <table className="w-full text-left" style={{ minWidth: config.minWidth ?? "44rem" }}>
+                  <thead>
+                    <tr className="text-fg-muted">
+                      {columns.map((c) => (
+                        <th key={c} className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">
+                          {header(c)}
+                        </th>
+                      ))}
+                      {!config.readOnly && (
+                        <th className="px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">Action</th>
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((deck) => {
+                      // The workspace replaces the unguarded "Complete signup" button:
+                      // a sign-up completes on the countersign, not on a click.
+                      const actions = (deck.actions ?? []).filter(
+                        (a) => !EXCLUDED_ACTIONS.has(a.action) && !(config.workspace && a.action === "complete_signup"),
+                      );
+                      const signup = config.workspace ? signups[deck.id] : undefined;
+                      return (
+                        <tr
+                          key={deck.id}
+                          className={`border-t border-line align-top ${pane?.deckId === deck.id ? "bg-surface-2" : ""}`}
+                        >
+                          {columns.map((c) => (
+                            <td key={c} className="px-4 py-3">
+                              {cell(c, deck)}
+                            </td>
                           ))}
-                        </div>
-                      </td>
-                    )}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </Card>
-
-      {config.legend && rows.length > 0 && (
-        <div className="flex flex-wrap items-center gap-4 text-xs text-fg-muted">
-          {config.legend.map((l) => (
-            <span key={l.label} className="flex items-center gap-1.5">
-              <span className="h-2 w-2 rounded-full" style={{ background: l.color }} />
-              {l.label}
-            </span>
-          ))}
+                          {!config.readOnly && (
+                            <td className="px-4 py-3">
+                              {config.capture && actions.some((a) => a.action === config.capture!.action) && (
+                                <div className="mb-2 flex justify-end gap-1.5">
+                                  {config.capture.fields.map((f) => (
+                                    <input
+                                      key={f.name}
+                                      className="sj-input h-8 w-24 py-0 text-xs"
+                                      placeholder={f.label}
+                                      aria-label={f.label}
+                                      value={captured[deck.id]?.[f.name] ?? ""}
+                                      onChange={(e) =>
+                                        setCaptured((cap) => ({
+                                          ...cap,
+                                          [deck.id]: { ...cap[deck.id], [f.name]: e.target.value },
+                                        }))
+                                      }
+                                    />
+                                  ))}
+                                </div>
+                              )}
+                              <div className="flex flex-wrap justify-end gap-2">
+                                {signup && (
+                                  <Button
+                                    size="sm"
+                                    variant="secondary"
+                                    title={signup.readOnly ? "Read-only — a Super user or Admin must assign you" : undefined}
+                                    onClick={() => setWorkspace({ signupId: signup.signupId, tab: "agr" })}
+                                  >
+                                    {signup.readOnly ? (
+                                      <Lock className="mr-1 h-3.5 w-3.5" />
+                                    ) : (
+                                      <Signature className="mr-1 h-3.5 w-3.5" />
+                                    )}
+                                    Sign-up
+                                  </Button>
+                                )}
+                                {actions.length === 0 && !signup && <span className="text-xs text-fg-muted">—</span>}
+                                {actions.map((a) => (
+                                  <Button
+                                    key={a.action}
+                                    size="sm"
+                                    variant={a.to === "rejected" || a.to === "archived" ? "secondary" : "primary"}
+                                    disabled={busy !== null}
+                                    onClick={() => runAction(deck, a)}
+                                  >
+                                    {busy === `${deck.id}:${a.action}` ? "…" : a.label}
+                                  </Button>
+                                ))}
+                              </div>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </Card>
+          </div>
+          <StageFooter stat={stat} legend={config.legend} />
         </div>
-      )}
+
+        {paneRow && pane && (
+          <DetailPane
+            title={paneRow.deck.name}
+            meta={[paneRow.deck.sector, paneRow.deck.stage, paneRow.deck.city].filter(Boolean).join(" · ")}
+            tabs={subTabs.map(resolveTab)}
+            active={pane.tab}
+            onTab={(tab) => setPane({ deckId: paneRow.deck.id, tab })}
+            onClose={() => setPane(null)}
+            headerAction={
+              <Button size="sm" variant="secondary" onClick={() => setSelected(paneRow.deck)}>
+                Evaluation
+              </Button>
+            }
+          >
+            {paneBody(paneRow, pane.tab)}
+          </DetailPane>
+        )}
+      </div>
 
       {selected && (
         <EvaluationDrawer
@@ -645,11 +839,84 @@ export function StagePage({ config }: { config: StageConfig }) {
           onClose={() => setReportFor(null)}
         />
       )}
+    </section>
+  );
+}
+
+function documentsOption(deck: DeckView, signup?: SignupSummary) {
+  const value = signup?.documentsStatus ?? deck.documentsStatus ?? "pending";
+  return DOCUMENT_OPTIONS.find((o) => o.value === value) ?? DOCUMENT_OPTIONS[0];
+}
+
+/**
+ * The slide-over's Sign-up tab (`cuTab('signup')` → `suSignupBody`): where the
+ * record stands, the document roll-up, and — once sign-up has completed — the
+ * seat card. The full three-tab workflow stays in the workspace it links to.
+ */
+export function SignupPaneBody({
+  row,
+  busy,
+  onOpenWorkspace,
+  onAllocate,
+}: {
+  row: StageRow;
+  busy: boolean;
+  onOpenWorkspace: (tab: WorkspaceTab) => void;
+  onAllocate: () => void;
+}) {
+  const { deck, signup } = row;
+  if (!signup) {
+    return <p className="text-xs text-fg-muted">No sign-up has been started for {deck.name} yet.</p>;
+  }
+  const docs = documentsOption(deck, signup);
+  return (
+    <div className="flex flex-col gap-3" data-testid="pane-signup">
+      <div className="text-[11px] text-fg-muted">
+        Sign-up workflow — status:{" "}
+        <b className="text-fg">{SIGNUP_STATUS_LABELS[signup.status] ?? signup.status}</b>
+      </div>
+      <div className="flex items-center justify-between gap-2 rounded-lg border border-line px-3 py-2 text-xs">
+        <span className="text-fg-muted">Documents</span>
+        <button type="button" title="Open the document set" onClick={() => onOpenWorkspace("docs")}>
+          <Badge tone={docs.tone}>{docs.label}</Badge>
+        </button>
+      </div>
+      <div className="flex items-center justify-between gap-2 rounded-lg border border-line px-3 py-2 text-xs">
+        <span className="text-fg-muted">Founder signature</span>
+        <span className="text-fg">{signup.founderSigned ? "Signed" : "Awaiting founder"}</span>
+      </div>
+      {SEAT_STATUSES.includes(signup.status) &&
+        (signup.seated ? (
+          <div
+            data-testid="pane-seat-allocated"
+            className="flex items-center gap-2 rounded-lg border border-green/30 bg-green-lt px-3 py-2.5 text-xs font-semibold text-green"
+          >
+            <Armchair className="h-4 w-4" aria-hidden="true" /> Seat allocated · founder access provisioned
+          </div>
+        ) : (
+          <div
+            data-testid="pane-seatless"
+            className="flex items-center gap-2 rounded-lg border border-red/30 bg-red-lt px-3 py-2 text-xs"
+          >
+            <span className="flex flex-1 items-center gap-1.5 font-semibold text-red">
+              <TriangleAlert className="h-4 w-4" aria-hidden="true" /> Seatless — no cohort seat allocated yet
+            </span>
+            <Button size="sm" variant="secondary" disabled={busy || signup.readOnly} onClick={onAllocate}>
+              Allocate seat
+            </Button>
+          </div>
+        ))}
+      <Button size="sm" variant="secondary" onClick={() => onOpenWorkspace("agr")}>
+        <Signature className="mr-1 h-3.5 w-3.5" /> Open sign-up workspace
+      </Button>
     </div>
   );
 }
 
 const VC_SECTOR = { label: "Sector", field: "sector" as const };
+/** W7-F — what every VC stage screen had before the config carried a toolbar.
+ *  Wave 9 (`W9-B`, `W9-C`) replaces it per screen with the prototype's Filter + Export. */
+const VC_TOOLBAR: StageToolbar = { export: true };
 
 /** Config for each VC stage nav slug rendered by StagePage. IC voting (`icpipeline`)
  *  and scoring (`evaluate`) are dedicated screens, not config-driven. */
@@ -662,6 +929,7 @@ export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
     subtitle: "Track every deck through analyst + associate scoring — shortlist to partner or archive.",
     statuses: ["analyst_scoring", "associate_review"],
     secondary: VC_SECTOR,
+    toolbar: VC_TOOLBAR,
     columns: ["startup", "evaluators", "ai", "jury", "avg", "addl", "assignedDate", "status"],
     minWidth: "68rem",
     emptyTitle: "No decks in associate review",
@@ -672,6 +940,7 @@ export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
     subtitle: "Shortlisted deals under partner review — advance to a partner call or archive.",
     statuses: ["partner_review"],
     secondary: VC_SECTOR,
+    toolbar: VC_TOOLBAR,
     columns: ["startup", "sector", "ai", "jury", "avg", "addl", "status"],
     minWidth: "60rem",
     emptyTitle: "No decks in partner review",
@@ -682,6 +951,7 @@ export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
     subtitle: "Pre-IC investment diligence · Managing Partner approval before the deal reaches IC.",
     statuses: ["investment_dd"],
     secondary: VC_SECTOR,
+    toolbar: VC_TOOLBAR,
     columns: ["startup", "sector", "ai", "avg", "addl", "status"],
     minWidth: "56rem",
     emptyTitle: "Nothing in diligence",
@@ -692,6 +962,7 @@ export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
     subtitle: "Deals with a term sheet in motion · track drafting, issue and signing, then start legal DD.",
     statuses: ["term_sheet"],
     secondary: VC_SECTOR,
+    toolbar: VC_TOOLBAR,
     columns: ["startup", "sector", "ai", "avg", "status"],
     emptyTitle: "No term sheets in motion",
     emptyDescription: "Deals with an issued term sheet appear here.",
@@ -701,6 +972,7 @@ export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
     subtitle: "Post-signing confirmatory & legal diligence · clear all items before the round closes.",
     statuses: ["legal_dd"],
     secondary: VC_SECTOR,
+    toolbar: VC_TOOLBAR,
     columns: ["startup", "sector", "ai", "avg", "status"],
     emptyTitle: "No deals in legal DD",
     emptyDescription: "Term-sheet deals move here for legal diligence.",
@@ -710,6 +982,7 @@ export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
     subtitle: "Funded companies joining the portfolio — cleared legal DD and ready to onboard.",
     statuses: ["onboard_ready"],
     secondary: VC_SECTOR,
+    toolbar: VC_TOOLBAR,
     readOnly: true,
     columns: ["startup", "cohort", "curationStage", "lead", "progress", "status"],
     minWidth: "56rem",
@@ -721,6 +994,7 @@ export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
     subtitle: "Deals removed from the active pipeline — passed or not shortlisted. Restore any of them back into the pipeline.",
     statuses: ["archived"],
     secondary: VC_SECTOR,
+    toolbar: VC_TOOLBAR,
     columns: ["startup", "reason", "stageReached", "archivedOn", "archivedBy"],
     minWidth: "56rem",
     emptyTitle: "Archive is empty",
@@ -728,47 +1002,100 @@ export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
   },
 };
 
+/** A filter per legend entry that decodes statuses — the Filter menu speaks the legend's words. */
+function legendFilters(legend: LegendItem[], key: (row: StageRow) => string | undefined): FilterOption<StageRow>[] {
+  return legend
+    .filter((l) => l.statuses?.length)
+    .map((l) => ({ id: l.label, label: l.label, match: (row) => l.statuses!.includes(key(row) ?? "") }));
+}
+
+const count = (rows: StageRow[], test: (row: StageRow) => boolean) => rows.filter(test).length;
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+// `panel-jurypipeline` legend (`.jp-legend`), each entry decoding its stage pill.
+const JURY_LEGEND: LegendItem[] = [
+  { label: "Assigned", color: "var(--blue-dk)", statuses: ["assigned"] },
+  { label: "Shortlisted", color: "var(--green)", statuses: ["shortlisted"] },
+  { label: "Rejected", color: "var(--red)", statuses: ["rejected"] },
+  { label: "Pending", color: "var(--gold-dk)", statuses: ["jury_evaluation"] },
+];
+
+// `panel-forsignup` legend — the sign-up lifecycle (`suSignupLabel`).
+const PM_LEGEND: LegendItem[] = [
+  { label: "Shortlisted", color: "var(--green)", statuses: ["shortlisted"] },
+  { label: "Initiated", color: "var(--blue-dk)", statuses: ["initiated"] },
+  { label: "In progress", color: "var(--gold-dk)", statuses: ["progress"] },
+  { label: "Completed", color: "#047857", statuses: ["completed"] },
+  { label: "Onboarded", color: "#6D28D9", statuses: ["onboarded", "onboard_ready"] },
+  { label: "Rejected", color: "var(--red)", statuses: ["rejected"] },
+];
+
+// `panel-incuration` legend — names the payment / document tints.
+const SIGNUP_LEGEND: LegendItem[] = [
+  { label: "Paid / All docs", color: "#047857" },
+  { label: "Partial", color: "var(--gold-dk)" },
+  { label: "Payment pending", color: "var(--blue-dk)" },
+  { label: "Docs missing", color: "var(--red)" },
+];
+
+const docsOf = (row: StageRow) => row.signup?.documentsStatus ?? row.deck.documentsStatus ?? "pending";
+const payOf = (row: StageRow) => row.deck.paymentStatus ?? "pending";
+
 /** Config for each incubator stage nav slug rendered by StagePage. */
 export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
   // Issue 25 — Startup · Jury members & status · AI · Jury · Avg · Addl.
-  // Parameter scores · Assigned date · Status · Action.
+  // Parameter scores · Assigned date · Status · Action. The startup name keeps
+  // opening the Evaluation drawer: the prototype's name opens the report, and
+  // its one-tab "Pitch deck" pane is only reachable from an Action menu.
   jurypipeline: {
     title: "Jury Pipeline",
     subtitle:
-      "Track every deck through jury evaluation — AI vs jury scoring, assignment and final decision.",
+      "Track every deck through jury evaluation — AI vs jury scoring, assignment and final decision",
     statuses: ["assigned", "jury_evaluation", "shortlisted", "rejected"],
     columns: ["startup", "evaluators", "ai", "jury", "avg", "addl", "assignedDate", "status"],
+    labels: { evaluators: "Jury members & status" },
     minWidth: "70rem",
-    legend: [
-      { label: "Assigned", color: "var(--color-info)" },
-      { label: "Shortlisted", color: "var(--color-positive)" },
-      { label: "Rejected", color: "var(--color-signal-flagged)" },
-      { label: "Pending", color: "var(--color-signal-moderate)" },
-    ],
+    toolbar: { filters: legendFilters(JURY_LEGEND, (r) => r.deck.statusId), export: true },
+    legend: JURY_LEGEND,
+    // `jpFoot`
+    footer: (rows) =>
+      `${plural(rows.length, "deck")} · ${count(rows, (r) => r.deck.statusId === "shortlisted")} shortlisted · ` +
+      `${count(rows, (r) => r.deck.statusId === "rejected")} rejected · ` +
+      `${count(rows, (r) => r.deck.statusId === "assigned" || r.deck.statusId === "jury_evaluation")} in progress`,
     emptyTitle: "No decks in jury evaluation",
     emptyDescription: "Assigned decks appear here for Score / Shortlist / Reject.",
   },
-  // Issue 26 — the Program Manager's own decision surface, after Jury Pipeline.
+  // Issue 26 — "as per image9", which is the prototype's `panel-forsignup`
+  // retitled: shortlisted startups moving into onboarding, by sign-up status.
+  // The PM's shortlist / reject decision is Jury Pipeline's Action (as it is in
+  // the prototype), so this screen starts at Shortlisted (§8 Q-W7F-1).
   pmpipeline: {
     title: "Prog Manager Pipeline",
-    subtitle:
-      "The Program Manager's decision queue — jury-scored decks awaiting sign-off, and shortlisted startups waiting on an intro call.",
-    statuses: ["jury_evaluation", "shortlisted", "rejected"],
-    columns: ["startup", "evaluators", "ai", "jury", "avg", "addl", "callScheduled", "status"],
-    minWidth: "70rem",
-    legend: [
-      { label: "Awaiting PM decision", color: "var(--color-signal-moderate)" },
-      { label: "Shortlisted", color: "var(--color-positive)" },
-      { label: "Rejected", color: "var(--color-signal-flagged)" },
-    ],
-    emptyTitle: "Nothing awaiting a decision",
-    emptyDescription:
-      "Decks the jury has scored arrive here for the Program Manager to shortlist, reject or send to an intro call.",
+    subtitle: "Shortlisted startups moving into onboarding — track sign-up status and action each one",
+    statuses: ["shortlisted", "intro", "signup", "onboard_ready", "rejected"],
+    // Only the jury's rejections — a deck the AI gate turned away never reached this funnel.
+    include: (d) => d.statusId !== "rejected" || d.exitAction === "reject",
+    columns: ["startup", "ai", "jury", "avg", "addl", "callScheduled", "callDate", "callCompleted", "signupStatus"],
+    minWidth: "76rem",
+    toolbar: { filters: legendFilters(PM_LEGEND, (r) => signupStatusKey(r.deck, r.signup)), export: true },
+    subTabs: ["deck", "scores"],
+    legend: PM_LEGEND,
+    // `suFoot`
+    footer: (rows) => {
+      const is = (...keys: string[]) => (r: StageRow) => keys.includes(signupStatusKey(r.deck, r.signup) ?? "");
+      return (
+        `${plural(rows.length, "startup")} · ${count(rows, is("completed"))} signed up · ` +
+        `${count(rows, is("initiated", "progress"))} in onboarding · ${count(rows, is("shortlisted"))} awaiting · ` +
+        `${count(rows, is("archived"))} archived`
+      );
+    },
+    emptyTitle: "Nothing moving into onboarding",
+    emptyDescription: "Startups the jury shortlists arrive here for the intro call and sign-up.",
   },
   // Issue 29 — adds Payment status and Documents status.
   incuration: {
     title: "Sign up Pipeline",
-    subtitle: "Signed-up startups being curated for the cohort — track payment and document readiness.",
+    subtitle: "Signed-up startups being curated for the cohort — track payment and document readiness",
     statuses: ["signup"],
     columns: [
       "startup",
@@ -778,18 +1105,28 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
       "addl",
       "callScheduled",
       "callDate",
+      "callCompleted",
       "signupStatus",
       "paymentStatus",
       "documentsStatus",
     ],
-    minWidth: "82rem",
+    minWidth: "88rem",
     workspace: true,
-    legend: [
-      { label: "Paid / All docs", color: "var(--color-positive)" },
-      { label: "Partial", color: "var(--color-signal-moderate)" },
-      { label: "Payment pending", color: "var(--color-info)" },
-      { label: "Docs missing", color: "var(--color-signal-flagged)" },
-    ],
+    toolbar: {
+      filters: [
+        { id: "paid-all", label: "Paid / All docs", match: (r) => payOf(r) === "paid" && docsOf(r) === "complete" },
+        { id: "partial", label: "Partial", match: (r) => payOf(r) === "partial" || docsOf(r) === "partial" },
+        { id: "pay-pending", label: "Payment pending", match: (r) => payOf(r) === "pending" },
+        { id: "docs-missing", label: "Docs missing", match: (r) => docsOf(r) === "pending" },
+      ],
+      export: true,
+    },
+    subTabs: ["deck", "scores", "signup"],
+    legend: SIGNUP_LEGEND,
+    // `cuFoot`
+    footer: (rows) =>
+      `${plural(rows.length, "startup")} in curation · ${count(rows, (r) => payOf(r) === "paid")} fully paid · ` +
+      `${count(rows, (r) => docsOf(r) === "complete")} with all documents`,
     emptyTitle: "No sign-ups in progress",
     emptyDescription: "Startups sent a sign-up invite appear here until they complete it.",
   },
@@ -797,12 +1134,20 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
   curation: {
     title: "Onboard ready",
     subtitle:
-      "Onboarded startups being actively curated through the cohort — mentorship, milestones and demo-day readiness.",
+      "Onboarded startups being actively curated through the cohort — mentorship, milestones and demo-day readiness",
     statuses: ["onboard_ready"],
     columns: ["startup", "cohort", "curationStage", "lead", "progress"],
     minWidth: "56rem",
     // The seat card (Seatless / Seat allocated) lives in the workspace.
     workspace: true,
+    toolbar: {
+      filters: [
+        { id: "seatless", label: "Seatless", match: (r) => !!r.signup?.seatless },
+        { id: "seated", label: "Seat allocated", match: (r) => !!r.signup?.seated },
+      ],
+      export: true,
+    },
+    footer: (rows) => `${plural(rows.length, "startup")} in active curation`,
     emptyTitle: "No startups onboarded yet",
     emptyDescription: "Startups that complete sign-up land here, ready to onboard.",
   },
@@ -815,6 +1160,14 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
     statuses: ["rejected", "archived"],
     columns: ["startup", "reason", "stageReached", "archivedOn", "archivedBy"],
     minWidth: "56rem",
+    toolbar: {
+      filters: [
+        { id: "rejected", label: "Rejected", match: (r) => r.deck.statusId === "rejected" },
+        { id: "archived", label: "Archived", match: (r) => r.deck.statusId === "archived" },
+      ],
+      export: true,
+    },
+    footer: (rows) => `${plural(rows.length, "archived startup")}`,
     emptyTitle: "Archive is empty",
     emptyDescription: "Rejected and archived decks are kept here for the record.",
   },
