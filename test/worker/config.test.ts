@@ -232,6 +232,11 @@ describe("role-scoped additional params (Premium)", () => {
   it("enforces ≤3 per role, validates the owner role, and edits rename/prompt", async () => {
     const admin = await login(ADMIN);
     expect((await req("PUT", "/api/config/plan", admin, { plan: "premium" })).status).toBe(200);
+    // W8-B (§8 Q116) — the role parameters now need the MEMBER's seat to be
+    // Premium too, and the seeded admin holds a Pro seat (0052). The behaviour
+    // under test is the slot cap and the edits, so the admin is given a Premium
+    // seat for it (restored below); `parameters-w8b.test.ts` covers the refusal.
+    await env.DB.prepare("UPDATE users SET plan_tier = 'premium' WHERE email = ?").bind(ADMIN).run();
 
     // Seed gives jury exactly 3 additional params → a 4th is blocked.
     const juryParam = await env.DB.prepare(
@@ -282,6 +287,7 @@ describe("role-scoped additional params (Premium)", () => {
       .first<{ name: string; prompt: string }>();
     expect(row!.name).toBe("Jury lens v2");
     expect(row!.prompt).toBe("New prompt. Score 0-10.");
+    await env.DB.prepare("UPDATE users SET plan_tier = 'pro' WHERE email = ?").bind(ADMIN).run();
   });
 });
 
