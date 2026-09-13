@@ -351,3 +351,259 @@ describe("calls — invites", () => {
     expect((await req("POST", "/api/calls/call_seed_greenroute_intro/invite", jury)).status).toBe(403);
   });
 });
+
+// ── W9-E ─────────────────────────────────────────────────────────────────────
+// Everything below runs AFTER the blocks above in this file's shared storage.
+// Decks it moves (MedGrid) or delegates (AgriChain) are touched by nothing above
+// except read-only lookups.
+
+const INC_FOUNDER = "meera.sharma@demo.startupjury.ai";
+const VC_IC = "rajesh.kumar.vc@demo.startupjury.ai";
+const VC_ADMIN = "nisha.kapoor.vc@demo.startupjury.ai";
+
+interface ListShape {
+  calls: (CallShape & { canComplete: boolean })[];
+  schedulers: { deckId: string; kind: string; userId: string; userName: string; role: string }[];
+  decided: { deckId: string; action: string; outcome: string; toStage: string }[];
+  outcomes: { deckId: string; outcome: string }[];
+  canDecide: boolean;
+}
+const list = async (path: string, cookie: string) => (await (await get(path, cookie)).json()) as ListShape;
+
+describe("calls — a participant closes out their own call (W7-F §9, §8 Q103)", () => {
+  it("flags the call canComplete for a participant who cannot manage it", async () => {
+    const jury = await login(INC_JURY);
+    const { calls } = await list("/api/calls", jury);
+    const gr = calls.find((c) => c.id === "call_seed_greenroute_intro")!;
+    expect(gr.canManage).toBe(false);
+    expect(gr.canComplete).toBe(true);
+  });
+
+  it("200 on their own call's status — completed, then reopened", async () => {
+    const analyst = await login(VC_ANALYST); // on the WealthOS intro
+    const done = await req("PATCH", "/api/calls/call_seed_wealthos_intro", analyst, { status: "completed" });
+    expect(done.status).toBe(200);
+    const { call } = (await done.json()) as { call: CallShape & { canComplete: boolean } };
+    expect(call.status).toBe("completed");
+    expect(call.canManage).toBe(false);
+    expect(call.canComplete).toBe(true);
+
+    const back = await req("PATCH", "/api/calls/call_seed_wealthos_intro", analyst, { status: "scheduled" });
+    expect(back.status).toBe(200);
+    const row = await env.DB.prepare("SELECT status FROM calls WHERE id = 'call_seed_wealthos_intro'").first<{
+      status: string;
+    }>();
+    expect(row?.status).toBe("scheduled");
+  });
+
+  it("403 on another person's call — same edition, and across editions", async () => {
+    const analyst = await login(VC_ANALYST); // NOT on the MedGrid partner call
+    expect((await req("PATCH", "/api/calls/call_seed_medgrid_partner", analyst, { status: "completed" })).status).toBe(403);
+    const jury = await login(INC_JURY);
+    expect((await req("PATCH", "/api/calls/call_seed_wealthos_intro", jury, { status: "completed" })).status).toBe(403);
+  });
+
+  it("403 for any other field, any other status, or status plus anything else — and nothing is written", async () => {
+    const analyst = await login(VC_ANALYST);
+    const before = await env.DB.prepare(
+      "SELECT status, title, ics_sequence AS seq FROM calls WHERE id = 'call_seed_wealthos_intro'",
+    ).first<{ status: string; title: string; seq: number }>();
+    for (const body of [
+      { durationMinutes: 60 },
+      { scheduledAt: "2026-10-01T10:00:00.000Z" },
+      { status: "cancelled" },
+      { status: "draft" },
+      { status: "completed", title: "Renamed" },
+      { status: "completed", sendInvite: true },
+      {},
+    ]) {
+      expect((await req("PATCH", "/api/calls/call_seed_wealthos_intro", analyst, body)).status, JSON.stringify(body)).toBe(403);
+    }
+    const after = await env.DB.prepare(
+      "SELECT status, title, ics_sequence AS seq FROM calls WHERE id = 'call_seed_wealthos_intro'",
+    ).first<{ status: string; title: string; seq: number }>();
+    expect(after).toEqual(before);
+  });
+
+  it("a founder never gets the participant verb", async () => {
+    const founder = await login(INC_FOUNDER);
+    expect((await req("PATCH", "/api/calls/call_seed_greenroute_intro", founder, { status: "completed" })).status).toBe(403);
+  });
+});
+
+describe("calls — Assign scheduler (§8 Q102: a delegate may book THAT deck's call of THAT kind)", () => {
+  it("a non-scheduler cannot delegate (403); a scheduler validates the deck, kind and assignee", async () => {
+    const analyst = await login(VC_ANALYST);
+    expect(
+      (await req("PUT", "/api/calls/scheduler", analyst, { deckId: "vc_deck_agrichain", kind: "intro", userId: "vc_analyst" })).status,
+    ).toBe(403);
+
+    const assoc = await login(VC_ASSOCIATE);
+    const put = (body: unknown) => req("PUT", "/api/calls/scheduler", assoc, body);
+    expect((await put({})).status).toBe(400);
+    expect((await put({ deckId: "vc_deck_agrichain", kind: "coffee", userId: "vc_analyst" })).status).toBe(400);
+    expect((await put({ deckId: "vc_deck_agrichain", kind: "intro" })).status).toBe(400);
+    expect((await put({ deckId: "nope", kind: "intro", userId: "vc_analyst" })).status).toBe(404);
+    // An incubator deck is not in this edition.
+    expect((await put({ deckId: "inc_deck_greenroute", kind: "intro", userId: "vc_analyst" })).status).toBe(404);
+    // Another edition's user, and a founder, cannot hold it.
+    expect((await put({ deckId: "vc_deck_agrichain", kind: "intro", userId: "inc_jury" })).status).toBe(400);
+    expect((await put({ deckId: "vc_deck_agrichain", kind: "intro", userId: "inc_founder" })).status).toBe(400);
+  });
+
+  it("before a delegation the analyst has no roster and cannot book", async () => {
+    const analyst = await login(VC_ANALYST);
+    expect((await get("/api/calls/directory", analyst)).status).toBe(403);
+    expect(
+      (await req("POST", "/api/calls", analyst, { deckId: "vc_deck_agrichain", kind: "intro", scheduledAt: null, participants: [] })).status,
+    ).toBe(403);
+  });
+
+  it("delegated, the analyst books, reschedules and invites on that deck's intro call — and nothing else", async () => {
+    const assoc = await login(VC_ASSOCIATE);
+    const set = await req("PUT", "/api/calls/scheduler", assoc, { deckId: "vc_deck_agrichain", kind: "intro", userId: "vc_analyst" });
+    expect(set.status).toBe(200);
+    expect(((await set.json()) as { scheduler: { userName: string; role: string } }).scheduler).toMatchObject({
+      userName: "Rhea Nair",
+      role: "analyst",
+    });
+
+    const analyst = await login(VC_ANALYST);
+    expect((await get("/api/calls/directory", analyst)).status).toBe(200);
+
+    const booked = await req("POST", "/api/calls", analyst, {
+      deckId: "vc_deck_agrichain",
+      kind: "intro",
+      scheduledAt: "2026-10-02T09:00:00.000Z",
+      participants: [{ email: "founder@agrichain.example", kind: "founder" }],
+    });
+    expect(booked.status).toBe(200);
+    const { call } = (await booked.json()) as { call: CallShape };
+    expect(call.canManage).toBe(true);
+
+    expect((await req("PATCH", `/api/calls/${call.id}`, analyst, { durationMinutes: 45 })).status).toBe(200);
+    expect((await req("POST", `/api/calls/${call.id}/invite`, analyst)).status).toBe(200);
+
+    // Not another deck, not another kind on the same deck, not a call they only attend.
+    expect(
+      (await req("POST", "/api/calls", analyst, { deckId: "vc_deck_wealthos", kind: "intro", scheduledAt: null, participants: [] })).status,
+    ).toBe(403);
+    expect(
+      (await req("POST", "/api/calls", analyst, { deckId: "vc_deck_agrichain", kind: "partner", scheduledAt: null, participants: [] })).status,
+    ).toBe(403);
+    expect((await req("PATCH", "/api/calls/call_seed_wealthos_intro", analyst, { durationMinutes: 45 })).status).toBe(403);
+    expect((await req("POST", "/api/calls/call_seed_wealthos_intro/invite", analyst)).status).toBe(403);
+    // A delegate cannot pass it on.
+    expect(
+      (await req("PUT", "/api/calls/scheduler", analyst, { deckId: "vc_deck_agrichain", kind: "intro", userId: "vc_ic" })).status,
+    ).toBe(403);
+
+    // The listing names the delegation, and shows the delegate the call they booked.
+    const mine = await list("/api/calls?kind=intro", analyst);
+    expect(mine.schedulers).toEqual([expect.objectContaining({ deckId: "vc_deck_agrichain", userId: "vc_analyst" })]);
+    expect(mine.calls.find((c) => c.id === call.id)?.canManage).toBe(true);
+    // The scheduler sees it too.
+    const all = await list("/api/calls?kind=intro", assoc);
+    expect(all.schedulers.some((s) => s.deckId === "vc_deck_agrichain" && s.userName === "Rhea Nair")).toBe(true);
+  });
+
+  it("Change replaces the delegate; clearing it withdraws the rights", async () => {
+    const assoc = await login(VC_ASSOCIATE);
+    expect(
+      (await req("PUT", "/api/calls/scheduler", assoc, { deckId: "vc_deck_agrichain", kind: "intro", userId: "vc_ic" })).status,
+    ).toBe(200);
+    const rows = await env.DB.prepare(
+      "SELECT user_id FROM call_schedulers WHERE deck_id = 'vc_deck_agrichain' AND kind = 'intro'",
+    ).all<{ user_id: string }>();
+    expect(rows.results.map((r) => r.user_id)).toEqual(["vc_ic"]);
+
+    const analyst = await login(VC_ANALYST);
+    expect((await get("/api/calls/directory", analyst)).status).toBe(403);
+
+    expect(
+      (await req("PUT", "/api/calls/scheduler", assoc, { deckId: "vc_deck_agrichain", kind: "intro", userId: null })).status,
+    ).toBe(200);
+    expect((await get("/api/calls/directory", await login(VC_IC))).status).toBe(403);
+  });
+});
+
+describe("calls — recorded outcomes (F0558: Alignment call's Renegotiate / Hold)", () => {
+  it("a partner records Hold on a deal at alignment, and the listing reads it back", async () => {
+    const partner = await login(VC_PARTNER);
+    const res = await req("PUT", "/api/calls/outcome", partner, { deckId: "vc_deck_learnloop", kind: "alignment", outcome: "hold" });
+    expect(res.status).toBe(200);
+    const listing = await list("/api/calls?kind=alignment", partner);
+    expect(listing.canDecide).toBe(true);
+    expect(listing.outcomes).toEqual([expect.objectContaining({ deckId: "vc_deck_learnloop", outcome: "hold" })]);
+    // Recording is not moving: the deck is still at the alignment call.
+    const deck = await env.DB.prepare("SELECT status FROM decks WHERE id = 'vc_deck_learnloop'").first<{ status: string }>();
+    expect(deck?.status).toBe("alignment_call");
+  });
+
+  it("refuses roles the stage's transitions do not name", async () => {
+    const body = { deckId: "vc_deck_learnloop", kind: "alignment", outcome: "renegotiate" };
+    expect((await req("PUT", "/api/calls/outcome", await login(VC_ASSOCIATE), body)).status).toBe(403);
+    expect((await req("PUT", "/api/calls/outcome", await login(VC_ADMIN), body)).status).toBe(403);
+    expect((await req("PUT", "/api/calls/outcome", await login(VC_IC), body)).status).toBe(403);
+    expect((await req("PUT", "/api/calls/outcome", await login(INC_PM), body)).status).toBe(403);
+    expect((await list("/api/calls?kind=alignment", await login(VC_ASSOCIATE))).canDecide).toBe(false);
+  });
+
+  it("refuses an outcome that is a transition, an unknown one, a kind with none, and a deck not at the stage", async () => {
+    const partner = await login(VC_PARTNER);
+    const put = (body: unknown) => req("PUT", "/api/calls/outcome", partner, body);
+    expect((await put({ deckId: "vc_deck_learnloop", kind: "alignment", outcome: "issue_term_sheet" })).status).toBe(400);
+    expect((await put({ deckId: "vc_deck_learnloop", kind: "alignment", outcome: "maybe" })).status).toBe(400);
+    expect((await put({ deckId: "vc_deck_learnloop", kind: "intro", outcome: "hold" })).status).toBe(400);
+    expect((await put({ deckId: "vc_deck_dockflow", kind: "alignment", outcome: "hold" })).status).toBe(409);
+    expect((await put({ deckId: "nope", kind: "alignment", outcome: "hold" })).status).toBe(404);
+    // Clearing works.
+    expect((await put({ deckId: "vc_deck_learnloop", kind: "alignment", outcome: null })).status).toBe(200);
+    expect((await list("/api/calls?kind=alignment", partner)).outcomes).toEqual([]);
+  });
+});
+
+describe("calls — decided rows (F0627, the reading agreed with W9-B in §9)", () => {
+  it("reads each seeded decision from the event that left the stage, not from where the deck is now", async () => {
+    const partner = await login(VC_PARTNER);
+    const pc = await list("/api/calls?kind=partner", partner);
+    // PayWise went partner_call → partner_review and is now onboard_ready;
+    // FreshCart passed at the call and has since been seeded at term_sheet.
+    expect(pc.decided).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ deckId: "vc_deck_paywise", outcome: "Need another meeting" }),
+        expect.objectContaining({ deckId: "vc_deck_freshcart", outcome: "Pass" }),
+      ]),
+    );
+    const al = await list("/api/calls?kind=alignment", partner);
+    expect(al.decided).toEqual(
+      expect.arrayContaining([expect.objectContaining({ deckId: "vc_deck_gridzero", outcome: "Issue term sheet" })]),
+    );
+    // A deal still at the stage is not decided.
+    expect(al.decided.some((d) => d.deckId === "vc_deck_learnloop")).toBe(false);
+    // Intro calls decide nothing.
+    expect((await list("/api/calls?kind=intro", partner)).decided).toEqual([]);
+  });
+
+  it("a deal back at the stage is active again; a later move elsewhere does not rewrite the outcome", async () => {
+    const partner = await login(VC_PARTNER);
+    const move = (action: string) => req("POST", "/api/decks/vc_deck_medgrid/transition", partner, { action });
+    const medgrid = async () => (await list("/api/calls?kind=partner", partner)).decided.find((d) => d.deckId === "vc_deck_medgrid");
+
+    expect((await move("another_meeting")).status).toBe(200);
+    expect((await medgrid())?.outcome).toBe("Need another meeting");
+    expect((await move("advance_to_call")).status).toBe(200);
+    expect(await medgrid()).toBeUndefined();
+
+    expect((await move("sponsor_to_ic")).status).toBe(200);
+    expect((await medgrid())?.outcome).toBe("Sponsor to IC");
+    expect((await move("mp_approve_dd")).status).toBe(200); // investment_dd → ic_review
+    expect((await medgrid())?.outcome).toBe("Sponsor to IC");
+  });
+
+  it("a non-scheduler learns only the decisions on decks they are on a call for", async () => {
+    const ic = await login(VC_IC); // on MedGrid's partner call, not PayWise's or FreshCart's
+    const { decided } = await list("/api/calls?kind=partner", ic);
+    expect(decided.map((d) => d.deckId)).toEqual(["vc_deck_medgrid"]);
+  });
+});

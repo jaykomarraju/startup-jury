@@ -560,6 +560,19 @@ const PROBES: Probe[] = [
     allow: ["admin", "program_manager"] },
   { id: "calls.schedule", label: "POST /api/calls (schedule + ICS invite)", kind: "write", method: "POST", path: "/api/calls", body: {},
     allow: ["admin", "program_manager", "program_associate", "partner", "associate"] },
+  // W9-E — the calls router's other gates. A seeded user holds no scheduling
+  // delegation, so each probe sees the role tier alone: a scheduler reaches the
+  // ghost call's 404 / the empty body's 400, everyone else the 403. A non-scheduler
+  // PATCH is refused unless it is `{status}` on a call they are on — `{}` is not.
+  { id: "calls.update", label: "PATCH /api/calls/:id (reschedule · cancel · close out)", kind: "write", method: "PATCH", path: "/api/calls/__ghost__", body: {},
+    allow: ["admin", "program_manager", "program_associate", "partner", "associate"] },
+  { id: "calls.invite", label: "POST /api/calls/:id/invite", kind: "write", method: "POST", path: "/api/calls/__ghost__/invite", body: {},
+    allow: ["admin", "program_manager", "program_associate", "partner", "associate"] },
+  { id: "calls.scheduler", label: "PUT /api/calls/scheduler (Assign scheduler)", kind: "write", method: "PUT", path: "/api/calls/scheduler", body: {},
+    allow: ["admin", "program_manager", "program_associate", "partner", "associate"] },
+  // Only roles the call stage's own transitions name (vc.ts: partner, superuser).
+  { id: "calls.outcome", label: "PUT /api/calls/outcome (Renegotiate / Hold)", kind: "write", method: "PUT", path: "/api/calls/outcome", body: {},
+    editions: ["vc"], allow: ["partner"] },
   // W7-E — the Assign router (`/api/assignments`). The board is read by the
   // staff who assign; the confirmation is gated like POST /decks/:id/assign. The
   // empty body 400s (`no_decks`) for an allowed role before anything is read.
