@@ -142,7 +142,21 @@ test("admin — the programme's checklist asks for four documents, and its templ
         id: current.inherited ? undefined : i.id,
         name: i.name,
         note: i.note,
-        mandatory: i.name === "Bank account details" ? true : i.mandatory,
+        // Both values this test later ASSERTS are pinned here rather than
+        // inherited. `current` is the ORG-WIDE default when the programme has no
+        // list of its own, and `e2e/signup-config.spec.ts` (W5-A's) deliberately
+        // toggles the org-wide "GST / tax registration" row mid-run. Playwright's
+        // `describe.serial` orders tests WITHIN a file; it does not stop two FILES
+        // sharing the one dev-server D1 across two workers, so this read could
+        // land inside that spec's mutation window and the programme list would
+        // inherit `mandatory: true`. Pinning both makes the assertion independent
+        // of a row another spec owns. Found at Wave 6 integration; flagged §4.
+        mandatory:
+          i.name === "Bank account details"
+            ? true
+            : i.name === "GST / tax registration"
+              ? false
+              : i.mandatory,
       })),
     },
   });
