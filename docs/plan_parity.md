@@ -913,7 +913,7 @@ best reading and note it.
 | Q25 | `W2-C` (F0040) | **There is no per-question round trip.** `queries.questions` is one text blob out and `queries.founder_response` one blob back, so once the bank is wired there is still nowhere to record *which* bank question was asked on a deck, who asked it, whether the founder answered *that* question, or when — and "which areas did the founder actually address" stays uncomputable. Both specs sketch the schema (`founder_clarifications(id, deck_id, asked_by, question, answer, answered_at)`). | The bank is keyed by `parameters.id` and the producer already returns the questions grouped by area, so the shape is ready for it. Building the table needs a migration plus `FounderPortal.tsx` (`W10-B`) and `pipeline.ts`, none of which is `W2-C`'s — **migration `0040` is still unused** and reserved. Prompt drafted in §10. |
 | Q26 | `W3-A` | **Is the superuser subject to its own permission grid?** `requireRole`'s superuser bypass is untouched (it still passes every role list), but `requireTask` puts the superuser through the grid like everyone else. The seed grants it all 21/24 cells, so nothing changes today — and F0019's own FIX line says "keep superuser hard-allowed", which is the opposite. | **Subject to the grid.** Exempting it would make the superuser column in the console's own grid a lie — 24 checkboxes that do nothing — and the prototype draws that column as toggleable. As built, an administrator who deliberately closes a superuser cell gets what they asked for, and `PUT /api/permissions` refuses to write the superuser row at all (`immutable_superuser`, mirroring `users.ts`), so the only way to reach that state is a direct DB edit or a future migration. The roles harness asserts the superuser holds every task on the default seed, so a seed that ever stopped granting one would go red rather than silently narrow. |
 | Q27 | `W3-A` | **Six task rows have a cell but still no verb.** `register`, `reassign`, `remind`, `deleteuser` and `outofofficedelegation` are enforced nowhere, because the product has no such action to gate — the grid can now express them, which makes their absence visible rather than fixing it. `activateuser` / `deactivateuser` DID get a verb here (`PATCH /api/users/:id`, checked per direction). | Left as vocabulary, which is what `0029` intended for `source: "none"` rows. Each has a named owner and the cell is ready for it: *Remind* → `W3-B` (`scheduled.ts` already sends evaluator reminders and should consult `remind` when it does); *Reassign / Resubmit* → the Assign lane; *Delete user* + the Activate/Deactivate UI → `W4-A`; *Out of office delegation* → F0072/F0907/F0928, a genuine product feature (an OOO window per user with a delegate inheriting assignments **and grants** for the period) that no wave currently owns — the prompt in §10 proposes one. *Register* is F0073 and is an onboarding-lane question, not a permissions one. |
-| Q28 | `W3-A` | **`npm run roles` and the e2e suite cannot both be trusted while sibling worktrees are busy.** §2.3 documents the false PASS (a neighbour's server on your `ROLES_BASE`). This session hit the mirror image: two full e2e runs failed ~16 specs on `page.goto` timeouts at **load average 64**, with `sj-W3-D`'s Playwright run live and `sj-W1-C` leaving two stale `workerd` servers up days after that session ended. Nothing the specs assert ever disagreed. | Ran the suite at `--workers=1` on a private port (5231, ownership proved by `lsof` → this worktree's `vite`): **124/124**. Two suggestions for the plan rather than for a session: (1) §2.3 should say "prove the port **and** check the machine" — `ps aux \| grep workerd` before believing a red e2e, the same way it already says to check before believing a green roles run; (2) an integration session should sweep stale `workerd`/`vite` processes from removed worktrees, since `git worktree remove` does not kill them. |
+| Q28 | `W3-A` | **`npm run roles` and the e2e suite cannot both be trusted while sibling worktrees are busy.** §2.3 documents the false PASS (a neighbour's server on your `ROLES_BASE`). **CORRECTED at Wave 8 integration:** it was repeated across several waves that `npm run roles` *exits 0* when it cannot reach a server. **It does not — it exits 1** (`scripts/role-matrix.ts` catches the unreachable probe, increments `checksFailed`, and ends `process.exit(checksFailed > 0 ? 1 : 0)`; verified empirically against a dead port). The real trap is narrower and still real: the run PRINTS a summary either way, so a reader who scans the text rather than the exit code sees "156 checks · 156 passed" and calls it green. Read the exit code. This session hit the mirror image: two full e2e runs failed ~16 specs on `page.goto` timeouts at **load average 64**, with `sj-W3-D`'s Playwright run live and `sj-W1-C` leaving two stale `workerd` servers up days after that session ended. Nothing the specs assert ever disagreed. | Ran the suite at `--workers=1` on a private port (5231, ownership proved by `lsof` → this worktree's `vite`): **124/124**. Two suggestions for the plan rather than for a session: (1) §2.3 should say "prove the port **and** check the machine" — `ps aux \| grep workerd` before believing a red e2e, the same way it already says to check before believing a green roles run; (2) an integration session should sweep stale `workerd`/`vite` processes from removed worktrees, since `git worktree remove` does not kill them. |
 | Q29 | `W3-D` | **A self-serve Connect button cannot, on its own, make a CRM connection usable — and that is by design.** §1.3 forbids a vendor credential on the critical path and `0037` says in as many words that keys "belong in Worker secrets, never in D1". The prototype shows the opposite: a per-provider Connect that an admin completes alone. The two cannot both be true, so this session resolved it by splitting the act: the admin's Connect posts a key, the app records **only** a masked tail plus the *name* of the Worker secret a live deployment reads (`CRM_SALESFORCE_TOKEN`), and the key itself is discarded. Going live therefore needs an operator to run `wrangler secret put` — the same external step the sending domain needs (§1.4). The client should know the Connect button is a configuration record, not a handshake. | Implemented as described. It is the only reading that satisfies both rules, and it makes the credential test trivially strong — there is no stored secret for a GET to leak. If the client wants true self-serve, the answer is a provider OAuth redirect storing a token in a secrets store, which is the same shape §1.2 already mandates for card data. |
 | Q30 | `W3-D` (F0179) | **"Auto-approve if within monthly cap" approves *what*?** The prototype's sub-line — "No manual approval needed if submission count is below the monthly limit" — implies that a pulled deck otherwise waits in an approval queue. **This product has no such queue**: a deck is uploaded, evaluated and enters the pipeline. So the toggle either (a) gates whether a CRM-pulled deck is evaluated immediately or parked for a human, which is a new pipeline state, or (b) is redundant once the cap itself is enforced. | Persisted and enforced as the **cap**, which is the half that is unambiguous and is the only spend guard on auto-pulled decks: `runPull` refuses once the month's pulled count reaches `monthly_deck_cap`, and records a `'skipped'` row saying so. The toggle is stored and carried on the recorded attempt payload (`autoApproveWithinCap`) so whichever reading wins costs one branch in the pull, not a schema change. The approval queue is **not** built. |
 | Q31 | `W3-D` | **Is a CRM connection per workspace, or per programme / cohort?** `0037` keys `crm_connections` on `(edition, provider)` — one Salesforce for the whole incubator side — and `s-crm` draws no programme selector. But the console title bar carries a programme/cohort chip on *every* section, which reads as though each section is scoped by it, and a multi-programme incubator plausibly wants one CRM pipeline per programme. | Edition-wide, per `0037`'s UNIQUE key, which is also what the prototype's four flat rows depict. Changing it later means a `program_id` column and widening that UNIQUE — contained, because every read goes through `src/server/crm/store.ts`. |
@@ -2105,8 +2105,7 @@ TEST
   - `npm run roles` if you add a router — add its probes to scripts/role-matrix.ts in the SAME
     commit, with each write probe's body shaped so an ALLOWED role still gets a 4xx. Run it as
         ROLES_BASE=http://127.0.0.1:<your port> npm run roles
-    against a server you PROVED you own with `lsof`: it defaults to :5173 and **exits 0 even when it
-    cannot reach anything** (§8 Q28). Read the baseline off `main` first — Wave 5 left it at
+    against a server you PROVED you own with `lsof`: it defaults to :5173, so point it at YOUR port. Read the baseline off `main` first — Wave 5 left it at
     **827/827** — and confirm your run moves it by exactly the probes you added.
     **If you change `nav.ts` gating, `npm run roles` is the check that proves it**, and the number
     WILL move by design. Say so in your handoff rather than letting integration wonder.
@@ -2616,8 +2615,7 @@ TEST
     baseline at 981/981** (`W6-C` alone left it at 879/879: 827 + 52 for
     `/api/seats`), and Wave 6 integration may have moved it again. Run it as
         ROLES_BASE=http://127.0.0.1:5273 npm run roles
-    against a server you PROVED you own with `lsof` (port 5273 is yours) — it exits 0 even when it
-    reaches nothing (§8 Q28). And run `npm run test:e2e` with E2E_PORT=5273: Playwright's
+    against a server you PROVED you own with `lsof` (port 5273 is yours). And run `npm run test:e2e` with E2E_PORT=5273: Playwright's
     `reuseExistingServer` will otherwise happily reuse a SIBLING's server on :5173.
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
   The whole gate is about four and a half minutes on a quiet machine (**1581** unit/worker/client
@@ -2700,8 +2698,8 @@ TEST
     claims to cover it. Then run it as
         ROLES_BASE=http://127.0.0.1:<your port> npm run roles
     against a server you PROVED you own with `lsof`. It reads ROLES_BASE, defaults to :5173, and
-    **exits 0 even when it cannot reach anything** (§8 Q28) — Wave 4 integration was handed a
-    false "156 passed" that way. The real baseline is 631/631.
+    **reports a FINDING and exits 1** when it cannot reach one — but it still prints a summary,
+    and Wave 4 integration misread that summary as a pass. Read the EXIT CODE, not the text.
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
   Note `test/worker/migrations-w1b.test.ts` caps migration numbers at ALLOTMENT_CEILING; Wave 5
   raises it to 49. Both Wave 5 sessions hit that one line — expect a conflict, take the highest.
@@ -2807,7 +2805,7 @@ TEST
   `false` — if you set it back, a run adopts whatever server sits on its port, a sibling's code
   against a sibling's mutated database, reported as a pass.
   `npm run roles` if you add a router — probes in scripts/role-matrix.ts in the SAME commit, against
-  a server you proved you own with `lsof` (it exits 0 when it reaches nothing). **Wave 6 integration
+  a server you proved you own with `lsof`. **Wave 6 integration
   measured the merged baseline at 981/981**; read the number off `main` first and confirm your run
   moves it by exactly the probes you added.
   Two more traps `W6-B` hit that you will too: derive a default selection during render, not in an
@@ -2958,7 +2956,7 @@ FINISH
 > **This session had two prompts and neither was whole.** `W7-C` wrote the Query half and `W7-B` the
 > Upload quarter; §6 gives `W9-A` **four** screen families and the other two — All decks and Evaluate —
 > had no prompt at all. Merged and completed here, the way Wave 5 integration merged the two `W6-A`
-> prompts and Wave 7 integration merged the `W9-E` pair. Both originals also cited §8 Q80–Q83, which
+> prompts and this same integration merged the `W9-E` pair. Both originals also cited §8 Q80–Q83, which
 > the Wave 7 renumber had reassigned to `W7-A`; repointed to their authors' real questions.
 >
 > **The shape of the session: most of this is verification, not construction.** `W7-A`–`W7-F` rebuilt
@@ -2988,19 +2986,35 @@ READ FIRST (in this order, and nothing else)
                           `vc/partner · role-gap query` recorded as DELIBERATE in parity-nav (Q90).
        §8 Q80–Q83       — `W7-A`'s All decks decisions. Read them: they are the screen you inherit.
        §8 Q91–Q95       — `W7-D`'s Evaluate decisions, including the stage-aware report.
-     Then the `W7-A`, `W7-B`, `W7-C` and `W7-D` rows in §7 — each lists what it closed FOR BOTH
-     EDITIONS versus what it left VC-specific. That list is the actual worklist.
-  2. Your worklist:
+     Then the `W7-A`, `W7-B`, `W7-C` and `W7-D` rows in §7 — they record what Wave 7 closed and
+     what it left. (`W7-A`'s row does not split by edition at all, so do not expect one; verify
+     against the VC screens themselves.)
+     **And §9 — grep the table for `W9-A`.** At least one row names you by file and line.
+  2. **Your worklist is TWO queries, not one.** The findings for your four screens are split across
+     two areas, and running only the first returns ZERO rows for All decks and ZERO for Evaluate:
        python3 docs/prototype/tools/findings.py --area "Deck intake" --edition vc --full
-     68 findings across four screens. **Most are already closed** by Wave 7 for both editions,
-     because three of your four files are shared. Verify each claimed closure ON THE VC EDITION
-     rather than re-doing it; what survives is genuinely VC-specific.
+         → 68: Upload and Query (plus settings / branding / founder-portal rows that are not yours).
+       python3 docs/prototype/tools/findings.py --area "Evaluation workbench" --edition vc --full
+         → 26: **14 All decks and 11 Evaluate** — including three P0s that are the core of this
+           session: **F0433** (the All-decks table never changes columns per stat tile; 5 of the
+           prototype's 6 VC table formats do not exist), **F0434** (IC-member All decks is a
+           different screen entirely, "Awaiting my vote", and is not built) and **F0435** (VC
+           Evaluate is missing the parameters column and the parameter-detail column).
+     Wave 7 split the same way — `W7-A` used `--area "Deck intake"` and `W7-D`
+     `--area "Evaluation workbench"`. Many Upload/Query rows are already closed by Wave 7 for both
+     editions because those files are shared; verify each claimed closure ON THE VC EDITION rather
+     than re-doing it. **The All-decks and Evaluate rows are not closed — they are unbuilt.**
   3. The prototypes, from ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_VC_Superuser_V8/:
        panel-alldecks.html · panel-upload.html · panel-query.html · panel-evaluate.html
      and their renderers in `_scripts.js` (grep the panel's ids; read only those functions).
-     **Diff each against AISJ_IC_SuserV15's** — `W0` found the VC panels byte-identical across the
-     six VC role files, so any difference you find is EDITION, not role. Then diff
-     AISJ_VC_{Partner_V1,Associate_V1,Analyst_V1,IC_member_V2} for the role-trimmed variants
+     **Diff each against AISJ_IC_SuserV15's to find the EDITION differences — then diff the VC role
+     builds against each other, because three of your four panels are NOT the same across them.**
+     Only `panel-query.html` is identical in all six VC builds. `panel-evaluate.html` differs in
+     `AISJ_VC_IC_member_V2`, `panel-upload.html` differs at line 165 (Buy credits deleted), and
+     `panel-alldecks.html` differs too — F0434 is exactly that: **IC-member All decks is a different
+     screen, "Awaiting my vote"**. Verify with `md5` across the six rather than trusting any claim,
+     this one included. The builds are
+     AISJ_VC_{Superuser_V8,Partner_V1,Associate_V1,Analyst_V1,IC_member_V2}
      (panel-upload.html line 165: Buy credits is deleted for those roles — already honoured by
      `canAccessNav(…, "billing", can)`).
   4. The files. `VcEvaluatePage.tsx` is yours outright; the other three are SHARED and you own only
@@ -3018,8 +3032,11 @@ BUILD — four screens, in this order, because the later ones depend on the earl
      that the VC status vocabulary (deal stages, not cohort stages) is what renders.
   2. **Upload (VC).** Mostly a proof, not a build: an e2e walk per VC upload role (admin, partner,
      associate, analyst) on the VC seed — the wizard renders, the credits bar shows the balance,
-     **Buy credits appears for admin ONLY**, and no link in the screen body resolves to "Not
-     available for your role" (copy the link walk in e2e/upload.spec.ts). Then: an analyst stages two
+     **Buy credits appears for admin AND superuser and for nobody else** — `nav.ts` gives superuser a
+     bypass on every non-portal item, so "admin only" is wrong and the prototype agrees (the button
+     is present in the Superuser and Admin builds, blank in the other four). Assert both the
+     presence and the absence. No link in the screen body may resolve to "Not available for your
+     role" (copy the link walk in e2e/upload.spec.ts). Then: an analyst stages two
      decks, uploads one, flags one VC parameter (VC rubric names come from `GET /api/parameters` —
      assert one BY NAME) and sends it to Query; assert the query row through the API.
      Anything in the VC panel that differs beyond line 165 — diff first; if nothing differs, say so
@@ -3032,7 +3049,10 @@ BUILD — four screens, in this order, because the later ones depend on the earl
      Then the flow view for a VC deal — the VC parameter set, and whether blind scoring
      (`aiScoreWithheld`) should hide the completion bar for an analyst who has not scored yet. It
      degrades to "AI area scores are not available" today; confirm that is the right reading.
-  4. **Evaluate (VC).** `VcEvaluatePage.tsx` is the one file here nobody else owns. The workbench to
+  4. **Evaluate (VC).** `VcEvaluatePage.tsx` is the one file here nobody else owns — **but it is not
+     only the Evaluate screen.** `App.tsx` routes BOTH `evaluate` and `assign` to it, and `assign`
+     is the VC **Submit** screen, which §6 gives to `W9-B`. Changing shared chrome in that file
+     changes `W9-B`'s screen; coordinate in §9 rather than both editing it. The workbench to
      the VC prototype: toolbar, filters, exact columns and headers, status vocabulary, legend, row
      actions, drawer, empty state. `W7-D` made the evaluation report **stage-aware**
      (`GET /api/decks/:id/report?stage=`) and fixed three display-scale defects — read its §7 row
@@ -3070,8 +3090,7 @@ TEST
     union into `EXPECTED`) and never delete a row you did not capture — four other Wave 9 sessions
     are re-capturing theirs at the same moment.
   - `npm run roles` if you touch a gate — probes in scripts/role-matrix.ts in the SAME commit,
-    against a server you PROVED you own with `lsof`. It defaults to :5173 and **exits 0 even when it
-    reaches nothing** (§8 Q28). Wave 8 integration measured **1022/1022**; read the live number off
+    against a server you PROVED you own with `lsof`. It defaults to :5173, so point it at YOUR port. Wave 8 integration measured **1022/1022**; read the live number off
     `main` and confirm your run moves it by exactly the probes you added.
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
   **The gate is about six minutes on a quiet box, and the live baseline is on `main`, not here.**
@@ -3127,6 +3146,8 @@ READ FIRST (in this order, and nothing else)
      jointly with you, it derived the drift bands from `RUBRIC_BANDS`, and it changed the INCUBATOR
      funnel's columns while deliberately leaving the VC ones alone. Its §8 questions are Q106–Q111
      and several are about report format generally, not only the incubator's — read them.
+     **And §9 — grep the table for `W9-D`. Two rows name you**, one of them the VC funnel (see
+     CONSTRAINTS); read them rather than taking this prompt's word for either.
   2. Your worklist:
        python3 docs/prototype/tools/findings.py --area "Reports" --edition vc --full
      49 findings.
@@ -3147,14 +3168,17 @@ BUILD
      axes and series names, every legend, and the **exact table column headers**. Report format is
      what the client named specifically — `W8-A` asserted the incubator's headers as literals copied
      from the prototype renderer, and yours should be asserted the same way.
-  2. Adopt the kit `W8-A` left rather than rebuilding one: `AnalyticsKit.tsx` carries the tiles,
-     chart frames and `<PanelFrame>`. **Change a kit component's PROPS additively or not at all** —
+  2. Adopt the kit `W8-A` left rather than rebuilding one: `AnalyticsKit.tsx` carries the tiles and
+     chart frames. It uses `<PanelFrame>` internally but imports it from `../../components` and does
+     not re-export it — import `PanelFrame` from `src/client/components` if you need it directly. **Change a kit component's PROPS additively or not at all** —
      `W8-A`'s seven incubator reports render through the same components and a required new prop
      breaks all of them.
   3. Every report's empty state AND its disabled state where a Scoring-framework toggle gates it
      (`show_score_drift` is the precedent `W8-A` wired), each with the prototype's copy where it has
      one. "Turned off" and "no data" are different states and must not render the same.
-  4. Scores render in the org's display scale via `toDisplayScale` / `formatScore` from
+  4. **`VcReports.tsx:183` still names a retired band in user-visible copy** (§9, Wave 2
+     integration, addressed to you). Every cut-point and band name comes from `RUBRIC_BANDS`.
+  5. Scores render in the org's display scale via `toDisplayScale` / `formatScore` from
      `src/shared/scoring.ts` — `W7-D` fixed three defects that were exactly this, and `W8-A` a
      fourth. Do not write a second conversion or a second band table; every cut-point comes from
      `RUBRIC_BANDS`.
@@ -3162,10 +3186,13 @@ BUILD
 CONSTRAINTS
   - Own only: `src/client/routes/analytics/VcReports.tsx`, and PROPS-additive changes to
     `AnalyticsKit.tsx`. `src/shared/analytics.ts` and `IncubatorReports.tsx` are `W8-A`'s.
-  - **`FunnelPage` renders BOTH editions and lives in `IncubatorReports.tsx`, which you do not own.**
-    `App.tsx` routes `funnel` to it for VC too, under the comment "Funnel is shared". `W8-A` changed
-    the incubator columns and left the four VC rows in `e2e/parity.spec.ts` untouched — that is the
-    contract. If the VC funnel must change, it is a **§9 request with the exact diff**, not an edit.
+  - **The VC Pipeline Funnel IS yours, and §9 says how.** `W8-A` split `FunnelPage` so it returns
+    `<VcFunnel>` for the VC edition, and its §9 row addressed to you reads: *move `VcFunnel` into
+    `VcReports.tsx` and point `App.tsx`'s VC `funnel` at it, or rebuild it in place — either way
+    nothing in `IncubatorReports.tsx` needs to change for you.* Take one of those two paths and say
+    which. The INCUBATOR funnel and the rest of `IncubatorReports.tsx` remain `W8-A`'s; a change
+    there is a §9 request. `src/client/App.tsx` is a §2.2 hazard file — the one routing line is
+    expected and declared, nothing else.
   - `src/shared/scoring.ts` is not yours. If a report needs a helper it does not have, §9 it rather
     than writing a local copy — two copies of a cut-point is the defect Waves 2, 7 and 8 spent four
     §9 rows removing.
@@ -3220,8 +3247,8 @@ FINISH
 > happened to `W6-A` and to `W9-A`. `W7-E` built the intro-call AI-questions block and wrote the
 > screen-parity half; `W7-F` built the `StagePage`/`CallsPage` config extension and wrote the
 > declare-your-config half. Neither alone is complete: `W7-E`'s would have you rebuild screens the
-> config extension already renders, and `W7-F`'s would leave the AI questions unwired for a second
-> wave running. Merged rather than chosen between. Both originals cited §8 Q80–Q84, which the Wave 7
+> config extension already renders, and `W7-F`'s alone would leave `W7-E`'s screen-parity half
+> unstated. Merged rather than chosen between. Both originals cited §8 Q80–Q84, which the Wave 7
 > renumber had reassigned; repointed to their authors' real questions.
 
 ```
@@ -3246,16 +3273,23 @@ READ FIRST (in this order, and nothing else)
      Then the `W7-E` and `W7-F` rows in §7 — between them they built everything you are wiring.
   2. Your worklist:
        python3 docs/prototype/tools/findings.py --area "Pipeline" --edition vc \
-         --screen "introcalls|partnercall|alignmentcall" --full
+         --screen "introcalls|partnercall|alignmentcall|call modal" --full
+     37 findings — §6's filter exactly. Dropping `call modal` loses F0583 (the participant picker),
+     which the call-modal build below needs.
   3. ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_VC_Superuser_V8/panel-{introcalls,partnercall,alignmentcall}.html
      and their renderers in that build's `_scripts.js` — those functions only.
   4. **`src/client/routes/CallsPage.tsx` — read `INCUBATOR_CALLS_CONFIG.introcalls` as the worked
      example.** `W7-F` extended the config to carry `toolbar`, `footer`, `subTabs`, `juryStack` and
      a legend precisely so these screens could reach parity by DECLARING rather than by being
      rewritten as bespoke pages. Its §9 row records the extension's shape.
-  5. `<IntroCallQuestions callId=… />` — `W7-E` built it and wired it on the incubator side. It
-     renders the three fields of `GET /api/calls/:id/prompts` and renders NOTHING when the response
-     says `enabled:false`. You are placing it, not writing it.
+  5. **How the AI questions actually reach a screen — check this before you write anything.**
+     `W7-E` built `src/client/components/IntroCallQuestions.tsx` and **it is placed nowhere in
+     `src/`** (grep it: only its own file and its doc comment). What `W7-F` built instead is
+     DECLARATIVE: `CallsPage`'s config carries `aiQuestions?: boolean`, `useCallPrompts` fetches
+     `GET /api/calls/:id/prompts` when it is on, and the incubator Intro calls config turns it on
+     with `aiQuestions: true`. **A VC screen gets the questions by declaring `aiQuestions: true`,
+     not by placing the component** — placing it would create the second implementation the plan has
+     spent four §9 rows removing elsewhere. Decide what to do with the orphaned component, and say.
   6. src/server/routes/calls.ts — yours this wave.
 
 BUILD
@@ -3268,10 +3302,11 @@ BUILD
      must render **identically** after your change — it is the regression this session is most
      likely to cause.
   3. The call modal (schedule / reschedule) to the prototype's shape.
-  4. **Place `<IntroCallQuestions>` on the VC calls that should carry it**, and assert its ABSENCE on
-     the kinds that should not — after the request has settled, not before. The endpoint has been
-     built, tested and unreachable since Wave 2; `W7-E` gave it a caller on one edition and this is
-     the other.
+  4. **Turn the AI questions on for the VC calls that should carry them** — `aiQuestions: true` in
+     the config, plus `subTabs` if the pane needs one — and assert their ABSENCE on the kinds that
+     should not, after the request has settled rather than before. `W7-F` wired this on the
+     incubator Intro calls pane at Wave 7 with client and e2e coverage; this is the other edition,
+     and it is a config change, not a component placement.
   5. **A participant may set `status` on their own call** (§9, `W7-F`) — and only `status`, and only
      on a call they are on. Any other field, or another person's call, is refused.
   6. Decided rows the prototype keeps with their outcome (F0627) — decide and record.
@@ -3281,6 +3316,10 @@ CONSTRAINTS
     key) and `src/server/routes/calls.ts`. The incubator configs are `W7-F`'s.
   - **Do not change `GET /api/calls/:id/prompts`'s contract.** It is tested, and the incubator pane
     calls it.
+  - **You share TEN findings with `W9-E`, which runs in parallel** — F0562, F0595, F0596, F0625,
+    F0626, F0627, F0628, F0629, F0630, F0651, each scoped to *jurypipeline + partnerpipeline +
+    partnercall*. F0627 (decided rows keeping their outcome) appears in BOTH prompts' build lists.
+    Agree the split in §9 before you build, or you will each implement half of it differently.
   - **A call's participants are not its evaluators.** `deck_assignments` (0058) is who SCORES a deck;
     a call's participant list is who ATTENDS. Conflating them is the defect §8 Q96 exists to prevent.
   - §1.3: no calendar vendor SDK. The composers are URLs and the invite is the `.ics` the app already
@@ -3301,7 +3340,7 @@ TEST
     replacing obsolete sets; never delete a row you did not capture — four other Wave 9 sessions are
     re-capturing theirs at the same moment.
   - `npm run roles` if you touch a gate — probes in scripts/role-matrix.ts in the SAME commit,
-    against a server you PROVED you own with `lsof` (it exits 0 when it reaches nothing, §8 Q28).
+    against a server you PROVED you own with `lsof`.
     Wave 8 integration measured **1022/1022**; read the live number off `main` first.
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
   **The gate is about six minutes on a quiet box, and the live baseline is on `main`, not here.**
@@ -3368,6 +3407,10 @@ CONSTRAINTS
   - Own only: the `jurypipeline` and `partnerpipeline` entries of VC_STAGE_CONFIG in StagePage.tsx,
     and any new optional StageConfig key you need (default: draws nothing, with a test saying so).
   - `W9-C` edits other VC_STAGE_CONFIG entries in the same file this wave.
+  - **You share TEN findings with `W9-E`, which runs in parallel** — F0562, F0595, F0596, F0625,
+    F0626, F0627, F0628, F0629, F0630, F0651, each scoped to *jurypipeline + partnerpipeline +
+    partnercall*. F0627 (decided rows keeping their outcome) appears in BOTH prompts' build lists.
+    Agree the split in §9 before you build, or you will each implement half of it differently.
   - You own migration **0062** and only 0062 (Wave 9 is 0061–0065 in letter order; `main` ends at
     0060). None expected on a stage-config session. If you DO add one, raise `ALLOTMENT_CEILING` in
     test/worker/migrations-w1b.test.ts from 60 to match, in the SAME commit.
@@ -3379,7 +3422,9 @@ CONSTRAINTS
 TEST
   - Client: each screen's exact header set, legend and footer sentence, from the real config.
   - Client: the incubator configs and the other VC configs still render exactly as before.
-  - Re-capture the changed `e2e/parity.spec.ts` rows (replace obsolete sets; do not union them).
+  - Re-capture the changed `e2e/parity.spec.ts` rows per the CONSTRAINTS rule above: **union your
+    own rows into `EXPECTED`; replace only a row you own whose set is obsolete.** Never delete a row
+    you did not capture.
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
   The whole gate is about five minutes on a quiet box (W7-F: 1608 unit/worker/client in ~20 s).
   `uptime` before you start; never run it while a sibling runs theirs; never conclude anything from
@@ -3437,7 +3482,10 @@ BUILD
 CONSTRAINTS
   - Own only: IcVotePage.tsx and the five VC_STAGE_CONFIG entries above. `W9-B` edits two others.
   - Any new StageConfig key defaults to drawing nothing, with a test saying so.
-  - `signup_documents` and its router are `W5-A`'s, complete and tested — give them a surface.
+  - **`signup_documents` has TWO routers, not one** — `src/server/routes/signup-config.ts` (`W5-A`'s,
+    the admin checklist) and `src/server/routes/signups.ts` (`W6-A`'s, the sign-up workspace). Read
+    both before you call either, and see §8 Q65, which was opened to record exactly this trap. You
+    are giving the model a VC surface; if the verb you need is on neither, that is a §9 request.
   - You own migration **0063** and only 0063 (Wave 9 is 0061–0065 in letter order; `main` ends at
     0060). If you DO add one, raise `ALLOTMENT_CEILING` in test/worker/migrations-w1b.test.ts from
     60 to match, in the SAME commit.
@@ -3471,7 +3519,8 @@ FINISH
   Commit to parity/W9-C. Do not merge to main.
 ```
 
-`W9-A` and `W9-D` still have no prompt; neither depends on this session's work.
+*(Stale when written, corrected at Wave 8 integration: `W9-A` and `W9-D` both have prompts now —
+`W9-A` was assembled from two partials and `W9-D` written from scratch, both above.)*
 
 
 ### `W11-A` — the parameter half *(written by `W8-B`)*
