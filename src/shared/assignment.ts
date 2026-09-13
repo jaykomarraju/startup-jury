@@ -8,6 +8,7 @@
  */
 import type { Edition, Role } from "./roles";
 import { ROLE_LABELS } from "./roles";
+import { INTAKE_FIELD_LABELS, type IntakeField } from "./intake";
 
 /** "Deadline — 7 days from assignment date" (renderAs4) and "· deadline 7 days" (asShowResults). */
 export const ASSIGNMENT_DEADLINE_DAYS = 7;
@@ -138,4 +139,36 @@ export function assignRoleHeading(edition: Edition, role: string): string {
 export function assignRoleSubline(role: string, available: number): string {
   const desc = ASSIGN_ROLE_DESCRIPTIONS[role as Role];
   return desc ? `${desc} · ${available} available` : `${available} available`;
+}
+
+/**
+ * The missing-information line an incomplete deck carries in column 1 and in the
+ * Incomplete decks table — the prototype's "Founder email & key metrics not
+ * captured" / "Missing slides 4–9 · no traction or team data".
+ */
+export function missingInfoText(deck: { missingFields?: readonly string[]; missingSections?: readonly string[] }): string {
+  const parts: string[] = [];
+  const fields = (deck.missingFields ?? []).map((f) => INTAKE_FIELD_LABELS[f as IntakeField] ?? f);
+  if (fields.length) parts.push(`${fields.join(" & ")} not captured`);
+  const sections = deck.missingSections ?? [];
+  if (sections.length) parts.push(`no ${sections.map((s) => s.toLowerCase()).join(", ")} data`);
+  if (parts.length === 0) return "Insufficient information for AI evaluation";
+  const text = parts.join(" · ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** renderAsDecks' score colours: green ≥ 7, amber ≥ 5, red below. */
+export function paramScoreColour(v: number): string {
+  return v >= 7 ? "#3A7D44" : v >= 5 ? "#BA7517" : "#B42318";
+}
+
+/** The #as-pov card's "Weighted total N / 10" — a weight-weighted mean of what was scored. */
+export function weightedParamTotal(rows: readonly { weight: number; value: number }[]): number {
+  let w = 0;
+  let sum = 0;
+  for (const r of rows) {
+    w += r.weight;
+    sum += r.weight * r.value;
+  }
+  return w > 0 ? Math.round((sum / w) * 10) / 10 : 0;
 }

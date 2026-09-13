@@ -184,6 +184,8 @@ export interface EvaluatorMember {
   role: string;
   title?: string;
   openDecks: number;
+  /** W7-E / F0258 — the load bar's denominator (own capacity, else the role default). */
+  capacity: number;
 }
 
 export interface EvaluatorGroup {
@@ -194,6 +196,51 @@ export interface EvaluatorGroup {
 
 export function listEvaluators(): Promise<{ groups: EvaluatorGroup[] }> {
   return fetch("/api/evaluators").then((r) => json(r));
+}
+
+// ── W7-E · Assign: the board and the cross-product confirmation ─────────────
+
+/** What column 1 draws on a deck row beyond the deck listing. */
+export interface AssignBoardDeck {
+  /** The AI's 13 core values, rubric order; empty while withheld or unscored. */
+  core: { key: string; value: number }[];
+  /** AI totals on each owner role's additional parameters, out of 30. */
+  additional: Partial<Record<string, number | null>>;
+  withheld: boolean;
+  assignees: { id: string; name: string; role: string; dueAt: string | null; submitted: boolean }[];
+}
+
+export function getAssignBoard(): Promise<{ decks: Record<string, AssignBoardDeck> }> {
+  return fetch("/api/assignments/board").then((r) => json(r));
+}
+
+export interface AssignmentRow {
+  deckId: string;
+  deckName: string;
+  evaluatorId: string;
+  evaluatorName: string;
+  initials: string;
+  role: string;
+  roleLabel: string;
+}
+
+export interface AssignmentResult {
+  ok: true;
+  assignedAt: string;
+  dueAt: string;
+  evaluations: number;
+  notified: number;
+  rows: AssignmentRow[];
+}
+
+/** Every deck × every member, all-or-nothing. */
+export function confirmAssignments(input: {
+  deckIds: string[];
+  assigneeIds: string[];
+  note?: string;
+  notify?: boolean;
+}): Promise<AssignmentResult> {
+  return postJson<AssignmentResult>("/api/assignments", input);
 }
 
 // ── My own alias title (issue 1) ─────────────────────────────────────────────
@@ -997,6 +1044,17 @@ export const updateCall = (
 
 export const sendCallInvite = (id: string) =>
   postJson<{ ok: true; invited: number }>(`/api/calls/${id}/invite`);
+
+/** One AI-suggested question for an intro call (`GET /api/calls/:id/prompts`). */
+export interface CallPrompt {
+  topic: string;
+  because: string;
+  question: string;
+}
+
+/** `enabled: false` means the admin turned the feature off — render nothing. */
+export const getCallPrompts = (id: string) =>
+  fetch(`/api/calls/${id}/prompts`).then((r) => json<{ enabled: boolean; prompts: CallPrompt[] }>(r));
 
 /** The .ics endpoint is a plain download — the browser handles it, not fetch. */
 export const callIcsUrl = (id: string) => `/api/calls/${id}/ics`;

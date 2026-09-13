@@ -19,17 +19,22 @@ test("program associate assigns an AI-gated deck to a jury member", async ({ pag
   await expect(page.getByRole("heading", { name: "Assign" })).toBeVisible();
 
   // Aug-2026 issue 22 — four panels: decks → role → members → allocation.
+  // W7-E: the role rows read in the prototype's sentence case ("Jury member").
   await page.getByRole("checkbox", { name: "Select FinStack" }).check();
-  await page.getByRole("button", { name: /^Jury Member/ }).click();
+  await page.getByRole("button", { name: /^Jury member/ }).click();
   await page.getByRole("checkbox", { name: "Select Rajesh Kumar" }).check();
 
-  // Panel 4 previews the allocation before anything is written.
-  const summary = page.locator("li", { hasText: "FinStack" }).last();
+  // Panel 4 previews the allocation before anything is written. W7-E: it is now
+  // the prototype's summary card (deck chips × member chips), not a pair list.
+  const summary = page.getByTestId("assign-summary");
+  await expect(summary).toContainText("FinStack");
   await expect(summary).toContainText("Rajesh Kumar");
 
   await page.getByRole("button", { name: /Confirm assignment/ }).click();
   await expect(page.getByText(/Assignment confirmed/)).toBeVisible();
-  await expect(page.getByText("FinStack → Rajesh Kumar", { exact: false })).toBeVisible();
+  // W7-E: the confirmation is the results table — one row per deck × member.
+  const row = page.getByRole("table", { name: "Assignment results" }).getByRole("row", { name: /FinStack/ });
+  await expect(row).toContainText("Rajesh Kumar");
 });
 
 test("jury member scores an assigned deck and shortlists it", async ({ page }) => {
