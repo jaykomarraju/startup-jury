@@ -43,14 +43,32 @@ import {
   listActivity,
   retryDeckAi,
   updateThresholds,
+  getDeckEvents,
+  listIcVotes,
+  IC_VOTE_LABELS,
   type CohortView,
   type ProgramView,
   type DeckVersionView,
   type ActivityEvent,
+  type IcVotes,
+  type IcVoteValue,
+  type PipelineEvent,
 } from "../api";
 import { cohortRating, weightedTotal } from "../../shared/scoring";
-import { deckStats, matchesStat, type DeckStat, type DeckStatKey } from "../../shared/deckStats";
-import { navForUser } from "../../shared/nav";
+import {
+  deckStats,
+  icMemberStats,
+  matchesIcStat,
+  matchesStat,
+  pipelineProgress,
+  vcFunnelLabel,
+  vcReached,
+  type DeckStat,
+  type IcStatKey,
+  type MyBallot,
+  type StatKey,
+} from "../../shared/deckStats";
+import { canAccessNav, navForUser } from "../../shared/nav";
 import type { Edition } from "../../shared/roles";
 import { useActiveContext } from "../activeContext";
 
@@ -114,20 +132,160 @@ export const ALL_DECKS_COLUMNS = {
     "Submitted date",
     "By Due date",
   ],
-  // VC keeps the shape it shipped with until `W9-A` takes the VC branch (its
-  // prototype's column sets differ again — Diligence progress, Ask, Valuation…).
-  vcDetails: ["Startup", "Founder name", "Email ID", "Phone", "City", "Sector", "Status"],
+  // W9-A — `AISJ_VC_Superuser_V8` `adRenderTable()`, one set per stat box (the
+  // Admin, Partner, Associate and Analyst builds are md5-identical) — F0433.
+  vcUploaded: ["Startup", "Sector", "City", "AI score", "Stage", "Submitted"],
+  vcIncomplete: ["Startup", "Founder name", "Email ID", "Phone number", "City", "Status"],
+  vcEvaluated: ["Startup", "AI score", "Parameter scores"],
+  vcDiligence: ["Startup", "Sector", "AI score", "Diligence progress", "Flags", "Lead"],
+  vcIcReady: ["Startup", "AI score", "Avg. score", "Ask", "Valuation", "Recommendation"],
+  vcOnboard: ["Startup", "AI score", "Term sheet", "Legal DD", "Onboarding"],
+  // W9-A — the IC member's "Awaiting my vote" build (`AISJ_VC_IC_member_V2`
+  // `adRenderTable()`) — F0434.
+  icAtIc: ["Startup", "Sector", "AI score", "Stage in IC", "My status"],
+  icMyVote: ["Startup", "Sector", "AI score", "IC avg", "Ask", "My vote"],
+  icMyEval: ["Startup", "AI score", "My score", "My recommendation", "IC outcome"],
+  icAgenda: ["#", "Startup", "Sector", "AI score", "Sponsor", "Ask"],
+  icPipeline: ["Startup", "Cleared", "Stage", "Status", "Ask", "Owner"],
+  icFunded: ["Startup", "Final check", "Round", "Close date", "Ownership"],
 } as const;
 
 type TableShape = keyof typeof ALL_DECKS_COLUMNS;
 
+/** The VC staff table for each stat box. */
+const VC_SHAPES: Record<string, TableShape> = {
+  uploaded: "vcUploaded",
+  vcIncomplete: "vcIncomplete",
+  aiEvaluated: "vcEvaluated",
+  inDiligence: "vcDiligence",
+  icReady: "vcIcReady",
+  onboardReady: "vcOnboard",
+};
+
+/** The IC member's table for each stat box. */
+const IC_SHAPES: Record<IcStatKey, TableShape> = {
+  atIc: "icAtIc",
+  myvote: "icMyVote",
+  myeval: "icMyEval",
+  agenda: "icAgenda",
+  pipeline: "icPipeline",
+  funded: "icFunded",
+};
+
+/** Shapes whose cells read the deck's pipeline events (a sponsor, a clearing date). */
+const EVENT_SHAPES: readonly TableShape[] = ["vcDiligence", "icAgenda", "icPipeline", "icFunded"];
+
+// ── The VC cells ─────────────────────────────────────────────────────────────
+
+/** `.ad-chip.go / .hold / .no / .info` */
+type ChipTone = "go" | "hold" | "no" | "info" | "none";
+
+const CHIP_TONES: Record<ChipTone, string> = {
+  go: "bg-olive-lt text-olive-dk",
+  hold: "bg-warn-lt text-warn",
+  no: "bg-red-lt text-red",
+  info: "bg-blue-lt text-blue",
+  none: "bg-surface-2 text-fg-muted",
+};
+
+function AdChip({ tone, children, title }: { tone: ChipTone; children: ReactNode; title?: string }) {
+  return (
+    <span
+      title={title}
+      className={`inline-block whitespace-nowrap rounded-[11px] px-2 py-0.5 text-[10.5px] font-semibold ${CHIP_TONES[tone]}`}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** The Uploaded view's Stage pill, in the VC funnel's own words (`.sp-n/.sp-p/.sp-d/.sp-i`). */
+export function vcStagePill(deck: DeckView): { label: string; tone: PillTone } {
+  const { label, key } = vcFunnelLabel(deck.statusId);
+  const tone: PillTone =
+    key === "vcIncomplete"
+      ? "red"
+      : key === "onboardReady"
+        ? "green"
+        : key === "inDiligence"
+          ? "amber"
+          : key === "aiEvaluated" || key === "icReady"
+            ? "blue"
+            : "grey";
+  return { label, tone };
+}
+
+/** Term sheet · Legal DD · Onboarding, as far as the deal's stage establishes them. */
+export function vcOnboardChips(deck: DeckView): {
+  termSheet: [string, ChipTone];
+  legal: [string, ChipTone];
+  onboarding: [string, ChipTone];
+} {
+  const s = deck.statusId ?? "";
+  // Legal DD only starts once the term sheet is executed (`start_legal_dd`).
+  const termSheet: [string, ChipTone] = vcReached(s, "legal_dd")
+    ? ["Signed", "go"]
+    : s === "term_sheet"
+      ? ["Issued", "info"]
+      : ["Not issued", "none"];
+  const legal: [string, ChipTone] =
+    s === "onboard_ready" ? ["Cleared", "go"] : s === "legal_dd" ? ["In progress", "hold"] : ["Not started", "none"];
+  const onboarding: [string, ChipTone] =
+    s === "onboard_ready"
+      ? [deck.curationStage ?? "Ready to onboard", "go"]
+      : s === "legal_dd"
+        ? ["Docs pending", "hold"]
+        : s === "term_sheet"
+          ? ["Awaiting signature", "info"]
+          : ["Not started", "none"];
+  return { termSheet, legal, onboarding };
+}
+
+/** The IC member's "Stage in IC" and "My status" cells (`adRenderTable`'s At IC branch). */
+export function icStageCells(
+  deck: DeckView,
+  myVote: IcVoteValue | null | undefined,
+): { stage: [string, ChipTone]; mine: [string, ChipTone] } {
+  const s = deck.statusId ?? "";
+  if (s === "onboard_ready") return { stage: ["Funded", "go"], mine: ["Invested", "go"] };
+  if (["alignment_call", "term_sheet", "legal_dd"].includes(s)) {
+    return { stage: [deck.status ?? s, "info"], mine: ["Cleared", "go"] };
+  }
+  if (myVote) return { stage: [s === "ic_review" ? "Voted" : "Vote closed", "go"], mine: [IC_VOTE_LABELS[myVote], "go"] };
+  if (s === "ic_review") return { stage: ["Awaiting vote", "hold"], mine: ["Vote pending", "no"] };
+  return { stage: ["Vote closed", "info"], mine: ["Did not vote", "none"] };
+}
+
+/** The IC outcome a member's ballot led to (`myeval`'s last column). */
+export function icOutcome(deck: DeckView): [string, ChipTone] {
+  const s = deck.statusId ?? "";
+  if (s === "onboard_ready") return ["Funded", "go"];
+  if (["alignment_call", "term_sheet", "legal_dd"].includes(s)) return ["Cleared", "go"];
+  if (s === "archived") return ["Passed", "no"];
+  return ["Recorded", "info"];
+}
+
+const VOTE_TONE: Record<IcVoteValue, ChipTone> = { invest: "go", hold: "hold", need_more_info: "info", pass: "no" };
+
+/** The partner who sponsored a deal to IC — the deal's lead and owner. */
+function sponsorOf(events: PipelineEvent[] | undefined): string | undefined {
+  return events?.find((e) => e.action === "sponsor_to_ic")?.actorName;
+}
+
+function eventAt(events: PipelineEvent[] | undefined, action: string): string | undefined {
+  return events?.find((e) => e.action === action)?.createdAt;
+}
+
 // ── The jury's "My Pipeline" ─────────────────────────────────────────────────
 
 export type JuryStatKey = "assigned" | "evaluated" | "drafts" | "pending" | "submitted";
-type ViewKey = DeckStatKey | JuryStatKey;
+type ViewKey = StatKey | JuryStatKey | IcStatKey;
 
 /** Stages in which a jury member's allocation is still being scored. */
 const JURY_STAGES = ["assigned", "jury_evaluation"];
+
+/** The VC stages a deal is scored in (`POST /decks/:id/evaluate` refuses the rest). */
+const VC_SCORING_STAGES = ["analyst_scoring", "associate_review", "partner_review"];
 
 /**
  * Which of the jury screen's five disjoint buckets a deck allocated to the
@@ -153,7 +311,7 @@ const JURY_TILES: { key: JuryStatKey; label: string; sub: string; color: string 
   { key: "submitted", label: "Submitted", sub: "Sent for review", color: "var(--green)" },
 ];
 
-/** A stat box: the incubator six share `DeckStat`; the jury five add two keys. */
+/** A stat box: the staff six share `DeckStat`; the jury five and the IC member's six add keys. */
 type Tile = Omit<DeckStat, "key"> & { key: ViewKey };
 
 function juryTiles(mine: DeckView[]): Tile[] {
@@ -169,30 +327,6 @@ function juryTiles(mine: DeckView[]): Tile[] {
       color: t.color,
     };
   });
-}
-
-/**
- * The incubator stat boxes with the prototype's copy and colours (F0323):
- * "+3 since yesterday" on Uploaded, "Missing slides" on Incomplete, and the
- * `panel-alldecks.html` bar colours — olive, amber, red, olive, blue, green.
- */
-function incubatorTiles(stats: DeckStat[], decks: DeckView[]): DeckStat[] {
-  const dayAgo = Date.now() - 86_400_000;
-  const recent = decks.filter((d) => d.uploadedAt && parseTs(d.uploadedAt) >= dayAgo).length;
-  const colors: Record<DeckStatKey, string> = {
-    all: "var(--olive)",
-    pending: "var(--amber)",
-    incomplete: "var(--red)",
-    evaluated: "var(--olive)",
-    assigned: "var(--blue)",
-    shortlisted: "var(--green)",
-  };
-  return stats.map((s) => ({
-    ...s,
-    color: colors[s.key],
-    sublabel:
-      s.key === "all" ? `+${recent} since yesterday` : s.key === "incomplete" ? "Missing slides" : s.sublabel,
-  }));
 }
 
 /** The stage pill on the Assigned view (`.sp-n/.sp-p/.sp-d/.sp-i`). */
@@ -437,6 +571,13 @@ function ParamPopover({
  * two `mpRender()` tables over the decks allocated to the viewer, and a rail
  * holding Pipeline progress only.
  *
+ * VC staff (W9-A): `AISJ_VC_Superuser_V8`'s deal funnel — Uploaded · Incomplete
+ * · AI Evaluated · In Diligence · IC ready · Onboard ready — each box its own
+ * table (F0433). VC IC member: `AISJ_VC_IC_member_V2`'s "Awaiting my vote"
+ * build — six first-person boxes over the deals that reached the committee,
+ * counted off the member's own ballots (F0434). Deal figures no deck carries
+ * (ask, valuation, ownership, final cheque — F0447) render "—".
+ *
  * Aug-2026 issue log (still in force):
  *   • 2 — search box + tag filter, with per-deck tagging in the report.
  *   • 3 — Export, Program and Cohort controls on the top row.
@@ -451,7 +592,10 @@ export function DashboardPage() {
   const can = usePermissions();
   const edition: Edition = user?.edition ?? "incubator";
   const isJury = edition === "incubator" && user?.role === "jury";
-  const defaultView: ViewKey = isJury ? "assigned" : "all";
+  // W9-A (F0434) — the IC member's All decks is "Awaiting my vote".
+  const isIc = edition === "vc" && user?.role === "ic_member";
+  const isVcStaff = edition === "vc" && !isIc;
+  const defaultView: ViewKey = isJury ? "assigned" : isIc ? "myvote" : edition === "vc" ? "uploaded" : "all";
   const [ctx, setCtx] = useActiveContext(edition);
   const [decks, setDecks] = useState<DeckView[] | null>(null);
   const [loadedAt, setLoadedAt] = useState<string | null>(null);
@@ -494,6 +638,11 @@ export function DashboardPage() {
   // screen in the views that need it (§9 asks for it on the list instead).
   const [paramScores, setParamScores] = useState<Record<string, ParamScoreView[] | null>>({});
   const [myEvals, setMyEvals] = useState<Record<string, { total?: number; submittedAt?: string } | null>>({});
+  // VC: each deal's committee ballots (the IC member's own vote; the staff IC
+  // ready view's recommendation) and its pipeline events (sponsor, clearing).
+  // `null` while loading, `false` when the read failed.
+  const [icVotes, setIcVotes] = useState<Record<string, IcVotes | null | false>>({});
+  const [events, setEvents] = useState<Record<string, PipelineEvent[] | null>>({});
   const requested = useRef(new Set<string>());
   const [popover, setPopover] = useState<DeckView | null>(null);
   const [matrixFor, setMatrixFor] = useState<DeckView | null>(null);
@@ -635,40 +784,92 @@ export function DashboardPage() {
     () => (isJury && user ? (decks ?? []).filter((d) => d.assignedTo === user.id) : []),
     [decks, isJury, user],
   );
-  const scope = isJury ? mine : (decks ?? []);
+
+  /** This IC member's ballot per deal: a vote, `null` for none, `undefined` until read. */
+  const ballots = useMemo(() => {
+    const out: Record<string, MyBallot> = {};
+    for (const [id, v] of Object.entries(icVotes)) out[id] = v ? v.myVote : undefined;
+    return out;
+  }, [icVotes]);
+
+  // The IC member's pool: every deal that has reached the committee.
+  const atIc = useMemo(
+    () => (isIc ? (decks ?? []).filter((d) => matchesIcStat(d, "atIc", undefined)) : []),
+    [decks, isIc],
+  );
+  const scope = isJury ? mine : isIc ? atIc : (decks ?? []);
 
   const tiles = useMemo((): Tile[] => {
     if (isJury) return juryTiles(mine);
-    const stats = deckStats(edition, decks ?? []);
-    return edition === "incubator" ? incubatorTiles(stats, decks ?? []) : stats;
-  }, [isJury, mine, edition, decks]);
+    if (isIc) return icMemberStats(atIc, ballots);
+    return deckStats(edition, decks ?? []);
+  }, [isJury, isIc, mine, atIc, ballots, edition, decks]);
 
   const rows = useMemo(() => {
     if (isJury) return view === "drafts" ? [] : mine.filter((d) => juryBucket(d) === view);
-    return (decks ?? []).filter((d) => matchesStat(edition, d, view as DeckStatKey));
-  }, [isJury, mine, decks, edition, view]);
+    if (isIc) return atIc.filter((d) => matchesIcStat(d, view as IcStatKey, ballots[d.id]));
+    return (decks ?? []).filter((d) => matchesStat(edition, d, view as StatKey));
+  }, [isJury, isIc, mine, atIc, ballots, decks, edition, view]);
 
   const shape: TableShape = isJury
     ? view === "submitted"
       ? "jurySubmitted"
       : "juryOpen"
-    : edition !== "incubator"
-      ? "vcDetails"
-      : view === "evaluated"
-        ? "evaluated"
-        : view === "assigned"
-          ? "assigned"
-          : view === "shortlisted"
-            ? "shortlisted"
-            : "details";
+    : isIc
+      ? IC_SHAPES[view as IcStatKey]
+      : isVcStaff
+        ? VC_SHAPES[view] ?? "vcUploaded"
+        : view === "evaluated"
+          ? "evaluated"
+          : view === "assigned"
+            ? "assigned"
+            : view === "shortlisted"
+              ? "shortlisted"
+              : "details";
 
-  // Parameter breakdowns for the sparkline columns; the jury's own totals for
-  // the Submitted view. Requested once per deck (StrictMode runs this twice).
+  // May this viewer read a deal's committee ballots (`GET /decks/:id/ic-votes`)?
+  const canReadIcVotes = user ? canAccessNav(edition, user.role, "icpipeline", can) : false;
+
+  // The IC member's boxes count off their own ballots, so every deal in the pool
+  // needs its votes read — not only the rows on screen.
   useEffect(() => {
-    const wantParams = shape === "evaluated" || shape === "assigned";
-    const wantMine = shape === "jurySubmitted";
-    if (!wantParams && !wantMine) return;
+    if (!isIc || !canReadIcVotes) return;
+    for (const d of atIc) {
+      const key = `v:${d.id}`;
+      if (requested.current.has(key)) continue;
+      requested.current.add(key);
+      setIcVotes((v) => ({ ...v, [d.id]: null }));
+      listIcVotes(d.id)
+        .then((r) => setIcVotes((v) => ({ ...v, [d.id]: r })))
+        .catch(() => setIcVotes((v) => ({ ...v, [d.id]: false })));
+    }
+  }, [isIc, canReadIcVotes, atIc]);
+
+  // Parameter breakdowns for the sparkline columns; the jury's and the IC
+  // member's own totals; the IC ready view's recommendations; the events a
+  // sponsor or clearing date is read from. Requested once per deck (StrictMode
+  // runs this twice).
+  useEffect(() => {
+    const wantParams = shape === "evaluated" || shape === "assigned" || shape === "vcEvaluated";
+    const wantMine = shape === "jurySubmitted" || shape === "icMyEval";
+    const wantVotes = shape === "vcIcReady" && canReadIcVotes;
+    const wantEvents = EVENT_SHAPES.includes(shape);
     for (const d of rows) {
+      if (wantVotes && !requested.current.has(`v:${d.id}`)) {
+        requested.current.add(`v:${d.id}`);
+        setIcVotes((v) => ({ ...v, [d.id]: null }));
+        listIcVotes(d.id)
+          .then((r) => setIcVotes((v) => ({ ...v, [d.id]: r })))
+          .catch(() => setIcVotes((v) => ({ ...v, [d.id]: false })));
+      }
+      if (wantEvents && !requested.current.has(`e:${d.id}`)) {
+        requested.current.add(`e:${d.id}`);
+        setEvents((e) => ({ ...e, [d.id]: null }));
+        getDeckEvents(d.id)
+          .then((r) => setEvents((e) => ({ ...e, [d.id]: r.events })))
+          .catch(() => setEvents((e) => ({ ...e, [d.id]: [] })));
+      }
+      if (!wantParams && !wantMine) continue;
       const key = `${wantParams ? "p" : "m"}:${d.id}`;
       if (requested.current.has(key)) continue;
       requested.current.add(key);
@@ -688,7 +889,7 @@ export function DashboardPage() {
           .catch(() => setMyEvals((m) => ({ ...m, [d.id]: {} })));
       }
     }
-  }, [shape, rows, user]);
+  }, [shape, rows, user, canReadIcVotes]);
 
   // Bucket evaluated decks by the admin-configured cohort thresholds so an edit
   // actually re-classifies the cohort (not just the rail's labels).
@@ -725,15 +926,17 @@ export function DashboardPage() {
   // F0238 — the title follows the stat box and the program / cohort choice.
   const statLabel = tiles.find((t) => t.key === view)?.label ?? "All decks";
   const context = [activeProgram?.name, activeCohort?.name].filter(Boolean);
-  const title = `${view === defaultView ? "All decks" : statLabel}${
-    context.length > 0 ? ` — ${context.join(", ")}` : ""
-  }`;
-  // F0239 — the FILTERED count and a freshness stamp.
-  const noun = isJury ? "deck" : "submission";
+  // The IC member's `updateTitle()` names every box, its first one "At IC".
+  const baseTitle = isIc ? (view === "atIc" ? "At IC" : statLabel) : view === defaultView ? "All decks" : statLabel;
+  const title = `${baseTitle}${context.length > 0 ? ` — ${context.join(", ")}` : ""}`;
+  // F0239 — the FILTERED count and a freshness stamp ("N deals at IC" for the IC member).
+  const noun = isJury ? "deck" : isIc ? "deal" : "submission";
   const subtitle =
     decks === null
       ? "Loading…"
-      : `${rows.length} ${noun}${rows.length === 1 ? "" : "s"}${loadedAt ? ` · Updated ${relativeTime(loadedAt)}` : ""}`;
+      : `${rows.length} ${noun}${rows.length === 1 ? "" : "s"}${isIc ? " at IC" : ""}${
+          loadedAt ? ` · Updated ${relativeTime(loadedAt)}` : ""
+        }`;
 
   function selectProgram(programId: string) {
     setCtx({ programId: programId || null, cohortId: null });
@@ -840,10 +1043,234 @@ export function DashboardPage() {
     );
   }
 
-  function renderRow(deck: DeckView) {
+  function chipCell([label, tone]: [string, ChipTone], title?: string) {
+    return (
+      <td className={td}>
+        <AdChip tone={tone} title={title}>
+          {label}
+        </AdChip>
+      </td>
+    );
+  }
+
+  /** A deal figure no deck carries yet (ask, valuation, ownership — F0447). */
+  const notRecorded = (
+    <td className={dim} title="Not recorded for this deal yet">
+      —
+    </td>
+  );
+
+  function whoCell(name: string | undefined, loading: boolean) {
+    return <td className={dim}>{loading ? "…" : (name ?? "—")}</td>;
+  }
+
+  function renderRow(deck: DeckView, index: number) {
+    const evs = events[deck.id] ?? undefined;
+    const evLoading = events[deck.id] === null;
+    const votes = icVotes[deck.id];
+    const myVote = votes ? votes.myVote : undefined;
     switch (shape) {
+      // ── VC staff ──
+      case "vcUploaded": {
+        const pill = vcStagePill(deck);
+        return (
+          <>
+            {startupCell(deck)}
+            <td className={td}>{deck.sector ?? "—"}</td>
+            <td className={dim}>{deck.city ?? "—"}</td>
+            <td className={td}>
+              <ScoreChip value={deck.aiScore} />
+            </td>
+            <td className={td}>
+              <span title={deck.status}>
+                <StatusPill tone={pill.tone}>{pill.label}</StatusPill>
+              </span>
+            </td>
+            <td className={dim}>{shortDate(deck.uploadedAt)}</td>
+          </>
+        );
+      }
+      case "vcIncomplete":
+        return (
+          <>
+            {startupCell(deck, { stage: true })}
+            {captured(deck.founder)}
+            {captured(deck.founderEmail)}
+            {captured(deck.founderPhone)}
+            {captured(deck.city)}
+            <td className={td}>
+              <IntakeStatusPill deck={deck} />
+            </td>
+          </>
+        );
+      case "vcEvaluated":
+        return (
+          <>
+            {startupCell(deck)}
+            <td className={td}>
+              <ScoreChip value={deck.aiScore} />
+            </td>
+            {sparkCell(deck)}
+          </>
+        );
+      case "vcDiligence": {
+        // Investment DD is approved once the deal moves on to IC; while it is
+        // open nothing records per-item progress yet (W9-C's checklist, §9).
+        const approved = vcReached(deck.statusId, "ic_review");
+        return (
+          <>
+            {startupCell(deck)}
+            <td className={td}>{deck.sector ?? "—"}</td>
+            <td className={td}>
+              <ScoreChip value={deck.aiScore} />
+            </td>
+            <td className={td}>
+              {approved ? (
+                <div className="flex items-center gap-2" title="Investment DD approved for IC">
+                  <div className="h-2 min-w-[80px] flex-1 overflow-hidden rounded-[5px] bg-offwhite">
+                    <div className="h-full w-full bg-olive" />
+                  </div>
+                  <span className="font-mono text-[11px] font-semibold text-navy">100%</span>
+                </div>
+              ) : (
+                <span className="text-[11px] text-fg-muted" title="Per-item diligence progress is not recorded yet">
+                  In progress
+                </span>
+              )}
+            </td>
+            <td className={dim} title="Diligence flags are not recorded yet">
+              —
+            </td>
+            {whoCell(sponsorOf(evs), evLoading)}
+          </>
+        );
+      }
+      case "vcIcReady": {
+        const rec = votes ? votes.recommendation : null;
+        return (
+          <>
+            {startupCell(deck)}
+            <td className={td}>
+              <ScoreChip value={deck.aiScore} />
+            </td>
+            <td className={td}>
+              <ScoreChip value={deck.decisionScore} />
+            </td>
+            {notRecorded}
+            {notRecorded}
+            {!canReadIcVotes ? (
+              <td className={dim} title="Committee ballots are confidential to the committee">
+                —
+              </td>
+            ) : votes === null ? (
+              <td className={dim}>…</td>
+            ) : rec ? (
+              chipCell([IC_VOTE_LABELS[rec], VOTE_TONE[rec]], `${votes ? votes.total : 0} IC vote(s)`)
+            ) : (
+              chipCell(["No votes yet", "none"])
+            )}
+          </>
+        );
+      }
+      case "vcOnboard": {
+        const chips = vcOnboardChips(deck);
+        return (
+          <>
+            {startupCell(deck)}
+            <td className={td}>
+              <ScoreChip value={deck.aiScore} />
+            </td>
+            {chipCell(chips.termSheet)}
+            {chipCell(chips.legal)}
+            {chipCell(chips.onboarding)}
+          </>
+        );
+      }
+      // ── VC IC member ──
+      case "icAtIc": {
+        const cells = icStageCells(deck, myVote);
+        return (
+          <>
+            {startupCell(deck)}
+            <td className={td}>{deck.sector ?? "—"}</td>
+            <td className={td}>
+              <ScoreChip value={deck.aiScore} />
+            </td>
+            {chipCell(cells.stage)}
+            {votes === null ? <td className={dim}>…</td> : chipCell(cells.mine)}
+          </>
+        );
+      }
+      case "icMyVote":
+        return (
+          <>
+            {startupCell(deck)}
+            <td className={td}>{deck.sector ?? "—"}</td>
+            <td className={td}>
+              <ScoreChip value={deck.aiScore} />
+            </td>
+            <td className={td}>
+              {/* The human composite the committee is weighing (§8). */}
+              <ScoreChip value={deck.juryScore} />
+            </td>
+            {notRecorded}
+            {chipCell(["Vote pending", "hold"])}
+          </>
+        );
+      case "icMyEval": {
+        const my = myEvals[deck.id];
+        return (
+          <>
+            {startupCell(deck)}
+            <td className={td}>
+              <ScoreChip value={deck.aiScore} />
+            </td>
+            <td className={td}>
+              <ScoreChip value={my?.total} />
+            </td>
+            {myVote ? chipCell([IC_VOTE_LABELS[myVote], VOTE_TONE[myVote]]) : <td className={dim}>—</td>}
+            {chipCell(icOutcome(deck))}
+          </>
+        );
+      }
+      case "icAgenda":
+        return (
+          <>
+            <td className={`${dim} font-mono`}>{index + 1}</td>
+            {startupCell(deck)}
+            <td className={td}>{deck.sector ?? "—"}</td>
+            <td className={td}>
+              <ScoreChip value={deck.aiScore} />
+            </td>
+            {whoCell(sponsorOf(evs), evLoading)}
+            {notRecorded}
+          </>
+        );
+      case "icPipeline":
+        return (
+          <>
+            {startupCell(deck)}
+            <td className={dim}>{evLoading ? "…" : shortDate(eventAt(evs, "invest"))}</td>
+            {chipCell([deck.status ?? deck.statusId ?? "—", deck.statusId === "legal_dd" ? "hold" : "info"])}
+            <td className={dim} title="Nothing records a stalled deal yet">
+              —
+            </td>
+            {notRecorded}
+            {whoCell(sponsorOf(evs), evLoading)}
+          </>
+        );
+      case "icFunded":
+        return (
+          <>
+            {startupCell(deck)}
+            {notRecorded}
+            {deck.stage ? chipCell([deck.stage, "info"]) : <td className={dim}>—</td>}
+            <td className={dim}>{evLoading ? "…" : shortDate(eventAt(evs, "complete_legal_dd"))}</td>
+            {notRecorded}
+          </>
+        );
+      // ── Incubator ──
       case "details":
-      case "vcDetails":
         return (
           <>
             {startupCell(deck, { stage: true })}
@@ -1033,7 +1460,8 @@ export function DashboardPage() {
         </p>
       )}
       <div className="mt-3 flex flex-col gap-2.5">
-        {(isJury ? tiles : tiles.filter((t) => t.key !== "all")).map((p) => {
+        {/* Every box but the first ("Uploaded" / "At IC"), which is the denominator. */}
+        {(isJury ? tiles : pipelineProgress(tiles)).map((p) => {
           const max = Math.max(1, ...tiles.map((t) => t.value));
           // The jury rail's bar is relative to the largest bucket (`mpProgress`).
           const width = isJury ? Math.round((p.value / max) * 100) : p.progress;
@@ -1246,12 +1674,20 @@ export function DashboardPage() {
         {workspaceEmpty ? (
           <div className="p-6">
             <EmptyState
-              icon={isJury ? "ClipboardCheck" : "Upload"}
-              title={isJury ? "No decks have been assigned to you yet" : "No decks yet"}
+              icon={isJury ? "ClipboardCheck" : isIc ? "Vote" : "Upload"}
+              title={
+                isJury
+                  ? "No decks have been assigned to you yet"
+                  : isIc
+                    ? "No deals have reached the committee yet"
+                    : "No decks yet"
+              }
               description={
                 isJury
                   ? "Decks appear here as soon as they are allocated to you for evaluation."
-                  : "Upload a pitch deck to run AI extraction and rubric scoring."
+                  : isIc
+                    ? "Deals appear here once a partner sponsors them and diligence is approved for IC."
+                    : "Upload a pitch deck to run AI extraction and rubric scoring."
               }
             />
           </div>
@@ -1289,9 +1725,9 @@ export function DashboardPage() {
                   </td>
                 </tr>
               ) : (
-                rows.map((deck) => (
+                rows.map((deck, i) => (
                   <tr key={deck.id} className="border-b border-line-soft last:border-b-0 hover:bg-offwhite">
-                    {renderRow(deck)}
+                    {renderRow(deck, i)}
                   </tr>
                 ))
               )}
@@ -1312,7 +1748,9 @@ export function DashboardPage() {
           weightedTotal={report?.weightedTotal}
           aiScoreWithheld={report?.aiScoreWithheld}
           actions={
-            evaluateSlug && JURY_STAGES.includes(selected.statusId ?? "") ? (
+            evaluateSlug &&
+            (edition === "vc" ? VC_SCORING_STAGES : JURY_STAGES).includes(selected.statusId ?? "") &&
+            !isIc ? (
               <Link to={`/app/${evaluateSlug}`} className="tbb pr">
                 Score in Evaluate
               </Link>

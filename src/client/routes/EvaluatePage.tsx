@@ -702,7 +702,8 @@ function onScale(value: number, scale: ScoringSettings["scoreScale"], decimals: 
   return scale === "0-10" ? value.toFixed(decimals) : formatScore(value, scale);
 }
 
-function ParamRow({
+/** A column-2 parameter row — also drawn by the VC Evaluate screen (W9-A). */
+export function ParamRow({
   badge,
   name,
   weight,
@@ -758,7 +759,8 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-function CoreDetail({
+/** A core area's detail card — also drawn by the VC Evaluate screen (W9-A). */
+export function CoreDetail({
   param,
   number,
   anchors,
