@@ -8,7 +8,13 @@ import type { AppEnv } from "../types";
 import type { Edition, Role } from "../../shared/roles";
 import { canSeeEvaluatorScores, evaluationRank, isAssignableEvaluator, roleLabel } from "../../shared/roles";
 import { getStage, allowedTransitions } from "../../pipeline";
-import { decisionScore, withholdsAiScore, WEAK_SIGNAL_MAX } from "../../shared/scoring";
+import {
+  decisionScore,
+  shortlistFloor,
+  withholdsAiScore,
+  WEAK_SIGNAL_MAX,
+  type ScoringSettings,
+} from "../../shared/scoring";
 import { loadScoringSettings } from "../config/scoringSettings";
 import { missingIntakeFields, parseMissingFields, type IntakeMatch } from "../../shared/intake";
 import { denyMentor, requireAuth, requireTask } from "../auth/middleware";
@@ -198,14 +204,40 @@ export function normaliseTags(input: unknown): string[] {
   return out;
 }
 
-function toDeckView(edition: Edition, row: DeckRow, role: Role) {
-  const missingFields = parseMissingFields(row.missing_fields);
-  // The number a shortlist decision is judged on — the composite form of the
-  // workbench's AI · My · Average column (see shared/scoring.ts decisionScore).
+/** The two scoring-framework values the shortlist hint is judged by. */
+type ShortlistSettings = Pick<ScoringSettings, "aiWeightPct" | "shortlistThreshold">;
+
+/**
+ * The shortlist hint on a deck view — the SAME judgement the shortlist check in
+ * `routes/pipeline.ts` enforces on the transition, at the same split and against
+ * the same floor.
+ *
+ * Wave 2 integration §9, closed by `W7-A`: this used to call `decisionScore`
+ * without its third argument, so the hint blended AI and jury at the DEFAULT
+ * 50/50 while the transition blended at the org's configured `ai_weight_pct`
+ * (40/60 as shipped). It also compared against the programme floor only, while
+ * the transition falls back to the org-wide shortlist threshold. A deck could
+ * render as shortlistable and then be refused. `scoring` is required, not
+ * defaulted, so a new call site cannot quietly reintroduce the default split.
+ * Pinned by `test/worker/alldecks-shortlist-hint.test.ts`.
+ */
+function shortlistHint(row: DeckRow, scoring: ShortlistSettings) {
   const decision = decisionScore(
     row.ai_score,
     typeof row.human_avg === "number" ? [row.human_avg] : [],
+    scoring.aiWeightPct,
   );
+  const { minimum, source } = shortlistFloor(row.shortlist_min, scoring.shortlistThreshold);
+  // Unscored: only a floor a PROGRAMME set blocks (pipeline.ts, and plan §8).
+  const blocked = decision === null ? source === "program" : decision < minimum;
+  return { decision, blocked };
+}
+
+function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: ShortlistSettings) {
+  const missingFields = parseMissingFields(row.missing_fields);
+  // The number a shortlist decision is judged on — the composite form of the
+  // workbench's AI · My · Average column (see shared/scoring.ts decisionScore).
+  const { decision, blocked } = shortlistHint(row, scoring);
   const shortlistMin = row.shortlist_min ?? null;
   return {
     id: row.id,
@@ -225,8 +257,8 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role) {
     decisionScore: decision ?? undefined,
     shortlistMin: shortlistMin ?? undefined,
     // Pre-flagged for the UI so a juror sees the guardrail before clicking; the
-    // server re-checks on the transition either way.
-    shortlistBlocked: shortlistMin !== null && (decision === null || decision < shortlistMin),
+    // server re-checks on the transition either way — with the same judgement.
+    shortlistBlocked: blocked,
     signal: (row.signal as string | null) ?? undefined,
     status: statusLabel(edition, row.status),
     statusId: row.status,
@@ -324,7 +356,7 @@ decks.get("/", async (c) => {
   // whole list. One extra query, and only when the toggle is actually off.
   const scoring = await loadScoringSettings(c.env.DB, edition);
   if (!withholdsAiScore(scoring, { isEvaluator: isAssignableEvaluator(edition, role), hasSubmitted: false })) {
-    return c.json({ decks: rows.map((r) => toDeckView(edition, r, role)) });
+    return c.json({ decks: rows.map((r) => toDeckView(edition, r, role, scoring)) });
   }
   const submitted = new Set(
     (
@@ -335,7 +367,7 @@ decks.get("/", async (c) => {
   );
   return c.json({
     decks: rows.map((r) => {
-      const view = toDeckView(edition, r, role);
+      const view = toDeckView(edition, r, role, scoring);
       if (submitted.has(r.id)) return view;
       return {
         ...view,
@@ -458,7 +490,7 @@ decks.get("/:id", async (c) => {
     hasSubmitted: Boolean(submitted),
   });
 
-  const view = toDeckView(edition, row, role);
+  const view = toDeckView(edition, row, role, scoring);
   return c.json({
     deck: blind ? { ...view, aiScore: undefined, signal: undefined } : view,
     extraction,
@@ -561,7 +593,12 @@ decks.put("/:id/onboarding", requireTask("onboard", ...ONBOARDING_ROLES), async 
   )
     .bind(id, edition)
     .first<DeckRow>();
-  return c.json({ ok: true, deck: updated ? toDeckView(edition, updated, c.var.user.role) : null });
+  // The returned view carries the shortlist hint, which needs the org's split.
+  const scoring = updated ? await loadScoringSettings(c.env.DB, edition) : null;
+  return c.json({
+    ok: true,
+    deck: updated && scoring ? toDeckView(edition, updated, c.var.user.role, scoring) : null,
+  });
 });
 
 // ── Manual override of the auto-recognised details (Aug-2026 issue 12) ───────
@@ -661,7 +698,12 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
   )
     .bind(id, edition)
     .first<DeckRow>();
-  return c.json({ ok: true, deck: updated ? toDeckView(edition, updated, c.var.user.role) : null });
+  // The returned view carries the shortlist hint, which needs the org's split.
+  const scoring = updated ? await loadScoringSettings(c.env.DB, edition) : null;
+  return c.json({
+    ok: true,
+    deck: updated && scoring ? toDeckView(edition, updated, c.var.user.role, scoring) : null,
+  });
 });
 
 // ── Consolidated evaluation report (Aug-2026 issues 20/21/23/24) ─────────────
@@ -892,7 +934,7 @@ decks.get("/:id/report", async (c) => {
   }
 
   return c.json({
-    deck: toDeckView(edition, deckRow, role),
+    deck: toDeckView(edition, deckRow, role, scoring),
     columns,
     core,
     additional: [...groups.values()],

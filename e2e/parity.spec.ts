@@ -163,7 +163,7 @@ const EXPECTED: Record<string, Screen> = {
   // ── incubator/superuser · 25 screens ──
   "incubator/superuser/alldecks": {
     title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
+    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "SECTOR", "STATUS"]],
   },
   "incubator/superuser/upload": { title: "Upload pitch decks", tables: [] },
   "incubator/superuser/query": {
@@ -238,7 +238,7 @@ const EXPECTED: Record<string, Screen> = {
   // ── incubator/admin · 25 screens ──
   "incubator/admin/alldecks": {
     title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
+    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "SECTOR", "STATUS"]],
   },
   "incubator/admin/upload": { title: "Upload pitch decks", tables: [] },
   "incubator/admin/query": {
@@ -304,7 +304,7 @@ const EXPECTED: Record<string, Screen> = {
   // ── incubator/program_manager · 19 screens ──
   "incubator/program_manager/alldecks": {
     title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
+    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "SECTOR", "STATUS"]],
   },
   "incubator/program_manager/upload": { title: "Upload pitch decks", tables: [] },
   "incubator/program_manager/query": {
@@ -366,7 +366,7 @@ const EXPECTED: Record<string, Screen> = {
   // ── incubator/program_associate · 19 screens ──
   "incubator/program_associate/alldecks": {
     title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
+    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "SECTOR", "STATUS"]],
   },
   "incubator/program_associate/upload": { title: "Upload pitch decks", tables: [] },
   "incubator/program_associate/query": {
@@ -420,7 +420,8 @@ const EXPECTED: Record<string, Screen> = {
   // ── incubator/jury · 13 screens ──
   "incubator/jury/alldecks": {
     title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE", "CITY", "SECTOR", "STATUS"]],
+    // W7-A — the jury build's "My Pipeline" (`mpRender()`), not the staff table.
+    tables: [["STARTUP", "STATUS", "AI SCORE", "ASSIGNED BY", "ASSIGNED DATE", "DUE DATE"]],
   },
   "incubator/jury/jassigned": { title: "Evaluate", tables: [] },
   "incubator/jury/jurypipeline": {
