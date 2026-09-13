@@ -137,7 +137,8 @@ test("the VC Query screen lists founder queries and sends one", async ({ page })
   await expect(body).not.toBeEmpty();
   await body.fill("Please share ARR and net revenue retention.");
   await page.getByRole("button", { name: "Send query" }).click();
-  await expect(page.getByText(/Query sent to 1 founder/)).toBeVisible();
+  // W7-C: "sent" only when the outbox delivers — local dev records (§1.4).
+  await expect(page.getByRole("button", { name: "Query recorded for 1 founder" })).toBeVisible();
 });
 
 test("the team logs and triages an internal issue", async ({ page }) => {
