@@ -2923,7 +2923,7 @@ FINISH
 > **Wave 8 is two parallel sessions (`W8-A` reports, `W8-B` parameters) and this is the second.** It
 > inherits `W7-D`'s scale work: `W7-D` SETTLED how a score-shaped setting crosses the display-scale
 > boundary, so this session applies the rule to `ConfigPage`'s cohort thresholds rather than
-> re-deriving it. **Wave 7 integration filled these in (2026-09-13):** base `main` at `e040975`; merged gate
+> re-deriving it. **Wave 7 integration filled these in (2026-09-13):** base is **whatever `main` is when you start** — SETUP branches from `main`, not from a SHA (it was `43ced12` at hand-off); merged gate
 > baselines **1816 passed / 1 skipped in 27 s · roles 1009/1009 · parity:nav 63 known gaps ·
 > e2e 196 passed / 1 flaky / 0 failed in 5.3 min**; migration **0060** (see CONSTRAINTS).
 
@@ -3313,7 +3313,7 @@ FINISH
 ### `W8-A` — Incubator reports *(written by `W7-A`)*
 
 > Wave 8 is two sessions: `W8-A` (reports, this one) and `W8-B` (parameters, written by `W7-D`).
-> **Wave 7 integration set these (2026-09-13):** base `main` at `e040975`; migration **0059** and only
+> **Wave 7 integration set these (2026-09-13):** base is **whatever `main` is when you start** — SETUP branches from `main`, not from a SHA (it was `43ced12` at hand-off); migration **0059** and only
 > 0059 (`W8-B` holds 0060; `main` ends at 0058). You almost certainly need none — if you do add one,
 > raise `ALLOTMENT_CEILING` in test/worker/migrations-w1b.test.ts from 59 to 60 in the SAME commit,
 > because the guard asserts `max(numbers) <= ALLOTMENT_CEILING`.
