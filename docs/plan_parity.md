@@ -2608,7 +2608,7 @@ FINISH
 > prompts** unless a sibling or Wave 6 integration writes them. The base is **`main` after Wave 6
 > integration**; its migration allotment is Wave 6 integration's to set — Wave 6 used up to 0053.
 
-```markdown
+```
 You are running session W7-B — Upload: the intake wizard, the review screen and the credits bar —
 of the ai.STARTUPJURY parity programme. You have no prior context. Everything you need is in the repo.
 
@@ -2690,12 +2690,10 @@ TEST
   `false` — if you set it back, a run adopts whatever server sits on its port, a sibling's code
   against a sibling's mutated database, reported as a pass.
   `npm run roles` if you add a router — probes in scripts/role-matrix.ts in the SAME commit, against
-  a server you proved you own with `lsof` (it exits 0 when it reaches nothing). Wave 6 left it at
-  **866/866** plus whatever `W6-A` and `W6-C` added; read the number off `main` first.
-  **The gate is about five minutes on a quiet box** (`W6-B`: 1495 unit/worker/client in under a
-  minute, e2e 176 passed / 1 flaky in 5.5 min at load 8–19). `uptime` BEFORE you start; never run
-  your gate while a sibling runs theirs; `flaky` means the dev server dropped a connection.
-  Two traps `W6-B` hit that you will too: derive a default selection during render, not in an
+  a server you proved you own with `lsof` (it exits 0 when it reaches nothing). **Wave 6 integration
+  measured the merged baseline at 981/981**; read the number off `main` first and confirm your run
+  moves it by exactly the probes you added.
+  Two more traps `W6-B` hit that you will too: derive a default selection during render, not in an
   effect (an effect leaves one frame where a click does nothing, and a test clicking in that frame
   fails intermittently); and a client-test principal with no `permissions` array is granted
   NOTHING — `lookupFromGranted` treats an absent list as empty — so pass the task ids you mean.
