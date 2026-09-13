@@ -177,7 +177,7 @@ const EXPECTED: Record<string, Screen> = {
     tables: [["STARTUP", "EVALUATORS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
   },
   "incubator/superuser/pmpipeline": {
-    title: "Prog Manager Pipeline",
+    title: "Prog manager pipeline",
     tables: [["STARTUP", "EVALUATORS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "STATUS", "ACTION"]],
   },
   "incubator/superuser/introcalls": {
@@ -252,7 +252,7 @@ const EXPECTED: Record<string, Screen> = {
     tables: [["STARTUP", "EVALUATORS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
   },
   "incubator/admin/pmpipeline": {
-    title: "Prog Manager Pipeline",
+    title: "Prog manager pipeline",
     tables: [["STARTUP", "EVALUATORS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "STATUS", "ACTION"]],
   },
   "incubator/admin/introcalls": {
@@ -318,7 +318,7 @@ const EXPECTED: Record<string, Screen> = {
     tables: [["STARTUP", "EVALUATORS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
   },
   "incubator/program_manager/pmpipeline": {
-    title: "Prog Manager Pipeline",
+    title: "Prog manager pipeline",
     tables: [["STARTUP", "EVALUATORS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "STATUS", "ACTION"]],
   },
   "incubator/program_manager/introcalls": {

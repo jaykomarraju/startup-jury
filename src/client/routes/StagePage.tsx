@@ -1070,7 +1070,7 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
   // The PM's shortlist / reject decision is Jury Pipeline's Action (as it is in
   // the prototype), so this screen starts at Shortlisted (§8 Q-W7F-1).
   pmpipeline: {
-    title: "Prog Manager Pipeline",
+    title: "Prog manager pipeline",
     subtitle: "Shortlisted startups moving into onboarding — track sign-up status and action each one",
     statuses: ["shortlisted", "intro", "signup", "onboard_ready", "rejected"],
     // Only the jury's rejections — a deck the AI gate turned away never reached this funnel.

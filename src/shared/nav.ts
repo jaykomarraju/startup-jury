@@ -92,7 +92,7 @@ const INCUBATOR_NAV: NavItem[] = [
     // directly after Jury Pipeline. The jury scores; the PM (the decision maker
     // per §8) signs off here and sends the deck on to the intro call.
     id: "pmpipeline",
-    label: "Prog Manager Pipeline",
+    label: "Prog manager pipeline",
     icon: "ClipboardList",
     section: "Evaluation",
     roles: ["admin", "program_manager"],
@@ -133,7 +133,7 @@ const INCUBATOR_NAV: NavItem[] = [
   { id: "scoredrift", label: "Score drift", icon: "TrendingUp", section: "Reports", roles: ["admin", "program_manager", "program_associate"] },
   { id: "funnel", label: "Pipeline funnel", icon: "Activity", section: "Reports", roles: ["admin", "program_manager", "program_associate"] },
   { id: "repdecks", label: "My decks summary", icon: "ChartBar", section: "Reports", roles: ["jury"], exclusive: true },
-  { id: "repscores", label: "My scores", icon: "FileText", section: "Reports", roles: ["jury"], exclusive: true },
+  { id: "repscores", label: "My Scores", icon: "FileText", section: "Reports", roles: ["jury"], exclusive: true },
   { id: "repdrift", label: "My scores drift", icon: "TrendingUp", section: "Reports", roles: ["jury"], exclusive: true },
   // Settings
   { id: "coreparams", label: "Core Parameters", icon: "SlidersHorizontal", section: "Settings", roles: ["admin"] },

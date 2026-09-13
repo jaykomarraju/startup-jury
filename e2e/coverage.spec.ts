@@ -114,7 +114,7 @@ test("incubator sign-up, onboarding and archive stages are all live", async ({ p
   // Aug-2026 issue 28 deleted the "For Sign up" screen; issue 26 added the
   // Program Manager's pipeline in its place in the Evaluation section.
   for (const [slug, heading, deck] of [
-    ["pmpipeline", "Prog Manager Pipeline", /InsureFlow|GreenRoute|AgroFresh/],
+    ["pmpipeline", "Prog manager pipeline", /InsureFlow|GreenRoute|AgroFresh/],
     ["incuration", "Sign up Pipeline", /LedgerLite/],
     ["curation", "Onboard ready", /Medixir/],
     ["archive", "Archive", /SolarCircuit/],
