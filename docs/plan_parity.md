@@ -2923,7 +2923,7 @@ FINISH
 > **Wave 8 is two parallel sessions (`W8-A` reports, `W8-B` parameters) and this is the second.** It
 > inherits `W7-D`'s scale work: `W7-D` SETTLED how a score-shaped setting crosses the display-scale
 > boundary, so this session applies the rule to `ConfigPage`'s cohort thresholds rather than
-> re-deriving it. **Wave 7 integration filled these in (2026-09-13):** base `main` at `359975d`; merged gate
+> re-deriving it. **Wave 7 integration filled these in (2026-09-13):** base `main` at `e040975`; merged gate
 > baselines **1816 passed / 1 skipped in 27 s · roles 1009/1009 · parity:nav 63 known gaps ·
 > e2e 196 passed / 1 flaky / 0 failed in 5.3 min**; migration **0060** (see CONSTRAINTS).
 
@@ -2997,6 +2997,11 @@ CONSTRAINTS
     ONLY your own rows (`PARITY_CAPTURE=1`, then union the new rows into `EXPECTED`) and never delete a
     row you did not capture — the other session is re-capturing theirs at the same moment, and a
     wholesale overwrite silently drops their work. Expect a conflict there; the resolution is the union.
+  - **`main` is now pushed to `origin` and deployed** (2026-09-13, worker version `bac7345d`, production
+    D1 migrated through 0058). Two consequences for you: **do not push your `parity/W8-*` branch** —
+    §2 keeps session branches local and integration commits the merge straight to `main`; and if you
+    DO add a migration, say so loudly in §9, because the deployed database is a separate thing that
+    only a deploy step migrates and it is currently at 0058.
   - **Migration: you own 0060 and only 0060** (`W8-A` holds 0059; `main` ends at 0058). You almost
     certainly need none. If you DO add one, raise `ALLOTMENT_CEILING` in
     test/worker/migrations-w1b.test.ts from 59 to 60 in the SAME commit — the guard asserts
@@ -3308,7 +3313,7 @@ FINISH
 ### `W8-A` — Incubator reports *(written by `W7-A`)*
 
 > Wave 8 is two sessions: `W8-A` (reports, this one) and `W8-B` (parameters, written by `W7-D`).
-> **Wave 7 integration set these (2026-09-13):** base `main` at `359975d`; migration **0059** and only
+> **Wave 7 integration set these (2026-09-13):** base `main` at `e040975`; migration **0059** and only
 > 0059 (`W8-B` holds 0060; `main` ends at 0058). You almost certainly need none — if you do add one,
 > raise `ALLOTMENT_CEILING` in test/worker/migrations-w1b.test.ts from 59 to 60 in the SAME commit,
 > because the guard asserts `max(numbers) <= ALLOTMENT_CEILING`.
@@ -3373,6 +3378,11 @@ CONSTRAINTS
     `funnel` to it for VC too, under the comment "Funnel is shared". Rewriting the Pipeline funnel
     therefore changes a VC screen `W9-D` is about to work on. Keep the VC branch behaviourally
     identical and record what you did in §9.
+  - **`main` is now pushed to `origin` and deployed** (2026-09-13, worker version `bac7345d`, production
+    D1 migrated through 0058). Two consequences for you: **do not push your `parity/W8-*` branch** —
+    §2 keeps session branches local and integration commits the merge straight to `main`; and if you
+    DO add a migration, say so loudly in §9, because the deployed database is a separate thing that
+    only a deploy step migrates and it is currently at 0058.
   - **Migration: you own 0059 and only 0059** (`W8-B` holds 0060; `main` ends at 0058). You almost
     certainly need none — this is a screens-and-reports session. If you DO add one, raise
     `ALLOTMENT_CEILING` in test/worker/migrations-w1b.test.ts from 59 to 60 in the SAME commit: the
