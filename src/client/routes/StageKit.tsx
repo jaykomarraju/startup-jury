@@ -14,7 +14,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { BarChart3, Filter, Presentation, Signature, X } from "lucide-react";
 import { ToolbarButton, type ParamScoreView, type ExtractionSlide } from "../components";
-import { getDeck } from "../api";
+import { getDeck, getDeckReport, type DeckReportMatrix } from "../api";
 import type { DeckView } from "../types";
 
 /** `jpColor` / `ncColor` / `suColor` — ≥8 green, ≥6 olive, else amber. */
@@ -356,5 +356,56 @@ export function AllScores({ deck, scores }: { deck: DeckView; scores: ParamScore
         </ol>
       )}
     </div>
+  );
+}
+
+// ── Per-evaluator scores ────────────────────────────────────────────────────
+
+/**
+ * The evaluation report matrix for each row on screen (`GET /api/decks/:id/report`).
+ *
+ * The deck list carries one averaged jury score; the prototype's score cells
+ * show one number PER evaluator (`pipelineScoreCells`) and the jury's own
+ * columns read their score and their additional parameters. The report is the
+ * one read that already carries that, hierarchy-filtered for the viewer, so a
+ * screen that needs it asks for its rows' reports rather than the server
+ * growing a second shape. Only screens that opt in pay for it.
+ */
+export function useReportMatrices(deckIds: string[], enabled: boolean) {
+  const [matrices, setMatrices] = useState<Record<string, DeckReportMatrix | null>>({});
+  const key = enabled ? deckIds.join(",") : "";
+  useEffect(() => {
+    if (!key) return;
+    let live = true;
+    const wanted = key.split(",");
+    Promise.all(
+      wanted.map((id) =>
+        getDeckReport(id)
+          .then((m) => [id, m] as const)
+          .catch(() => [id, null] as const),
+      ),
+    ).then((pairs) => {
+      if (live) setMatrices((prev) => ({ ...prev, ...Object.fromEntries(pairs) }));
+    });
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  return matrices;
+}
+
+/** `jaSparkCell` — the AI's per-parameter scores as a row of tiny bars. */
+export function Sparkline({ values }: { values: number[] }) {
+  if (values.length === 0) return <span className="font-mono text-sm text-fg-muted">—</span>;
+  return (
+    <span className="inline-flex h-5 items-end gap-px" aria-hidden="true">
+      {values.map((v, i) => (
+        <span
+          key={i}
+          className="w-[3px] rounded-sm"
+          style={{ height: `${Math.max(10, (v / 10) * 100)}%`, background: scoreColor(v) }}
+        />
+      ))}
+    </span>
   );
 }
