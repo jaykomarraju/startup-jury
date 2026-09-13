@@ -56,7 +56,8 @@ test("upload a pitch deck, see it in All decks, and view its slides", async ({ p
   await expect(row.getByText("Pending AI")).toBeVisible();
 
   // The report drawer renders DeckPdfViewer against the R2 object just stored.
-  await row.click();
+  // W7-A (F0325): the startup NAME is the report link, not the whole row.
+  await row.getByRole("button", { name }).click();
   await expect(page.getByText("Pitch deck")).toBeVisible();
   const strip = page.getByLabel("Deck slides");
   await expect(strip).toBeVisible({ timeout: 20_000 });

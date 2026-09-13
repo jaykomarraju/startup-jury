@@ -29,20 +29,29 @@ test("admin adds a program via the Set up wizard; it appears in the toolbar filt
   // editor's program <option> of the same name).
   await expect(page.locator("li").filter({ hasText: "Wizard QA Program" })).toBeVisible();
 
-  // And it's now selectable in the dashboard's Program filter dropdown.
+  // And it's now selectable in the dashboard's Program filter dropdown. W7-A:
+  // the control is the prototype's icon dropdown button (`#prog-btn` +
+  // `.cust-drop`), not a native <select>, so its options live in a menu.
   await page.goto("/app/alldecks");
-  await expect(page.getByLabel("Program filter")).toContainText("Wizard QA Program");
+  await page.getByRole("button", { name: "Program filter" }).click();
+  await expect(
+    page.getByRole("listbox", { name: "Programs" }).getByRole("option", { name: "Wizard QA Program" }),
+  ).toBeVisible();
 });
 
 test("dashboard Program filter scopes the decks list to a program", async ({ page }) => {
   await login(page, "nisha.kapoor@demo.startupjury.ai"); // inc_admin
   await page.goto("/app/alldecks");
 
-  const programFilter = page.getByLabel("Program filter");
+  const programFilter = page.getByRole("button", { name: "Program filter" });
   await expect(programFilter).toBeVisible();
-  await expect(programFilter).toContainText("Climate Cohort");
+  await programFilter.click();
+  await page.getByRole("listbox", { name: "Programs" }).getByRole("option", { name: "Climate Cohort" }).click();
 
-  // Selecting a seeded program updates the header context line.
-  await programFilter.selectOption({ label: "Climate Cohort" });
-  await expect(page.getByText(/· Climate Cohort/)).toBeVisible();
+  // Selecting a seeded program updates the screen's context. W7-A: the
+  // prototype's `updateTitle()` puts it in the TITLE ("All decks — Climate
+  // Cohort"), not in the subtitle the old assertion read, and the button label
+  // takes the programme's name.
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("All decks — Climate Cohort");
+  await expect(programFilter).toHaveText(/Climate Cohort/);
 });

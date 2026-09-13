@@ -173,7 +173,7 @@ function headers(): string[] {
 
 function tile(label: string) {
   // A KpiTile's accessible name runs label, value and sub-label together.
-  return screen.getByRole("button", { name: new RegExp(`^${label}\\d`) });
+  return screen.getByRole("button", { name: new RegExp(`^${label}\\s*\\d`) });
 }
 
 const realFetch = globalThis.fetch;
