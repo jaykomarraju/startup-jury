@@ -4334,6 +4334,328 @@ FINISH
   Commit to parity/Wx-VCFUND. Do not merge to main.
 ```
 
+### Wave 10 — cross-cutting surfaces *(written by Wave 9 integration)*
+
+> **Nobody wrote these.** Wave 9's five sessions wrote `W11-A`, `W11-B`, `Wx-VCDD`, `Wx-CALLS` and
+> `Wx-VCFUND` — all useful, none of them the next wave. Written here so Wave 10 can start.
+>
+> **`W10-A` absorbs `Wx-PWD` and `Wx-OOO`.** Both were written by Wave 3/4 sessions against the same
+> files this session owns (`Topbar.tsx`, `src/client/auth/**`, `auth.ts`, and the credential verbs in
+> `users.ts`). Running them as separate sessions would put three sessions in one small file set. The
+> two older prompts stay in §10 as the detail behind steps 2 and 3 — **read them, do not run them.**
+>
+> **Migrations: `main` ends at 0065. Wave 10 is 0066–0068 in letter order** (`W10-A` 0066, `W10-B`
+> 0067, `W10-C` 0068). `ALLOTMENT_CEILING` is **65** — raise it to your number IN THE SAME COMMIT.
+>
+> **§8 partition (it has now held for two waves — keep it): `W10-A` Q171 · `W10-B` Q181 · `W10-C`
+> Q191.** §8 ends at Q167.
+>
+> **Baselines are on `main`, never from a prompt.** At Wave 9 integration: unit/worker/client **2069
+> passed / 1 skipped**, **e2e 224**, **roles 1115/1115**, `parity:nav` **62** known gaps,
+> `parity:tokens` 0 gaps, `e2e/parity.spec.ts` **247** rows.
+>
+> **Two live confidentiality defects are in these worklists** — F0021 (`W10-A`) and F1089 (`W10-C`).
+> Neither is cosmetic. Read them first.
+
+#### `W10-A` — the profile menu, and the credential lifecycle it is missing
+
+```
+You are running session W10-A — the avatar profile menu and everything behind it: setting and
+changing a password, recovering a lost one, and out-of-office delegation — of the ai.STARTUPJURY
+parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W10-A -b parity/W10-A main
+  cd ../sj-W10-A && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1 (§1.2 especially: passwords are its first row), §2, §4, your `W10-A`
+     entry in §6, then:
+       §8 Q42        — `W4-A`'s: should a system-issued password be COMPULSORY to change at next
+                       sign-in? It records what was built and what deliberately was not. **You own
+                       the missing half.**
+       §10 `Wx-PWD`  — written by `W4-A`; the credential half of this session, in detail.
+       §10 `Wx-OOO`  — written by `W3-A`; the delegation half, in detail.
+     **Read both prompts as specification. Do NOT create their branches** — this session absorbs
+     them, because all three would edit the same four files.
+     Then grep §9 for `W4-A` and `W3-A`.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --screen "Profile menu|out.of.office|password" --full
+     17 findings, six of them P0. **F0021 first: the prototype reveals every user's plaintext
+     password to every role.** That is a prototype defect to be REJECTED, not reproduced — §1.1 says
+     the spec outranks the prototype and this is the clearest case in the programme. Record the
+     rejection in §8; build nothing that displays or returns a password.
+  3. The prototype: ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/ — the topbar avatar and its
+     dropdown, `s-uc.html` (F0020), and the login screen's forgot-password affordance. Diff the
+     dropdown across roles: F0928 records out-of-office as present for SU/Admin/PM/PA and
+     DELIBERATELY absent for Jury — verify that before you gate anything.
+  4. The code, in this order:
+       src/client/components/Topbar.tsx              (130 lines — the menu goes here)
+       src/client/auth/{AuthProvider.tsx,useAuth.ts} · src/client/routes/LoginPage.tsx
+       src/server/routes/auth.ts                     (137 lines — login; the compulsion check)
+       src/server/routes/users.ts:424-470            (`PUT /api/users/me/password` ALREADY EXISTS,
+                                                      verified against the current password)
+       src/client/routes/admin/teamApi.ts:116        (its client helper already exists too)
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. **The profile dropdown (F0929, F1064).** The prototype's rows in its order: the username row,
+     the locked plan pill, the dark-theme switch, set / change password, out of office, log out.
+     Plus the signed-out login card the prototype shows in the same place.
+  2. **Set / change password (F0388, F1024, F0075).** `PUT /api/users/me/password` exists — give it
+     a screen. Then close the loop §8 Q42 left open: `must_change_password` is WRITTEN by every route
+     that issues a credential (`users.ts` create / resend / admin reset) and READ BY NOTHING. Decide
+     with §8 Q42's reasoning whether `POST /api/auth/login` refuses a principal carrying the flag or
+     admits it and forces the screen; either way the user must not be able to skip past it. Whichever
+     you choose, no copy anywhere may claim a force that is not enforced — that mismatch IS F0075.
+  3. **Forgot password (F0406, F1022).** A real transport, not a stub: a single-use, expiring token,
+     an outbox entry, and a reset screen. §1.4 holds — email is RECORDED, not sent, while `EMAIL_FROM`
+     is `""`; the UI says what actually happened. Expiry and single-use are worker-tested.
+  4. **Out of office with delegation (F0413, F0928, F1023).** A named colleague, a date range, and
+     the delegation actually re-routing something — an assignment or an approval — not just a flag.
+     Migration 0066 if you need one. `Wx-OOO` has the detail.
+
+CONSTRAINTS
+  - Own only: `src/client/components/Topbar.tsx`, `src/client/auth/**`, `src/client/routes/LoginPage.tsx`,
+    `src/server/routes/auth.ts`, and the credential verbs in `src/server/routes/users.ts`. The rest of
+    `users.ts` (the console's Team & roles) is `W4-A`'s — a change there is a §9 request.
+  - **Never log, return, or render a password or a raw reset token.** A token appears exactly once,
+    in the outbox record. F0021 is a defect to reject, not a feature to port.
+  - You own migration **0066** and only 0066. If you add one, raise `ALLOTMENT_CEILING` in
+    test/worker/migrations-w1b.test.ts from 65 IN THE SAME COMMIT.
+  - §2.2 hazard files: `src/client/index.css`, `src/shared/nav.ts`, `src/shared/roles.ts`,
+    `src/client/App.tsx`. The profile menu is topbar chrome, not a nav item — if you think you need
+    `nav.ts`, say why in §9 first.
+  - A new gate changes `npm run roles`: probes in `scripts/role-matrix.ts` in the SAME commit, run
+    against a server you PROVED you own (`lsof` on the PID **and** its cwd). Baseline 1115/1115.
+
+TEST
+  - Worker: the reset-token lifecycle — issued once, single-use, expired rejected, another user's
+    token rejected; the login refusal or forced-screen path; `PUT /me/password` with a wrong current
+    password (401/403) and a right one.
+  - Client: the dropdown's exact rows per role, INCLUDING out-of-office absent for Jury; the
+    signed-out card; the change-password form's validation.
+  - E2E: a user issued a temporary password signs in, is made to change it, and signs in again with
+    the new one. One sign-in per test — `/login` redirects an authenticated session to `/app`.
+  - `e2e/parity.spec.ts`: re-capture ONLY rows you own (`PARITY_CAPTURE=1`, `TMPDIR` at your own
+    scratchpad, union into `EXPECTED`); never delete a row you did not capture. 247 rows today.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  **`nvm use` first — the build needs Node 22 and fails on 20 with a `registerHooks` error that
+  looks like a code fault and is not.** `uptime` BEFORE you start; never run your gate while a
+  sibling runs theirs (`ps -eo args | grep -E "playwright test|vitest"`); run e2e on YOUR `E2E_PORT`.
+  Never conclude anything from a red run at load 40+ without re-running the file alone AND a spec
+  your change never touched as a control.
+  Traps earlier waves paid for, all real:
+    • gate client assertions on a POPULATED element, never a heading the loading branch also renders
+      — this exact race was still being fixed at Wave 9 integration;
+    • never locate an element by the attribute your click is about to change;
+    • guard a draft against its own mount fetch: StrictMode runs that effect twice;
+    • `describe.configure({ mode: "serial" })` orders tests WITHIN a file only — two e2e workers
+      share one D1, so PIN what you assert rather than inheriting another spec's value;
+    • a new button whose name CONTAINS an existing one's breaks page-wide locators — scope them.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  **Number your §8 questions from Q171.** §8 ends at Q167; the Wave 10 partition is `W10-A` Q171,
+  `W10-B` Q181, `W10-C` Q191. Two waves have now needed no renumber because of this — keep it.
+  **Say in §7 that this session absorbed `Wx-PWD` and `Wx-OOO`, and strike both from §10.**
+  Commit to parity/W10-A. Do not merge to main.
+```
+
+#### `W10-B` — the founder portal, and how a founder signs in at all
+
+```
+You are running session W10-B — the founder portal and founder sign-in — of the ai.STARTUPJURY
+parity programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W10-B -b parity/W10-B main
+  cd ../sj-W10-B && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, your `W10-B` entry in §6, and **`W7-C`'s §7 row**, which built
+     the staff half of the query loop your portal is the other end of. Grep §9 for `W10-B`.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Founder portal" --full
+     43 findings — the largest in the wave, with three P0s and a dozen P1s. **Two are already closed;
+     do not rebuild them:** F0466 (the query email promising a portal link it did not contain) was
+     closed at Wave 9 integration by `W7-C-query-email.patch`, and F0472 / F0491 were closed by
+     `W7-C` itself. Verify each against `main` before you start rather than trusting this line.
+  3. The three P0s are one story, in this order:
+       F0459  no real founder can ever REACH the portal — founder accounts cannot be created and the
+              invite email carries no link or credential;
+       F0470  no founder account can be created at all — the console excludes the role and there is
+              no self-registration route, so the only founder in the system is a seeded demo row;
+       F0460  the portal shows a founder only decks THEY uploaded — a staff-uploaded deck is
+              invisible to its own founder.
+     **Build the account path before the screens.** Every screen finding below is unreachable in
+     production until a real founder can exist and sign in.
+  4. **F0464 is a confidentiality defect and outranks the cosmetics:** the portal shows founders AI
+     scores, signal, jury averages, verdicts, per-parameter scores and their evaluator's NAME — none
+     of which the prototype's founder surface ever exposes. Decide what a founder may see, write it
+     down in §8, and enforce it on the SERVER, not by not-rendering it.
+  5. The prototypes: the founder builds under ${TMPDIR:-/tmp}/sj-prototype-split/ — the sign-in
+     screen (F0469: email + 6-digit access code, not the staff password screen), the deck-submission
+     form, the clarification-answering screen (F0468: completion meter, "areas with sufficient
+     signal", scoring legend, submit checklist) and the area cards (F0467: weight, Weak/Absent signal
+     pill, "What the AI found").
+  6. The code: src/client/routes/FounderPortal.tsx (286) · ResubmitPage.tsx (308) · LoginPage.tsx
+     (106) · src/server/routes/auth.ts · the founder branches of src/server/routes/decks.ts.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. **A founder account can exist** (F0470, F0463) and **an invited founder can reach the portal**
+     (F0459) — the invite carries a link and a credential, and §1.4 still holds: email is RECORDED,
+     not sent, and the UI says so.
+  2. **Founder sign-in as specified** (F0469): email + access code, its own screen. Bring the staff
+     login screen to visual parity while you are in it (F0501: the wordmark colouring is inverted).
+  3. **A founder sees their own decks** (F0460) — ownership is by the deck's founder, not by who
+     uploaded it — **and sees only what a founder may see** (F0464), enforced server-side.
+  4. **The founder's Upload screen is not the staff screen** (F0465): credits, bulk upload, CRM
+     ticketing and cohort pickers all leak today, two of them into 403s.
+  5. The clarification surface to the prototype (F0467, F0468) — it is the other end of `W7-C`'s
+     query loop, so read that loop before redesigning anything.
+  6. **Decide and record whether the workspace launcher belongs in the product at all** (§6). It is
+     a prototype navigation device and may be no feature.
+
+CONSTRAINTS
+  - Own only: `FounderPortal.tsx`, `ResubmitPage.tsx`, `LoginPage.tsx`, the founder branches of
+    `decks.ts`, and the founder path in `auth.ts`. **`W10-A` owns the rest of `auth.ts` and the whole
+    credential lifecycle this wave** — agree the seam in §9 BEFORE you build, the way `W9-B` and
+    `W9-E` did over their ten shared findings, or you will each write half an invite flow.
+  - You own migration **0067** and only 0067. If you add one, raise `ALLOTMENT_CEILING` from 65 IN
+    THE SAME COMMIT.
+  - §2.2 hazard files: `index.css`, `nav.ts`, `roles.ts`, `App.tsx`. A founder route is likely to
+    need `App.tsx` and `nav.ts` — declare exactly which lines in §9 rather than editing freely.
+  - New gates change `npm run roles`: probes in `scripts/role-matrix.ts` in the SAME commit, against
+    a server you PROVED you own. Baseline 1115/1115.
+
+TEST
+  - Worker: a founder reads their own deck and 403s on another's; the report payload a founder
+    receives contains NO evaluator name, AI score, verdict or per-parameter score (assert the
+    absence on the RESPONSE, not the screen); the access-code lifecycle.
+  - Client: the portal under a founder — the area cards' three elements, the completion meter, the
+    submit checklist; the sign-in screen.
+  - E2E: an invited founder signs in with an access code, sees a STAFF-uploaded deck, answers a
+    clarification, and submits. Create what you mutate — the suite is fullyParallel over one D1.
+  - `e2e/parity.spec.ts`: re-capture ONLY your own rows (`PARITY_CAPTURE=1`, private `TMPDIR`, union
+    into `EXPECTED`); never delete a row you did not capture. 247 rows today.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  **`nvm use` first — the build needs Node 22; on Node 20 it fails with a `registerHooks` error that
+  looks like a code fault and is not.** `uptime` BEFORE you start; never run your gate while a
+  sibling runs theirs; run e2e on YOUR `E2E_PORT`. Never conclude anything from a red run at load
+  40+ without re-running the file alone AND an untouched spec as a control.
+  Traps earlier waves paid for: gate assertions on a POPULATED element, never a heading the loading
+  branch renders; never locate an element by the attribute your click changes; one sign-in per test;
+  guard a draft against StrictMode's double mount; `describe.serial` orders WITHIN a file only, so
+  PIN what you assert; a new button whose name CONTAINS an existing one's breaks page-wide locators.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  **Number your §8 questions from Q181.** §8 ends at Q167; the Wave 10 partition is `W10-A` Q171,
+  `W10-B` Q181, `W10-C` Q191.
+  Commit to parity/W10-B. Do not merge to main.
+```
+
+#### `W10-C` — support, contact and the ticket queue
+
+```
+You are running session W10-C — support, contact and the ticket queue — of the ai.STARTUPJURY parity
+programme. You have no prior context. Everything you need is in the repo.
+
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-W10-C -b parity/W10-C main
+  cd ../sj-W10-C && npm ci
+  python3 docs/prototype/tools/split-prototypes.py
+
+READ FIRST (in this order, and nothing else)
+  1. docs/plan_parity.md — §1, §2, §4, your `W10-C` entry in §6. Grep §9 for `W10-C`.
+  2. Your worklist:
+       python3 docs/prototype/tools/findings.py --area "Support" --full
+     26 findings. **Start with F1089: `/api/messages` has no founder or mentor gate, so the internal
+     team channel is readable by an external founder.** That is live, it is one route, and it is not
+     a rendering question — fix it first, with a worker test that a founder gets 403, and say so in
+     §7. Do not let it queue behind the screens.
+  3. Then the three remaining P0s, which are one screen each:
+       F1082  Contact Admin is a TICKET-RAISING FORM in the prototype; the repo has a free-text box;
+       F1083  the ticket detail pane, message thread and reply box do not exist at all;
+       F1084  the seat / credit approval workflow — the panel's core feature — does not exist.
+  4. **F1087/F1088 settle the question §6 asks:** *Contact Admin* and *Contact team* ARE two
+     different forms — Contact team is a 1:1 composer with a recipient and a subject plus a team
+     directory; the repo maps both to one body-only broadcast. Confirm that against the prototypes
+     yourself and record it in §8; do not take this line as the finding.
+  5. The prototypes: panel-contactadmin.html, panel-contactteam.html and the ticket panels under
+     ${TMPDIR:-/tmp}/sj-prototype-split/AISJ_IC_SuserV15/, and their renderers in `_scripts.js`
+     (grep the panel ids; read only those functions). **Diff the ticket panel across roles** —
+     F1093 records a Super User read-only mode with its own pill, subtitle and approve-instead-of-edit
+     behaviour.
+  6. The code: src/client/routes/SupportPages.tsx (216) · IssueLogPage.tsx (306) ·
+     src/server/routes/support.ts (312), and whichever router serves `/api/messages`.
+  Do NOT read docs/PARITY-FINDINGS.md whole (1.4 MB). Do NOT read a prototype HTML whole.
+
+BUILD
+  1. **The `/api/messages` gate (F1089), first and on its own commit.**
+  2. **Contact Admin as a ticket form** (F1082) with the screenshot attachment (F1086) and the "My
+     recent tickets" card the prototype draws (F1085).
+  3. **The ticket detail pane** (F1083): the thread, the reply box, and the status vocabulary and
+     inline select the prototype uses (F1092 — "In progress" exists there and not here).
+  4. **The approval chain** (F1084): seat and credit requests raised, queued, approved or refused,
+     with the Super User's read-only / approve mode (F1093).
+  5. **The queue's own furniture:** the four KPI tiles that double as filters (F1090), the prototype's
+     exact columns — ID, Category, Priority, Age — and no invented "Routing" column (F1091), and the
+     sidebar's pending-count badge (F1094).
+  6. **Contact team as a 1:1 composer** with recipient, subject and the team directory (F1087, F1088).
+
+CONSTRAINTS
+  - Own only: `SupportPages.tsx`, `IssueLogPage.tsx`, `src/server/routes/support.ts`, and the
+    `/api/messages` gate. A seat or credit APPROVAL that has to change what a seat IS belongs to
+    `W6-C`'s seat model — §9 it rather than editing `seats`.
+  - Email is RECORDED, not sent (§1.4): a notification says what actually happened.
+  - You own migration **0068** and only 0068 (tickets, threads and approvals will almost certainly
+    need one). Raise `ALLOTMENT_CEILING` in test/worker/migrations-w1b.test.ts from 65 IN THE SAME
+    COMMIT — it is the one line every session in a wave touches, so expect a conflict and take the
+    highest value.
+  - §2.2 hazard files: `index.css`, `nav.ts`, `roles.ts`, `App.tsx`. The sidebar badge (F1094) needs
+    `nav.ts` — declare the exact change in §9 before making it.
+  - New routes change `npm run roles`: probes in `scripts/role-matrix.ts` in the SAME commit, against
+    a server you PROVED you own with `lsof` (PID and cwd). Baseline 1115/1115.
+
+TEST
+  - Worker: `/api/messages` — a founder and a mentor get 403, staff get 200 (this is the F1089 test,
+    and it goes in the same commit as the gate). Then every new route: happy path, validation, an
+    allowed role AND a forbidden one.
+  - Client: the ticket queue's exact headers and status vocabulary; the four KPI tiles filtering;
+    the Super User read-only mode; both contact forms, asserted as DIFFERENT forms.
+  - E2E: a user raises a ticket, an admin replies on the thread, and the raiser sees the reply; one
+    approval taken end to end. Create what you mutate.
+  - `e2e/parity.spec.ts`: re-capture ONLY your own rows (`PARITY_CAPTURE=1`, private `TMPDIR`, union
+    into `EXPECTED`); never delete a row you did not capture. 247 rows today.
+  Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  **`nvm use` first — the build needs Node 22; on Node 20 it fails with a `registerHooks` error that
+  looks like a code fault and is not.** `uptime` BEFORE you start; never run your gate while a
+  sibling runs theirs; run e2e on YOUR `E2E_PORT`. Never conclude anything from a red run at load
+  40+ without re-running the file alone AND an untouched spec as a control.
+  Traps earlier waves paid for: gate assertions on a POPULATED element, never a heading the loading
+  branch renders; never locate an element by the attribute your click changes; one sign-in per test;
+  guard a draft against StrictMode's double mount; `describe.serial` orders WITHIN a file only, so
+  PIN what you assert; a new button whose name CONTAINS an existing one's breaks page-wide locators.
+
+FINISH
+  Complete the §2.4 exit checklist: update §7 Progress, §8 Open questions and §9 Cross-session
+  requests in docs/plan_parity.md, then write the next prompt(s) into §10 using the §5 template.
+  **Number your §8 questions from Q191.** §8 ends at Q167; the Wave 10 partition is `W10-A` Q171,
+  `W10-B` Q181, `W10-C` Q191.
+  Commit to parity/W10-C. Do not merge to main.
+```
+
+
 ## 11. Reference
 
 | What | Where |
