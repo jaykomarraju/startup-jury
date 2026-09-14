@@ -18,11 +18,13 @@ import { exportDecks } from "../exportCsv";
 import {
   listDecks,
   getDeck,
+  getDeckEvents,
   transitionDeck,
   ApiError,
   sendSignup,
   updateDeckOnboarding,
   type DeckVersionView,
+  type PipelineEvent,
 } from "../api";
 import {
   SignupWorkspace,
@@ -74,13 +76,30 @@ export type StageColumn =
   | "stageReached"
   | "archivedOn"
   | "archivedBy"
-  | "status";
+  | "status"
+  // W9-B — `jpRowAssoc`'s date and destination cells, and the Action column placed
+  // explicitly (it is appended after the last column when `columns` omits it).
+  | "submittedDate"
+  | "submitTo"
+  | "action";
 
 /** One table row as a filter, footer or custom tab sees it. */
 export interface StageRow {
   deck: DeckView;
   /** The sign-up record behind the row, on screens that load them. */
   signup?: SignupSummary;
+  /** W9-B — on a `keepDecided` screen, the event by which this screen decided the deck. */
+  decided?: PipelineEvent;
+}
+
+/** W9-B — a row's Status pill (`key` is what the legend decodes) and its submission. */
+export interface StageRowStatus {
+  key: string;
+  label: string;
+  /** When the deck was submitted on — the Submitted date column. */
+  submittedAt?: string;
+  /** Where it was submitted to — the Submit to column. */
+  submitTo?: string;
 }
 
 /**
@@ -145,7 +164,27 @@ export interface StageConfig {
    * the Sign-up status read from the sign-up record rather than the deck.
    */
   workspace?: boolean;
+  /**
+   * W9-B — decided rows stay on the screen with their outcome (F0627; the reading
+   * agreed with `W9-E` in §9). A deck now in one of these stages is kept when its
+   * latest pipeline event FROM `statuses` went to a stage OUTSIDE them. That event
+   * is the row's `decided`, and a decided row offers no transitions (the deck's
+   * actions belong to the stage it is in now). A deck back inside `statuses` is
+   * active again. Omitted → the screen lists `statuses` only and reads no events.
+   */
+  keepDecided?: string[];
+  /** W9-B — the Status pill's words and legend key. Omitted → the stage label, keyed by stage id. */
+  rowStatus?: (row: StageRow) => StageRowStatus;
+  /**
+   * W9-B — the Action column as the prototype's one `Action ▾` select
+   * (`jpActionSelect`): `View deck` (the one-tab Pitch deck pane) and then the
+   * row's transitions, relabelled by `labels`. Omitted → a button per transition.
+   */
+  actionMenu?: { labels?: Record<string, string> };
 }
+
+/** The `actionMenu` option that opens the deck rather than running a transition. */
+const VIEW_DECK = "__view_deck";
 
 // Actions handled by dedicated screens rather than inline buttons here.
 const EXCLUDED_ACTIONS = new Set(["assign_jury"]);
@@ -175,6 +214,9 @@ const COLUMN_LABELS: Record<StageColumn, string> = {
   archivedOn: "Archived on",
   archivedBy: "Archived by",
   status: "Status",
+  submittedDate: "Submitted date",
+  submitTo: "Submit to",
+  action: "Action",
 };
 
 const PAYMENT_OPTIONS = [
@@ -343,14 +385,63 @@ export function StagePage({ config }: { config: StageConfig }) {
     };
   }, [selected]);
 
-  /** Every row in the stage — what the footer counts. */
-  const stageRows = useMemo<StageRow[]>(
+  // W9-B — the deciding event per candidate deck on a `keepDecided` screen,
+  // tagged with the stage set it was read for so a neighbouring screen's
+  // decisions never show while this one's are loading.
+  const [decisions, setDecisions] = useState<{ stages: string; events: Record<string, PipelineEvent> }>({
+    stages: "",
+    events: {},
+  });
+  const stagesKey = config.statuses.join("|");
+  const candidateKey = useMemo(
     () =>
-      (decks ?? [])
-        .filter((d) => d.statusId && config.statuses.includes(d.statusId) && (!config.include || config.include(d)))
-        .map((deck) => ({ deck, signup: signups[deck.id] })),
-    [decks, signups, config],
+      config.keepDecided
+        ? (decks ?? [])
+            .filter((d) => d.statusId && config.keepDecided!.includes(d.statusId) && !config.statuses.includes(d.statusId))
+            .map((d) => d.id)
+            .join(",")
+        : "",
+    [decks, config],
   );
+
+  useEffect(() => {
+    if (!candidateKey) return;
+    let live = true;
+    const inStage = (stage: string | null) => !!stage && config.statuses.includes(stage);
+    Promise.all(
+      candidateKey.split(",").map((id) =>
+        getDeckEvents(id)
+          // Newest first, so the first match is the latest decision.
+          .then((r) => [id, r.events.find((e) => inStage(e.fromStage) && !inStage(e.toStage))] as const)
+          .catch(() => [id, undefined] as const),
+      ),
+    ).then((pairs) => {
+      if (!live) return;
+      const events: Record<string, PipelineEvent> = {};
+      for (const [id, event] of pairs) if (event) events[id] = event;
+      setDecisions({ stages: stagesKey, events });
+    });
+    return () => {
+      live = false;
+    };
+    // `config.statuses` is read through `stagesKey`, so a new config object with
+    // the same stages does not refetch.
+  }, [candidateKey, stagesKey]);
+
+  /** Every row in the stage — what the footer counts. */
+  const stageRows = useMemo<StageRow[]>(() => {
+    const decided = candidateKey && decisions.stages === stagesKey ? decisions.events : {};
+    return (decks ?? []).flatMap((deck): StageRow[] => {
+      const id = deck.statusId;
+      if (!id) return [];
+      if (config.statuses.includes(id)) {
+        return !config.include || config.include(deck) ? [{ deck, signup: signups[deck.id] }] : [];
+      }
+      return config.keepDecided?.includes(id) && decided[deck.id]
+        ? [{ deck, signup: signups[deck.id], decided: decided[deck.id] }]
+        : [];
+    });
+  }, [decks, signups, config, candidateKey, decisions, stagesKey]);
 
   const activeFilter = config.toolbar?.filters?.find((f) => f.id === filterId);
   /** The rows on screen — what the table draws and Export writes. */
@@ -359,6 +450,9 @@ export function StagePage({ config }: { config: StageConfig }) {
     [stageRows, activeFilter],
   );
   const rows = useMemo(() => shown.map((r) => r.deck), [shown]);
+  // W9-B — `actionMenu`'s View deck opens the Pitch deck pane on a screen that
+  // declares no tabs; with tabs declared it opens those, on Deck if present.
+  const paneTabs: StageSubTab[] = subTabs.length > 0 ? subTabs : ["deck"];
 
   const paneRow = pane ? stageRows.find((r) => r.deck.id === pane.deckId) : undefined;
   const paneEval = usePaneEvaluation(paneRow ? paneRow.deck.id : null);
@@ -429,7 +523,8 @@ export function StagePage({ config }: { config: StageConfig }) {
     return c === "founder" && config.secondary ? config.secondary.label : COLUMN_LABELS[c];
   }
 
-  function cell(column: StageColumn, deck: DeckView): ReactNode {
+  function cell(column: StageColumn, row: StageRow): ReactNode {
+    const deck = row.deck;
     switch (column) {
       case "startup":
         return (
@@ -629,9 +724,115 @@ export function StagePage({ config }: { config: StageConfig }) {
         return <span className="text-sm text-fg-muted">{fmtDate(deck.exitAt)}</span>;
       case "archivedBy":
         return <span className="text-sm text-fg-muted">{deck.exitBy ?? "—"}</span>;
-      case "status":
-        return <LegendPill item={legendFor(config.legend, deck.statusId)}>{deck.status ?? "—"}</LegendPill>;
+      case "status": {
+        const s = config.rowStatus?.(row);
+        return s ? (
+          <LegendPill item={legendFor(config.legend, s.key)}>{s.label}</LegendPill>
+        ) : (
+          <LegendPill item={legendFor(config.legend, deck.statusId)}>{deck.status ?? "—"}</LegendPill>
+        );
+      }
+      case "submittedDate":
+        return <span className="text-sm text-fg-muted">{fmtDate(config.rowStatus?.(row).submittedAt)}</span>;
+      case "submitTo": {
+        const to = config.rowStatus?.(row).submitTo;
+        return to ? <span className="text-sm text-fg">{to}</span> : <span className="text-sm text-fg-muted">—</span>;
+      }
+      case "action":
+        return actionCell(row);
     }
+  }
+
+  function actionCell(row: StageRow): ReactNode {
+    const deck = row.deck;
+    // The workspace replaces the unguarded "Complete signup" button:
+    // a sign-up completes on the countersign, not on a click.
+    // Any screen that reads the sign-up records (Prog manager pipeline
+    // lists `signup` decks too) must not offer the bypass either.
+    // A decided row offers nothing: its actions are the next stage's.
+    const actions = row.decided
+      ? []
+      : (deck.actions ?? []).filter(
+          (a) => !EXCLUDED_ACTIONS.has(a.action) && !(wantsSignups && a.action === "complete_signup"),
+        );
+    const signup = config.workspace ? signups[deck.id] : undefined;
+    return (
+      <>
+        {config.capture && actions.some((a) => a.action === config.capture!.action) && (
+          <div className="mb-2 flex justify-end gap-1.5">
+            {config.capture.fields.map((f) => (
+              <input
+                key={f.name}
+                className="sj-input h-8 w-24 py-0 text-xs"
+                placeholder={f.label}
+                aria-label={f.label}
+                value={captured[deck.id]?.[f.name] ?? ""}
+                onChange={(e) =>
+                  setCaptured((cap) => ({
+                    ...cap,
+                    [deck.id]: { ...cap[deck.id], [f.name]: e.target.value },
+                  }))
+                }
+              />
+            ))}
+          </div>
+        )}
+        {config.actionMenu ? (
+          <div className="flex justify-end">
+            <select
+              className="sj-input h-8 w-auto py-0 text-xs"
+              aria-label={`Action for ${deck.name}`}
+              value=""
+              disabled={busy !== null}
+              onChange={(e) => {
+                const value = e.target.value;
+                if (value === VIEW_DECK) {
+                  const tab = paneTabs.includes("deck") ? "deck" : resolveTab(paneTabs[0]).id;
+                  setPane({ deckId: deck.id, tab });
+                  return;
+                }
+                const action = actions.find((a) => a.action === value);
+                if (action) void runAction(deck, action);
+              }}
+            >
+              <option value="">{busy?.startsWith(`${deck.id}:`) ? "…" : "Action ▾"}</option>
+              <option value={VIEW_DECK}>View deck</option>
+              {actions.map((a) => (
+                <option key={a.action} value={a.action}>
+                  {config.actionMenu?.labels?.[a.action] ?? a.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          <div className="flex flex-wrap justify-end gap-2">
+            {signup && (
+              <Button
+                size="sm"
+                variant="secondary"
+                title={signup.readOnly ? "Read-only — a Super user or Admin must assign you" : undefined}
+                onClick={() => setWorkspace({ signupId: signup.signupId, tab: "agr" })}
+              >
+                {signup.readOnly ? <Lock className="mr-1 h-3.5 w-3.5" /> : <Signature className="mr-1 h-3.5 w-3.5" />}
+                Sign-up
+              </Button>
+            )}
+            {actions.length === 0 && !signup && <span className="text-xs text-fg-muted">—</span>}
+            {actions.map((a) => (
+              <Button
+                key={a.action}
+                size="sm"
+                variant={a.to === "rejected" || a.to === "archived" ? "secondary" : "primary"}
+                disabled={busy !== null}
+                onClick={() => runAction(deck, a)}
+              >
+                {busy === `${deck.id}:${a.action}` ? "…" : a.label}
+              </Button>
+            ))}
+          </div>
+        )}
+      </>
+    );
   }
 
   function paneBody(row: StageRow, tab: string): ReactNode {
@@ -653,6 +854,12 @@ export function StagePage({ config }: { config: StageConfig }) {
 
   const stat = config.footer?.(stageRows);
   const toolbar = config.toolbar;
+  // The Action column sits where `columns` places it, else last; never on a read-only screen.
+  const tableColumns: StageColumn[] = config.readOnly
+    ? columns.filter((c) => c !== "action")
+    : columns.includes("action")
+      ? columns
+      : [...columns, "action"];
 
   return (
     <section className="sj-frame">
@@ -701,91 +908,29 @@ export function StagePage({ config }: { config: StageConfig }) {
                 <table className="w-full text-left" style={{ minWidth: config.minWidth ?? "44rem" }}>
                   <thead>
                     <tr className="text-fg-muted">
-                      {columns.map((c) => (
-                        <th key={c} className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide">
+                      {tableColumns.map((c) => (
+                        <th
+                          key={c}
+                          className={`px-4 py-2.5 text-xs font-medium uppercase tracking-wide ${c === "action" ? "text-right" : ""}`}
+                        >
                           {header(c)}
                         </th>
                       ))}
-                      {!config.readOnly && (
-                        <th className="px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide">Action</th>
-                      )}
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map((deck) => {
-                      // The workspace replaces the unguarded "Complete signup" button:
-                      // a sign-up completes on the countersign, not on a click.
-                      // Any screen that reads the sign-up records (Prog manager pipeline
-                      // lists `signup` decks too) must not offer the bypass either.
-                      const actions = (deck.actions ?? []).filter(
-                        (a) => !EXCLUDED_ACTIONS.has(a.action) && !(wantsSignups && a.action === "complete_signup"),
-                      );
-                      const signup = config.workspace ? signups[deck.id] : undefined;
-                      return (
-                        <tr
-                          key={deck.id}
-                          className={`border-t border-line align-top ${pane?.deckId === deck.id ? "bg-surface-2" : ""}`}
-                        >
-                          {columns.map((c) => (
-                            <td key={c} className="px-4 py-3">
-                              {cell(c, deck)}
-                            </td>
-                          ))}
-                          {!config.readOnly && (
-                            <td className="px-4 py-3">
-                              {config.capture && actions.some((a) => a.action === config.capture!.action) && (
-                                <div className="mb-2 flex justify-end gap-1.5">
-                                  {config.capture.fields.map((f) => (
-                                    <input
-                                      key={f.name}
-                                      className="sj-input h-8 w-24 py-0 text-xs"
-                                      placeholder={f.label}
-                                      aria-label={f.label}
-                                      value={captured[deck.id]?.[f.name] ?? ""}
-                                      onChange={(e) =>
-                                        setCaptured((cap) => ({
-                                          ...cap,
-                                          [deck.id]: { ...cap[deck.id], [f.name]: e.target.value },
-                                        }))
-                                      }
-                                    />
-                                  ))}
-                                </div>
-                              )}
-                              <div className="flex flex-wrap justify-end gap-2">
-                                {signup && (
-                                  <Button
-                                    size="sm"
-                                    variant="secondary"
-                                    title={signup.readOnly ? "Read-only — a Super user or Admin must assign you" : undefined}
-                                    onClick={() => setWorkspace({ signupId: signup.signupId, tab: "agr" })}
-                                  >
-                                    {signup.readOnly ? (
-                                      <Lock className="mr-1 h-3.5 w-3.5" />
-                                    ) : (
-                                      <Signature className="mr-1 h-3.5 w-3.5" />
-                                    )}
-                                    Sign-up
-                                  </Button>
-                                )}
-                                {actions.length === 0 && !signup && <span className="text-xs text-fg-muted">—</span>}
-                                {actions.map((a) => (
-                                  <Button
-                                    key={a.action}
-                                    size="sm"
-                                    variant={a.to === "rejected" || a.to === "archived" ? "secondary" : "primary"}
-                                    disabled={busy !== null}
-                                    onClick={() => runAction(deck, a)}
-                                  >
-                                    {busy === `${deck.id}:${a.action}` ? "…" : a.label}
-                                  </Button>
-                                ))}
-                              </div>
-                            </td>
-                          )}
-                        </tr>
-                      );
-                    })}
+                    {shown.map((row) => (
+                      <tr
+                        key={row.deck.id}
+                        className={`border-t border-line align-top ${pane?.deckId === row.deck.id ? "bg-surface-2" : ""}`}
+                      >
+                        {tableColumns.map((c) => (
+                          <td key={c} className="px-4 py-3">
+                            {cell(c, row)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               )}
@@ -798,7 +943,7 @@ export function StagePage({ config }: { config: StageConfig }) {
           <DetailPane
             title={paneRow.deck.name}
             meta={[paneRow.deck.sector, paneRow.deck.stage, paneRow.deck.city].filter(Boolean).join(" · ")}
-            tabs={subTabs.map(resolveTab)}
+            tabs={paneTabs.map(resolveTab)}
             active={pane.tab}
             onTab={(tab) => setPane({ deckId: paneRow.deck.id, tab })}
             onClose={() => setPane(null)}
@@ -922,31 +1067,140 @@ const VC_SECTOR = { label: "Sector", field: "sector" as const };
  *  Wave 9 (`W9-B`, `W9-C`) replaces it per screen with the prototype's Filter + Export. */
 const VC_TOOLBAR: StageToolbar = { export: true };
 
+// ── W9-B — the two VC pipelines (`jpRowAssoc` / `jpFoot`) ───────────────────
+
+/** `.jp-tb-sub` — identical on both VC pipeline panels. */
+const VC_PIPELINE_SUBTITLE =
+  "Track every deck through jury evaluation — AI vs jury scoring, assignment and final decision";
+
+const VC_PIPELINE_COLUMNS: StageColumn[] = [
+  "startup",
+  "ai",
+  "jury",
+  "avg",
+  "addl",
+  "submittedDate",
+  "status",
+  "action",
+  "submitTo",
+];
+
+/** The VC stage order (`src/pipeline/vc.ts`) after the intake stages. */
+const VC_STAGE_ORDER = [
+  "analyst_scoring",
+  "associate_review",
+  "partner_review",
+  "partner_call",
+  "investment_dd",
+  "ic_review",
+  "mp_decision",
+  "alignment_call",
+  "term_sheet",
+  "legal_dd",
+  "onboard_ready",
+];
+
+/** Every stage a deck decided at `stage` can be in now — later stages, or archived. */
+function vcStagesAfter(stage: string): string[] {
+  return [...VC_STAGE_ORDER.slice(VC_STAGE_ORDER.indexOf(stage) + 1), "archived"];
+}
+
+// `.jp-legend` — the same four dots on both panels, each decoding a pill key.
+const VC_PIPELINE_LEGEND: LegendItem[] = [
+  { label: "Assigned", color: "var(--blue-dk)", statuses: ["assigned"] },
+  { label: "Shortlisted", color: "var(--green)", statuses: ["shortlisted"] },
+  { label: "Rejected", color: "var(--red)", statuses: ["rejected"] },
+  { label: "Pending", color: "var(--gold-dk)", statuses: ["pending"] },
+];
+
+/** The role a decided deck was submitted to, by the stage the deciding event entered. */
+const VC_SUBMIT_TO: Record<string, string> = {
+  partner_review: "Partner",
+  partner_call: "Partner call",
+};
+
+/**
+ * `jpRowAssoc`'s pill: an active row by its stage, a decided row by its deciding
+ * event. Submitted wears the Shortlisted colour, as the prototype's
+ * `.jp-stat.shortlisted` does. A pass is Rejected, with no date and no destination.
+ */
+function vcPipelineStatus(active: Record<string, StageRowStatus>) {
+  return (row: StageRow): StageRowStatus => {
+    const event = row.decided;
+    if (!event) return active[row.deck.statusId ?? ""] ?? { key: "pending", label: "Pending" };
+    if (event.toStage === "archived") return { key: "rejected", label: "Rejected" };
+    return {
+      key: "shortlisted",
+      label: "Submitted",
+      submittedAt: event.createdAt,
+      submitTo: VC_SUBMIT_TO[event.toStage] ?? event.toLabel,
+    };
+  };
+}
+
+// With the analyst → Assigned; awaiting the associate's decision → Pending.
+const ASSOC_PIPELINE_STATUS = vcPipelineStatus({
+  analyst_scoring: { key: "assigned", label: "Assigned" },
+  associate_review: { key: "pending", label: "Pending" },
+});
+const PARTNER_PIPELINE_STATUS = vcPipelineStatus({
+  partner_review: { key: "pending", label: "Pending" },
+});
+
+/** `jpFoot` — "N decks · N shortlisted · N rejected · N in progress". */
+function vcPipelineFoot(status: (row: StageRow) => StageRowStatus) {
+  return (rows: StageRow[]) => {
+    const n = (...keys: string[]) => rows.filter((r) => keys.includes(status(r).key)).length;
+    return (
+      `${rows.length} ${rows.length === 1 ? "deck" : "decks"} · ${n("shortlisted")} shortlisted · ` +
+      `${n("rejected")} rejected · ${n("assigned", "pending")} in progress`
+    );
+  };
+}
+
 /** Config for each VC stage nav slug rendered by StagePage. IC voting (`icpipeline`)
  *  and scoring (`evaluate`) are dedicated screens, not config-driven. */
 // NB `partnercall` / `alignmentcall` (VC) and `introcalls` (incubator) moved to
 // `CallsPage` in Session 7 — those screens now schedule calls and emit ICS
 // invites on top of the stage list, so they are no longer plain stage screens.
 export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
+  // `panel-jurypipeline` · `jpRowAssoc`: Startup · AI score · Analyst Score ·
+  // Avg. score · Addl. Parameter scores · Submitted date · Status · Action ·
+  // Submit to. No evaluator column ("no juror column") and no Sector column
+  // (sector is the startup's sub-line).
   jurypipeline: {
     title: "Assoc. Pipeline",
-    subtitle: "Track every deck through analyst + associate scoring — shortlist to partner or archive.",
+    subtitle: VC_PIPELINE_SUBTITLE,
     statuses: ["analyst_scoring", "associate_review"],
-    secondary: VC_SECTOR,
-    toolbar: VC_TOOLBAR,
-    columns: ["startup", "evaluators", "ai", "jury", "avg", "addl", "assignedDate", "status"],
-    minWidth: "68rem",
+    keepDecided: vcStagesAfter("associate_review"),
+    rowStatus: ASSOC_PIPELINE_STATUS,
+    columns: VC_PIPELINE_COLUMNS,
+    labels: { jury: "Analyst Score" },
+    minWidth: "72rem",
+    toolbar: { filters: legendFilters(VC_PIPELINE_LEGEND, (r) => ASSOC_PIPELINE_STATUS(r).key), export: true },
+    legend: VC_PIPELINE_LEGEND,
+    footer: vcPipelineFoot(ASSOC_PIPELINE_STATUS),
+    // `jpActionSelect('jp')` — View deck / Submit forward / Pass.
+    actionMenu: { labels: { shortlist_to_partner: "Submit forward", not_shortlisted: "Pass" } },
     emptyTitle: "No decks in associate review",
     emptyDescription: "Decks land here after AI evaluation for core + additional scoring.",
   },
+  // `panel-partnerpipeline` — the same panel with "Inv. Assoc." in the third
+  // column (Superuser V8; the five role builds still say "Analyst Score", §8 Q133).
   partnerpipeline: {
     title: "Partner Pipeline",
-    subtitle: "Shortlisted deals under partner review — advance to a partner call or archive.",
+    subtitle: VC_PIPELINE_SUBTITLE,
     statuses: ["partner_review"],
-    secondary: VC_SECTOR,
-    toolbar: VC_TOOLBAR,
-    columns: ["startup", "sector", "ai", "jury", "avg", "addl", "status"],
-    minWidth: "60rem",
+    keepDecided: vcStagesAfter("partner_review"),
+    rowStatus: PARTNER_PIPELINE_STATUS,
+    columns: VC_PIPELINE_COLUMNS,
+    labels: { jury: "Inv. Assoc." },
+    minWidth: "72rem",
+    toolbar: { filters: legendFilters(VC_PIPELINE_LEGEND, (r) => PARTNER_PIPELINE_STATUS(r).key), export: true },
+    legend: VC_PIPELINE_LEGEND,
+    footer: vcPipelineFoot(PARTNER_PIPELINE_STATUS),
+    // `jpActionSelect('pp')` — View deck / Move to Partner call / Pass.
+    actionMenu: { labels: { advance_to_call: "Move to Partner call", not_shortlisted_partner: "Pass" } },
     emptyTitle: "No decks in partner review",
     emptyDescription: "Associate-shortlisted deals appear here for the partner.",
   },

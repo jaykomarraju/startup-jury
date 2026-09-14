@@ -221,7 +221,9 @@ describe("a stage that declares none of it", () => {
   });
 
   it("the VC stage screens keep their Export and gain nothing else until Wave 9 declares it", () => {
-    for (const [slug, cfg] of Object.entries(VC_STAGE_CONFIG)) {
+    // W9-B declared the two VC pipelines; test/client/vcPipelines.test.tsx covers them.
+    const declared = new Set(["jurypipeline", "partnerpipeline"]);
+    for (const [slug, cfg] of Object.entries(VC_STAGE_CONFIG).filter(([s]) => !declared.has(s))) {
       expect(cfg.toolbar, slug).toEqual({ export: true });
       expect(cfg.subTabs, slug).toBeUndefined();
       expect(cfg.legend, slug).toBeUndefined();
