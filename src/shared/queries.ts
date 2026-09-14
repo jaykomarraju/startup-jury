@@ -336,7 +336,12 @@ export function queryStatusOf(queries: QueryRecord[], now = Date.now()): QueryLi
 export const QUERYABLE_STAGES: Record<Edition, readonly string[]> = {
   // The AI flagged it Incomplete, or it is parked in manual review.
   incubator: ["incomplete", "manual_review"],
-  // VC raises a query while the deal is being scored, or once it is Incomplete.
+  // VC raises a query while the deal is being screened — the AI stopped it as
+  // Incomplete, or the analyst and associate are scoring it — and not after:
+  // from partner review on, a question for the founder is the partner call's,
+  // not an intake clarification (W9-A confirmed, §8). The Upload review list's
+  // Send to Query reaches the same stages, since an uploaded VC deal lands at
+  // `pending_ai` and the AI moves it to `incomplete` or `analyst_scoring`.
   vc: ["incomplete", "analyst_scoring", "associate_review"],
 };
 
@@ -344,6 +349,14 @@ export const QUERYABLE_STAGES: Record<Edition, readonly string[]> = {
  * Where a deck waits between the founder's answer and review picking it back
  * up — `founder_response` moves an incubator deck `incomplete → uploaded`
  * (`src/pipeline/incubator.ts`), and it is re-scored from there.
+ *
+ * The VC pipeline has NO `founder_response` transition (`src/pipeline/vc.ts`):
+ * a VC founder's answer changes no stage. So on VC an answered query stays
+ * listed — as Responded — only while the deal is still in a queryable stage,
+ * and drops off once the associate moves it on to partner review. The one VC
+ * path back through intake is a founder resubmitting the deck through the
+ * secure link, which re-scores it from `pending_ai`; `uploaded` is the VC
+ * pipeline's initial stage, kept so a deal put back there is not lost either.
  */
 export const AWAITING_REVIEW_STAGES: Record<Edition, readonly string[]> = {
   incubator: ["uploaded", "pending_ai"],

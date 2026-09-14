@@ -369,6 +369,36 @@ describe("which decks the list shows", () => {
     expect(isQueryListed({ statusId: "partner_review", weakAreas: ["Team"] }, [], "vc")).toBe(false);
   });
 
+  // W9-A — the VC pipeline has no `founder_response` transition, so an answer
+  // moves nothing: "awaiting review" on VC is "still in a screening stage".
+  it("keeps an answered VC query listed as Responded while the deal is still being screened", () => {
+    for (const stage of ["incomplete", "analyst_scoring", "associate_review"]) {
+      expect(isQueryListed({ statusId: stage }, answered, "vc"), stage).toBe(true);
+    }
+    expect(queryStatusOf(answered)).toBe("responded");
+    // A resubmitted deck being re-scored keeps its history on screen.
+    expect(isQueryListed({ statusId: "pending_ai" }, answered, "vc")).toBe(true);
+  });
+
+  it("drops a VC deal — answered or not — once it has moved past screening", () => {
+    for (const stage of ["partner_review", "partner_call", "investment_dd", "ic_review", "archived"]) {
+      expect(isQueryListed({ statusId: stage }, answered, "vc"), `${stage} answered`).toBe(false);
+      expect(isQueryListed({ statusId: stage, weakAreas: ["Team"] }, open, "vc"), `${stage} open`).toBe(false);
+    }
+  });
+
+  it("an open VC query past its five working days is Overdue, not Responded", () => {
+    const created = "2026-09-11T10:00:00.000Z";
+    const row = [{ deck_id: "d1", founder_response: null, created_at: created }];
+    expect(isQueryListed({ statusId: "analyst_scoring" }, row, "vc")).toBe(true);
+    expect(queryStatusOf(row, Date.parse("2026-09-18T10:00:01Z"))).toBe("overdue");
+  });
+
+  it("a VC deal the AI has not flagged is not listed without a query", () => {
+    expect(isQueryListed({ statusId: "pending_ai" }, [], "vc")).toBe(false);
+    expect(isQueryListed({ statusId: "uploaded", missingFields: ["city"] }, [], "vc")).toBe(false);
+  });
+
   it("exports a row in the list's own column order", () => {
     expect([...QUERY_LIST_HEADERS]).toEqual([
       "Startup",

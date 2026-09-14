@@ -801,6 +801,7 @@ function FounderFlow({ deck, onBack, onEmail }: { deck: DeckView; onBack: () => 
   const latest = latestQuery(data.queries);
   const responded = Boolean(latest?.founder_response);
   const flaggedCount = flow.flagged.length;
+  const withheld = data.scores?.aiScoreWithheld === true;
   const badge = !latest
     ? "Action required — no query sent yet"
     : responded
@@ -855,6 +856,20 @@ function FounderFlow({ deck, onBack, onEmail }: { deck: DeckView; onBack: () => 
             </div>
           </div>
 
+          {withheld ? (
+            // W9-A — blind scoring withheld the AI area scores from this
+            // evaluator (a VC analyst who has not scored the deal yet). The
+            // completion figure is computed FROM those scores, so a "0%"
+            // here would be invented; say why there is none instead.
+            <div className="mb-4 rounded-[9px] bg-surface-2 px-[14px] py-3" data-testid="flow-withheld">
+              <div className="mb-1 text-[11.5px] font-semibold text-fg">Deck completion</div>
+              <div className="text-[10.5px] text-fg-muted">
+                {flaggedCount} {plural(flaggedCount, "area")} {flaggedCount === 1 ? "requires" : "require"} a
+                response below · the AI&rsquo;s area scores are withheld until you submit your own evaluation
+                (blind scoring)
+              </div>
+            </div>
+          ) : (
           <div className="mb-4 rounded-[9px] bg-surface-2 px-[14px] py-3">
             <div className="mb-1.5 flex items-center justify-between">
               <span className="text-[11.5px] font-semibold text-fg">Deck completion</span>
@@ -876,6 +891,7 @@ function FounderFlow({ deck, onBack, onEmail }: { deck: DeckView; onBack: () => 
                 : `${flaggedCount} ${plural(flaggedCount, "area")} ${flaggedCount === 1 ? "requires" : "require"} your responses below · AI area scores are not available for this deck yet`}
             </div>
           </div>
+          )}
 
           <div className="mb-2 text-[11.5px] font-bold uppercase tracking-[.05em] text-fg">
             Areas requiring your input
