@@ -31,11 +31,13 @@ test("IC member casts a vote in the committee queue", async ({ page }) => {
 
   await expect(page.getByRole("heading", { name: "IC Pipeline" })).toBeVisible();
 
-  // Open CreditBridge (seeded at ic_review) and cast an Invest vote.
+  // Open CreditBridge (seeded at ic_review) and cast an Invest vote. W9-C: the
+  // queue is the prototype's wide table and the ballot is its row's slide-over.
   await page.getByRole("button", { name: /CreditBridge/ }).click();
-  await expect(page.getByRole("heading", { name: "CreditBridge" })).toBeVisible();
-  await page.getByRole("button", { name: "Invest", exact: true }).click();
+  const pane = page.getByRole("complementary", { name: "CreditBridge detail" });
+  await expect(pane).toBeVisible();
+  await pane.getByRole("button", { name: "Invest", exact: true }).click();
 
   // The member's own vote is reflected back in the "Your vote" summary.
-  await expect(page.getByText(/Your vote · Invest/)).toBeVisible();
+  await expect(pane.getByText(/Your vote · Invest/)).toBeVisible();
 });

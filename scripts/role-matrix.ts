@@ -704,6 +704,29 @@ const PROBES: Probe[] = [
     editions: ["incubator"], allow: ["admin", "program_manager", "program_associate"] },
   { id: "signups.assignee", label: "PUT …/signups/:id/assignee (assign the PM)", kind: "write", method: "PUT", path: "/api/signups/__ghost__/assignee", body: { userId: null },
     editions: ["incubator"], allow: ["admin"] },
+  // ── W9-C · VC diligence record (`/api/diligence`) ─────────────────────────
+  // A new router, so its probes land in the same commit (§9's standing ask).
+  // VC only — every route refuses the incubator with `wrong_edition` (the
+  // worker suite asserts that on a real session). Each verb carries the task of
+  // the screen it serves: `openchecklist` (Investment DD / Legal DD),
+  // `mpapproval` (partner), `signup` (Term sheet Pipeline). Ghost deck ids, so
+  // an allowed role gets a 404 and nothing is written.
+  { id: "diligence.list", label: "GET /api/diligence (deal records, Investment DD → close)", kind: "read", method: "GET", path: "/api/diligence",
+    editions: ["vc"], allow: ["admin", "partner", "ic_member"] },
+  { id: "diligence.checklist", label: "GET /api/diligence/:deck/checklist/:track (DD checklist)", kind: "read", method: "GET", path: `/api/diligence/${GHOST_DECK}/checklist/investment`,
+    editions: ["vc"], allow: ["admin", "partner", "ic_member"] },
+  { id: "diligence.templates", label: "GET /api/diligence/templates (term sheet templates)", kind: "read", method: "GET", path: "/api/diligence/templates",
+    editions: ["vc"], allow: ["admin", "partner"] },
+  { id: "diligence.item", label: "PATCH …/checklist/:track/:item (move one DD item)", kind: "write", method: "PATCH", path: `/api/diligence/${GHOST_DECK}/checklist/investment/__ghost__`, body: { status: "done" },
+    editions: ["vc"], allow: ["admin", "partner", "ic_member"] },
+  { id: "diligence.mp", label: "PUT …/:deck/mp-approval (MP approval)", kind: "write", method: "PUT", path: `/api/diligence/${GHOST_DECK}/mp-approval`, body: { value: "approved" },
+    editions: ["vc"], allow: ["partner"] },
+  { id: "diligence.deal", label: "PUT …/:deck/deal (row status, leads, ask, pre-money)", kind: "write", method: "PUT", path: `/api/diligence/${GHOST_DECK}/deal`, body: { ask: "x" },
+    editions: ["vc"], allow: ["admin", "partner", "ic_member"] },
+  { id: "diligence.termsheet", label: "PUT …/:deck/term-sheet (term sheet status)", kind: "write", method: "PUT", path: `/api/diligence/${GHOST_DECK}/term-sheet`, body: { status: "issued" },
+    editions: ["vc"], allow: ["admin", "partner"] },
+  { id: "diligence.attach", label: "POST …/:deck/term-sheet/attach (attach a template)", kind: "write", method: "POST", path: `/api/diligence/${GHOST_DECK}/term-sheet/attach`, body: { templateId: "__ghost__" },
+    editions: ["vc"], allow: ["admin", "partner"] },
   // ── W6-C · Purchased seats (`/api/seats`) ─────────────────────────────────
   // The Set up wizard's Team step and its buy-seats sub-flow. One gate for the
   // whole router — `requireTask("addmembers", "admin")`, the cell

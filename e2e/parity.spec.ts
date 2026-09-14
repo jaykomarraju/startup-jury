@@ -495,24 +495,27 @@ const EXPECTED: Record<string, Screen> = {
   },
   "vc/superuser/investmentdd": {
     title: "Investment DD",
-    tables: [["STARTUP", "SECTOR", "AI SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AVG. SCORE", "ADDL. PARAMETERS", "SECTOR", "STAGE", "MP APPROVAL", "STATUS", "DILIGENCE PROGRESS", "FLAGS", "LEAD", "CHECKLIST"]],
   },
-  "vc/superuser/icpipeline": { title: "IC Pipeline", tables: [] },
+  "vc/superuser/icpipeline": {
+    title: "IC Pipeline",
+    tables: [["STARTUP", "SECTOR", "STAGE", "AI SCORE", "AVG. SCORE", "ADDL. PARAMETERS", "DD", "ASK", "VALUATION", "RECOMMENDATION"]],
+  },
   "vc/superuser/alignmentcall": {
     title: "Alignment call",
     tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
   },
   "vc/superuser/incuration": {
     title: "Term sheet Pipeline",
-    tables: [["STARTUP", "SECTOR", "AI SCORE", "AVG. SCORE", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "PARTNER", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULE CALL", "TERM SHEET STATUS", "TERM SHEET DOC"]],
   },
   "vc/superuser/legaldd": {
     title: "Legal DD",
-    tables: [["STARTUP", "SECTOR", "AI SCORE", "AVG. SCORE", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AVG. SCORE", "ADDL. PARAMETERS", "SECTOR", "STAGE", "LEGAL DD PROGRESS", "FLAGS", "LEAD", "SIGN UP"]],
   },
   "vc/superuser/curation": {
     title: "Onboard ready",
-    tables: [["STARTUP", "COHORT", "CURATION STAGE", "JURY MEMBER LEAD", "PROGRESS", "STATUS"]],
+    tables: [["STARTUP", "AVG. SCORE", "ADDL. PARAMETERS", "COHORT", "CURATION STAGE", "JURY MEMBER LEAD", "PROGRESS", "ACTION"]],
   },
   "vc/superuser/archive": {
     title: "Archive",
@@ -585,24 +588,27 @@ const EXPECTED: Record<string, Screen> = {
   },
   "vc/admin/investmentdd": {
     title: "Investment DD",
-    tables: [["STARTUP", "SECTOR", "AI SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AVG. SCORE", "ADDL. PARAMETERS", "SECTOR", "STAGE", "MP APPROVAL", "STATUS", "DILIGENCE PROGRESS", "FLAGS", "LEAD", "CHECKLIST"]],
   },
-  "vc/admin/icpipeline": { title: "IC Pipeline", tables: [] },
+  "vc/admin/icpipeline": {
+    title: "IC Pipeline",
+    tables: [["STARTUP", "SECTOR", "STAGE", "AI SCORE", "AVG. SCORE", "ADDL. PARAMETERS", "DD", "ASK", "VALUATION", "RECOMMENDATION"]],
+  },
   "vc/admin/alignmentcall": {
     title: "Alignment call",
     tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
   },
   "vc/admin/incuration": {
     title: "Term sheet Pipeline",
-    tables: [["STARTUP", "SECTOR", "AI SCORE", "AVG. SCORE", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "PARTNER", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULE CALL", "TERM SHEET STATUS", "TERM SHEET DOC"]],
   },
   "vc/admin/legaldd": {
     title: "Legal DD",
-    tables: [["STARTUP", "SECTOR", "AI SCORE", "AVG. SCORE", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AVG. SCORE", "ADDL. PARAMETERS", "SECTOR", "STAGE", "LEGAL DD PROGRESS", "FLAGS", "LEAD", "SIGN UP"]],
   },
   "vc/admin/curation": {
     title: "Onboard ready",
-    tables: [["STARTUP", "COHORT", "CURATION STAGE", "JURY MEMBER LEAD", "PROGRESS", "STATUS"]],
+    tables: [["STARTUP", "AVG. SCORE", "ADDL. PARAMETERS", "COHORT", "CURATION STAGE", "JURY MEMBER LEAD", "PROGRESS", "ACTION"]],
   },
   "vc/admin/archive": {
     title: "Archive",
@@ -666,24 +672,27 @@ const EXPECTED: Record<string, Screen> = {
   },
   "vc/partner/investmentdd": {
     title: "Investment DD",
-    tables: [["STARTUP", "SECTOR", "AI SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AVG. SCORE", "ADDL. PARAMETERS", "SECTOR", "STAGE", "MP APPROVAL", "STATUS", "DILIGENCE PROGRESS", "FLAGS", "LEAD", "CHECKLIST"]],
   },
-  "vc/partner/icpipeline": { title: "IC Pipeline", tables: [] },
+  "vc/partner/icpipeline": {
+    title: "IC Pipeline",
+    tables: [["STARTUP", "SECTOR", "STAGE", "AI SCORE", "AVG. SCORE", "ADDL. PARAMETERS", "DD", "ASK", "VALUATION", "RECOMMENDATION"]],
+  },
   "vc/partner/alignmentcall": {
     title: "Alignment call",
     tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
   },
   "vc/partner/incuration": {
     title: "Term sheet Pipeline",
-    tables: [["STARTUP", "SECTOR", "AI SCORE", "AVG. SCORE", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "PARTNER", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULE CALL", "TERM SHEET STATUS", "TERM SHEET DOC"]],
   },
   "vc/partner/legaldd": {
     title: "Legal DD",
-    tables: [["STARTUP", "SECTOR", "AI SCORE", "AVG. SCORE", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AVG. SCORE", "ADDL. PARAMETERS", "SECTOR", "STAGE", "LEGAL DD PROGRESS", "FLAGS", "LEAD", "SIGN UP"]],
   },
   "vc/partner/curation": {
     title: "Onboard ready",
-    tables: [["STARTUP", "COHORT", "CURATION STAGE", "JURY MEMBER LEAD", "PROGRESS", "STATUS"]],
+    tables: [["STARTUP", "AVG. SCORE", "ADDL. PARAMETERS", "COHORT", "CURATION STAGE", "JURY MEMBER LEAD", "PROGRESS", "ACTION"]],
   },
   "vc/partner/archive": {
     title: "Archive",
@@ -728,16 +737,19 @@ const EXPECTED: Record<string, Screen> = {
   },
   "vc/ic_member/investmentdd": {
     title: "Investment DD",
-    tables: [["STARTUP", "SECTOR", "AI SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AVG. SCORE", "ADDL. PARAMETERS", "SECTOR", "STAGE", "MP APPROVAL", "STATUS", "DILIGENCE PROGRESS", "FLAGS", "LEAD", "CHECKLIST"]],
   },
-  "vc/ic_member/icpipeline": { title: "IC Pipeline", tables: [] },
+  "vc/ic_member/icpipeline": {
+    title: "IC Pipeline",
+    tables: [["STARTUP", "SECTOR", "STAGE", "AI SCORE", "AVG. SCORE", "ADDL. PARAMETERS", "DD", "ASK", "VALUATION", "STATUS"]],
+  },
   "vc/ic_member/alignmentcall": {
     title: "Alignment call",
     tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
   },
   "vc/ic_member/curation": {
-    title: "Onboard ready",
-    tables: [["STARTUP", "COHORT", "CURATION STAGE", "JURY MEMBER LEAD", "PROGRESS", "STATUS"]],
+    title: "Invest ready",
+    tables: [["STARTUP", "CLEARED", "STAGE", "STATUS", "ASK", "OWNER"]],
   },
   "vc/ic_member/archive": {
     title: "Archive",

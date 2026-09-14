@@ -21,6 +21,7 @@ import signupConfig from "./routes/signup-config";
 import seats from "./routes/seats"; // W6-C · purchased seats (Set up → Team)
 import esign from "./esign/routes";
 import signups, { esignWorkspaceGate } from "./routes/signups";
+import diligence from "./routes/diligence";
 import { tickets, messages, issues } from "./routes/support";
 import { calls } from "./routes/calls";
 import { assignments } from "./routes/assignments"; // W7-E · Assign: board + cross-product confirm
@@ -67,6 +68,7 @@ app.use("/api/esign/signups/:signupId/*", esignWorkspaceGate); // W6-A · §8.3 
 app.route("/api/seats", seats);
 app.route("/api/esign", esign); // W5-B · agreements library, signatories, signing method
 app.route("/api/signups", signups); // W6-A · the three-tab sign-up workspace
+app.route("/api/diligence", diligence); // W9-C · VC diligence checklists, deal record, term sheet
 app.route("/api/tickets", tickets);
 app.route("/api/issues", issues);
 app.route("/api/messages", messages);

@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Armchair, Download, FileBarChart, Lock, Signature, TriangleAlert } from "lucide-react";
+import { AuthContext } from "../auth/AuthProvider";
+import type { Role } from "../../shared/roles";
 import {
   Card,
   Button,
@@ -49,6 +51,35 @@ import {
   type PaneTab,
   type PaneTabId,
 } from "./StageKit";
+import {
+  ARCHIVE_REASON_LABELS,
+  ArchiveReasonCell,
+  ChecklistTab,
+  ClearedCell,
+  CurationActionCell,
+  DdStatusCell,
+  DiligenceProgressCell,
+  FlagsPill,
+  InvestReadyStageCell,
+  InvestReadyStatusCell,
+  MpApprovalCell,
+  OpenTabButton,
+  ProgressBar,
+  ScheduleCallCell,
+  SignupRecordTab,
+  StageChip,
+  TermSheetDocCell,
+  TermSheetStatusCell,
+  TermSheetTab,
+  archiveReason,
+  checklistIcon,
+  dealOf,
+  investReadyOwner,
+  loadDeals,
+  signupIcon,
+  type ArchiveReason,
+} from "./VcDiligence";
+import { investReadyStatus, isComplete, legendKeyOf, type DiligenceTrack } from "../../shared/diligence";
 
 /** Columns a stage screen can show. The design gives each screen its own set
  *  (Aug-2026 issues 25–31), so they are named here and composed per config. */
@@ -90,6 +121,8 @@ export interface StageRow {
   signup?: SignupSummary;
   /** W9-B — on a `keepDecided` screen, the event by which this screen decided the deck. */
   decided?: PipelineEvent;
+  /** W9-C — whatever the config's `extra` loader returned for this deck. */
+  extra?: unknown;
 }
 
 /** W9-B — a row's Status pill (`key` is what the legend decodes) and its submission. */
@@ -100,6 +133,34 @@ export interface StageRowStatus {
   submittedAt?: string;
   /** Where it was submitted to — the Submit to column. */
   submitTo?: string;
+}
+
+/**
+ * W9-C — what a config-declared cell or tab may do to the screen around it:
+ * refresh the rows after a write, open the row's slide-over on a tab or the
+ * report on a tab, run one of the deck's transitions, and surface a failure in
+ * the screen's own error strip.
+ */
+export interface StageContext {
+  role?: Role;
+  busy: boolean;
+  reload: () => Promise<void>;
+  openTab: (deck: DeckView, tab: string) => void;
+  openReport: (deck: DeckView, tab: "core" | "additional") => void;
+  runAction: (deck: DeckView, action: DeckAction) => Promise<void>;
+  fail: (message: string) => void;
+}
+
+/**
+ * W9-C — a column the renderer does not know by name: its header and its cell,
+ * declared by the screen. The same `{ id, label, render }` shape a custom
+ * `subTabs` entry has, for the same reason — a VC diligence column is a
+ * declaration, not a new case in a shared switch.
+ */
+export interface StageCustomColumn {
+  id: string;
+  label: string;
+  render: (row: StageRow, ctx: StageContext) => ReactNode;
 }
 
 /**
@@ -118,7 +179,9 @@ export interface StageToolbar {
  * `Deck`, `All scores` and `Sign-up` (`su-stabs` / `nc-stabs`); a screen with a
  * tab of its own (a DD checklist, a term-sheet record) passes `render`.
  */
-export type StageSubTab = PaneTabId | { id: string; label: string; render: (row: StageRow) => ReactNode };
+export type StageSubTab =
+  | PaneTabId
+  | { id: string; label: string; render: (row: StageRow, ctx: StageContext) => ReactNode };
 
 export interface StageConfig {
   title: string;
@@ -134,8 +197,9 @@ export interface StageConfig {
   secondary?: { label: string; field: "founder" | "sector" };
   /** Hide the Action column (read-only screens). */
   readOnly?: boolean;
-  /** The exact columns, in order. Defaults to the pre-Aug-2026 layout. */
-  columns?: StageColumn[];
+  /** The exact columns, in order. Defaults to the pre-Aug-2026 layout. A
+   *  `StageCustomColumn` draws its own header and cell (W9-C). */
+  columns?: (StageColumn | StageCustomColumn)[];
   /** Per-screen header overrides ("Jury members & status" vs "Evaluators & status"). */
   labels?: Partial<Record<StageColumn, string>>;
   /** Minimum table width so wide layouts scroll rather than squash. */
@@ -181,10 +245,24 @@ export interface StageConfig {
    * row's transitions, relabelled by `labels`. Omitted → a button per transition.
    */
   actionMenu?: { labels?: Record<string, string> };
+  /**
+   * W9-C — a per-deck record the screen reads beside the deck list (the VC
+   * diligence record), loaded and refreshed with it and handed to every row as
+   * `row.extra`. Omitted → nothing extra is fetched.
+   */
+  extra?: () => Promise<Record<string, unknown>>;
+  /**
+   * W9-C — the same slug drawn differently for one role (the IC member's
+   * "Invest ready" on `curation`). Keys present override the base config for a
+   * caller of that role. Omitted, or no entry for the role → the base config.
+   */
+  roleVariants?: Partial<Record<Role, Partial<Omit<StageConfig, "roleVariants">>>>;
 }
 
 /** The `actionMenu` option that opens the deck rather than running a transition. */
 const VIEW_DECK = "__view_deck";
+
+const columnId = (c: StageColumn | StageCustomColumn) => (typeof c === "string" ? c : c.id);
 
 // Actions handled by dedicated screens rather than inline buttons here.
 const EXCLUDED_ACTIONS = new Set(["assign_jury"]);
@@ -308,7 +386,12 @@ function resolveTab(tab: StageSubTab): PaneTab {
  * add on top of a table — `toolbar`, `subTabs` and `legend` + `footer` — so a
  * screen reaches parity by declaring them rather than by becoming bespoke.
  */
-export function StagePage({ config }: { config: StageConfig }) {
+export function StagePage({ config: base }: { config: StageConfig }) {
+  const role = useContext(AuthContext)?.user?.role;
+  const config = useMemo<StageConfig>(() => {
+    const variant = role ? base.roleVariants?.[role] : undefined;
+    return variant ? { ...base, ...variant } : base;
+  }, [base, role]);
   const [decks, setDecks] = useState<DeckView[] | null>(null);
   const [selected, setSelected] = useState<DeckView | null>(null);
   // Aug-2026 issues 23/24 — the report opens on the Core Parameters tab from a
@@ -332,9 +415,11 @@ export function StagePage({ config }: { config: StageConfig }) {
   // W7-F — the toolbar filter and the row slide-over.
   const [filterId, setFilterId] = useState<string | null>(null);
   const [pane, setPane] = useState<{ deckId: string; tab: string } | null>(null);
+  // W9-C — the config's per-deck record (`extra`).
+  const [extras, setExtras] = useState<Record<string, unknown>>({});
 
   const secondary = config.secondary ?? { label: "Founder", field: "founder" as const };
-  const columns: StageColumn[] =
+  const columns: (StageColumn | StageCustomColumn)[] =
     config.columns ?? ["startup", secondary.field, "ai", "avg", "status"];
   const subTabs = config.subTabs ?? [];
   const wantsSignups =
@@ -358,14 +443,16 @@ export function StagePage({ config }: { config: StageConfig }) {
       .catch(() => setSignups({}));
   }, [wantsSignups]);
 
+  const loadExtra = config.extra;
   const load = useCallback(() => {
     return Promise.all([
       listDecks()
         .then((r) => setDecks(r.decks))
         .catch(() => setDecks([])),
       loadSignups(),
-    ]);
-  }, [loadSignups]);
+      loadExtra ? loadExtra().then(setExtras, () => setExtras({})) : Promise.resolve(),
+    ]).then(() => undefined);
+  }, [loadSignups, loadExtra]);
 
   useEffect(() => {
     load();
@@ -435,13 +522,15 @@ export function StagePage({ config }: { config: StageConfig }) {
       const id = deck.statusId;
       if (!id) return [];
       if (config.statuses.includes(id)) {
-        return !config.include || config.include(deck) ? [{ deck, signup: signups[deck.id] }] : [];
+        return !config.include || config.include(deck)
+          ? [{ deck, signup: signups[deck.id], extra: extras[deck.id] }]
+          : [];
       }
       return config.keepDecided?.includes(id) && decided[deck.id]
-        ? [{ deck, signup: signups[deck.id], decided: decided[deck.id] }]
+        ? [{ deck, signup: signups[deck.id], extra: extras[deck.id], decided: decided[deck.id] }]
         : [];
     });
-  }, [decks, signups, config, candidateKey, decisions, stagesKey]);
+  }, [decks, signups, extras, config, candidateKey, decisions, stagesKey]);
 
   const activeFilter = config.toolbar?.filters?.find((f) => f.id === filterId);
   /** The rows on screen — what the table draws and Export writes. */
@@ -518,12 +607,27 @@ export function StagePage({ config }: { config: StageConfig }) {
     else setSelected(deck);
   }
 
-  function header(c: StageColumn): string {
+  /** W9-C — what a declared cell or tab may do to the screen. */
+  const ctx: StageContext = {
+    role,
+    busy: busy !== null,
+    reload: load,
+    openTab: (deck, tab) => setPane({ deckId: deck.id, tab }),
+    openReport: (deck, tab) => setReportFor({ deck, tab }),
+    runAction,
+    fail: setError,
+  };
+
+  function header(col: StageColumn | StageCustomColumn): string {
+    if (typeof col !== "string") return col.label;
+    const c = col;
     if (config.labels?.[c]) return config.labels[c]!;
     return c === "founder" && config.secondary ? config.secondary.label : COLUMN_LABELS[c];
   }
 
-  function cell(column: StageColumn, row: StageRow): ReactNode {
+  function cell(column: StageColumn | StageCustomColumn, row: StageRow): ReactNode {
+    // W9-C — a column the renderer does not know by name draws itself.
+    if (typeof column !== "string") return column.render(row, ctx);
     const deck = row.deck;
     switch (column) {
       case "startup":
@@ -837,7 +941,7 @@ export function StagePage({ config }: { config: StageConfig }) {
 
   function paneBody(row: StageRow, tab: string): ReactNode {
     const custom = subTabs.find((t): t is Exclude<StageSubTab, PaneTabId> => typeof t !== "string" && t.id === tab);
-    if (custom) return custom.render(row);
+    if (custom) return custom.render(row, ctx);
     if (tab === "scores") return <AllScores deck={row.deck} scores={paneEval?.scores ?? null} />;
     if (tab === "signup") {
       return (
@@ -855,9 +959,9 @@ export function StagePage({ config }: { config: StageConfig }) {
   const stat = config.footer?.(stageRows);
   const toolbar = config.toolbar;
   // The Action column sits where `columns` places it, else last; never on a read-only screen.
-  const tableColumns: StageColumn[] = config.readOnly
-    ? columns.filter((c) => c !== "action")
-    : columns.includes("action")
+  const tableColumns: (StageColumn | StageCustomColumn)[] = config.readOnly
+    ? columns.filter((c) => columnId(c) !== "action")
+    : columns.some((c) => columnId(c) === "action")
       ? columns
       : [...columns, "action"];
 
@@ -910,8 +1014,8 @@ export function StagePage({ config }: { config: StageConfig }) {
                     <tr className="text-fg-muted">
                       {tableColumns.map((c) => (
                         <th
-                          key={c}
-                          className={`px-4 py-2.5 text-xs font-medium uppercase tracking-wide ${c === "action" ? "text-right" : ""}`}
+                          key={columnId(c)}
+                          className={`px-4 py-2.5 text-xs font-medium uppercase tracking-wide ${columnId(c) === "action" ? "text-right" : ""}`}
                         >
                           {header(c)}
                         </th>
@@ -925,7 +1029,7 @@ export function StagePage({ config }: { config: StageConfig }) {
                         className={`border-t border-line align-top ${pane?.deckId === row.deck.id ? "bg-surface-2" : ""}`}
                       >
                         {tableColumns.map((c) => (
-                          <td key={c} className="px-4 py-3">
+                          <td key={columnId(c)} className="px-4 py-3">
                             {cell(c, row)}
                           </td>
                         ))}
@@ -1061,6 +1165,29 @@ export function SignupPaneBody({
     </div>
   );
 }
+
+/** W9-C — a declared column, in one line. */
+function col(id: string, label: string, render: StageCustomColumn["render"]): StageCustomColumn {
+  return { id, label, render };
+}
+
+// `panel-investmentdd` / `panel-legaldd` legend (`.nc-legend`), each entry the
+// state of a checklist — the Filter menu speaks the same three words.
+const DD_LEGEND: LegendItem[] = [
+  { label: "Done", color: "var(--green)", statuses: ["done"] },
+  { label: "In progress", color: "var(--gold-dk)", statuses: ["in_progress"] },
+  { label: "Flagged", color: "var(--red)", statuses: ["flagged"] },
+];
+const DD_FILTERS = (track: DiligenceTrack): FilterOption<StageRow>[] =>
+  legendFilters(DD_LEGEND, (r) => legendKeyOf(dealOf(r)?.[track]));
+
+// `panel-incuration` legend — the term sheet's own status (`TS_OUTCOMES`).
+const TS_LEGEND: LegendItem[] = [
+  { label: "Signed", color: "var(--green)", statuses: ["signed"] },
+  { label: "Issued", color: "#2D7DD2", statuses: ["issued"] },
+  { label: "Drafted", color: "var(--gold-dk)", statuses: ["drafted"] },
+  { label: "Declined", color: "var(--red)", statuses: ["declined"] },
+];
 
 const VC_SECTOR = { label: "Sector", field: "sector" as const };
 /** W7-F — what every VC stage screen had before the config carried a toolbar.
@@ -1204,57 +1331,222 @@ export const VC_STAGE_CONFIG: Record<string, StageConfig> = {
     emptyTitle: "No decks in partner review",
     emptyDescription: "Associate-shortlisted deals appear here for the partner.",
   },
+  // ── W9-C · the diligence-to-close screens ─────────────────────────────────
+  // `panel-investmentdd` (`ddRender`): Startup · Avg. score · Addl. parameters ·
+  // Sector · Stage · MP approval · Status · Diligence progress · Flags · Lead ·
+  // Checklist. No Action column — the deck's own move ("Approve for IC") is at
+  // the foot of the Checklist tab, which "Open checklist" opens.
   investmentdd: {
     title: "Investment DD",
-    subtitle: "Pre-IC investment diligence · Managing Partner approval before the deal reaches IC.",
+    subtitle:
+      "Pre-IC investment diligence · market, team, customers, product, financials & competition · log findings before the deal reaches IC",
     statuses: ["investment_dd"],
-    secondary: VC_SECTOR,
-    toolbar: VC_TOOLBAR,
-    columns: ["startup", "sector", "ai", "avg", "addl", "status"],
-    minWidth: "56rem",
+    readOnly: true,
+    columns: [
+      "startup",
+      "avg",
+      "addl",
+      "sector",
+      col("stage", "Stage", ({ deck }) => <StageChip>{deck.stage}</StageChip>),
+      col("mpApproval", "MP approval", (row, ctx) => <MpApprovalCell row={row} ctx={ctx} />),
+      col("ddStatus", "Status", (row, ctx) => <DdStatusCell row={row} ctx={ctx} />),
+      col("ddProgress", "Diligence progress", (row) => <DiligenceProgressCell row={row} />),
+      col("flags", "Flags", (row) => <FlagsPill summary={dealOf(row)?.investment} />),
+      col("ddLead", "Lead", (row) => <span className="text-sm text-fg-muted">{dealOf(row)?.investmentLead ?? "—"}</span>),
+      col("checklist", "Checklist", (row, ctx) => (
+        <OpenTabButton row={row} ctx={ctx} tab="checklist" icon={checklistIcon}>
+          Open checklist
+        </OpenTabButton>
+      )),
+    ],
+    labels: { addl: "Addl. parameters" },
+    minWidth: "82rem",
+    extra: loadDeals,
+    toolbar: { filters: DD_FILTERS("investment"), export: true },
+    subTabs: [
+      { id: "checklist", label: "Checklist", render: (row, ctx) => <ChecklistTab row={row} ctx={ctx} track="investment" /> },
+      "deck",
+      "scores",
+    ],
+    legend: DD_LEGEND,
+    footer: (rows) => {
+      const s = rows.map((r) => dealOf(r)?.investment);
+      return `${plural(rows.length, "deal")} in diligence · ${s.filter(isComplete).length} complete · ${s.filter((x) => !!x?.flagged).length} with flags`;
+    },
     emptyTitle: "Nothing in diligence",
     emptyDescription: "Sponsored deals appear here for pre-IC diligence and MP approval.",
   },
+  // `panel-incuration` (`tsRender` via `clRow`): Startup · AI score · Partner ·
+  // Avg. score · Addl. Parameter scores · Call scheduled · Call date · Call
+  // completed · Schedule call · Term sheet status · Term sheet doc.
   incuration: {
     title: "Term sheet Pipeline",
-    subtitle: "Deals with a term sheet in motion · track drafting, issue and signing, then start legal DD.",
+    subtitle: "Deals with a term sheet in motion · track drafting, issue and signing",
     statuses: ["term_sheet"],
-    secondary: VC_SECTOR,
-    toolbar: VC_TOOLBAR,
-    columns: ["startup", "sector", "ai", "avg", "status"],
+    readOnly: true,
+    columns: [
+      "startup",
+      "ai",
+      col("partner", "Partner", (row) => <span className="text-sm text-fg-muted">{dealOf(row)?.partnerName ?? "—"}</span>),
+      "avg",
+      "addl",
+      "callScheduled",
+      "callDate",
+      "callCompleted",
+      col("scheduleCall", "Schedule call", (row, ctx) => <ScheduleCallCell row={row} ctx={ctx} />),
+      col("termSheetStatus", "Term sheet status", (row, ctx) => <TermSheetStatusCell row={row} ctx={ctx} />),
+      col("termSheetDoc", "Term sheet doc", (row, ctx) => <TermSheetDocCell row={row} ctx={ctx} />),
+    ],
+    minWidth: "92rem",
+    extra: loadDeals,
+    toolbar: {
+      filters: TS_LEGEND.map((l) => ({
+        id: l.label,
+        label: l.label,
+        match: (r: StageRow) => l.statuses!.includes(dealOf(r)?.termSheet.status ?? ""),
+      })),
+      export: true,
+    },
+    subTabs: [
+      { id: "term-sheet", label: "Term sheet", render: (row, ctx) => <TermSheetTab row={row} ctx={ctx} /> },
+      "deck",
+      "scores",
+    ],
+    legend: TS_LEGEND,
+    // `tsRender`'s foot: "issued" counts every term sheet that has gone out, signed ones included.
+    footer: (rows) => {
+      const st = rows.map((r) => dealOf(r)?.termSheet.status);
+      return `${plural(rows.length, "deal")} in term-sheet stage · ${st.filter((x) => x === "issued" || x === "signed").length} issued · ${st.filter((x) => x === "signed").length} signed`;
+    },
     emptyTitle: "No term sheets in motion",
     emptyDescription: "Deals with an issued term sheet appear here.",
   },
+  // `panel-legaldd` (`ldRender`): Startup · Avg. score · Addl. parameters ·
+  // Sector · Stage · Legal DD progress · Flags · Lead · Sign up.
   legaldd: {
     title: "Legal DD",
-    subtitle: "Post-signing confirmatory & legal diligence · clear all items before the round closes.",
+    subtitle: "Post-signing confirmatory & legal diligence · clear all items before the round closes",
     statuses: ["legal_dd"],
-    secondary: VC_SECTOR,
-    toolbar: VC_TOOLBAR,
-    columns: ["startup", "sector", "ai", "avg", "status"],
+    readOnly: true,
+    columns: [
+      "startup",
+      "avg",
+      "addl",
+      "sector",
+      col("stage", "Stage", ({ deck }) => <StageChip>{deck.stage}</StageChip>),
+      col("legalProgress", "Legal DD progress", (row) => <ProgressBar summary={dealOf(row)?.legal} />),
+      col("flags", "Flags", (row) => <FlagsPill summary={dealOf(row)?.legal} />),
+      col("legalLead", "Lead", (row) => <span className="text-sm text-fg-muted">{dealOf(row)?.legalLead ?? "—"}</span>),
+      col("signup", "Sign up", (row, ctx) => (
+        <OpenTabButton row={row} ctx={ctx} tab="signup-record" icon={signupIcon}>
+          Open sign up
+        </OpenTabButton>
+      )),
+    ],
+    labels: { addl: "Addl. parameters" },
+    minWidth: "72rem",
+    extra: loadDeals,
+    toolbar: { filters: DD_FILTERS("legal"), export: true },
+    subTabs: [
+      { id: "legal-checklist", label: "Checklist", render: (row, ctx) => <ChecklistTab row={row} ctx={ctx} track="legal" /> },
+      { id: "signup-record", label: "Sign up", render: (row, ctx) => <SignupRecordTab row={row} ctx={ctx} /> },
+      "deck",
+      "scores",
+    ],
+    legend: DD_LEGEND,
+    footer: (rows) => {
+      const s = rows.map((r) => dealOf(r)?.legal);
+      return `${plural(rows.length, "deal")} in legal DD · ${s.filter(isComplete).length} cleared · ${s.filter((x) => !!x?.flagged).length} with flags`;
+    },
     emptyTitle: "No deals in legal DD",
     emptyDescription: "Term-sheet deals move here for legal diligence.",
   },
+  // `panel-curation` (`curRender`): Startup · Avg. score · Addl. parameters ·
+  // Cohort · Curation stage · Jury member lead · Progress · Action. The IC
+  // member's build redraws the same slug as "Invest ready" (F0563).
   curation: {
     title: "Onboard ready",
-    subtitle: "Funded companies joining the portfolio — cleared legal DD and ready to onboard.",
+    subtitle:
+      "Onboarded startups being actively curated through the cohort — mentorship, milestones and demo-day readiness",
     statuses: ["onboard_ready"],
-    secondary: VC_SECTOR,
-    toolbar: VC_TOOLBAR,
     readOnly: true,
-    columns: ["startup", "cohort", "curationStage", "lead", "progress", "status"],
-    minWidth: "56rem",
+    columns: [
+      "startup",
+      "avg",
+      "addl",
+      "cohort",
+      "curationStage",
+      "lead",
+      "progress",
+      col("action", "Action", (row, ctx) => <CurationActionCell row={row} ctx={ctx} />),
+    ],
+    labels: { addl: "Addl. parameters" },
+    minWidth: "72rem",
+    toolbar: {
+      filters: [
+        { id: "started", label: "In curation", match: (r) => !!r.deck.curationStage },
+        { id: "not-started", label: "Not started", match: (r) => !r.deck.curationStage },
+      ],
+      export: true,
+    },
+    footer: (rows) => `${plural(rows.length, "startup")} in active curation`,
     emptyTitle: "No companies onboarded yet",
     emptyDescription: "Deals that clear legal DD land here as portfolio companies.",
+    roleVariants: {
+      // `AISJ_VC_IC_member_V2` panel-curation: Startup · Cleared · Stage · Status · Ask · Owner.
+      ic_member: {
+        title: "Invest ready",
+        subtitle: "Deals cleared by the IC — executing through term sheet and legal toward close",
+        statuses: ["alignment_call", "term_sheet", "legal_dd", "onboard_ready"],
+        columns: [
+          "startup",
+          col("cleared", "Cleared", (row) => <ClearedCell row={row} />),
+          col("investStage", "Stage", (row) => <InvestReadyStageCell row={row} />),
+          col("investStatus", "Status", (row) => <InvestReadyStatusCell row={row} />),
+          col("ask", "Ask", (row) => <span className="text-[11px] text-fg">{dealOf(row)?.ask ?? "—"}</span>),
+          col("owner", "Owner", (row) => <span className="text-[11px] text-fg-muted">{investReadyOwner(row) ?? "—"}</span>),
+        ],
+        minWidth: "56rem",
+        extra: loadDeals,
+        toolbar: {
+          filters: (["On track", "Stalled", "Funded"] as const).map((label) => ({
+            id: label,
+            label,
+            match: (r: StageRow) => investReadyStatus(r.deck.statusId, dealOf(r)?.lastActivityAt) === label,
+          })),
+          export: true,
+        },
+        footer: (rows) =>
+          `${plural(rows.length, "deal")} cleared · ${rows.filter((r) => r.deck.statusId === "onboard_ready").length} funded`,
+        emptyTitle: "No deals cleared by the IC yet",
+        emptyDescription: "Deals the committee clears appear here as they execute toward close.",
+      },
+    },
   },
+  // `panel-archive` (`arRender`): Startup · Reason · Stage reached · Archived on ·
+  // Archived by · Action (Restore). Reason is the prototype's toned pill (F0589).
   archive: {
     title: "Archive",
-    subtitle: "Deals removed from the active pipeline — passed or not shortlisted. Restore any of them back into the pipeline.",
+    subtitle:
+      "Startups removed from the active pipeline — rejected, withdrawn or graduated. Restore any of them back into the workflow.",
     statuses: ["archived"],
-    secondary: VC_SECTOR,
-    toolbar: VC_TOOLBAR,
-    columns: ["startup", "reason", "stageReached", "archivedOn", "archivedBy"],
+    columns: [
+      "startup",
+      col("reason", "Reason", (row) => <ArchiveReasonCell row={row} />),
+      "stageReached",
+      "archivedOn",
+      "archivedBy",
+    ],
     minWidth: "56rem",
+    toolbar: {
+      filters: (Object.keys(ARCHIVE_REASON_LABELS) as ArchiveReason[]).map((reason) => ({
+        id: reason,
+        label: ARCHIVE_REASON_LABELS[reason],
+        match: (r: StageRow) => archiveReason(r.deck) === reason,
+      })),
+      export: true,
+    },
+    footer: (rows) => `${plural(rows.length, "archived startup")}`,
     emptyTitle: "Archive is empty",
     emptyDescription: "Passed and not-shortlisted deals are kept here for the record.",
   },

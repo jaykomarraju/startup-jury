@@ -220,14 +220,17 @@ describe("a stage that declares none of it", () => {
     expect(screen.queryByRole("tab")).not.toBeInTheDocument();
   });
 
-  it("the VC stage screens keep their Export and gain nothing else until Wave 9 declares it", () => {
-    // W9-B declared the two VC pipelines; test/client/vcPipelines.test.tsx covers them.
-    const declared = new Set(["jurypipeline", "partnerpipeline"]);
-    for (const [slug, cfg] of Object.entries(VC_STAGE_CONFIG).filter(([s]) => !declared.has(s))) {
-      expect(cfg.toolbar, slug).toEqual({ export: true });
-      expect(cfg.subTabs, slug).toBeUndefined();
-      expect(cfg.legend, slug).toBeUndefined();
-      expect(cfg.footer, slug).toBeUndefined();
+  it("every VC stage screen is declared — Wave 9 left none at the bare Export default", () => {
+    // This once asserted the opposite: that the VC screens stayed bare "until
+    // Wave 9 declares it". Wave 9 declared all seven — W9-B's two pipelines
+    // (test/client/vcPipelines.test.tsx) and W9-C's five diligence-to-archive
+    // screens (test/client/vcDiligence.test.tsx) — so the old filter would now
+    // loop over nothing and assert nothing. Inverted to the invariant that
+    // actually holds, which fails if a config is reverted to the default.
+    expect(Object.keys(VC_STAGE_CONFIG).length).toBe(7);
+    for (const [slug, cfg] of Object.entries(VC_STAGE_CONFIG)) {
+      expect(cfg.toolbar, slug).not.toEqual({ export: true });
+      expect(cfg.footer, slug).toBeTypeOf("function");
     }
   });
 });
