@@ -32,7 +32,9 @@ test("VC admin sees capital deployment and decision history", async ({ page }) =
 
   await page.goto("/app/capital");
   await expect(page.getByRole("heading", { name: "Capital Deployment & Pacing" })).toBeVisible();
-  await expect(page.getByText("Deployed vs. allocated vs. committed")).toBeVisible();
+  // W9-D — the prototype's card is "Deployed vs. dry powder" (`panel-capital.html`);
+  // "Deployed vs. allocated vs. committed" was this application's wording.
+  await expect(page.getByRole("heading", { name: "Deployed vs. dry powder" })).toBeVisible();
 
   await page.goto("/app/decisions");
   await expect(page.getByRole("heading", { name: "Decision History" })).toBeVisible();

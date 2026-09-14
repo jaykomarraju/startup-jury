@@ -32,6 +32,7 @@ import {
 } from "./routes/analytics/IncubatorReports";
 import { RepDecksPage, RepScoresPage, RepDriftPage } from "./routes/analytics/JuryReports";
 import {
+  VcFunnelPage,
   CapitalPage,
   PortfolioPage,
   ScoringPage,
@@ -85,7 +86,7 @@ function NavRoute() {
 
   // Analytics reports (Phase 7). Funnel is shared; the rest are edition-specific
   // but the nav guard already restricts visibility per edition/role.
-  if (navId === "funnel") return <FunnelPage />;
+  if (navId === "funnel") return user.edition === "vc" ? <VcFunnelPage /> : <FunnelPage />;
   if (navId === "cohortsummary") return <CohortSummaryPage />;
   if (navId === "evaluatorscores") return <EvaluatorScoresPage />;
   if (navId === "scoredrift") return <ScoreDriftPage />;

@@ -1,0 +1,828 @@
+diff --git a/src/client/routes/analytics/VcReports.tsx b/src/client/routes/analytics/VcReports.tsx
+index 931a81b..966d7bc 100644
+--- a/src/client/routes/analytics/VcReports.tsx
++++ b/src/client/routes/analytics/VcReports.tsx
+@@ -50,6 +50,7 @@ import {
+   type DecisionReport,
+ } from "../../api";
+ import { getStage } from "../../../pipeline";
++import { HIGH_DISAGREEMENT_SIGMA, MODERATE_DISAGREEMENT_SIGMA } from "../../../shared/analytics";
+ import { formatDelta, formatScore } from "../../../shared/scoring";
+ import { RUBRIC_BANDS, type ScoreScale } from "../../../shared/types";
+ import { scoringSettings } from "../admin/scoringApi";
+@@ -499,10 +500,11 @@ const LEAN_PILL = { Invest: "go", Hold: "hold", "Need info": "hold", Pass: "no"
+  * `panel-scoring.html` "Highest-variance deals": red at σ 1.4, gold at 0.9 and
+  * 0.6, olive at 0.3. A standard deviation is not a score, so there is no rubric
+  * band to read; these two steps are the narrowest rule that reproduces the
+- * panel (§8 Q155). Canonical 0–10 units, whatever the display scale.
++ * panel (§8 Q155), and the red step is the σ `/diligence` raises a red flag at.
++ * Canonical 0–10 units, whatever the display scale.
+  */
+ export function varianceColor(sigma: number): string {
+-  return sigma >= 1 ? "var(--red)" : sigma >= 0.5 ? "var(--gold-dk)" : "var(--olive)";
++  return sigma >= HIGH_DISAGREEMENT_SIGMA ? "var(--red)" : sigma >= MODERATE_DISAGREEMENT_SIGMA ? "var(--gold-dk)" : "var(--olive)";
+ }
+ 
+ export const HIGHEST_VARIANCE_ROWS = 4;
+diff --git a/src/server/routes/analytics.ts b/src/server/routes/analytics.ts
+index 1521d88..c78b98a 100644
+--- a/src/server/routes/analytics.ts
++++ b/src/server/routes/analytics.ts
+@@ -18,7 +18,7 @@ import { requireAuth } from "../auth/middleware";
+ import { loadScoringSettings } from "../config/scoringSettings";
+ import { canAccessNav, navItemById } from "../../shared/nav";
+ import { RUBRIC_BANDS } from "../../shared/types";
+-import { isAssignableEvaluator } from "../../shared/roles";
++import { canSeeEvaluatorScores, isAssignableEvaluator, type Role } from "../../shared/roles";
+ import { withholdsAiScore } from "../../shared/scoring";
+ import { ASSIGNEE_PAIRS_SQL } from "../decks/assignments";
+ import {
+@@ -32,6 +32,12 @@ import {
+   decisionHistory,
+   decisionKind,
+   myDecksSummary,
++  fundLabel,
++  pacingByYear,
++  checkSizeMix,
++  clarificationQuestion,
++  stddev,
++  HIGH_DISAGREEMENT_SIGMA,
+   type CohortDeck,
+   type MyDeckInput,
+   type EvaluationRow,
+@@ -94,12 +100,31 @@ async function humanEvalsByDeck(
+ 
+ // ── Pipeline funnel (both editions) ──────────────────────────────────────────
+ 
++/**
++ * W9-D — the VC deal-maker roles read THEIR pipeline. `AISJ_VC_{Partner_V1,
++ * IC_member_V2,Associate_V1,Analyst_V1}/panel-funnel.html` add "Limited to deals
++ * in your pipeline." to the subtitle, and only the Super User and Admin builds
++ * omit it (F0816, F0863). Those four roles are exactly the VC's assignable
++ * evaluators. "Your pipeline" is every deal the caller uploaded, is assigned to,
++ * scored, or moved: the union of the ways a person comes to own a deal here.
++ */
++const MY_DEALS_SQL =
++  "SELECT id AS deck_id FROM decks WHERE uploaded_by = ?1 " +
++  `UNION SELECT deck_id FROM (${ASSIGNEE_PAIRS_SQL}) WHERE evaluator_id = ?1 ` +
++  "UNION SELECT deck_id FROM evaluations WHERE evaluator_id = ?1 " +
++  "UNION SELECT deck_id FROM pipeline_events WHERE actor_id = ?1";
++
+ analytics.get("/funnel", guard("funnel"), async (c) => {
+-  const edition = c.var.user.edition;
++  const { edition, role, id } = c.var.user;
++  const mine = edition === "vc" && isAssignableEvaluator(edition, role);
+   const rows = (
+-    await c.env.DB.prepare("SELECT status FROM decks WHERE edition = ?").bind(edition).all<{ status: string }>()
++    mine
++      ? await c.env.DB.prepare(`SELECT status FROM decks WHERE edition = ?2 AND id IN (${MY_DEALS_SQL})`)
++          .bind(id, edition)
++          .all<{ status: string }>()
++      : await c.env.DB.prepare("SELECT status FROM decks WHERE edition = ?").bind(edition).all<{ status: string }>()
+   ).results;
+-  return c.json(buildFunnel(edition, rows.map((r) => r.status)));
++  return c.json({ ...buildFunnel(edition, rows.map((r) => r.status)), scope: mine ? "mine" : "all" });
+ });
+ 
+ // ── Cohort summary (incubator) ───────────────────────────────────────────────
+@@ -216,28 +241,44 @@ analytics.get("/drift", guard("scoredrift"), async (c) => {
+ // ── Scoring summary (VC) ─────────────────────────────────────────────────────
+ 
+ analytics.get("/scoring", guard("scoring"), async (c) => {
+-  const edition = c.var.user.edition;
++  const { edition, role, id: viewerId } = c.var.user;
+   const decks = (
+     await c.env.DB.prepare("SELECT id, name, ai_score FROM decks WHERE edition = ?")
+       .bind(edition)
+       .all<{ id: string; name: string; ai_score: number | null }>()
+   ).results;
+-  const humans = await humanEvalsByDeck(c, edition);
++  // W9-D — issue 21: "lower guys must not be able to view the evaluators' scores
++  // up in the hierarchy". The deck report enforces it (`canSeeEvaluatorScores`);
++  // this summary averaged EVERY evaluator, so an analyst read partner and IC
++  // scores folded into the mean. Only evaluations the viewer may see count —
++  // in the averages, the variance and the "Evaluators" tile alike.
++  const evals = (
++    await c.env.DB.prepare(
++      "SELECT e.deck_id AS deck_id, e.evaluator_id AS eid, u.role AS role, e.weighted_total AS wt FROM evaluations e " +
++        "JOIN decks d ON d.id = e.deck_id JOIN users u ON u.id = e.evaluator_id " +
++        "WHERE d.edition = ? AND e.evaluator_id IS NOT NULL AND e.weighted_total IS NOT NULL",
++    )
++      .bind(edition)
++      .all<{ deck_id: string; eid: string; role: string; wt: number }>()
++  ).results.filter((e) => e.eid === viewerId || canSeeEvaluatorScores(edition, role, e.role as Role));
++  const humans = new Map<string, number[]>();
++  for (const e of evals) (humans.get(e.deck_id) ?? humans.set(e.deck_id, []).get(e.deck_id)!).push(e.wt);
++
++  // W9-D — blind scoring (F0106) held on the deck read but not here: with "Show
++  // AI score to jury before they score" off, an assignable evaluator read every
++  // AI score on this report before scoring. Same predicate as `GET /api/decks/:id`.
++  const scoring = await loadScoringSettings(c.env.DB, edition);
++  const submitted = new Set(evals.filter((e) => e.eid === viewerId).map((e) => e.deck_id));
++  const isEvaluator = isAssignableEvaluator(edition, role);
++
+   const input: ScoringInput[] = decks.map((d) => ({
+     deckId: d.id,
+     name: d.name,
+     aiScore: d.ai_score,
+     humanScores: humans.get(d.id) ?? [],
++    aiWithheld: withholdsAiScore(scoring, { isEvaluator, hasSubmitted: submitted.has(d.id) }),
+   }));
+-  // Distinct human evaluators across the edition (the "Evaluators" KPI) — computed
+-  // here where evaluator identity is available (the pure aggregator only sees scores).
+-  const distinct = await c.env.DB.prepare(
+-    "SELECT COUNT(DISTINCT e.evaluator_id) AS n FROM evaluations e JOIN decks d ON d.id = e.deck_id " +
+-      "WHERE d.edition = ? AND e.evaluator_id IS NOT NULL AND e.weighted_total IS NOT NULL",
+-  )
+-    .bind(edition)
+-    .first<{ n: number }>();
+-  return c.json(scoringSummary(input, distinct?.n ?? 0));
++  return c.json(scoringSummary(input, new Set(evals.map((e) => e.eid)).size));
+ });
+ 
+ // ── Capital deployment (VC) ──────────────────────────────────────────────────
+@@ -246,10 +287,18 @@ async function loadPortfolio(c: Context<AppEnv>, edition: Edition): Promise<Port
+   const rows = (
+     await c.env.DB.prepare(
+       "SELECT pf.deck_id AS deck_id, d.name AS name, d.sector AS sector, d.stage AS stage, d.city AS city, " +
+-        "pf.capital_deployed AS capital FROM portfolio pf JOIN decks d ON d.id = pf.deck_id WHERE d.edition = ?",
++        "pf.capital_deployed AS capital, pf.onboarded_at AS onboarded_at FROM portfolio pf JOIN decks d ON d.id = pf.deck_id WHERE d.edition = ?",
+     )
+       .bind(edition)
+-      .all<{ deck_id: string; name: string; sector: string | null; stage: string | null; city: string | null; capital: string | null }>()
++      .all<{
++        deck_id: string;
++        name: string;
++        sector: string | null;
++        stage: string | null;
++        city: string | null;
++        capital: string | null;
++        onboarded_at: string | null;
++      }>()
+   ).results;
+   return rows.map((r) => ({
+     deckId: r.deck_id,
+@@ -258,9 +307,20 @@ async function loadPortfolio(c: Context<AppEnv>, edition: Edition): Promise<Port
+     stage: r.stage,
+     city: r.city,
+     capitalDeployed: num(r.capital),
++    onboardedAt: r.onboarded_at,
+   }));
+ }
+ 
++/** W9-D — the chip's fund name: the one active programme with a committed size, else "All funds". */
++async function loadFundLabel(c: Context<AppEnv>, edition: Edition): Promise<string> {
++  const programs = (
++    await c.env.DB.prepare("SELECT name, fund_size FROM programs WHERE edition = ? AND active = 1")
++      .bind(edition)
++      .all<{ name: string; fund_size: number | null }>()
++  ).results;
++  return fundLabel(programs.map((p) => ({ name: p.name, fundSize: p.fund_size })));
++}
++
+ /** Sum the edition's program-level fund economics (₹ Cr). Falls back to the
+  *  single-fund constant only when no program has a committed size yet. */
+ async function loadFundTotals(
+@@ -284,12 +344,32 @@ analytics.get("/capital", guard("capital"), async (c) => {
+   const edition = c.var.user.edition;
+   const rows = await loadPortfolio(c, edition);
+   const { committed, allocated } = await loadFundTotals(c, edition);
+-  return c.json(capitalDeployment(rows, committed, allocated));
++  return c.json({
++    ...capitalDeployment(rows, committed, allocated),
++    fund: { label: await loadFundLabel(c, edition) },
++    // W9-D — `panel-capital.html` draws reserves, a deployment plan and a
++    // follow-on split. No surface records any of the three (§8 Q152), so each is
++    // an explicit null the screen renders as "—", never an invented number.
++    reserves: null,
++    paceVsPlan: null,
++    deployedFollowOn: null,
++    pacing: pacingByYear(rows, new Date()),
++  });
+ });
+ 
+ analytics.get("/portfolio", guard("portfolio"), async (c) => {
+-  const rows = await loadPortfolio(c, c.var.user.edition);
+-  return c.json(portfolioConstruction(rows));
++  const edition = c.var.user.edition;
++  const rows = await loadPortfolio(c, edition);
++  const report = portfolioConstruction(rows);
++  const deployed = rows.reduce((n, r) => n + (r.capitalDeployed !== null && r.capitalDeployed > 0 ? r.capitalDeployed : 0), 0);
++  return c.json({
++    ...report,
++    fund: { label: await loadFundLabel(c, edition) },
++    deployed: Math.round(deployed * 10) / 10,
++    checkSizeMix: checkSizeMix(rows),
++    // No position can be marked a follow-on cheque yet (§8 Q152).
++    followOnRate: null,
++  });
+ });
+ 
+ // ── Diligence & risk (VC) ────────────────────────────────────────────────────
+@@ -312,34 +392,71 @@ analytics.get("/diligence", guard("diligence"), async (c) => {
+   // rather than naming the keys means the next scale change cannot silently
+   // empty this list.
+   const LOWEST_BANDS = RUBRIC_BANDS.slice(-2).map((b) => b.key as string);
+-  const isRedFlag = (s: string | null) => s !== null && LOWEST_BANDS.includes(s);
+-  const redFlags = inDiligence.filter((d) => isRedFlag(d.signal));
++  const isLowSignal = (s: string | null) => s !== null && LOWEST_BANDS.includes(s);
+ 
+-  // Open founder clarifications = unanswered queries on decks *in diligence* only.
++  // W9-D — `panel-diligence.html` flags a deal for more than its signal band:
++  // "High evaluator disagreement (σ 1.4)" is the Scoring Summary's widest
++  // spread, raised as a flag. That one is computable from the evaluations; the
++  // panel's other kinds (an unverified reference, a founder departure, revenue
++  // concentration) need a flag someone RAISES, which nothing records (§8 Q153).
+   const placeholders = DILIGENCE_STAGES.map(() => "?").join(",");
+-  const openQ = await c.env.DB.prepare(
+-    "SELECT COUNT(*) AS n FROM queries q JOIN decks d ON d.id = q.deck_id " +
+-      `WHERE d.edition = ? AND q.email_status != 'answered' AND d.status IN (${placeholders})`,
+-  )
+-    .bind(edition, ...DILIGENCE_STAGES)
+-    .first<{ n: number }>();
+-  const clarifications = openQ?.n ?? 0;
++  const evals = (
++    await c.env.DB.prepare(
++      "SELECT e.deck_id AS deck_id, e.weighted_total AS wt FROM evaluations e JOIN decks d ON d.id = e.deck_id " +
++        `WHERE d.edition = ? AND d.status IN (${placeholders}) AND e.evaluator_id IS NOT NULL AND e.weighted_total IS NOT NULL`,
++    )
++      .bind(edition, ...DILIGENCE_STAGES)
++      .all<{ deck_id: string; wt: number }>()
++  ).results;
++  const scoresByDeck = new Map<string, number[]>();
++  for (const e of evals) (scoresByDeck.get(e.deck_id) ?? scoresByDeck.set(e.deck_id, []).get(e.deck_id)!).push(e.wt);
++
++  const flags: Array<{ company: string; flag: string }> = [];
++  for (const d of inDiligence) {
++    if (isLowSignal(d.signal)) {
++      flags.push({ company: d.name, flag: d.signal === "insufficient" ? "Insufficient signal" : "Weak overall signal" });
++    }
++    const scores = scoresByDeck.get(d.id) ?? [];
++    const sigma = scores.length >= 2 ? Math.round(stddev(scores) * 10) / 10 : 0;
++    if (sigma >= HIGH_DISAGREEMENT_SIGMA) {
++      flags.push({ company: d.name, flag: `High evaluator disagreement (σ ${sigma.toFixed(1)})` });
++    }
++  }
++  const flagged = new Set(flags.map((f) => f.company));
++
++  // Founder clarifications on decks *in diligence* only: the unanswered count,
++  // and (W9-D, F0814) the rows — newest first, answered ones included, as the
++  // panel lists InsureFlow's "Answered" beside two "Pending".
++  const clarificationRows = (
++    await c.env.DB.prepare(
++      "SELECT d.name AS company, q.questions AS questions, q.email_status AS status FROM queries q JOIN decks d ON d.id = q.deck_id " +
++        `WHERE d.edition = ? AND d.status IN (${placeholders}) ORDER BY q.created_at DESC`,
++    )
++      .bind(edition, ...DILIGENCE_STAGES)
++      .all<{ company: string; questions: string; status: string }>()
++  ).results.map((q) => ({
++    company: q.company,
++    question: clarificationQuestion(q.questions),
++    status: q.status === "answered" ? ("Answered" as const) : ("Pending" as const),
++  }));
++  const clarifications = clarificationRows.filter((q) => q.status === "Pending").length;
+ 
+   return c.json({
+     inDiligence: inDiligence.length,
+-    redFlags: redFlags.length,
++    redFlags: flags.length,
+     clarifications,
+-    onTrack: inDiligence.length - redFlags.length,
++    onTrack: inDiligence.length - flagged.size,
+     items: inDiligence.map((d) => ({
+       company: d.name,
+       stage: d.status,
+       signal: d.signal,
+-      status: isRedFlag(d.signal) ? "Flagged" : "In progress",
+-    })),
+-    flags: redFlags.map((d) => ({
+-      company: d.name,
+-      flag: d.signal === "insufficient" ? "Insufficient signal" : "Weak overall signal",
++      status: flagged.has(d.name) ? "Flagged" : "In progress",
+     })),
++    flags,
++    // No item-level diligence checklist is modelled (§8 Q153).
++    openItems: null,
++    itemRows: [],
++    clarificationRows,
+   });
+ });
+ 
+diff --git a/src/shared/analytics.ts b/src/shared/analytics.ts
+index 415f37c..903c47e 100644
+--- a/src/shared/analytics.ts
++++ b/src/shared/analytics.ts
+@@ -631,6 +631,12 @@ export interface ScoringInput {
+   aiScore: number | null;
+   /** Human evaluation totals for the deck (one per evaluator). */
+   humanScores: number[];
++  /**
++   * W9-D — blind scoring withheld the AI score from this viewer
++   * (`withholdsAiScore`). The row then carries no AI number at all, and nothing
++   * derived from one: not the lean, not its position in the sort.
++   */
++  aiWithheld?: boolean;
+ }
+ 
+ export interface ScoringRow {
+@@ -642,6 +648,8 @@ export interface ScoringRow {
+   spreadLow: number | null;
+   spreadHigh: number | null;
+   lean: "Invest" | "Hold" | "Need info" | "Pass";
++  /** W9-D — present (true) only when blind scoring withheld `ai` from this viewer. */
++  aiWithheld?: true;
+ }
+ 
+ export interface ScoringSummary {
+@@ -652,12 +660,21 @@ export interface ScoringSummary {
+   avgVariance: number;
+ }
+ 
+-function leanFor(score: number | null): "Invest" | "Hold" | "Need info" | "Pass" {
+-  if (score === null) return "Need info";
+-  if (score >= 8) return "Invest";
+-  if (score >= 6.5) return "Hold";
+-  if (score >= 5) return "Need info";
+-  return "Pass";
++/**
++ * The Scoring Summary's Lean pill, from the evaluators' mean.
++ *
++ * W9-D — this held a private cut-point table (≥ 8 / ≥ 6.5 / ≥ 5), the defect
++ * Waves 2, 7 and 8 removed from every other report: an 8.0 read "Invest" here
++ * and "Strong" on the rubric, a 6.9 "Hold" beside a "Moderate" band. It reads
++ * `RUBRIC_BANDS` now — Exceptional and Strong lean Invest, Moderate Hold, Weak
++ * and Insufficient Pass. A deal no evaluator has scored is "Need info", which is
++ * what `panel-scoring.html` shows for WealthOS (AI 7.8, evaluators pending):
++ * the lean is the evaluators' call, never the AI's (§8 Q156).
++ */
++export function leanFor(evaluatorAvg: number | null): "Invest" | "Hold" | "Need info" | "Pass" {
++  if (evaluatorAvg === null) return "Need info";
++  const i = rubricBand(evaluatorAvg).index;
++  return i <= 1 ? "Invest" : i === 2 ? "Hold" : "Pass";
+ }
+ 
+ /**
+@@ -673,12 +690,13 @@ export function scoringSummary(inputs: ScoringInput[], evaluatorCount: number):
+     return {
+       deckId: i.deckId,
+       name: i.name,
+-      ai: i.aiScore === null ? null : round(i.aiScore, 1),
++      ai: i.aiWithheld || i.aiScore === null ? null : round(i.aiScore, 1),
+       evaluatorAvg: avg === null ? null : round(avg, 1),
+       variance: multi ? round(stddev(i.humanScores), 1) : null,
+       spreadLow: hasHuman ? round(Math.min(...i.humanScores), 1) : null,
+       spreadHigh: hasHuman ? round(Math.max(...i.humanScores), 1) : null,
+-      lean: leanFor(avg ?? i.aiScore),
++      lean: leanFor(avg === null ? null : round(avg, 1)),
++      ...(i.aiWithheld ? { aiWithheld: true as const } : {}),
+     };
+   });
+   const scoredRows = rows.filter((r) => r.evaluatorAvg !== null);
+@@ -701,6 +719,8 @@ export interface PortfolioRow {
+   stage: string | null;
+   city: string | null;
+   capitalDeployed: number | null;
++  /** W9-D — when the position was recorded (`portfolio.onboarded_at`); feeds pacing by period. */
++  onboardedAt?: string | null;
+ }
+ 
+ export interface CapitalReport {
+@@ -874,3 +894,89 @@ export function decisionHistory(events: DecisionEvent[]): DecisionReport {
+     revisit: rows.filter((r) => r.decision === "Revisit").length,
+   };
+ }
++
++// ═══════════════════════════════════════════════════════════════════════════
++// W9-D — the VC reports' data the prototype panels draw and the shapes above
++// did not carry. Everything here is additive; `VcReports.tsx` reads each field
++// as optional, so a route without it still renders.
++// ═══════════════════════════════════════════════════════════════════════════
++
++/**
++ * The fund a VC report is about. `loadFundTotals` sums every active programme
++ * with a committed size, so the chip may only NAME a fund when exactly one
++ * programme carries one — otherwise "Fund II" would label a sum of several.
++ */
++export function fundLabel(programs: Array<{ name: string; fundSize: number | null }>): string {
++  const funded = programs.filter((p) => p.fundSize !== null && p.fundSize > 0);
++  return funded.length === 1 ? funded[0].name : "All funds";
++}
++
++export interface PacingRow {
++  year: number;
++  /** The current calendar year, still running — the panel's "2026 (YTD)". */
++  ytd: boolean;
++  /** No deployment plan is modelled (§8 Q152): null, never a guess. */
++  planned: number | null;
++  actual: number;
++  cumulative: number;
++  variance: number | null;
++}
++
++/** `panel-capital.html` "Pacing against plan": capital deployed per calendar year, and running total. */
++export function pacingByYear(rows: PortfolioRow[], now: Date): PacingRow[] {
++  const byYear = new Map<number, number>();
++  for (const r of rows) {
++    if (r.capitalDeployed === null || r.capitalDeployed <= 0 || !r.onboardedAt) continue;
++    const y = new Date(r.onboardedAt).getUTCFullYear();
++    if (!Number.isFinite(y)) continue;
++    byYear.set(y, (byYear.get(y) ?? 0) + r.capitalDeployed);
++  }
++  let cumulative = 0;
++  return [...byYear.entries()]
++    .sort((a, b) => a[0] - b[0])
++    .map(([year, actual]) => {
++      cumulative += actual;
++      return {
++        year,
++        ytd: year === now.getUTCFullYear(),
++        planned: null,
++        actual: round(actual, 1),
++        cumulative: round(cumulative, 1),
++        variance: null,
++      };
++    });
++}
++
++/**
++ * `panel-portfolio.html` "Check-size mix": `< ₹3 Cr` · `₹3–8 Cr` · `₹8–20 Cr` ·
++ * `> ₹20 Cr`. The labels leave both inner edges open; a bucket owns its LOWER
++ * edge (₹3 Cr is 3–8, ₹8 Cr is 8–20) and "> ₹20 Cr" is strictly above, so
++ * ₹20 Cr is 8–20 (§8 Q157).
++ */
++export const CHECK_SIZE_BUCKETS = ["< ₹3 Cr", "₹3–8 Cr", "₹8–20 Cr", "> ₹20 Cr"] as const;
++
++export function checkSizeBucket(crore: number): number {
++  return crore < 3 ? 0 : crore < 8 ? 1 : crore <= 20 ? 2 : 3;
++}
++
++export function checkSizeMix(rows: PortfolioRow[]): MixSlice[] {
++  const amounts = rows.map((r) => r.capitalDeployed).filter((v): v is number => v !== null && v > 0);
++  const counts = [0, 0, 0, 0];
++  for (const a of amounts) counts[checkSizeBucket(a)]++;
++  return CHECK_SIZE_BUCKETS.map((label, i) => ({ label, count: counts[i], pct: pct(counts[i], amounts.length) }));
++}
++
++/**
++ * Evaluator disagreement a red flag is raised for: `panel-diligence.html` flags
++ * CreditBridge "High evaluator disagreement (σ 1.4)", and `panel-scoring.html`
++ * paints the same σ red where 0.9 and 0.6 are gold. Canonical 0–10 units.
++ */
++export const HIGH_DISAGREEMENT_SIGMA = 1;
++/** Below this, `panel-scoring.html` paints σ olive (0.3); from it up to `HIGH_DISAGREEMENT_SIGMA`, gold. */
++export const MODERATE_DISAGREEMENT_SIGMA = 0.5;
++
++/** The panel's "Question" cell — a founder clarification's first line, shortened. */
++export function clarificationQuestion(text: string, max = 80): string {
++  const line = text.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
++  return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
++}
+diff --git a/test/unit/analytics-w9d.test.ts b/test/unit/analytics-w9d.test.ts
+new file mode 100644
+index 0000000..f8fd6ff
+--- /dev/null
++++ b/test/unit/analytics-w9d.test.ts
+@@ -0,0 +1,122 @@
++import { describe, it, expect } from "vitest";
++import {
++  checkSizeBucket,
++  checkSizeMix,
++  clarificationQuestion,
++  fundLabel,
++  leanFor,
++  pacingByYear,
++  scoringSummary,
++  HIGH_DISAGREEMENT_SIGMA,
++  MODERATE_DISAGREEMENT_SIGMA,
++  type PortfolioRow,
++} from "../../src/shared/analytics";
++import { RUBRIC_BANDS } from "../../src/shared/types";
++
++/** W9-D — the VC reports' additive aggregation (`W9-D-vc-report-data.patch`). */
++
++const pos = (name: string, capitalDeployed: number | null, onboardedAt: string | null = null): PortfolioRow => ({
++  deckId: name,
++  name,
++  sector: null,
++  stage: null,
++  city: null,
++  capitalDeployed,
++  onboardedAt,
++});
++
++describe("leanFor — the Lean pill reads RUBRIC_BANDS", () => {
++  it("Exceptional and Strong lean Invest, Moderate Hold, Weak and Insufficient Pass, unscored Need info", () => {
++    expect([9.5, 8, 7, 6.9, 5, 4.9, 1, null].map(leanFor)).toEqual([
++      "Invest",
++      "Invest",
++      "Invest",
++      "Hold",
++      "Hold",
++      "Pass",
++      "Pass",
++      "Need info",
++    ]);
++  });
++
++  it("every cut-point is a band's own minimum — none of the retired 8 / 6.5 / 5 splits survives", () => {
++    // The lean changes exactly where a band boundary changes it: Strong/Moderate and Moderate/Weak.
++    const strong = RUBRIC_BANDS.find((b) => b.key === "strong")!;
++    const moderate = RUBRIC_BANDS.find((b) => b.key === "moderate")!;
++    expect(leanFor(strong.min)).not.toBe(leanFor(strong.min - 0.01));
++    expect(leanFor(moderate.min)).not.toBe(leanFor(moderate.min - 0.01));
++    expect(leanFor(7)).toBe("Invest");
++    expect(leanFor(6.99)).toBe("Hold");
++    expect(leanFor(5)).toBe("Hold");
++    expect(leanFor(4.99)).toBe("Pass");
++    // The old table split at 8.0 and 6.5; both sides of each now agree.
++    expect(leanFor(8)).toBe(leanFor(7.99));
++    expect(leanFor(6.5)).toBe(leanFor(6.49));
++  });
++});
++
++describe("scoringSummary — blind scoring", () => {
++  const rows = scoringSummary(
++    [
++      { deckId: "a", name: "A", aiScore: 9.1, humanScores: [], aiWithheld: true },
++      { deckId: "b", name: "B", aiScore: 6.0, humanScores: [7, 7] },
++    ],
++    1,
++  ).rows;
++
++  it("a withheld row carries no AI number and says why", () => {
++    const a = rows.find((r) => r.name === "A")!;
++    expect(a.ai).toBeNull();
++    expect(a.aiWithheld).toBe(true);
++    expect(a.lean).toBe("Need info");
++  });
++
++  it("the withheld AI score does not leak through the sort order", () => {
++    expect(rows.map((r) => r.name)).toEqual(["B", "A"]);
++    expect(rows.find((r) => r.name === "B")!.aiWithheld).toBeUndefined();
++  });
++});
++
++describe("fundLabel", () => {
++  it("names the fund only when exactly one programme carries a committed size", () => {
++    expect(fundLabel([{ name: "Fund II", fundSize: 300 }, { name: "Deep Tech Fund", fundSize: null }])).toBe("Fund II");
++    expect(fundLabel([{ name: "Fund II", fundSize: 300 }, { name: "Fund III", fundSize: 500 }])).toBe("All funds");
++    expect(fundLabel([{ name: "Deep Tech Fund", fundSize: 0 }])).toBe("All funds");
++  });
++});
++
++describe("pacingByYear", () => {
++  it("sums deployed capital per calendar year, runs a cumulative total, and marks the current year YTD", () => {
++    const rows = [pos("A", 10, "2025-03-01T00:00:00Z"), pos("B", 5.5, "2026-01-02T00:00:00Z"), pos("C", 4, "2026-07-01T00:00:00Z"), pos("D", 0, "2024-01-01T00:00:00Z"), pos("E", 9, null)];
++    expect(pacingByYear(rows, new Date("2026-09-13T00:00:00Z"))).toEqual([
++      { year: 2025, ytd: false, planned: null, actual: 10, cumulative: 10, variance: null },
++      { year: 2026, ytd: true, planned: null, actual: 9.5, cumulative: 19.5, variance: null },
++    ]);
++  });
++});
++
++describe("checkSizeMix", () => {
++  it("buckets on the panel's four labels, each bucket owning its lower edge", () => {
++    expect([2.9, 3, 7.9, 8, 20, 20.1].map(checkSizeBucket)).toEqual([0, 1, 1, 2, 2, 3]);
++    const mix = checkSizeMix([pos("a", 2), pos("b", 4), pos("c", 12), pos("d", 22), pos("e", null)]);
++    expect(mix.map((m) => m.label)).toEqual(["< ₹3 Cr", "₹3–8 Cr", "₹8–20 Cr", "> ₹20 Cr"]);
++    expect(mix.map((m) => m.pct)).toEqual([25, 25, 25, 25]);
++  });
++});
++
++describe("disagreement thresholds", () => {
++  it("reproduce panel-scoring.html's colours: 1.4 red, 0.9 / 0.6 gold, 0.3 olive", () => {
++    expect(1.4 >= HIGH_DISAGREEMENT_SIGMA).toBe(true);
++    expect([0.9, 0.6].every((s) => s < HIGH_DISAGREEMENT_SIGMA && s >= MODERATE_DISAGREEMENT_SIGMA)).toBe(true);
++    expect(0.3 < MODERATE_DISAGREEMENT_SIGMA).toBe(true);
++  });
++});
++
++describe("clarificationQuestion", () => {
++  it("takes the first non-empty line and shortens a long one", () => {
++    expect(clarificationQuestion("\n  Churn definition \nWhat counts as churn?")).toBe("Churn definition");
++    const long = "x".repeat(100);
++    expect(clarificationQuestion(long)).toHaveLength(80);
++    expect(clarificationQuestion(long).endsWith("…")).toBe(true);
++  });
++});
+diff --git a/test/unit/analytics.test.ts b/test/unit/analytics.test.ts
+index 6e1633d..ba29d3e 100644
+--- a/test/unit/analytics.test.ts
++++ b/test/unit/analytics.test.ts
+@@ -353,7 +353,11 @@ describe("scoringSummary", () => {
+     const wos = s.rows.find((r) => r.name === "WealthOS")!;
+     expect(wos.evaluatorAvg).toBeNull();
+     expect(wos.variance).toBeNull();
+-    expect(wos.lean).toBe("Hold"); // no human scores → falls back to AI 7.8 → Hold band
++    // W9-D — RE-BASELINED, not deleted (§4). This read "Hold": `leanFor` fell back to the AI 7.8
++    // and cut it at a private ≥ 6.5. The lean now reads RUBRIC_BANDS from the evaluators' mean
++    // alone, and a deal no evaluator has scored is "Need info" — `panel-scoring.html`'s own
++    // WealthOS row (AI 7.8, evaluators pending) says exactly that.
++    expect(wos.lean).toBe("Need info");
+   });
+ 
+   it("treats a single-scorer deck as having no measurable variance", () => {
+diff --git a/test/worker/reports-w9d-data.test.ts b/test/worker/reports-w9d-data.test.ts
+new file mode 100644
+index 0000000..9b11ce2
+--- /dev/null
++++ b/test/worker/reports-w9d-data.test.ts
+@@ -0,0 +1,198 @@
++import { SELF, env } from "cloudflare:test";
++import { describe, it, expect, afterEach } from "vitest";
++
++/**
++ * W9-D — the VC report data `W9-D-vc-report-data.patch` adds to five routes:
++ * the funnel scoped to the caller's pipeline, the Scoring Summary honouring the
++ * evaluation hierarchy (issue 21) and blind scoring (F0106), capital pacing and
++ * the fund's name, the check-size mix, founder-clarification rows and the
++ * evaluator-disagreement red flag.
++ *
++ * Storage is isolated per file; every write below is still undone.
++ */
++
++const BASE = "https://example.com";
++const SUPERUSER = "aarav.khanna@demo.startupjury.ai";
++const ADMIN = "nisha.kapoor.vc@demo.startupjury.ai";
++const PARTNER = "ishaan.sethi@demo.startupjury.ai";
++const ASSOCIATE = "sunita.rao.vc@demo.startupjury.ai";
++const ANALYST = "rhea.nair@demo.startupjury.ai";
++const INC_ADMIN = "nisha.kapoor@demo.startupjury.ai";
++
++async function login(email: string): Promise<string> {
++  const res = await SELF.fetch(`${BASE}/api/auth/login`, {
++    method: "POST",
++    headers: { "content-type": "application/json" },
++    body: JSON.stringify({ email, password: "demo1234" }),
++  });
++  return (res.headers.get("set-cookie") ?? "").split(";")[0];
++}
++
++async function get<T>(path: string, email: string): Promise<{ status: number; body: T }> {
++  const res = await SELF.fetch(`${BASE}/api/analytics/${path}`, { headers: { cookie: await login(email) } });
++  return { status: res.status, body: (await res.json()) as T };
++}
++
++async function setBlind(blind: boolean): Promise<void> {
++  await env.DB.prepare("UPDATE org_scoring_settings SET show_ai_score_to_jury = ? WHERE edition = 'vc'")
++    .bind(blind ? 0 : 1)
++    .run();
++}
++
++afterEach(async () => {
++  await setBlind(false);
++  await env.DB.prepare("DELETE FROM evaluations WHERE id = 'eval_w9d_outlier'").run();
++  await env.DB.prepare("DELETE FROM queries WHERE id LIKE 'qry_w9d_%'").run();
++});
++
++interface Funnel {
++  top: number;
++  scope: "all" | "mine";
++}
++interface Scoring {
++  rows: Array<{ name: string; ai: number | null; evaluatorAvg: number | null; variance: number | null; lean: string; aiWithheld?: true }>;
++  evaluators: number;
++}
++
++describe("GET /api/analytics/funnel — a deal-maker's own pipeline", () => {
++  it("admin and superuser read every deal; partner and associate read theirs, and are told so", async () => {
++    const admin = await get<Funnel>("funnel", ADMIN);
++    const superuser = await get<Funnel>("funnel", SUPERUSER);
++    const partner = await get<Funnel>("funnel", PARTNER);
++    const associate = await get<Funnel>("funnel", ASSOCIATE);
++    const { n } = (await env.DB.prepare("SELECT COUNT(*) AS n FROM decks WHERE edition = 'vc'").first<{ n: number }>())!;
++
++    expect(admin.body).toMatchObject({ scope: "all", top: n });
++    expect(superuser.body).toMatchObject({ scope: "all", top: n });
++    expect(partner.body.scope).toBe("mine");
++    expect(associate.body.scope).toBe("mine");
++    expect(partner.body.top).toBeGreaterThan(0);
++    expect(partner.body.top).toBeLessThan(n);
++    expect(associate.body.top).toBeLessThan(n);
++  });
++
++  it("the incubator's funnel is untouched: every deck, scope all", async () => {
++    const inc = await get<Funnel>("funnel", INC_ADMIN);
++    const { n } = (await env.DB.prepare("SELECT COUNT(*) AS n FROM decks WHERE edition = 'incubator'").first<{ n: number }>())!;
++    expect(inc.body).toMatchObject({ scope: "all", top: n });
++  });
++});
++
++describe("GET /api/analytics/scoring — hierarchy and blind scoring", () => {
++  it("issue 21: an analyst's averages hold only what an analyst may see", async () => {
++    const admin = (await get<Scoring>("scoring", ADMIN)).body;
++    const analyst = (await get<Scoring>("scoring", ANALYST)).body;
++    const credit = (b: Scoring) => b.rows.find((r) => r.name === "CreditBridge")!;
++    // Seeded: analyst 6.6 · associate 7.8 · partner 6.4.
++    expect(credit(admin).evaluatorAvg).toBe(6.9);
++    expect(credit(analyst).evaluatorAvg).toBe(6.6);
++    expect(credit(analyst).variance).toBeNull(); // one visible score is not a spread
++    expect(analyst.evaluators).toBeLessThan(admin.evaluators);
++  });
++
++  it("toggle ON (the default): nobody's AI score is withheld", async () => {
++    const analyst = (await get<Scoring>("scoring", ANALYST)).body;
++    expect(analyst.rows.some((r) => r.aiWithheld)).toBe(false);
++  });
++
++  it("toggle OFF: an evaluator loses the AI score on deals they have not scored — and only those", async () => {
++    await setBlind(true);
++    const analyst = (await get<Scoring>("scoring", ANALYST)).body;
++    const quant = analyst.rows.find((r) => r.name === "QuantIQ")!; // AI 9.0, no analyst evaluation
++    const credit = analyst.rows.find((r) => r.name === "CreditBridge")!; // the analyst scored it
++    expect(quant).toMatchObject({ ai: null, aiWithheld: true });
++    expect(credit.ai).not.toBeNull();
++    expect(credit.aiWithheld).toBeUndefined();
++  });
++
++  it("toggle OFF: staff who oversee rather than score still read every AI score", async () => {
++    await setBlind(true);
++    const admin = (await get<Scoring>("scoring", ADMIN)).body;
++    expect(admin.rows.some((r) => r.aiWithheld)).toBe(false);
++    expect(admin.rows.find((r) => r.name === "QuantIQ")!.ai).toBe(9);
++  });
++
++  it("toggle OFF: the role gate still answers first — another edition's admin gets 403", async () => {
++    await setBlind(true);
++    expect((await get("scoring", INC_ADMIN)).status).toBe(403);
++  });
++});
++
++describe("GET /api/analytics/capital and /portfolio — the fund and its mix", () => {
++  it("capital names the one funded programme, paces by year, and leaves unmodelled figures null", async () => {
++    const d = (
++      await get<{
++        deployed: number;
++        fund: { label: string };
++        reserves: null;
++        paceVsPlan: null;
++        deployedFollowOn: null;
++        pacing: Array<{ year: number; actual: number; cumulative: number; planned: null; variance: null }>;
++      }>("capital", ADMIN)
++    ).body;
++    expect(d.fund.label).toBe("Fund II");
++    expect([d.reserves, d.paceVsPlan, d.deployedFollowOn]).toEqual([null, null, null]);
++    expect(d.pacing.length).toBeGreaterThan(0);
++    expect(d.pacing[d.pacing.length - 1].cumulative).toBe(d.deployed);
++    expect(d.pacing.every((p) => p.planned === null && p.variance === null)).toBe(true);
++  });
++
++  it("portfolio carries the check-size mix over every funded company, and the deployed total", async () => {
++    const d = (
++      await get<{ companies: number; deployed: number; checkSizeMix: Array<{ label: string; count: number }>; followOnRate: null }>(
++        "portfolio",
++        ADMIN,
++      )
++    ).body;
++    expect(d.checkSizeMix.map((b) => b.label)).toEqual(["< ₹3 Cr", "₹3–8 Cr", "₹8–20 Cr", "> ₹20 Cr"]);
++    expect(d.checkSizeMix.reduce((n, b) => n + b.count, 0)).toBe(d.companies);
++    expect(d.deployed).toBe(92); // 22+8+12+6+5+15+20+4, as analytics.test.ts pins for /capital
++    expect(d.followOnRate).toBeNull();
++  });
++});
++
++describe("GET /api/analytics/diligence — clarifications and flags", () => {
++  interface Diligence {
++    clarifications: number;
++    redFlags: number;
++    onTrack: number;
++    inDiligence: number;
++    flags: Array<{ company: string; flag: string }>;
++    clarificationRows: Array<{ company: string; question: string; status: string }>;
++    openItems: null;
++    itemRows: unknown[];
++  }
++
++  it("lists founder clarifications on deals in diligence, answered and pending, and counts the pending", async () => {
++    const before = (await get<Diligence>("diligence", ADMIN)).body;
++    await env.DB.prepare(
++      "INSERT INTO queries (id, deck_id, questions, email_status, created_at) VALUES " +
++        "('qry_w9d_1', 'vc_deck_solarnest', 'Churn definition\nHow is a churned customer counted?', 'sent', '2026-09-01T09:00:00Z'), " +
++        "('qry_w9d_2', 'vc_deck_dockflow', 'Unit economics', 'answered', '2026-09-02T09:00:00Z'), " +
++        "('qry_w9d_3', 'vc_deck_quantiq', 'Not in diligence', 'sent', '2026-09-03T09:00:00Z')",
++    ).run();
++    const after = (await get<Diligence>("diligence", ADMIN)).body;
++    expect(after.clarificationRows.slice(0, 2)).toEqual([
++      { company: "DockFlow", question: "Unit economics", status: "Answered" },
++      { company: "SolarNest", question: "Churn definition", status: "Pending" },
++    ]);
++    expect(after.clarificationRows.some((q) => q.question === "Not in diligence")).toBe(false);
++    expect(after.clarifications).toBe(before.clarifications + 1);
++    expect(after.openItems).toBeNull();
++    expect(after.itemRows).toEqual([]);
++  });
++
++  it("raises 'High evaluator disagreement (σ …)' for a spread of 1 point or more", async () => {
++    const { id } = (await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(SUPERUSER).first<{ id: string }>())!;
++    await env.DB.prepare(
++      "INSERT INTO evaluations (id, deck_id, evaluator_id, weighted_total, submitted_at) VALUES ('eval_w9d_outlier', 'vc_deck_solarnest', ?, 3.0, '2026-09-01T09:00:00Z')",
++    )
++      .bind(id)
++      .run();
++    const d = (await get<Diligence>("diligence", ADMIN)).body;
++    // SolarNest: 7.6 · 8.0 · 7.7 · 3.0 → σ 2.1.
++    expect(d.flags).toContainEqual({ company: "SolarNest", flag: "High evaluator disagreement (σ 2.1)" });
++    expect(d.redFlags).toBe(d.flags.length);
++    expect(d.onTrack).toBe(d.inDiligence - new Set(d.flags.map((f) => f.company)).size);
++  });
++});
