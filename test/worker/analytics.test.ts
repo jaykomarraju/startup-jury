@@ -86,8 +86,10 @@ describe("analytics — jury-personal reports (exclusive)", () => {
     const jury = await login(INC_JURY);
     const res = await get("/api/analytics/my/decks", jury);
     expect(res.status).toBe(200);
-    const d = (await res.json()) as { evaluated: number; decks: unknown[] };
-    expect(d.evaluated).toBeGreaterThan(0);
+    // W8-A data patch — the payload is `myDecksSummary()`'s now: the juror's
+    // assigned decks by state. "evaluated" (submitted evaluations) is `submitted`.
+    const d = (await res.json()) as { submitted: number; rows: unknown[] };
+    expect(d.submitted).toBeGreaterThan(0);
 
     // repdecks is exclusive to jury — an admin (no superuser bypass) is forbidden.
     const admin = await login(INC_ADMIN);

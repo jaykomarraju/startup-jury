@@ -353,7 +353,11 @@ describe("scoringSummary", () => {
     const wos = s.rows.find((r) => r.name === "WealthOS")!;
     expect(wos.evaluatorAvg).toBeNull();
     expect(wos.variance).toBeNull();
-    expect(wos.lean).toBe("Hold"); // no human scores → falls back to AI 7.8 → Hold band
+    // W9-D — RE-BASELINED, not deleted (§4). This read "Hold": `leanFor` fell back to the AI 7.8
+    // and cut it at a private ≥ 6.5. The lean now reads RUBRIC_BANDS from the evaluators' mean
+    // alone, and a deal no evaluator has scored is "Need info" — `panel-scoring.html`'s own
+    // WealthOS row (AI 7.8, evaluators pending) says exactly that.
+    expect(wos.lean).toBe("Need info");
   });
 
   it("treats a single-scorer deck as having no measurable variance", () => {

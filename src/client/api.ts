@@ -955,17 +955,12 @@ export interface DiligenceReport {
 export const getDiligence = () => fetch("/api/analytics/diligence").then((r) => json<DiligenceReport>(r));
 
 // Jury-personal reports.
-export interface MyDecksReport {
-  evaluated: number;
-  avgGiven: number;
-  shortlisted: number;
-  pending: number;
-  decks: Array<{ id: string; name: string; status: string; score: number }>;
-}
+export type { MyDecksReport } from "../shared/analytics";
+import type { MyDecksReport } from "../shared/analytics";
 export const getMyDecks = () => fetch("/api/analytics/my/decks").then((r) => json<MyDecksReport>(r));
 
 export interface MyScoresReport {
-  rows: Array<{ id: string; name: string; ai: number | null; mine: number }>;
+  rows: Array<{ id: string; name: string; sector?: string | null; ai: number | null; mine: number }>;
 }
 export const getMyReportScores = () => fetch("/api/analytics/my/scores").then((r) => json<MyScoresReport>(r));
 

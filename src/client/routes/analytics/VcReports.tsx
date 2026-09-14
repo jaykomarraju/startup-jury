@@ -50,6 +50,7 @@ import {
   type DecisionReport,
 } from "../../api";
 import { getStage } from "../../../pipeline";
+import { HIGH_DISAGREEMENT_SIGMA, MODERATE_DISAGREEMENT_SIGMA } from "../../../shared/analytics";
 import { formatDelta, formatScore } from "../../../shared/scoring";
 import { RUBRIC_BANDS, type ScoreScale } from "../../../shared/types";
 import { scoringSettings } from "../admin/scoringApi";
@@ -499,10 +500,11 @@ const LEAN_PILL = { Invest: "go", Hold: "hold", "Need info": "hold", Pass: "no" 
  * `panel-scoring.html` "Highest-variance deals": red at σ 1.4, gold at 0.9 and
  * 0.6, olive at 0.3. A standard deviation is not a score, so there is no rubric
  * band to read; these two steps are the narrowest rule that reproduces the
- * panel (§8 Q155). Canonical 0–10 units, whatever the display scale.
+ * panel (§8 Q155), and the red step is the σ `/diligence` raises a red flag at.
+ * Canonical 0–10 units, whatever the display scale.
  */
 export function varianceColor(sigma: number): string {
-  return sigma >= 1 ? "var(--red)" : sigma >= 0.5 ? "var(--gold-dk)" : "var(--olive)";
+  return sigma >= HIGH_DISAGREEMENT_SIGMA ? "var(--red)" : sigma >= MODERATE_DISAGREEMENT_SIGMA ? "var(--gold-dk)" : "var(--olive)";
 }
 
 export const HIGHEST_VARIANCE_ROWS = 4;

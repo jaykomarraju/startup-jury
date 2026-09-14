@@ -631,6 +631,12 @@ export interface ScoringInput {
   aiScore: number | null;
   /** Human evaluation totals for the deck (one per evaluator). */
   humanScores: number[];
+  /**
+   * W9-D — blind scoring withheld the AI score from this viewer
+   * (`withholdsAiScore`). The row then carries no AI number at all, and nothing
+   * derived from one: not the lean, not its position in the sort.
+   */
+  aiWithheld?: boolean;
 }
 
 export interface ScoringRow {
@@ -642,6 +648,8 @@ export interface ScoringRow {
   spreadLow: number | null;
   spreadHigh: number | null;
   lean: "Invest" | "Hold" | "Need info" | "Pass";
+  /** W9-D — present (true) only when blind scoring withheld `ai` from this viewer. */
+  aiWithheld?: true;
 }
 
 export interface ScoringSummary {
@@ -652,12 +660,21 @@ export interface ScoringSummary {
   avgVariance: number;
 }
 
-function leanFor(score: number | null): "Invest" | "Hold" | "Need info" | "Pass" {
-  if (score === null) return "Need info";
-  if (score >= 8) return "Invest";
-  if (score >= 6.5) return "Hold";
-  if (score >= 5) return "Need info";
-  return "Pass";
+/**
+ * The Scoring Summary's Lean pill, from the evaluators' mean.
+ *
+ * W9-D — this held a private cut-point table (≥ 8 / ≥ 6.5 / ≥ 5), the defect
+ * Waves 2, 7 and 8 removed from every other report: an 8.0 read "Invest" here
+ * and "Strong" on the rubric, a 6.9 "Hold" beside a "Moderate" band. It reads
+ * `RUBRIC_BANDS` now — Exceptional and Strong lean Invest, Moderate Hold, Weak
+ * and Insufficient Pass. A deal no evaluator has scored is "Need info", which is
+ * what `panel-scoring.html` shows for WealthOS (AI 7.8, evaluators pending):
+ * the lean is the evaluators' call, never the AI's (§8 Q156).
+ */
+export function leanFor(evaluatorAvg: number | null): "Invest" | "Hold" | "Need info" | "Pass" {
+  if (evaluatorAvg === null) return "Need info";
+  const i = rubricBand(evaluatorAvg).index;
+  return i <= 1 ? "Invest" : i === 2 ? "Hold" : "Pass";
 }
 
 /**
@@ -673,12 +690,13 @@ export function scoringSummary(inputs: ScoringInput[], evaluatorCount: number): 
     return {
       deckId: i.deckId,
       name: i.name,
-      ai: i.aiScore === null ? null : round(i.aiScore, 1),
+      ai: i.aiWithheld || i.aiScore === null ? null : round(i.aiScore, 1),
       evaluatorAvg: avg === null ? null : round(avg, 1),
       variance: multi ? round(stddev(i.humanScores), 1) : null,
       spreadLow: hasHuman ? round(Math.min(...i.humanScores), 1) : null,
       spreadHigh: hasHuman ? round(Math.max(...i.humanScores), 1) : null,
-      lean: leanFor(avg ?? i.aiScore),
+      lean: leanFor(avg === null ? null : round(avg, 1)),
+      ...(i.aiWithheld ? { aiWithheld: true as const } : {}),
     };
   });
   const scoredRows = rows.filter((r) => r.evaluatorAvg !== null);
@@ -701,6 +719,8 @@ export interface PortfolioRow {
   stage: string | null;
   city: string | null;
   capitalDeployed: number | null;
+  /** W9-D — when the position was recorded (`portfolio.onboarded_at`); feeds pacing by period. */
+  onboardedAt?: string | null;
 }
 
 export interface CapitalReport {
@@ -873,4 +893,90 @@ export function decisionHistory(events: DecisionEvent[]): DecisionReport {
     pass: rows.filter((r) => r.decision === "Pass").length,
     revisit: rows.filter((r) => r.decision === "Revisit").length,
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// W9-D — the VC reports' data the prototype panels draw and the shapes above
+// did not carry. Everything here is additive; `VcReports.tsx` reads each field
+// as optional, so a route without it still renders.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The fund a VC report is about. `loadFundTotals` sums every active programme
+ * with a committed size, so the chip may only NAME a fund when exactly one
+ * programme carries one — otherwise "Fund II" would label a sum of several.
+ */
+export function fundLabel(programs: Array<{ name: string; fundSize: number | null }>): string {
+  const funded = programs.filter((p) => p.fundSize !== null && p.fundSize > 0);
+  return funded.length === 1 ? funded[0].name : "All funds";
+}
+
+export interface PacingRow {
+  year: number;
+  /** The current calendar year, still running — the panel's "2026 (YTD)". */
+  ytd: boolean;
+  /** No deployment plan is modelled (§8 Q152): null, never a guess. */
+  planned: number | null;
+  actual: number;
+  cumulative: number;
+  variance: number | null;
+}
+
+/** `panel-capital.html` "Pacing against plan": capital deployed per calendar year, and running total. */
+export function pacingByYear(rows: PortfolioRow[], now: Date): PacingRow[] {
+  const byYear = new Map<number, number>();
+  for (const r of rows) {
+    if (r.capitalDeployed === null || r.capitalDeployed <= 0 || !r.onboardedAt) continue;
+    const y = new Date(r.onboardedAt).getUTCFullYear();
+    if (!Number.isFinite(y)) continue;
+    byYear.set(y, (byYear.get(y) ?? 0) + r.capitalDeployed);
+  }
+  let cumulative = 0;
+  return [...byYear.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([year, actual]) => {
+      cumulative += actual;
+      return {
+        year,
+        ytd: year === now.getUTCFullYear(),
+        planned: null,
+        actual: round(actual, 1),
+        cumulative: round(cumulative, 1),
+        variance: null,
+      };
+    });
+}
+
+/**
+ * `panel-portfolio.html` "Check-size mix": `< ₹3 Cr` · `₹3–8 Cr` · `₹8–20 Cr` ·
+ * `> ₹20 Cr`. The labels leave both inner edges open; a bucket owns its LOWER
+ * edge (₹3 Cr is 3–8, ₹8 Cr is 8–20) and "> ₹20 Cr" is strictly above, so
+ * ₹20 Cr is 8–20 (§8 Q157).
+ */
+export const CHECK_SIZE_BUCKETS = ["< ₹3 Cr", "₹3–8 Cr", "₹8–20 Cr", "> ₹20 Cr"] as const;
+
+export function checkSizeBucket(crore: number): number {
+  return crore < 3 ? 0 : crore < 8 ? 1 : crore <= 20 ? 2 : 3;
+}
+
+export function checkSizeMix(rows: PortfolioRow[]): MixSlice[] {
+  const amounts = rows.map((r) => r.capitalDeployed).filter((v): v is number => v !== null && v > 0);
+  const counts = [0, 0, 0, 0];
+  for (const a of amounts) counts[checkSizeBucket(a)]++;
+  return CHECK_SIZE_BUCKETS.map((label, i) => ({ label, count: counts[i], pct: pct(counts[i], amounts.length) }));
+}
+
+/**
+ * Evaluator disagreement a red flag is raised for: `panel-diligence.html` flags
+ * CreditBridge "High evaluator disagreement (σ 1.4)", and `panel-scoring.html`
+ * paints the same σ red where 0.9 and 0.6 are gold. Canonical 0–10 units.
+ */
+export const HIGH_DISAGREEMENT_SIGMA = 1;
+/** Below this, `panel-scoring.html` paints σ olive (0.3); from it up to `HIGH_DISAGREEMENT_SIGMA`, gold. */
+export const MODERATE_DISAGREEMENT_SIGMA = 0.5;
+
+/** The panel's "Question" cell — a founder clarification's first line, shortened. */
+export function clarificationQuestion(text: string, max = 80): string {
+  const line = text.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
+  return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
 }

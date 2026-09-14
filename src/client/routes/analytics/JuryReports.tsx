@@ -7,12 +7,7 @@
 // arithmetic lives in `src/shared/analytics.ts` (`myDecksSummary`,
 // `myScoresSummary`, `scoreDrift`).
 import { getMyDecks, getMyReportScores, getMyDrift } from "../../api";
-import {
-  myDecksSummary,
-  myScoresSummary,
-  type MyDeckState,
-  type MyDecksReport,
-} from "../../../shared/analytics";
+import { myScoresSummary, type MyDeckState } from "../../../shared/analytics";
 import {
   useReport,
   ReportGate,
@@ -55,35 +50,10 @@ export function fmtDay(iso: string | null): string {
   return Number.isNaN(d.getTime()) ? "—" : `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
-/**
- * `GET /api/analytics/my/decks` returns `myDecksSummary()`'s shape once the §9
- * data patch (`docs/parity-requests/W8-A-report-data.patch`) is applied. Until
- * then it returns the pre-W8-A payload — only the decks the juror has already
- * SUBMITTED, with no AI score, sector or date — which this reads as exactly
- * that, so nothing is invented. Delete the legacy branch with the patch.
- */
-export function toMyDecksReport(payload: unknown): MyDecksReport {
-  const p = payload as Partial<MyDecksReport> & {
-    decks?: Array<{ id: string; name: string; score: number }>;
-  };
-  if (Array.isArray(p.rows) && Array.isArray(p.breakdown)) return p as MyDecksReport;
-  return myDecksSummary(
-    (p.decks ?? []).map((r) => ({
-      id: r.id,
-      name: r.name,
-      sector: null,
-      ai: null,
-      mine: r.score,
-      state: "submitted" as const,
-      submittedAt: null,
-    })),
-  );
-}
-
 const one = (v: number | null) => (v === null ? "—" : v.toFixed(1));
 
 export function RepDecksPage() {
-  const state = useReport(() => getMyDecks().then(toMyDecksReport));
+  const state = useReport(getMyDecks);
   return (
     <JuryReportFrame title="My decks summary" subtitle="Your evaluation activity at a glance">
       <ReportGate

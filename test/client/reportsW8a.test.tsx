@@ -291,7 +291,7 @@ const MY: MyDeckInput[] = [
 
 describe("My decks summary", () => {
   it("renders the six tiles, the status breakdown series and the deck activity columns", async () => {
-    vi.mocked(getMyDecks).mockResolvedValue(myDecksSummary(MY) as never);
+    vi.mocked(getMyDecks).mockResolvedValue(myDecksSummary(MY));
     mount(<RepDecksPage />, "jury");
     expect(await screen.findByText("GreenRoute")).toBeInTheDocument();
 
@@ -314,22 +314,8 @@ describe("My decks summary", () => {
     expect(screen.queryByRole("button", { name: "Export PDF" })).not.toBeInTheDocument();
   });
 
-  it("reads the pre-patch payload as submitted decks without inventing scores it does not have", async () => {
-    vi.mocked(getMyDecks).mockResolvedValue({
-      evaluated: 1,
-      avgGiven: 7.2,
-      shortlisted: 0,
-      pending: 0,
-      decks: [{ id: "x", name: "LegacyCo", status: "jury_evaluation", score: 7.2 }],
-    } as never); // the pre-patch payload; `never` so the test still typechecks once api.ts re-types it
-    mount(<RepDecksPage />, "jury");
-    const row = (await screen.findByText("LegacyCo")).closest("tr")!;
-    expect(within(row).getByText("Submitted")).toBeInTheDocument();
-    expect(within(row).getAllByRole("cell")[3]).toHaveTextContent("—");
-  });
-
   it("has an empty state", async () => {
-    vi.mocked(getMyDecks).mockResolvedValue(myDecksSummary([]) as never);
+    vi.mocked(getMyDecks).mockResolvedValue(myDecksSummary([]));
     mount(<RepDecksPage />, "jury");
     expect(await screen.findByText("No decks assigned to you yet")).toBeInTheDocument();
   });
