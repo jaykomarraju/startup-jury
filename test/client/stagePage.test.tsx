@@ -221,7 +221,9 @@ describe("a stage that declares none of it", () => {
   });
 
   it("the VC stage screens keep their Export and gain nothing else until Wave 9 declares it", () => {
-    for (const [slug, cfg] of Object.entries(VC_STAGE_CONFIG)) {
+    // W9-C declared its five (test/client/vcDiligence.test.tsx pins them); the rest still wait.
+    const declaredByW9C = ["investmentdd", "incuration", "legaldd", "curation", "archive"];
+    for (const [slug, cfg] of Object.entries(VC_STAGE_CONFIG).filter(([s]) => !declaredByW9C.includes(s))) {
       expect(cfg.toolbar, slug).toEqual({ export: true });
       expect(cfg.subTabs, slug).toBeUndefined();
       expect(cfg.legend, slug).toBeUndefined();
