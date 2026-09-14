@@ -715,7 +715,7 @@ const MAX_QUERY_SUBJECT = 200;
  */
 pipeline.post(
   "/decks/:id/queries",
-  requireTask("query", "program_associate", "program_manager", "admin", "analyst", "associate"),
+  requireTask("query", "program_associate", "program_manager", "admin", "analyst", "associate", "partner"),
   async (c) => {
     const user = c.var.user;
     const deck = await loadDeck(c, c.req.param("id"));

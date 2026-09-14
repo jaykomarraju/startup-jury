@@ -198,7 +198,6 @@ const EXPECTED_GAPS: ReadonlyMap<string, string> = new Map([
   // as decided, not as work.
   ...gap(
     "DELIBERATE — untrimmed prototype sidebar. The spec's role matrix outranks it (§1.1) and `npm run roles` locks it at 526/526.",
-    "vc/partner · role-gap query",
     "vc/partner · role-gap assign",
     "vc/partner · role-gap jurypipeline",
     "vc/associate · role-gap partnerpipeline",

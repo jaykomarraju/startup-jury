@@ -23,8 +23,9 @@ const BLOCK_SIZE = LAST - FIRST + 1;
  * 0044–0047 (W4-A 0044, W4-B 0045, W4-C 0046, W4-D 0047); Wave 5 was
  * 0048–0049 (W5-A 0048, W5-B 0049); **Wave 6 is 0050–0053** (Wx-PWD 0050,
  * W6-A 0051, W6-C 0052, and W6-B 0053 — unallotted, declared in §9); **Wave 7 is
- * 0054–0059**, one per session in letter order (W7-D 0057, W7-E 0058; the other
- * four needed none); **Wave 8 is 0059–0060** (W8-A 0059, W8-B 0060); **Wave 9 is
+ * 0054–0059**, one per session in letter order (W7-C 0056 — placed at Wave 9
+ * integration with its §9 patch, not on its own branch; W7-D 0057, W7-E 0058;
+ * the other three needed none); **Wave 8 is 0059–0060** (W8-A 0059, W8-B 0060); **Wave 9 is
  * 0061–0065** in letter order (W9-C 0063, W9-E 0065; A, B and D needed none). Each
  * wave raises this line, and every parallel session in the wave hits it — expect a
  * one-line merge conflict here and take the highest value.

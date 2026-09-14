@@ -185,7 +185,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Edition, Record<string, readonly R
     assign: ["superuser", "admin", "associate", "analyst"],
     reassign: ["superuser", "partner", "associate"],
     remind: ["superuser", "partner", "associate", "analyst"],
-    query: ["superuser", "admin", "associate", "analyst"],
+    // W7-C — the partner raises founder queries (0056).
+    query: ["superuser", "admin", "partner", "associate", "analyst"],
     introcall: ["superuser", "admin", "partner", "ic_member", "associate", "analyst"],
     assocpipeline: ["superuser", "admin", "associate"],
     partnerpipeline: ["superuser", "admin", "partner", "ic_member"],

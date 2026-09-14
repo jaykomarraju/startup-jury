@@ -164,7 +164,10 @@ const VC_NAV: NavItem[] = [
   { id: "alldecks", label: "All decks", icon: "Layers", section: "Workflows", roles: ["admin", "partner", "ic_member", "associate", "analyst"] },
   // Evaluation
   { id: "upload", label: "Upload", icon: "Upload", section: "Evaluation", roles: ["admin", "partner", "associate", "analyst"], task: "upload" },
-  { id: "query", label: "Query", icon: "MessageSquare", section: "Evaluation", roles: ["admin", "associate", "analyst"], task: "query" },
+  // W7-C · F0218 / F0286 / F0288 — the Partner prototype's sidebar carries Query,
+  // its admin console's permDefaults grants Partner `query`, and the spec maps
+  // Partner ↔ Program Manager, who has held Query all along (§8).
+  { id: "query", label: "Query", icon: "MessageSquare", section: "Evaluation", roles: ["admin", "partner", "associate", "analyst"], task: "query" },
   { id: "evaluate", label: "Evaluate", icon: "ClipboardCheck", section: "Evaluation", roles: ["admin", "partner", "ic_member", "associate", "analyst"], task: "evaluate" },
   { id: "assign", label: "Submit", icon: "Send", section: "Evaluation", roles: ["admin", "associate", "analyst"], task: "assign" },
   { id: "jurypipeline", label: "Assoc. Pipeline", icon: "GitBranch", section: "Evaluation", roles: ["admin", "associate"], task: "assocpipeline" },

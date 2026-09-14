@@ -62,6 +62,7 @@ const requireQuerier = requireTask(
   "admin",
   "analyst",
   "associate",
+  "partner",
 );
 
 /** Longest question the accordion will store. The prototype's longest is 84. */

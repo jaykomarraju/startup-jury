@@ -591,7 +591,7 @@ const PROBES: Probe[] = [
   { id: "decks.version", label: "POST /api/decks/:id/version (re-upload)", kind: "write", method: "POST", path: `/api/decks/${GHOST_DECK}/version`, body: {},
     allow: ["admin", "program_manager", "program_associate", "founder", "associate", "analyst"] },
   { id: "decks.query", label: "POST /api/decks/:id/queries (ask the founder)", kind: "write", method: "POST", path: `/api/decks/${GHOST_DECK}/queries`, body: {},
-    allow: ["admin", "program_manager", "program_associate", "associate", "analyst"] },
+    allow: ["admin", "program_manager", "program_associate", "partner", "associate", "analyst"] },
   { id: "ic.vote", label: "POST /api/decks/:id/ic-vote", kind: "write", method: "POST", path: `/api/decks/${GHOST_DECK}/ic-vote`, body: {},
     editions: ["vc"], allow: ["admin", "ic_member", "partner"] },
   // W7-D — the incubator Evaluate screen's per-deck recommendation (0057).

@@ -665,7 +665,7 @@ const EXPECTED: Record<string, Screen> = {
     tables: [["ISSUE", "AREA", "SEVERITY", "STATUS", "OWNER", "RAISED", "AGE"]],
   },
 
-  // ── vc/partner · 23 screens ──
+  // ── vc/partner · 24 screens ──
   "vc/partner/alldecks": {
     // W9-A re-captured: the VC deal funnel's six views (the default is Uploaded).
     title: "All decks",
@@ -679,6 +679,10 @@ const EXPECTED: Record<string, Screen> = {
     ],
   },
   "vc/partner/upload": { title: "Upload your first pitchdecks", tables: [] },
+  "vc/partner/query": {
+    title: "Founder queries",
+    tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
+  },
   "vc/partner/evaluate": { title: "Evaluate", tables: [] },
   "vc/partner/introcalls": {
     title: "Intro calls",

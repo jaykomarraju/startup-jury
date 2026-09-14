@@ -197,3 +197,12 @@ test.describe.serial("an operator emails two flagged founders", () => {
     }
   });
 });
+
+test("a VC partner reaches the Query screen from the sidebar (F0218)", async ({ page }) => {
+  await login(page, "ishaan.sethi@demo.startupjury.ai"); // vc_partner
+  await page.getByRole("link", { name: "Query", exact: true }).click();
+  await page.waitForURL("**/app/query");
+  // Northbeam Robotics seeds Incomplete with an open query.
+  await expect(page.getByRole("checkbox", { name: "Select Northbeam Robotics" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Founder queries" })).toBeVisible();
+});

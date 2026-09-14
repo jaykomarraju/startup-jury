@@ -488,3 +488,27 @@ describe("deck list exposes per-role actions + status id", () => {
     expect(actions).toEqual(expect.arrayContaining(["shortlist", "reject"]));
   });
 });
+
+// W7-C · F0218 / F0286 / F0288 — the VC partner raises founder queries; the IC
+// member, who has no Query screen in any prototype, still cannot.
+describe("VC founder queries: the partner may raise one, the IC member may not", () => {
+  const VC_PARTNER = "ishaan.sethi@demo.startupjury.ai";
+  const VC_IC = "rajesh.kumar.vc@demo.startupjury.ai";
+
+  it("lets the partner draft and raise a query", async () => {
+    const id = "pipe_vc_partner_query";
+    await seedDeck(id, "associate_review", { edition: "vc", uploadedBy: "vc_analyst" });
+    const partner = await login(VC_PARTNER);
+    expect((await get(`/api/questions/draft/${id}`, partner)).status).toBe(200);
+    const res = await post(`/api/decks/${id}/queries`, partner, { questions: "What is your net revenue retention?" });
+    expect(res.status).toBe(200);
+  });
+
+  it("refuses the IC member (403) on both", async () => {
+    const id = "pipe_vc_ic_query";
+    await seedDeck(id, "associate_review", { edition: "vc", uploadedBy: "vc_analyst" });
+    const ic = await login(VC_IC);
+    expect((await get(`/api/questions/draft/${id}`, ic)).status).toBe(403);
+    expect((await post(`/api/decks/${id}/queries`, ic, { questions: "?" })).status).toBe(403);
+  });
+});
