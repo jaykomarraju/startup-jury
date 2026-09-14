@@ -21,12 +21,6 @@ import type { CohortSummary } from "../../../shared/analytics";
 import { roleLabel } from "../../../shared/roles";
 import {
   useReport,
-  ReportShell,
-  ReportBody,
-  StatTiles,
-  FunnelBars,
-  Section,
-  Table,
   ReportGate,
   StaffReportFrame,
   ReportMeta,
@@ -348,13 +342,12 @@ export function ScoreDriftPage() {
 export const FUNNEL_COLORS = ["var(--olive-dk)", "var(--olive)", "var(--blue)", "var(--gold-dk)", "var(--amber)", "var(--green)"];
 
 /**
- * `App.tsx` routes `funnel` here for BOTH editions. W8-A rebuilt the incubator
- * funnel only; the VC branch is the pre-W8-A screen, byte-for-byte in
- * behaviour, and belongs to `W9-D` (§9).
+ * The incubator funnel. `App.tsx` routed `funnel` here for BOTH editions until
+ * `W9-D` built the VC funnel as `VcFunnelPage` in `VcReports.tsx`; the VC branch
+ * and its `VcFunnel` were deleted at Wave 9 integration, per `W9-D`'s §9 row.
  */
 export function FunnelPage() {
-  const { user } = useAuth();
-  return user?.edition === "vc" ? <VcFunnel /> : <IncubatorFunnel />;
+  return <IncubatorFunnel />;
 }
 
 function IncubatorFunnel() {
@@ -409,43 +402,3 @@ function IncubatorFunnel() {
   );
 }
 
-function VcFunnel() {
-  const state = useReport(getFunnel);
-  return (
-    <ReportShell
-      title="Pipeline Funnel"
-      subtitle="Stage-by-stage counts and conversion from Sourced to Closed."
-      context="All time"
-      caption="Cumulative counts of decks that reached each stage · step conversion vs the previous stage."
-    >
-      <ReportBody state={state} title="pipeline data" icon="Activity" isEmpty={(d) => d.top === 0}>
-        {(d) => (
-          <div className="flex flex-col gap-4">
-            <StatTiles
-              stats={[
-                { label: "Deals sourced", value: d.top },
-                { label: "Closed", value: d.bottom, sublabel: `${d.conversion}% of top` },
-                { label: "Biggest drop-off", value: d.biggestDropLabel ?? "—", sublabel: d.biggestDropLabel ? `−${d.biggestDropPct}%` : undefined },
-                { label: "Overall conversion", value: `${d.conversion}%` },
-              ]}
-            />
-            <Section title="Funnel — Sourced to Closed">
-              <FunnelBars rows={d.rows} top={d.top} />
-            </Section>
-            <Section title="Stage breakdown & conversion">
-              <Table
-                cols={["Stage", "Count", "% of top", "Step conversion"]}
-                rows={d.rows.map((r) => [
-                  r.label,
-                  <span className="font-mono">{r.count}</span>,
-                  <span className="font-mono">{r.pctOfTop}%</span>,
-                  <span className="font-mono">{r.stepConversion === null ? "—" : `${r.stepConversion}%`}</span>,
-                ])}
-              />
-            </Section>
-          </div>
-        )}
-      </ReportBody>
-    </ReportShell>
-  );
-}

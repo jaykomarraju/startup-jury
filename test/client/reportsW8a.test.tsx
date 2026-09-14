@@ -269,16 +269,6 @@ describe("Pipeline funnel", () => {
     );
   });
 
-  it("VC: the shared route keeps the pre-W8-A VC screen exactly (W9-D's)", async () => {
-    vi.mocked(getFunnel).mockResolvedValue(buildFunnel("vc", ["uploaded", "analyst_scoring", "onboard_ready"]));
-    mount(<FunnelPage />, "admin", "vc");
-    expect(await screen.findByText("Funnel — Sourced to Closed")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1, name: "Pipeline Funnel" })).toBeInTheDocument();
-    expect(headers()).toEqual(["Stage", "Count", "% of top", "Step conversion"]);
-    expect(screen.getByText("Deals sourced")).toBeInTheDocument();
-    expect(screen.getByText("Overall conversion")).toBeInTheDocument();
-    expect(screen.queryByTestId("funnel-chart")).not.toBeInTheDocument();
-  });
 });
 
 // ── Jury reports ───────────────────────────────────────────────────────────
