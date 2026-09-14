@@ -386,7 +386,10 @@ describe("member roster (F0064 / F0123 / F0148)", () => {
     await screen.findByText(/Active members/);
     // Scoped to the roster: the owner's name and the words "Account owner" also
     // appear on the Account owner card above it.
-    const roster = within(screen.getByTestId("member-roster"));
+    // `find`, not `get`: "Active members" is the card's heading and renders
+    // before the roster body does, so a synchronous get here raced the fetch and
+    // failed under load at Wave 9 integration with the table still "Loading team…".
+    const roster = within(await screen.findByTestId("member-roster"));
     expect(within(roster.getByText("Nisha Kapoor").closest("tr")!).getByText("You")).toBeInTheDocument();
     expect(
       within(roster.getByText("Priya Sharma").closest("tr")!).getByText("Account owner"),

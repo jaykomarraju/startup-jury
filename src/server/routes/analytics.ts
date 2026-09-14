@@ -79,20 +79,33 @@ function num(v: string | number | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Mean human evaluation total per deck (evaluator_id NOT NULL), grouped. */
+/**
+ * Mean human evaluation total per deck (evaluator_id NOT NULL), grouped —
+ * counting only evaluations THIS VIEWER may see.
+ *
+ * Wave 9 integration, from `W9-D`'s §9 row: issue 21 is "lower guys must not be
+ * able to view the evaluators' scores up in the hierarchy". `W9-D` closed that
+ * on `/scoring` for both editions and found the same hole open on the three
+ * incubator reports that read this helper (`/cohort`, `/drift`) and on
+ * `/evaluators` — a program associate (rank 1) read jury (2) and PM (3) scores
+ * folded into every mean. Same predicate as the deck report and `/scoring`: your
+ * own evaluation always counts, anyone else's only when `canSeeEvaluatorScores`
+ * allows it.
+ */
 async function humanEvalsByDeck(
   c: Context<AppEnv>,
   edition: Edition,
 ): Promise<Map<string, number[]>> {
+  const { role, id: viewerId } = c.var.user;
   const rows = (
     await c.env.DB.prepare(
-      "SELECT e.deck_id AS deck_id, e.weighted_total AS wt FROM evaluations e " +
-        "JOIN decks d ON d.id = e.deck_id " +
+      "SELECT e.deck_id AS deck_id, e.evaluator_id AS eid, u.role AS role, e.weighted_total AS wt FROM evaluations e " +
+        "JOIN decks d ON d.id = e.deck_id JOIN users u ON u.id = e.evaluator_id " +
         "WHERE d.edition = ? AND e.evaluator_id IS NOT NULL AND e.weighted_total IS NOT NULL",
     )
       .bind(edition)
-      .all<{ deck_id: string; wt: number }>()
-  ).results;
+      .all<{ deck_id: string; eid: string; role: string; wt: number }>()
+  ).results.filter((r) => r.eid === viewerId || canSeeEvaluatorScores(edition, role, r.role as Role));
   const map = new Map<string, number[]>();
   for (const r of rows) (map.get(r.deck_id) ?? map.set(r.deck_id, []).get(r.deck_id)!).push(r.wt);
   return map;
@@ -192,7 +205,10 @@ analytics.get("/cohort", guard("cohortsummary"), async (c) => {
 // ── Evaluator scores / calibration (incubator) ───────────────────────────────
 
 analytics.get("/evaluators", guard("evaluatorscores"), async (c) => {
-  const edition = c.var.user.edition;
+  // Issue 21 (§9, `W9-D`): this report lists every evaluator's average BY NAME,
+  // so a viewer must not see one ranked above them. Same predicate as
+  // `humanEvalsByDeck` and `/scoring`.
+  const { edition, role, id: viewerId } = c.var.user;
   const rows = (
     await c.env.DB.prepare(
       "SELECT e.evaluator_id AS eid, u.name AS name, u.role AS role, e.deck_id AS deck_id, e.weighted_total AS wt " +
@@ -201,7 +217,7 @@ analytics.get("/evaluators", guard("evaluatorscores"), async (c) => {
     )
       .bind(edition)
       .all<{ eid: string; name: string; role: string; deck_id: string; wt: number }>()
-  ).results;
+  ).results.filter((r) => r.eid === viewerId || canSeeEvaluatorScores(edition, role, r.role as Role));
   const input: EvaluationRow[] = rows.map((r) => ({
     evaluatorId: r.eid,
     evaluatorName: r.name,
