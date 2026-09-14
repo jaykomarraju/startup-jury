@@ -7,13 +7,18 @@
 // is deliberately small: create a call, hand back a calendar file, optionally
 // mail it, and let the people on the call read it back.
 //
-// AuthZ has two tiers:
+// AuthZ has three tiers:
 //   • **Schedulers** (`CALL_SCHEDULER_ROLES` — incubator PM/associate, VC
 //     partner/associate, plus admin/superuser) create, reschedule and cancel.
+//   • **A delegated scheduler** (W9-E, `call_schedulers`, §8 Q102) has the same
+//     rights on ONE deck's call of ONE kind, whatever their role. Only a
+//     scheduler role may name one.
 //   • **Everyone else** is read-only and sees ONLY the calls they are a
 //     participant on. That is §8's "jury/IC members involved in a call can view
 //     their calls", and it means the IC member's calendar view can't be turned
-//     into a listing of every deal the firm is talking to.
+//     into a listing of every deal the firm is talking to. The one write they
+//     have (W7-F §9, §8 Q103) is closing out — or reopening — a call they are ON:
+//     `status` only, `completed` ⇄ `scheduled`, nothing else.
 
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -22,15 +27,17 @@ import { denyMentor, requireAuth } from "../auth/middleware";
 import {
   CALL_KIND_LABELS,
   CALL_KINDS_BY_EDITION,
+  MENTOR_ROLE,
   canScheduleCalls,
   isCallKind,
   type CallKind,
   type Edition,
 } from "../../shared/roles";
+import { callDecision, outcomeForAction, recordedOutcome, CALL_DECISIONS } from "../../shared/callOutcomes";
 import { buildIcs, icsFilename, ICS_CONTENT_TYPE, type IcsAttendee } from "../../shared/ics";
 import { introCallPrompts } from "../config/callPrompts";
 import { buildCallInviteEmail, emitNotification, sendEmail } from "../email/outbox";
-import { performAction } from "../../pipeline";
+import { getPipeline, performAction } from "../../pipeline";
 
 const calls = new Hono<AppEnv>();
 calls.use("*", requireAuth, denyMentor);
@@ -107,13 +114,23 @@ export interface CallView {
   participants: CallParticipantView[];
   /** True when the caller may reschedule/cancel/invite on this call. */
   canManage: boolean;
+  /**
+   * True when the caller may set `completed` ⇄ `scheduled` — everyone who may
+   * manage it, plus anyone who is ON the call (W7-F §9, §8 Q103).
+   */
+  canComplete: boolean;
 }
 
 function defaultTitle(deckName: string, kind: CallKind): string {
   return `${deckName} — ${CALL_KIND_LABELS[kind].toLowerCase()}`;
 }
 
-function toCallView(row: CallRow, participants: ParticipantRow[], canManage: boolean): CallView {
+function toCallView(
+  row: CallRow,
+  participants: ParticipantRow[],
+  canManage: boolean,
+  canComplete: boolean = canManage,
+): CallView {
   const kind = row.kind as CallKind;
   return {
     id: row.id,
@@ -136,6 +153,7 @@ function toCallView(row: CallRow, participants: ParticipantRow[], canManage: boo
       .filter((p) => p.call_id === row.id)
       .map((p) => ({ id: p.id, userId: p.user_id, email: p.email, name: p.name, kind: p.kind })),
     canManage,
+    canComplete: canManage || canComplete,
   };
 }
 
@@ -216,19 +234,133 @@ function parseDuration(value: unknown, fallback: number): number | { error: stri
 // ── Visibility ───────────────────────────────────────────────────────────────
 
 /**
- * Restrict the listing for a non-scheduler. A founder sees the calls on their own
- * decks; every other read-only role sees the calls they were invited to (matched
- * on their user id OR their account email, so an invite typed by hand still
- * shows up on their screen).
+ * "Is the caller on this call?" — their user id on a participant row, OR their
+ * account email on one, so an invite typed by hand still counts. Binds the user
+ * id twice. (Until W9-E the email half bound the user's ID — `SessionUser` has
+ * no email — so it could never match; it now reads the account's email.)
  */
-function visibilityClause(role: string): { sql: string; binds: string[] } | null {
-  if (role === "founder") return { sql: " AND d.uploaded_by = ?", binds: [] };
+const ON_CALL_SQL =
+  "EXISTS (SELECT 1 FROM call_participants p WHERE p.call_id = c.id " +
+  "AND (p.user_id = ? OR lower(p.email) = (SELECT lower(email) FROM users WHERE id = ?)))";
+
+/** "Was the caller delegated this deck's call of this kind?" Binds the user id once. */
+const DELEGATE_SQL =
+  "EXISTS (SELECT 1 FROM call_schedulers s WHERE s.deck_id = c.deck_id AND s.kind = c.kind AND s.user_id = ?)";
+
+/**
+ * Restrict the listing for a non-scheduler. A founder sees the calls on their own
+ * decks; every other read-only role sees the calls they were invited to, and the
+ * calls they were delegated to schedule.
+ */
+function visibilityClause(role: string, userId: string): { sql: string; binds: string[] } {
+  if (role === "founder") return { sql: " AND d.uploaded_by = ?", binds: [userId] };
+  return { sql: ` AND (${ON_CALL_SQL} OR ${DELEGATE_SQL})`, binds: [userId, userId, userId] };
+}
+
+/** Who the caller is to the calls router: a scheduler, and/or a delegate on some (deck, kind). */
+interface CallerScope {
+  scheduler: boolean;
+  /** `${deckId}:${kind}` for every call this caller was delegated. */
+  delegated: Set<string>;
+}
+
+async function callerScope(c: Context<AppEnv>): Promise<CallerScope> {
+  const user = c.var.user;
+  const rows = (
+    await c.env.DB.prepare(
+      "SELECT s.deck_id, s.kind FROM call_schedulers s JOIN decks d ON d.id = s.deck_id " +
+        "WHERE s.user_id = ? AND d.edition = ?",
+    )
+      .bind(user.id, user.edition)
+      .all<{ deck_id: string; kind: string }>()
+  ).results;
   return {
-    sql:
-      " AND EXISTS (SELECT 1 FROM call_participants p WHERE p.call_id = c.id " +
-      "AND (p.user_id = ? OR lower(p.email) = lower(?)))",
-    binds: [],
+    scheduler: canScheduleCalls(user.edition as Edition, user.role),
+    delegated: new Set(rows.map((r) => `${r.deck_id}:${r.kind}`)),
   };
+}
+
+function mayManage(scope: CallerScope, deckId: string, kind: string): boolean {
+  return scope.scheduler || scope.delegated.has(`${deckId}:${kind}`);
+}
+
+async function userEmail(env: Env, userId: string): Promise<string | null> {
+  const row = await env.DB.prepare("SELECT email FROM users WHERE id = ?").bind(userId).first<{ email: string }>();
+  return row?.email?.toLowerCase() ?? null;
+}
+
+function isOnCall(callId: string, participants: ParticipantRow[], userId: string, email: string | null): boolean {
+  return participants.some(
+    (p) => p.call_id === callId && (p.user_id === userId || (email !== null && p.email.toLowerCase() === email)),
+  );
+}
+
+/** A delegation as the screen draws it: "<user> · <role>". */
+export interface CallSchedulerView {
+  deckId: string;
+  kind: CallKind;
+  userId: string;
+  userName: string;
+  role: string;
+  assignedAt: string;
+}
+
+/**
+ * A deck this call's stage has DECIDED (F0627 — agreed with `W9-B`, §9): the
+ * latest `pipeline_events` row leaving the stage set, for a deck not currently
+ * back inside it. Read from the event, never inferred from where the deck is
+ * now — a deal sponsored at partner call and passed at IC still reads "Sponsor
+ * to IC" here.
+ */
+export interface DecidedCallView {
+  deckId: string;
+  action: string;
+  outcome: string;
+  toStage: string;
+  decidedAt: string;
+}
+
+async function decidedDecks(env: Env, edition: Edition, kind: CallKind): Promise<DecidedCallView[]> {
+  const decision = callDecision(edition, kind);
+  if (!decision) return [];
+  const marks = decision.stages.map(() => "?").join(", ");
+  const rows = (
+    await env.DB.prepare(
+      "SELECT e.id, e.deck_id, e.action, e.to_stage, e.created_at FROM pipeline_events e " +
+        "JOIN decks d ON d.id = e.deck_id " +
+        `WHERE d.edition = ? AND e.from_stage IN (${marks}) AND e.to_stage NOT IN (${marks}) ` +
+        `AND d.status NOT IN (${marks}) ORDER BY e.created_at DESC, e.id DESC`,
+    )
+      .bind(edition, ...decision.stages, ...decision.stages, ...decision.stages)
+      .all<{ id: string; deck_id: string; action: string; to_stage: string; created_at: string }>()
+  ).results;
+  const transitions = getPipeline(edition).transitions;
+  const seen = new Set<string>();
+  const out: DecidedCallView[] = [];
+  for (const r of rows) {
+    if (seen.has(r.deck_id)) continue;
+    seen.add(r.deck_id);
+    out.push({
+      deckId: r.deck_id,
+      action: r.action,
+      outcome:
+        outcomeForAction(decision, r.action)?.label ??
+        transitions.find((t) => t.action === r.action)?.label ??
+        r.action,
+      toStage: r.to_stage,
+      decidedAt: r.created_at,
+    });
+  }
+  return out;
+}
+
+/** The roles a stage's own transitions name — who may record an outcome there. */
+function decidingRoles(edition: Edition, stages: readonly string[]): Set<string> {
+  return new Set(
+    getPipeline(edition)
+      .transitions.filter((t) => stages.includes(t.from))
+      .flatMap((t) => t.roles as readonly string[]),
+  );
 }
 
 // ── Routes ───────────────────────────────────────────────────────────────────
@@ -236,12 +368,21 @@ function visibilityClause(role: string): { sql: string; binds: string[] } | null
 /**
  * GET /api/calls?deckId=&kind=&mine=1 — the caller's visible calls.
  * Schedulers see the edition's calls; everyone else sees only their own.
+ *
+ * W9-E — alongside the calls, for the screen that asked for one `kind`:
+ * `schedulers` (the Assign scheduler delegations), `decided` (decks the kind's
+ * stage has decided, F0627), `outcomes` (recorded Renegotiate / Hold) and
+ * `canDecide` (whether the caller may record one). A non-scheduler gets each
+ * narrowed to the decks they can see a call on — or were delegated.
  */
 calls.get("/", async (c) => {
   const user = c.var.user;
-  const scheduler = canScheduleCalls(user.edition as Edition, user.role);
+  const edition = user.edition as Edition;
+  const scope = await callerScope(c);
+  const scheduler = scope.scheduler;
   const deckId = c.req.query("deckId");
-  const kind = c.req.query("kind");
+  const rawKind = c.req.query("kind");
+  const kind = rawKind && isCallKind(rawKind) ? rawKind : null;
   const mineOnly = c.req.query("mine") === "1";
 
   let sql = `${CALL_SELECT} WHERE d.edition = ?`;
@@ -250,27 +391,192 @@ calls.get("/", async (c) => {
     sql += " AND c.deck_id = ?";
     binds.push(deckId);
   }
-  if (kind && isCallKind(kind)) {
+  if (kind) {
     sql += " AND c.kind = ?";
     binds.push(kind);
   }
   if (!scheduler || mineOnly) {
-    const clause = visibilityClause(user.role);
-    if (clause) {
-      sql += clause.sql;
-      if (user.role === "founder") binds.push(user.id);
-      else binds.push(user.id, c.var.user.id);
-    }
+    const clause = visibilityClause(user.role, user.id);
+    sql += clause.sql;
+    binds.push(...clause.binds);
   }
   sql += " ORDER BY c.scheduled_at IS NULL, c.scheduled_at ASC, c.created_at DESC";
 
   const rows = (await c.env.DB.prepare(sql).bind(...binds).all<CallRow>()).results;
   const participants = await loadParticipants(c.env, rows.map((r) => r.id));
+  const email = await userEmail(c.env, user.id);
+
+  let schedulerSql =
+    "SELECT s.deck_id, s.kind, s.user_id, u.name AS user_name, u.role, s.assigned_at FROM call_schedulers s " +
+    "JOIN decks d ON d.id = s.deck_id JOIN users u ON u.id = s.user_id WHERE d.edition = ?";
+  const schedulerBinds: string[] = [user.edition];
+  if (kind) {
+    schedulerSql += " AND s.kind = ?";
+    schedulerBinds.push(kind);
+  }
+  if (!scheduler) {
+    schedulerSql += " AND s.user_id = ?";
+    schedulerBinds.push(user.id);
+  }
+  const schedulers: CallSchedulerView[] = (
+    await c.env.DB.prepare(schedulerSql)
+      .bind(...schedulerBinds)
+      .all<{ deck_id: string; kind: string; user_id: string; user_name: string; role: string; assigned_at: string }>()
+  ).results.map((r) => ({
+    deckId: r.deck_id,
+    kind: r.kind as CallKind,
+    userId: r.user_id,
+    userName: r.user_name,
+    role: r.role,
+    assignedAt: r.assigned_at,
+  }));
+
+  // What a non-scheduler may learn about decisions: only decks they are on a
+  // call for (or were delegated). A scheduler sees the stage.
+  const visibleDecks = new Set([...rows.map((r) => r.deck_id), ...schedulers.map((s) => s.deckId)]);
+  const narrow = <T extends { deckId: string }>(list: T[]) =>
+    scheduler ? list : list.filter((x) => visibleDecks.has(x.deckId));
+
+  const decision = kind ? callDecision(edition, kind) : undefined;
+  const decided = kind ? narrow(await decidedDecks(c.env, edition, kind)) : [];
+  const outcomes =
+    kind && decision
+      ? narrow(
+          (
+            await c.env.DB.prepare(
+              "SELECT o.deck_id, o.outcome, o.set_at FROM call_outcomes o JOIN decks d ON d.id = o.deck_id " +
+                `WHERE d.edition = ? AND o.kind = ? AND d.status IN (${decision.stages.map(() => "?").join(", ")})`,
+            )
+              .bind(edition, kind, ...decision.stages)
+              .all<{ deck_id: string; outcome: string; set_at: string }>()
+          ).results.map((r) => ({ deckId: r.deck_id, outcome: r.outcome, setAt: r.set_at })),
+        )
+      : [];
+
   return c.json({
-    calls: rows.map((r) => toCallView(r, participants, scheduler)),
+    calls: rows.map((r) =>
+      toCallView(
+        r,
+        participants,
+        mayManage(scope, r.deck_id, r.kind),
+        isOnCall(r.id, participants, user.id, email),
+      ),
+    ),
     canSchedule: scheduler,
-    kinds: CALL_KINDS_BY_EDITION[user.edition as Edition],
+    kinds: CALL_KINDS_BY_EDITION[edition],
+    schedulers,
+    decided,
+    outcomes,
+    canDecide: decision ? decidingRoles(edition, decision.stages).has(user.role) : false,
   });
+});
+
+/**
+ * PUT /api/calls/scheduler — Intro calls' "Assign scheduler" (`ncAssign`, §8 Q102).
+ *
+ * Body: `{ deckId, kind, userId }`; `userId: null` clears it ("Change" re-opens the
+ * picker; picking again replaces). Scheduler roles only — a delegate cannot pass
+ * the delegation on. The assignee must be an active member of the edition who can
+ * hold a pipeline role: never a founder, never a mentor (a directory record).
+ */
+calls.put("/scheduler", async (c) => {
+  const user = c.var.user;
+  const edition = user.edition as Edition;
+  if (!canScheduleCalls(edition, user.role)) return c.json({ error: "forbidden" }, 403);
+
+  const body = await readBody<{ deckId: string; kind: string; userId: string | null }>(c);
+  const deckId = typeof body.deckId === "string" ? body.deckId : "";
+  if (!deckId) return c.json({ error: "deck_required" }, 400);
+  if (!isCallKind(body.kind) || !(CALL_KINDS_BY_EDITION[edition] as readonly string[]).includes(body.kind)) {
+    return c.json({ error: "invalid_kind" }, 400);
+  }
+  const kind = body.kind;
+  if (!("userId" in body) || (body.userId !== null && typeof body.userId !== "string")) {
+    return c.json({ error: "user_required" }, 400);
+  }
+  const deck = await c.env.DB.prepare("SELECT id FROM decks WHERE id = ? AND edition = ?")
+    .bind(deckId, edition)
+    .first<{ id: string }>();
+  if (!deck) return c.json({ error: "not_found" }, 404);
+
+  if (body.userId === null) {
+    await c.env.DB.prepare("DELETE FROM call_schedulers WHERE deck_id = ? AND kind = ?").bind(deckId, kind).run();
+    return c.json({ ok: true, scheduler: null });
+  }
+
+  const assignee = await c.env.DB.prepare(
+    "SELECT id, name, role FROM users WHERE id = ? AND edition = ? AND active = 1",
+  )
+    .bind(body.userId, edition)
+    .first<{ id: string; name: string; role: string }>();
+  if (!assignee) return c.json({ error: "invalid_user" }, 400);
+  if (assignee.role === "founder" || assignee.role === MENTOR_ROLE) return c.json({ error: "invalid_user" }, 400);
+
+  const ts = new Date().toISOString();
+  await c.env.DB.prepare(
+    "INSERT INTO call_schedulers (deck_id, kind, user_id, assigned_by, assigned_at) VALUES (?, ?, ?, ?, ?) " +
+      "ON CONFLICT (deck_id, kind) DO UPDATE SET user_id = excluded.user_id, assigned_by = excluded.assigned_by, " +
+      "assigned_at = excluded.assigned_at",
+  )
+    .bind(deckId, kind, assignee.id, user.id, ts)
+    .run();
+  const view: CallSchedulerView = {
+    deckId,
+    kind,
+    userId: assignee.id,
+    userName: assignee.name,
+    role: assignee.role,
+    assignedAt: ts,
+  };
+  return c.json({ ok: true, scheduler: view });
+});
+
+/**
+ * PUT /api/calls/outcome — record an outcome that is NOT a transition
+ * (Alignment call's Renegotiate / Hold, F0558). `outcome: null` clears it.
+ *
+ * An outcome that is a transition (Sponsor to IC, Issue term sheet…) is refused
+ * here: it goes through `POST /api/decks/:id/transition`, which owns the move,
+ * its side effects and the event row this router reads back.
+ *
+ * Gated like the stage's own transitions: only a role one of them names may
+ * decide, and only while the deck is at that stage.
+ */
+calls.put("/outcome", async (c) => {
+  const user = c.var.user;
+  const edition = user.edition as Edition;
+  const anyStages = Object.values(CALL_DECISIONS[edition]).flatMap((d) => d?.stages ?? []);
+  if (!decidingRoles(edition, anyStages).has(user.role)) return c.json({ error: "forbidden" }, 403);
+
+  const body = await readBody<{ deckId: string; kind: string; outcome: string | null }>(c);
+  const deckId = typeof body.deckId === "string" ? body.deckId : "";
+  if (!deckId) return c.json({ error: "deck_required" }, 400);
+  const decision = isCallKind(body.kind) ? callDecision(edition, body.kind) : undefined;
+  if (!decision || !isCallKind(body.kind)) return c.json({ error: "invalid_kind" }, 400);
+  const kind = body.kind;
+  if (body.outcome !== null && (typeof body.outcome !== "string" || !recordedOutcome(decision, body.outcome))) {
+    return c.json({ error: "invalid_outcome" }, 400);
+  }
+  if (!decidingRoles(edition, decision.stages).has(user.role)) return c.json({ error: "forbidden" }, 403);
+
+  const deck = await c.env.DB.prepare("SELECT id, status FROM decks WHERE id = ? AND edition = ?")
+    .bind(deckId, edition)
+    .first<{ id: string; status: string }>();
+  if (!deck) return c.json({ error: "not_found" }, 404);
+  if (!decision.stages.includes(deck.status)) return c.json({ error: "not_at_stage" }, 409);
+
+  if (body.outcome === null) {
+    await c.env.DB.prepare("DELETE FROM call_outcomes WHERE deck_id = ? AND kind = ?").bind(deckId, kind).run();
+    return c.json({ ok: true, outcome: null });
+  }
+  const ts = new Date().toISOString();
+  await c.env.DB.prepare(
+    "INSERT INTO call_outcomes (deck_id, kind, outcome, set_by, set_at) VALUES (?, ?, ?, ?, ?) " +
+      "ON CONFLICT (deck_id, kind) DO UPDATE SET outcome = excluded.outcome, set_by = excluded.set_by, set_at = excluded.set_at",
+  )
+    .bind(deckId, kind, body.outcome, user.id, ts)
+    .run();
+  return c.json({ ok: true, outcome: { deckId, outcome: body.outcome, setAt: ts } });
 });
 
 /**
@@ -279,13 +585,15 @@ calls.get("/", async (c) => {
  *
  * Deliberately NOT `GET /api/users` (admin-only, and it exposes the account
  * management surface): this is a name+email+role read, scoped to the edition,
- * available to exactly the roles that are allowed to schedule. Founders are
+ * available to exactly the roles that are allowed to schedule — and to anyone
+ * delegated a call, who needs the same roster to book it. Founders are
  * excluded — the founder is invited by their deck's contact email, not picked
  * from a directory of other people's founders.
  */
 calls.get("/directory", async (c) => {
   const user = c.var.user;
-  if (!canScheduleCalls(user.edition as Edition, user.role)) return c.json({ error: "forbidden" }, 403);
+  const scope = await callerScope(c);
+  if (!scope.scheduler && scope.delegated.size === 0) return c.json({ error: "forbidden" }, 403);
   const rows = (
     await c.env.DB.prepare(
       "SELECT id, name, email, role FROM users WHERE edition = ? AND active = 1 AND role != 'founder' ORDER BY name",
@@ -303,12 +611,9 @@ async function loadVisibleCall(c: Context<AppEnv>, id: string): Promise<CallRow 
   let sql = `${CALL_SELECT} WHERE c.id = ? AND d.edition = ?`;
   const binds: string[] = [id, user.edition];
   if (!scheduler) {
-    const clause = visibilityClause(user.role);
-    if (clause) {
-      sql += clause.sql;
-      if (user.role === "founder") binds.push(user.id);
-      else binds.push(user.id, user.id);
-    }
+    const clause = visibilityClause(user.role, user.id);
+    sql += clause.sql;
+    binds.push(...clause.binds);
   }
   return c.env.DB.prepare(sql).bind(...binds).first<CallRow>();
 }
@@ -328,7 +633,10 @@ async function loadVisibleCall(c: Context<AppEnv>, id: string): Promise<CallRow 
 calls.post("/", async (c) => {
   const user = c.var.user;
   const edition = user.edition as Edition;
-  if (!canScheduleCalls(edition, user.role)) return c.json({ error: "forbidden" }, 403);
+  const scope = await callerScope(c);
+  // A delegate may book only the (deck, kind) they were given; checked below,
+  // once the body names it. Nobody else gets as far as reading the body.
+  if (!scope.scheduler && scope.delegated.size === 0) return c.json({ error: "forbidden" }, 403);
 
   const body = await readBody<{
     deckId: string;
@@ -343,6 +651,9 @@ calls.post("/", async (c) => {
   }>(c);
 
   const deckId = typeof body.deckId === "string" ? body.deckId : "";
+  if (!scope.scheduler && !(deckId && isCallKind(body.kind) && mayManage(scope, deckId, body.kind))) {
+    return c.json({ error: "forbidden" }, 403);
+  }
   if (!deckId) return c.json({ error: "deck_required" }, 400);
   if (!isCallKind(body.kind)) return c.json({ error: "invalid_kind" }, 400);
   const kind = body.kind;
@@ -448,6 +759,12 @@ calls.post("/", async (c) => {
   });
 });
 
+/** The one PATCH a participant may send: `{ status: "completed" | "scheduled" }`, nothing else. */
+function isCompletionOnly(body: Record<string, unknown>): body is { status: "completed" | "scheduled" } {
+  const keys = Object.keys(body);
+  return keys.length === 1 && keys[0] === "status" && (body.status === "completed" || body.status === "scheduled");
+}
+
 async function organizerEmail(env: Env, userId: string): Promise<string | null> {
   const row = await env.DB.prepare("SELECT email FROM users WHERE id = ?")
     .bind(userId)
@@ -462,13 +779,9 @@ async function organizerEmail(env: Env, userId: string): Promise<string | null> 
  */
 calls.patch("/:id", async (c) => {
   const user = c.var.user;
-  const edition = user.edition as Edition;
-  if (!canScheduleCalls(edition, user.role)) return c.json({ error: "forbidden" }, 403);
-
+  const scope = await callerScope(c);
   const id = c.req.param("id");
   const existing = await loadVisibleCall(c, id);
-  if (!existing) return c.json({ error: "not_found" }, 404);
-
   const body = await readBody<{
     scheduledAt: string | null;
     durationMinutes: number;
@@ -479,6 +792,21 @@ calls.patch("/:id", async (c) => {
     participants: unknown;
     sendInvite: boolean;
   }>(c);
+
+  if (!scope.scheduler && !(existing && mayManage(scope, existing.deck_id, existing.kind))) {
+    // W7-F §9 / §8 Q103 — a participant closes out (or reopens) THEIR call. Any
+    // other field, any other status, or a call they are not on is refused with
+    // the same 403 a non-scheduler has always had, so it reveals nothing.
+    if (!existing || user.role === "founder" || !isCompletionOnly(body as Record<string, unknown>)) {
+      return c.json({ error: "forbidden" }, 403);
+    }
+    const onCall = isOnCall(existing.id, await loadParticipants(c.env, [existing.id]), user.id, await userEmail(c.env, user.id));
+    if (!onCall) return c.json({ error: "forbidden" }, 403);
+    if (existing.status !== "scheduled" && existing.status !== "completed") {
+      return c.json({ error: "not_scheduled" }, 409);
+    }
+  }
+  if (!existing) return c.json({ error: "not_found" }, 404);
 
   const sets: string[] = [];
   const binds: (string | number | null)[] = [];
@@ -559,7 +887,12 @@ calls.patch("/:id", async (c) => {
   // cancelling is neither of the two things the alert's label names.
   const moved = row?.scheduled_at && row.scheduled_at !== existing.scheduled_at;
   if (row && moved && row.status !== "cancelled") await announceCall(c, row, Boolean(existing.scheduled_at));
-  return c.json({ ok: true, invited: invited.sent, call: row ? toCallView(row, parts, true) : null });
+  const manage = mayManage(scope, existing.deck_id, existing.kind);
+  return c.json({
+    ok: true,
+    invited: invited.sent,
+    call: row ? toCallView(row, parts, manage, true) : null,
+  });
 });
 
 // ── ICS generation ───────────────────────────────────────────────────────────
@@ -743,9 +1076,10 @@ export function formatWhen(iso: string | null): string {
 
 /** POST /api/calls/:id/invite — (re)send the invite to every participant. */
 calls.post("/:id/invite", async (c) => {
-  const user = c.var.user;
-  if (!canScheduleCalls(user.edition as Edition, user.role)) return c.json({ error: "forbidden" }, 403);
+  const scope = await callerScope(c);
+  if (!scope.scheduler && scope.delegated.size === 0) return c.json({ error: "forbidden" }, 403);
   const row = await loadVisibleCall(c, c.req.param("id"));
+  if (!scope.scheduler && !(row && mayManage(scope, row.deck_id, row.kind))) return c.json({ error: "forbidden" }, 403);
   if (!row) return c.json({ error: "not_found" }, 404);
   if (!row.scheduled_at) return c.json({ error: "not_scheduled" }, 409);
   const { sent } = await dispatchInvite(c, row.id);

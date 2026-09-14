@@ -29,11 +29,12 @@ test("VC intro calls is a real screen with the seeded call", async ({ page }) =>
 
   const row = page.getByRole("row", { name: /WealthOS/ });
   await expect(row).toBeVisible();
-  await expect(row.getByText("Scheduled")).toBeVisible();
-  // Aug-2026 issue 27 replaced the raw participant list with the design's
-  // Scheduler column (organiser + participant count); the invite itself is
-  // still one click away.
-  await expect(row.getByText(/participants?$/)).toBeVisible();
+  // W9-E — the VC build's own last two columns (`panel-introcalls` 27-28): the
+  // Call scheduled pill AND the Schedule call column's tick both say Scheduled,
+  // and Assign scheduler replaces the incubator's Scheduler column (§8 Q102). The
+  // invite itself is still one click away.
+  await expect(row.getByText("Scheduled")).toHaveCount(2);
+  await expect(row.getByTestId("assign-scheduler")).toBeVisible();
   await expect(row.getByRole("link", { name: ".ics" })).toBeVisible();
 });
 
@@ -74,9 +75,12 @@ test("a partner schedules an alignment call and downloads the invite", async ({ 
   ]);
   expect(download.suggestedFilename()).toMatch(/\.ics$/);
 
-  // The term-sheet capture survived the move off StagePage.
+  // The term-sheet capture survived the move off StagePage. W9-E (F0558): Issue
+  // term sheet is now the Outcome select's option, and choosing it asks for the
+  // fields before anything moves — nothing is confirmed here, so LearnLoop stays put.
+  await row.getByRole("combobox", { name: "Outcome for LearnLoop" }).selectOption("issue_term_sheet");
   await expect(row.getByPlaceholder("Valuation")).toBeVisible();
-  await expect(row.getByRole("button", { name: "Issue term sheet" })).toBeVisible();
+  await expect(row.getByRole("button", { name: "Confirm" })).toBeVisible();
 });
 
 test("an IC member sees only the calls they are on, read-only", async ({ page }) => {

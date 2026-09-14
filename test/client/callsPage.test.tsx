@@ -115,41 +115,53 @@ interface Mock {
   calls?: CallView[];
   canSchedule?: boolean;
   prompts?: { enabled: boolean; prompts: { topic: string; because: string; question: string }[] };
+  // W9-E
+  decks?: DeckView[];
+  people?: { id: string; name: string; email: string; role: string }[];
+  matrix?: (deckId: string) => DeckReportMatrix;
+  listing?: { schedulers?: unknown[]; decided?: unknown[]; outcomes?: unknown[]; canDecide?: boolean };
 }
 
-function mockApi({ calls = [call({})], canSchedule = true, prompts = { enabled: false, prompts: [] } }: Mock) {
-  const seen: { url: string; method: string }[] = [];
+const INC_PEOPLE = [
+  { id: "inc_mentor", name: "Anil Mehta", email: "anil@x.ai", role: "mentor" },
+  { id: "inc_jury", name: "Rajesh Kumar", email: "rajesh@x.ai", role: "jury" },
+  { id: "inc_pm", name: "Raj Kumar", email: "raj@x.ai", role: "program_manager" },
+  { id: "inc_pa", name: "Sunita Rao", email: "sunita@x.ai", role: "program_associate" },
+];
+
+function mockApi({
+  calls = [call({})],
+  canSchedule = true,
+  prompts = { enabled: false, prompts: [] },
+  decks = DECKS,
+  people = INC_PEOPLE,
+  matrix: matrixFor = matrix,
+  listing = {},
+}: Mock) {
+  const seen: { url: string; method: string; body?: unknown }[] = [];
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    seen.push({ url, method: init?.method ?? "GET" });
+    seen.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : undefined });
     let body: unknown = {};
-    if (url === "/api/decks") body = { decks: DECKS };
-    else if (url.startsWith("/api/calls/directory")) {
-      body = {
-        people: [
-          { id: "inc_mentor", name: "Anil Mehta", email: "anil@x.ai", role: "mentor" },
-          { id: "inc_jury", name: "Rajesh Kumar", email: "rajesh@x.ai", role: "jury" },
-          { id: "inc_pm", name: "Raj Kumar", email: "raj@x.ai", role: "program_manager" },
-          { id: "inc_pa", name: "Sunita Rao", email: "sunita@x.ai", role: "program_associate" },
-        ],
-      };
-    } else if (/\/api\/calls\/[^/]+\/prompts$/.test(url)) body = prompts;
-    else if (url.startsWith("/api/calls")) body = { calls, canSchedule, kinds: ["intro"] };
-    else if (/\/api\/decks\/[^/]+\/report$/.test(url)) body = matrix(url.split("/")[3]!);
+    if (url === "/api/decks") body = { decks };
+    else if (url.startsWith("/api/calls/directory")) body = { people };
+    else if (/\/api\/calls\/[^/]+\/prompts$/.test(url)) body = prompts;
+    else if (url.startsWith("/api/calls")) body = { calls, canSchedule, kinds: ["intro"], ...listing };
+    else if (/\/api\/decks\/[^/]+\/report(\?.*)?$/.test(url)) body = matrixFor(url.split("/")[3]!.split("?")[0]!);
     else if (/\/api\/decks\/[^/]+\/versions$/.test(url)) body = { versions: [] };
     else if (url.startsWith("/api/decks/")) {
-      body = { deck: DECKS[0], scores: [], extraction: [{ label: "Cover", text: "EV logistics." }], versions: [] };
+      body = { deck: decks[0], scores: [], extraction: [{ label: "Cover", text: "EV logistics." }], versions: [] };
     }
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
   return seen;
 }
 
-function mount(config: CallsConfig, role: Role, id: string) {
-  const user: AuthUser = { id, name: "Test", initials: "TT", role, edition: "incubator" };
+function mount(config: CallsConfig, role: Role, id: string, edition: "incubator" | "vc" = "incubator", slug = "introcalls") {
+  const user: AuthUser = { id, name: "Test", initials: "TT", role, edition };
   return render(
     <AuthContext.Provider value={{ user, loading: false, login: vi.fn(), logout: vi.fn(), updateUser: vi.fn() }}>
-      <MemoryRouter initialEntries={["/app/introcalls"]}>
+      <MemoryRouter initialEntries={[`/app/${slug}`]}>
         <Routes>
           <Route path="/app/:navId" element={<CallsPage config={config} />} />
         </Routes>
@@ -357,11 +369,21 @@ describe("the AI questions (GET /api/calls/:id/prompts)", () => {
   });
 });
 
-describe("a call screen that declares none of the extension (VC, until W9-E)", () => {
+describe("a call screen that declares none of the extension", () => {
+  // Until W9-E this test borrowed the VC Intro calls config as its bare example;
+  // the VC configs now declare the extension, so the bare config is spelled out.
+  const BARE: CallsConfig = {
+    title: "Intro calls",
+    subtitle: "Bare",
+    kind: "intro",
+    statuses: ["shortlisted", "intro"],
+    emptyTitle: "No intro calls yet",
+    emptyDescription: "—",
+  };
+
   it("has no Filter, Export, legend, score stack or pane — and the name still opens the drawer", async () => {
     mockApi({});
-    const bare: CallsConfig = { ...VC_CALLS_CONFIG.introcalls, statuses: ["shortlisted", "intro"] };
-    mount(bare, "program_manager", "inc_pm");
+    mount(BARE, "program_manager", "inc_pm");
     await screen.findByRole("row", { name: /AgroFresh/ });
     expect(screen.queryByRole("button", { name: /^Filter/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Export" })).not.toBeInTheDocument();
@@ -370,6 +392,417 @@ describe("a call screen that declares none of the extension (VC, until W9-E)", (
     fireEvent.click(screen.getByRole("button", { name: "GreenRoute" }));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
     expect(screen.queryByTestId("stage-pane")).not.toBeInTheDocument();
+  });
+
+  it("W9-E's keys draw nothing when omitted: W7-F's trailing pair, Jury score, no outcome, no delegation", async () => {
+    mockApi({ listing: { decided: [{ deckId: "d9", action: "x", outcome: "Pass", toStage: "archived", decidedAt: "2026-06-01" }] } });
+    mount(BARE, "program_manager", "inc_pm");
+    await screen.findByRole("row", { name: /AgroFresh/ });
+    expect(headers()).toEqual([
+      "Startup",
+      "AI score",
+      "Jury score",
+      "Avg. score",
+      "Addl. Parameter scores",
+      "Call scheduled",
+      "Call date",
+      "Call completed",
+      "Scheduler",
+      "Action",
+    ]);
+    expect(screen.queryByTestId("assign-scheduler")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /^Sponsorship|^Outcome/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("row")).toHaveLength(3); // header + the two live decks, no decided row
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// W9-E — the VC call screens, from the real VC configs.
+
+function vcDeck(over: Partial<DeckView>): DeckView {
+  return {
+    id: "v1",
+    name: "WealthOS",
+    sector: "Wealthtech",
+    stage: "Pre-seed",
+    city: "Mumbai",
+    aiScore: 7.8,
+    juryScore: 5.5,
+    decisionScore: 7.5,
+    statusId: "associate_review",
+    status: "Associate Review",
+    actions: [],
+    ...over,
+  };
+}
+
+/** Analysts scored 7.0 and 8.0; the partner 9.0 — so a role-filtered cell is provably not the deck's juryScore. */
+function vcMatrix(deckId: string): DeckReportMatrix {
+  return {
+    deck: vcDeck({ id: deckId }),
+    columns: [
+      { id: "ai", kind: "ai", name: "AI", rank: 0 },
+      { id: "vc_analyst", kind: "human", name: "Rhea Nair", role: "analyst", rank: 1, total: 7.0, submittedAt: "2026-06-02" },
+      { id: "vc_analyst2", kind: "human", name: "Kiran Desai", role: "analyst", rank: 1, total: 8.0, submittedAt: "2026-06-02" },
+      { id: "vc_partner", kind: "human", name: "Ishaan Sethi", role: "partner", rank: 2, total: 9.0, submittedAt: "2026-06-03" },
+      { id: "vc_ic", kind: "human", name: "Rajesh Kumar", role: "ic_member", rank: 2, total: 6.4, submittedAt: "2026-06-04" },
+    ],
+    core: [],
+    additional: [],
+    hiddenEvaluators: 0,
+  };
+}
+
+const VC_PEOPLE = [
+  { id: "vc_partner", name: "Ishaan Sethi", email: "ishaan@x.ai", role: "partner" },
+  { id: "vc_analyst", name: "Rhea Nair", email: "rhea@x.ai", role: "analyst" },
+  { id: "vc_associate", name: "Sunita Rao", email: "sunita@x.ai", role: "associate" },
+  { id: "vc_ic", name: "Rajesh Kumar", email: "rajesh@x.ai", role: "ic_member" },
+];
+
+const vcCall = (over: Partial<CallView>) =>
+  call({ id: "vc1", deckId: "v1", deckName: "WealthOS", deckStatus: "associate_review", organizerId: "vc_associate", ...over });
+
+describe("VC Intro calls (panel-introcalls, AISJ_VC_Superuser_V8)", () => {
+  const CONFIG = VC_CALLS_CONFIG.introcalls;
+  const DECKS_VC = [vcDeck({}), vcDeck({ id: "v2", name: "AgriChain", sector: "AgriTech", city: "Jaipur", statusId: "partner_review" })];
+
+  it("draws the prototype's ten headers, subtitle, toolbar, footer sentence and legend", async () => {
+    mockApi({ decks: DECKS_VC, calls: [vcCall({})], people: VC_PEOPLE, matrix: vcMatrix });
+    mount(CONFIG, "associate", "vc_associate", "vc");
+    await screen.findByRole("row", { name: /AgriChain/ });
+
+    expect(headers()).toEqual([
+      "Startup",
+      "AI score",
+      "Analyst Score",
+      "Avg. score",
+      "Addl. Parameter scores",
+      "Call scheduled",
+      "Call date",
+      "Call completed",
+      "Schedule call",
+      "Assign scheduler",
+    ]);
+    expect(
+      screen.getByText("All shortlisted startups · click a name to view the deck · click the AI score for the full parameter breakdown"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Filter" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Export" })).toBeInTheDocument();
+    // `.nc-tb` has no primary button on the VC build.
+    expect(screen.queryByRole("button", { name: "Schedule intro call" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("stage-footer-stat")).toHaveTextContent("2 shortlisted startups · 1 scheduled · 0 completed");
+    expect(
+      within(screen.getByTestId("stage-legend"))
+        .getAllByText(/./)
+        .map((n) => n.textContent),
+    ).toEqual(["Scheduled", "Completed", "Not scheduled"]);
+  });
+
+  it("averages the ANALYSTS into Analyst Score, and keeps Schedule call in its own column", async () => {
+    mockApi({ decks: DECKS_VC, calls: [vcCall({})], people: VC_PEOPLE, matrix: vcMatrix });
+    mount(CONFIG, "associate", "vc_associate", "vc");
+    const agri = await screen.findByRole("row", { name: /AgriChain/ });
+    const wealth = screen.getByRole("row", { name: /WealthOS/ });
+    // (7.0 + 8.0) / 2 — not the partner's 9.0, not the deck's 5.5.
+    await vi.waitFor(() => expect(within(wealth).getAllByRole("cell")[2]).toHaveTextContent("7.5"));
+    expect(within(wealth).queryByText("5.5")).not.toBeInTheDocument();
+    // Scheduled: a pill in Call scheduled, a tick in Schedule call, no button.
+    expect(within(wealth).getAllByText("Scheduled")).toHaveLength(2);
+    expect(within(wealth).queryByRole("button", { name: "Schedule call" })).not.toBeInTheDocument();
+    expect(within(agri).getByText("Not scheduled")).toBeInTheDocument();
+    expect(within(agri).getByRole("button", { name: "Schedule call" })).toBeInTheDocument();
+    // No Action column, so no pipeline verbs on this screen.
+    expect(within(agri).queryByRole("button", { name: /Shortlist to partner/ })).not.toBeInTheDocument();
+  });
+
+  it("assigns a scheduler role → user → Assign, then shows '<user> · <role>' with Change", async () => {
+    const seen = mockApi({ decks: DECKS_VC, calls: [vcCall({})], people: VC_PEOPLE, matrix: vcMatrix });
+    mount(CONFIG, "associate", "vc_associate", "vc");
+    const agri = await screen.findByRole("row", { name: /AgriChain/ });
+    const user = within(agri).getByRole("combobox", { name: "Scheduler for AgriChain" });
+    expect(user).toBeDisabled();
+    fireEvent.change(within(agri).getByRole("combobox", { name: "Scheduler role for AgriChain" }), { target: { value: "analyst" } });
+    await vi.waitFor(() => expect(within(user).getAllByRole("option").map((o) => o.textContent)).toEqual(["— user —", "Rhea Nair"]));
+    expect(within(agri).getByRole("button", { name: "Assign" })).toBeDisabled();
+    fireEvent.change(user, { target: { value: "vc_analyst" } });
+    fireEvent.click(within(agri).getByRole("button", { name: "Assign" }));
+    await vi.waitFor(() =>
+      expect(seen.find((r) => r.url === "/api/calls/scheduler" && r.method === "PUT")?.body).toEqual({
+        deckId: "v2",
+        kind: "intro",
+        userId: "vc_analyst",
+      }),
+    );
+  });
+
+  it("names the delegate, and gives the delegate the Schedule call their role otherwise lacks", async () => {
+    const delegation = { deckId: "v2", kind: "intro", userId: "vc_analyst", userName: "Rhea Nair", role: "analyst" };
+    mockApi({ decks: DECKS_VC, calls: [vcCall({})], people: VC_PEOPLE, matrix: vcMatrix, listing: { schedulers: [delegation] } });
+    const { unmount } = mount(CONFIG, "associate", "vc_associate", "vc");
+    const agri = await screen.findByRole("row", { name: /AgriChain/ });
+    expect(within(agri).getByText("Rhea Nair · Analyst")).toBeInTheDocument();
+    fireEvent.click(within(agri).getByRole("button", { name: "Change" }));
+    expect(within(agri).getByRole("combobox", { name: "Scheduler role for AgriChain" })).toBeInTheDocument();
+    unmount();
+
+    // The analyst: a read-only role, on no call — but delegated AgriChain.
+    mockApi({ decks: DECKS_VC, calls: [], canSchedule: false, people: VC_PEOPLE, matrix: vcMatrix, listing: { schedulers: [delegation] } });
+    mount(CONFIG, "analyst", "vc_analyst", "vc");
+    const mine = await screen.findByRole("row", { name: /AgriChain/ });
+    expect(screen.queryByRole("row", { name: /WealthOS/ })).not.toBeInTheDocument();
+    expect(within(mine).getByRole("button", { name: "Schedule call" })).toBeInTheDocument();
+    // …and cannot pass the delegation on.
+    expect(within(mine).queryByRole("button", { name: "Change" })).not.toBeInTheDocument();
+  });
+
+  it("heads the name's pane with the AI's questions when the toggle is on", async () => {
+    mockApi({
+      decks: DECKS_VC,
+      calls: [vcCall({})],
+      people: VC_PEOPLE,
+      matrix: vcMatrix,
+      prompts: { enabled: true, prompts: [{ topic: "Traction & Validation", because: "Scored 4.5.", question: "Who pays today?" }] },
+    });
+    mount(CONFIG, "associate", "vc_associate", "vc");
+    fireEvent.click(await screen.findByRole("button", { name: "WealthOS" }));
+    const pane = screen.getByRole("complementary", { name: "WealthOS detail" });
+    expect(await within(pane).findByText("Who pays today?")).toBeInTheDocument();
+    expect(within(pane).getAllByRole("tab").map((t) => t.textContent)).toEqual(["Deck", "All scores"]);
+  });
+});
+
+describe("VC Partner call (panel-partnercall)", () => {
+  const CONFIG = VC_CALLS_CONFIG.partnercall;
+  const MEDGRID = vcDeck({
+    id: "m1",
+    name: "MedGrid",
+    sector: "Healthtech",
+    statusId: "partner_call",
+    actions: [
+      { action: "sponsor_to_ic", label: "Sponsor to IC", to: "investment_dd" },
+      { action: "pass_at_call", label: "Pass", to: "archived" },
+      { action: "another_meeting", label: "Need another meeting", to: "partner_review" },
+    ] as DeckView["actions"],
+  });
+  // Decided here, now at partner_review — whose actions must NOT surface on this row.
+  // `pass_at_call` is not a partner_review action; it is in the mock so the decided
+  // select is proven disabled BY the decision, not merely by having no allowed option.
+  const PAYWISE = vcDeck({
+    id: "p1",
+    name: "PayWise",
+    statusId: "partner_review",
+    actions: [
+      { action: "advance_to_call", label: "Advance to partner call", to: "partner_call" },
+      { action: "pass_at_call", label: "Pass", to: "archived" },
+    ] as DeckView["actions"],
+  });
+  const DECIDED = [{ deckId: "p1", action: "another_meeting", outcome: "Need another meeting", toStage: "partner_review", decidedAt: "2026-06-05" }];
+  const mc = vcCall({ id: "mc", deckId: "m1", deckName: "MedGrid", kind: "partner", deckStatus: "partner_call" });
+
+  it("draws the V8 headers, pcRender's footer and the outcome legend; keeps the decided row with its outcome and no verbs", async () => {
+    mockApi({ decks: [MEDGRID, PAYWISE], calls: [mc], people: VC_PEOPLE, matrix: vcMatrix, listing: { decided: DECIDED, canDecide: true } });
+    mount(CONFIG, "partner", "vc_partner", "vc", "partnercall");
+    const pay = await screen.findByRole("row", { name: /PayWise/ });
+
+    expect(headers()).toEqual([
+      "Startup",
+      "AI score",
+      "Partner",
+      "Avg. score",
+      "Addl. Parameter scores",
+      "Call scheduled",
+      "Call date",
+      "Call completed",
+      "Schedule call",
+      "Sponsorship",
+    ]);
+    expect(screen.getByTestId("stage-footer-stat")).toHaveTextContent("2 deals in partner review · 1 call scheduled · 0 sponsored to IC");
+    expect(
+      within(screen.getByTestId("stage-legend"))
+        .getAllByText(/./)
+        .map((n) => n.textContent),
+    ).toEqual(["Sponsor to IC", "Need another meeting", "Pass"]);
+
+    const decided = within(pay).getByRole("combobox", { name: "Sponsorship for PayWise" });
+    expect(decided).toBeDisabled();
+    expect(decided).toHaveDisplayValue("Need another meeting");
+    expect(within(pay).queryByRole("button", { name: /Advance to partner call|Schedule call/ })).not.toBeInTheDocument();
+
+    const med = screen.getByRole("row", { name: /MedGrid/ });
+    // The Partner column is the partner's own 9.0.
+    await vi.waitFor(() => expect(within(med).getAllByRole("cell")[2]).toHaveTextContent("9.0"));
+    const live = within(med).getByRole("combobox", { name: "Sponsorship for MedGrid" });
+    expect(live).toBeEnabled();
+    expect(within(live).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "— decide —",
+      "Sponsor to IC",
+      "Pass",
+      "Need another meeting",
+    ]);
+  });
+
+  it("choosing Sponsor to IC performs the transition", async () => {
+    const seen = mockApi({ decks: [MEDGRID], calls: [mc], people: VC_PEOPLE, matrix: vcMatrix, listing: { canDecide: true } });
+    mount(CONFIG, "partner", "vc_partner", "vc", "partnercall");
+    const med = await screen.findByRole("row", { name: /MedGrid/ });
+    fireEvent.change(within(med).getByRole("combobox", { name: "Sponsorship for MedGrid" }), { target: { value: "sponsor_to_ic" } });
+    await vi.waitFor(() =>
+      expect(seen.find((r) => r.url === "/api/decks/m1/transition")?.body).toMatchObject({ action: "sponsor_to_ic" }),
+    );
+  });
+
+  it("carries NO AI questions: the name opens the report, and /prompts is never asked", async () => {
+    const seen = mockApi({
+      decks: [MEDGRID],
+      calls: [mc],
+      people: VC_PEOPLE,
+      matrix: vcMatrix,
+      prompts: { enabled: true, prompts: [{ topic: "Team", because: "x", question: "Should never render" }] },
+    });
+    mount(CONFIG, "partner", "vc_partner", "vc", "partnercall");
+    fireEvent.click(await screen.findByRole("button", { name: "MedGrid" }));
+    const report = await screen.findByRole("dialog", { name: "Evaluation report — MedGrid" });
+    // Settled: the report's own request has been answered before absence is asserted.
+    await vi.waitFor(() => expect(seen.some((r) => r.url.startsWith("/api/decks/m1/report"))).toBe(true));
+    expect(report).toBeInTheDocument();
+    expect(screen.queryByTestId("call-ai-questions")).not.toBeInTheDocument();
+    expect(screen.queryByText("Should never render")).not.toBeInTheDocument();
+    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
+    expect(seen.some((r) => r.url.includes("/prompts"))).toBe(false);
+  });
+});
+
+describe("VC Alignment call (panel-alignmentcall)", () => {
+  const CONFIG = VC_CALLS_CONFIG.alignmentcall;
+  const LEARNLOOP = vcDeck({
+    id: "l1",
+    name: "LearnLoop",
+    sector: "Edtech",
+    statusId: "alignment_call",
+    actions: [{ action: "issue_term_sheet", label: "Issue term sheet", to: "term_sheet" }] as DeckView["actions"],
+  });
+  const lc = vcCall({ id: "lc", deckId: "l1", deckName: "LearnLoop", kind: "alignment", deckStatus: "alignment_call" });
+
+  it("draws the V8 headers and alRender's footer; records Renegotiate, and asks for the term sheet's fields before issuing", async () => {
+    const seen = mockApi({ decks: [LEARNLOOP], calls: [lc], people: VC_PEOPLE, matrix: vcMatrix, listing: { canDecide: true } });
+    mount(CONFIG, "partner", "vc_partner", "vc", "alignmentcall");
+    const row = await screen.findByRole("row", { name: /LearnLoop/ });
+    expect(headers()).toEqual([
+      "Startup",
+      "AI score",
+      "Partner",
+      "Avg. score",
+      "Addl. Parameter scores",
+      "Call scheduled",
+      "Call date",
+      "Call completed",
+      "Schedule call",
+      "Outcome",
+    ]);
+    expect(screen.getByTestId("stage-footer-stat")).toHaveTextContent("1 deal post-IC · 1 call scheduled · 0 clear to issue term sheet");
+    expect(
+      screen.getByText("Post-IC term alignment with the founder · confirm valuation and key terms, then decide whether to issue the term sheet"),
+    ).toBeInTheDocument();
+
+    const select = within(row).getByRole("combobox", { name: "Outcome for LearnLoop" });
+    fireEvent.change(select, { target: { value: "renegotiate" } });
+    await vi.waitFor(() =>
+      expect(seen.find((r) => r.url === "/api/calls/outcome")?.body).toEqual({ deckId: "l1", kind: "alignment", outcome: "renegotiate" }),
+    );
+
+    fireEvent.change(select, { target: { value: "issue_term_sheet" } });
+    fireEvent.change(within(row).getByRole("textbox", { name: "Valuation" }), { target: { value: "₹60 Cr" } });
+    expect(seen.some((r) => r.url === "/api/decks/l1/transition")).toBe(false);
+    fireEvent.click(within(row).getByRole("button", { name: "Confirm" }));
+    await vi.waitFor(() =>
+      expect(seen.find((r) => r.url === "/api/decks/l1/transition")?.body).toMatchObject({
+        action: "issue_term_sheet",
+        valuation: "₹60 Cr",
+      }),
+    );
+  });
+
+  it("a role that may not decide sees the select disabled", async () => {
+    mockApi({ decks: [{ ...LEARNLOOP, actions: [] }], calls: [lc], people: VC_PEOPLE, matrix: vcMatrix, listing: { canDecide: false } });
+    mount(CONFIG, "associate", "vc_associate", "vc", "alignmentcall");
+    const row = await screen.findByRole("row", { name: /LearnLoop/ });
+    expect(within(row).getByRole("combobox", { name: "Outcome for LearnLoop" })).toBeDisabled();
+  });
+
+  it("the IC member gets their own ten columns and two-verb legend, and may close out the call they are on", async () => {
+    const seen = mockApi({
+      decks: [LEARNLOOP],
+      calls: [{ ...lc, canManage: false, canComplete: true } as CallView],
+      canSchedule: false,
+      people: VC_PEOPLE,
+      matrix: vcMatrix,
+    });
+    mount(CONFIG, "ic_member", "vc_ic", "vc", "alignmentcall");
+    const row = await screen.findByRole("row", { name: /LearnLoop/ });
+    expect(headers()).toEqual([
+      "Startup",
+      "AI score",
+      "My score",
+      "Avg. score",
+      "Addl. Parameter scores",
+      "Call scheduled",
+      "Call date",
+      "Call completed",
+      "View Calendar",
+      "Archive",
+    ]);
+    expect(
+      within(screen.getByTestId("stage-legend"))
+        .getAllByText(/./)
+        .map((n) => n.textContent),
+    ).toEqual(["Launch on Google Meet, Teams or Zoom", "Archive to remove from the queue"]);
+    await vi.waitFor(() => expect(within(row).getByText("6.4")).toBeInTheDocument());
+    // No transition leaves alignment_call for Archive yet (§9).
+    expect(within(row).getByRole("button", { name: "Archive" })).toBeDisabled();
+    expect(within(row).getByText("Not yet")).toBeInTheDocument();
+    fireEvent.click(within(row).getByRole("button", { name: "Mark completed" }));
+    await vi.waitFor(() =>
+      expect(seen.find((r) => r.url === "/api/calls/lc" && r.method === "PATCH")?.body).toEqual({ status: "completed" }),
+    );
+  });
+});
+
+describe("the incubator Intro calls screen is unchanged by W9-E", () => {
+  it("declares none of W9-E's keys — the config is W7-F's, key for key", () => {
+    expect(Object.keys(INCUBATOR_CALLS_CONFIG.introcalls).sort()).toEqual(
+      [
+        "title",
+        "subtitle",
+        "kind",
+        "statuses",
+        "emptyTitle",
+        "emptyDescription",
+        "toolbar",
+        "footer",
+        "subTabs",
+        "aiQuestions",
+        "juryStack",
+        "participantColumns",
+      ].sort(),
+    );
+    expect(INCUBATOR_CALLS_CONFIG.introcalls.footer).toEqual({ noun: "shortlisted startup" });
+  });
+
+  it("still puts Schedule inside Call scheduled, draws no leaf, and offers no outcome or delegation", async () => {
+    mockApi({});
+    mount(INCUBATOR_CALLS_CONFIG.introcalls, "program_manager", "inc_pm");
+    const agro = await screen.findByRole("row", { name: /AgroFresh/ });
+    expect(within(agro).getByRole("button", { name: "Schedule" })).toBeInTheDocument();
+    expect(within(agro).queryByRole("button", { name: "Schedule call" })).not.toBeInTheDocument();
+    expect(within(agro).getByRole("button", { name: "AgroFresh" }).querySelector("svg")).toBeNull();
+    expect(screen.queryByTestId("assign-scheduler")).not.toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: /Schedule call|Assign scheduler|Sponsorship|Outcome|Analyst Score/ })).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("stage-legend")).getAllByText(/./).map((n) => n.textContent)).toEqual([
+      "Scheduled",
+      "Completed",
+      "Not scheduled",
+    ]);
   });
 });
 
