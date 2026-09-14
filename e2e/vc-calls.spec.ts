@@ -114,7 +114,8 @@ test("VC Partner call: V8's columns, decided rows kept with their outcome, and N
   await expect(page.getByRole("dialog", { name: "Evaluation report — PayWise" })).toBeVisible();
   await report; // settled before absence is asserted
   await expect(page.getByTestId("call-ai-questions")).toHaveCount(0);
-  await expect(page.getByRole("complementary")).toHaveCount(0);
+  // The app shell has its own <aside>; the row pane is the one named "… detail".
+  await expect(page.getByRole("complementary", { name: /detail$/ })).toHaveCount(0);
   expect(promptRequests).toEqual([]);
 });
 

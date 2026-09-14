@@ -475,7 +475,7 @@ const EXPECTED: Record<string, Screen> = {
   },
   "vc/superuser/introcalls": {
     title: "Intro calls",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "ANALYST SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULE CALL", "ASSIGN SCHEDULER"]],
   },
   "vc/superuser/partnerpipeline": {
     title: "Partner Pipeline",
@@ -483,7 +483,7 @@ const EXPECTED: Record<string, Screen> = {
   },
   "vc/superuser/partnercall": {
     title: "Partner call",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "PARTNER", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULE CALL", "SPONSORSHIP"]],
   },
   "vc/superuser/investmentdd": {
     title: "Investment DD",
@@ -492,7 +492,7 @@ const EXPECTED: Record<string, Screen> = {
   "vc/superuser/icpipeline": { title: "IC Pipeline", tables: [] },
   "vc/superuser/alignmentcall": {
     title: "Alignment call",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "PARTNER", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULE CALL", "OUTCOME"]],
   },
   "vc/superuser/incuration": {
     title: "Term sheet Pipeline",
@@ -557,7 +557,7 @@ const EXPECTED: Record<string, Screen> = {
   },
   "vc/admin/introcalls": {
     title: "Intro calls",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "ANALYST SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULE CALL", "ASSIGN SCHEDULER"]],
   },
   "vc/admin/partnerpipeline": {
     title: "Partner Pipeline",
@@ -565,7 +565,7 @@ const EXPECTED: Record<string, Screen> = {
   },
   "vc/admin/partnercall": {
     title: "Partner call",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "PARTNER", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULE CALL", "SPONSORSHIP"]],
   },
   "vc/admin/investmentdd": {
     title: "Investment DD",
@@ -574,7 +574,7 @@ const EXPECTED: Record<string, Screen> = {
   "vc/admin/icpipeline": { title: "IC Pipeline", tables: [] },
   "vc/admin/alignmentcall": {
     title: "Alignment call",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "PARTNER", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULE CALL", "OUTCOME"]],
   },
   "vc/admin/incuration": {
     title: "Term sheet Pipeline",
@@ -630,7 +630,7 @@ const EXPECTED: Record<string, Screen> = {
   "vc/partner/evaluate": { title: "Evaluate", tables: [] },
   "vc/partner/introcalls": {
     title: "Intro calls",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "ANALYST SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULE CALL", "ASSIGN SCHEDULER"]],
   },
   "vc/partner/partnerpipeline": {
     title: "Partner Pipeline",
@@ -638,7 +638,7 @@ const EXPECTED: Record<string, Screen> = {
   },
   "vc/partner/partnercall": {
     title: "Partner call",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "PARTNER", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULE CALL", "SPONSORSHIP"]],
   },
   "vc/partner/investmentdd": {
     title: "Investment DD",
@@ -647,7 +647,7 @@ const EXPECTED: Record<string, Screen> = {
   "vc/partner/icpipeline": { title: "IC Pipeline", tables: [] },
   "vc/partner/alignmentcall": {
     title: "Alignment call",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "PARTNER", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULE CALL", "OUTCOME"]],
   },
   "vc/partner/incuration": {
     title: "Term sheet Pipeline",
@@ -701,7 +701,7 @@ const EXPECTED: Record<string, Screen> = {
   "vc/ic_member/icpipeline": { title: "IC Pipeline", tables: [] },
   "vc/ic_member/alignmentcall": {
     title: "Alignment call",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "MY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "VIEW CALENDAR", "ARCHIVE"]],
   },
   "vc/ic_member/curation": {
     title: "Onboard ready",
@@ -746,7 +746,7 @@ const EXPECTED: Record<string, Screen> = {
   },
   "vc/associate/introcalls": {
     title: "Intro calls",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "ANALYST SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULE CALL", "ASSIGN SCHEDULER"]],
   },
   "vc/associate/archive": {
     title: "Archive",
@@ -784,7 +784,7 @@ const EXPECTED: Record<string, Screen> = {
   "vc/analyst/assign": { title: "Evaluate", tables: [] },
   "vc/analyst/introcalls": {
     title: "My Intro calls",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "ANALYST SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULE CALL", "ASSIGN SCHEDULER"]],
   },
   "vc/analyst/archive": {
     title: "Archive",
