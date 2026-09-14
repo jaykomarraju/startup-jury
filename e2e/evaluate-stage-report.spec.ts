@@ -36,7 +36,14 @@ async function reportSections(page: Page, deck: string): Promise<string[]> {
 test("a juror works a deck end to end, and the Assigned report differs from the Intro calls report", async ({
   page,
 }) => {
-  test.setTimeout(120_000);
+  // The longest walk in the suite: sign in, work a deck through the Assign
+  // workbench, read its report, then open the SAME deck's report from Intro
+  // calls to prove the two stages differ. Alone it finishes in seconds; under
+  // full-suite contention (two workers, one dev server) it flaked twice at
+  // Wave 9 integration by exhausting this budget at its last click — the
+  // failure reads as a broken locator and is not one. 120 s was the suite-wide
+  // convention for a long test, not a measurement of this one.
+  test.setTimeout(240_000);
   await login(page, "rajesh.kumar@demo.startupjury.ai"); // inc_jury
   await page.goto("/app/jassigned");
 
