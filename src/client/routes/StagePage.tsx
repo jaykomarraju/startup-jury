@@ -1189,11 +1189,6 @@ const TS_LEGEND: LegendItem[] = [
   { label: "Declined", color: "var(--red)", statuses: ["declined"] },
 ];
 
-const VC_SECTOR = { label: "Sector", field: "sector" as const };
-/** W7-F — what every VC stage screen had before the config carried a toolbar.
- *  Wave 9 (`W9-B`, `W9-C`) replaces it per screen with the prototype's Filter + Export. */
-const VC_TOOLBAR: StageToolbar = { export: true };
-
 // ── W9-B — the two VC pipelines (`jpRowAssoc` / `jpFoot`) ───────────────────
 
 /** `.jp-tb-sub` — identical on both VC pipeline panels. */
