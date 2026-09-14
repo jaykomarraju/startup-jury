@@ -187,13 +187,6 @@ test.describe.serial("an operator emails two flagged founders", () => {
   });
 
   test("the recorded email is the letter verbatim, under the operator's subject, with the response link", async () => {
-    // EXPECTED TO FAIL until integration places §9's `W7-C` server change
-    // (`docs/parity-requests/W7-C-query-email.patch`): today POST
-    // /api/decks/:id/queries ignores `subject`, wraps the letter in its own
-    // greeting (F0216), and mints no link (F0217). The patch deletes this
-    // `test.fail()` in the same commit — Playwright reports an unexpected pass
-    // otherwise, so the gap cannot quietly close without being recorded.
-    test.fail();
     const rows = recordedQueryEmails([alpha.deckId, beta.deckId]);
     expect(rows).toHaveLength(2);
     for (const mail of rows) {

@@ -24,6 +24,7 @@ import type { Env } from "../types";
 import type { Edition, Role } from "../../shared/roles";
 import { isMentor } from "../../shared/roles";
 import { describeMissingFields, type IntakeField } from "../../shared/intake";
+import { withResponseLink } from "../../shared/queries";
 import {
   NOTIFICATION_DEFAULTS,
   type NotificationChannel,
@@ -236,12 +237,28 @@ export async function sendEmail(
   return { ...email, id, status, createdAt, providerId, error };
 }
 
-/** Compose the founder-clarification email for a query. Pure (testable). */
+/**
+ * Compose the founder-clarification email for a query. Pure (testable).
+ *
+ * W7-C: given the operator's `subject`, `questions` is the whole letter as the
+ * Query screen's compose card showed it, and is sent verbatim under that
+ * subject — the only change is the response `link` put where the letter's
+ * placeholder stands (F0216 / F0217). Without a subject it is the older
+ * wrapped form, which still carries the link.
+ */
 export function buildQueryEmail(args: {
   deckName: string;
   founderName?: string | null;
   questions: string;
+  /** The Subject the operator typed; blank falls back to the default. */
+  subject?: string | null;
+  /** The founder's tokenized response link (`resubmitLink`). */
+  link?: string | null;
 }): { subject: string; body: string } {
+  const subject = args.subject?.trim();
+  if (subject) {
+    return { subject, body: args.link ? withResponseLink(args.questions, args.link) : args.questions };
+  }
   const greeting = args.founderName ? `Hi ${args.founderName},` : "Hi,";
   return {
     subject: `Action needed: a few questions about ${args.deckName}`,
@@ -249,7 +266,9 @@ export function buildQueryEmail(args: {
       `${greeting}\n\nThanks for submitting ${args.deckName} to the programme. ` +
       "Before we can complete the review, our team needs a little more detail:\n\n" +
       `${args.questions}\n\n` +
-      "Please reply through your founder portal and we'll pick the review back up.\n\n" +
+      (args.link
+        ? `Respond online: ${args.link}\n\n`
+        : "Please reply through your founder portal and we'll pick the review back up.\n\n") +
       "— The ai.STARTUPJURY team",
   };
 }

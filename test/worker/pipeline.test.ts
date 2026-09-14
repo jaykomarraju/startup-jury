@@ -226,6 +226,104 @@ describe("founder query loop: incomplete → query → founder response → uplo
   });
 });
 
+// W7-C (F0216 / F0217) — the Query screen's letter reaches the founder as it
+// was composed: under the operator's subject, with a live response link.
+describe("founder query email: the letter verbatim, the subject typed, a working link", () => {
+  const LETTER = [
+    "Dear Founder,",
+    "",
+    "Thank you for submitting TestCo. Please add your team slide.",
+    "",
+    "→ [your secure response link]",
+    "",
+    "Warm regards,",
+    "The Evaluation Team",
+  ].join("\n");
+
+  async function mailFor(id: string, queryId: string) {
+    return env.DB.prepare("SELECT subject, body, status FROM email_outbox WHERE deck_id = ? AND query_id = ?")
+      .bind(id, queryId)
+      .first<{ subject: string; body: string; status: string }>();
+  }
+
+  it("sends the composed letter under the typed subject, swapping in a link that opens the resubmit page", async () => {
+    const id = "pipe_query_letter";
+    await seedDeck(id, "incomplete", { complete: 0 });
+    const pa = await login(PA);
+
+    const res = await post(`/api/decks/${id}/queries`, pa, {
+      questions: LETTER,
+      subject: "  Two quick questions about TestCo  ",
+    });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { queryId: string; emailStatus: string; delivered: boolean };
+    // Miniflare has no send_email binding: recorded, and the response says so.
+    expect(json).toMatchObject({ emailStatus: "recorded", delivered: false });
+
+    const mail = await mailFor(id, json.queryId);
+    expect(mail!.subject).toBe("Two quick questions about TestCo");
+    expect(mail!.body.startsWith("Dear Founder,")).toBe(true);
+    expect(mail!.body).not.toContain("Hi Ada");
+    expect(mail!.body).not.toContain("[your secure response link]");
+    const link = mail!.body.match(/→ (\S+\/resubmit\/([A-Za-z0-9_-]+))/);
+    expect(link).not.toBeNull();
+    expect(mail!.body).toBe(LETTER.replace("[your secure response link]", link![1]));
+
+    // The stored query keeps the placeholder — the raw token lives only in the mail.
+    const stored = await env.DB.prepare("SELECT questions FROM queries WHERE id = ?")
+      .bind(json.queryId)
+      .first<{ questions: string }>();
+    expect(stored!.questions).toBe(LETTER);
+
+    // And the link is live: the public resubmit page opens for this deck.
+    const page = await SELF.fetch(`${BASE}/api/resubmit/${link![2]}`);
+    expect(page.status).toBe(200);
+  });
+
+  it("still carries a link when the operator deleted the placeholder, or sent no subject", async () => {
+    const id = "pipe_query_nolink";
+    await seedDeck(id, "incomplete", { complete: 0 });
+    const pa = await login(PA);
+
+    const edited = (await (
+      await post(`/api/decks/${id}/queries`, pa, { questions: "Please share your MRR.", subject: "MRR?" })
+    ).json()) as { queryId: string };
+    expect((await mailFor(id, edited.queryId))!.body).toMatch(/^Please share your MRR\.\n\nRespond online: \S+\/resubmit\/\S+$/);
+
+    const legacy = (await (await post(`/api/decks/${id}/queries`, pa, { questions: "What is your churn?" })).json()) as {
+      queryId: string;
+    };
+    const mail = await mailFor(id, legacy.queryId);
+    expect(mail!.subject).toBe("Action needed: a few questions about TestCo");
+    expect(mail!.body).toMatch(/Respond online: \S+\/resubmit\/\S+/);
+  });
+
+  it("rejects a subject that would break the header, or runs past a subject line", async () => {
+    const id = "pipe_query_badsubject";
+    await seedDeck(id, "incomplete", { complete: 0 });
+    const pa = await login(PA);
+    for (const subject of ["Hello\r\nBcc: everyone@example.com", "x".repeat(201)]) {
+      const res = await post(`/api/decks/${id}/queries`, pa, { questions: LETTER, subject });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: "invalid_subject" });
+    }
+    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM queries WHERE deck_id = ?").bind(id).first<{ n: number }>();
+    expect(count!.n).toBe(0);
+  });
+
+  it("refuses a role outside the query screen (403) and mints nothing", async () => {
+    const id = "pipe_query_jury";
+    await seedDeck(id, "incomplete", { complete: 0 });
+    const jury = await login(JURY);
+    const res = await post(`/api/decks/${id}/queries`, jury, { questions: LETTER, subject: "Hi" });
+    expect(res.status).toBe(403);
+    const tokens = await env.DB.prepare("SELECT COUNT(*) AS n FROM resubmit_tokens WHERE deck_id = ?")
+      .bind(id)
+      .first<{ n: number }>();
+    expect(tokens!.n).toBe(0);
+  });
+});
+
 describe("per-stage authorization", () => {
   it("jury cannot assign at the AI gate (403)", async () => {
     const id = "authz_assign";

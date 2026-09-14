@@ -38,6 +38,7 @@ import {
   emitNotification,
 } from "../email/outbox";
 import { evaluatorNoun } from "../../shared/notifications";
+import { mintResubmitToken, resubmitLink } from "../resubmit";
 // W3-C — the audit store. `listAudit` is what makes the Activity card below
 // and the console's Audit log section ONE store rather than two; F0052 is
 // the score-override half.
@@ -693,12 +694,24 @@ pipeline.get(
   },
 );
 
+/** Longest subject the Query screen may set — a subject line, not a paragraph. */
+const MAX_QUERY_SUBJECT = 200;
+
 /**
  * POST /decks/:id/queries — raise a founder query and email it.
  *
  * Session 7 opened this to the VC roles that own the Query screen (`analyst`,
  * `associate` — see `VC_NAV`). The VC edition raises exactly the same
  * clarification loop against the same table; only the roles differ.
+ *
+ * W7-C (F0216 / F0217): `questions` is the letter the compose card showed and
+ * `subject` the Subject the operator typed. With a subject, the email IS that
+ * letter under that subject — no second greeting, no server-minted subject.
+ * Every query email carries a freshly minted resubmit link, substituted for
+ * the letter's `[your secure response link]` placeholder; the stored query keeps
+ * the placeholder, so no raw token is ever persisted outside the outbox.
+ * `delivered` reports what the outbox actually did, so the screen can say
+ * "recorded" rather than "sent" while no sending domain is configured.
  */
 pipeline.post(
   "/decks/:id/queries",
@@ -708,9 +721,14 @@ pipeline.post(
     const deck = await loadDeck(c, c.req.param("id"));
     if (!deck) return c.json({ error: "not_found" }, 404);
 
-    const body = await readBody<{ questions: string }>(c);
+    const body = await readBody<{ questions: string; subject?: string }>(c);
     const questions = typeof body.questions === "string" ? body.questions.trim() : "";
     if (!questions) return c.json({ error: "questions_required" }, 400);
+    const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+    // A line break in a subject is a header injection, not a typo.
+    if (/[\r\n]/.test(subject) || subject.length > MAX_QUERY_SUBJECT) {
+      return c.json({ error: "invalid_subject" }, 400);
+    }
 
     const ts = new Date().toISOString();
     const queryId = `qry_${crypto.randomUUID()}`;
@@ -741,24 +759,28 @@ pipeline.post(
           .bind(deck.uploaded_by)
           .first<{ email: string; name: string }>()
       : null;
-    const { subject, body: emailBody } = buildQueryEmail({
+    // Prefer the founder's own address (captured at intake in Session 5) over
+    // the uploader's — a staff bulk upload would otherwise mail the analyst.
+    const toEmail = deck.founder_email ?? uploader?.email ?? "founder@portal.local";
+    const { token } = await mintResubmitToken(c.env, { deckId: deck.id, edition: deck.edition, toEmail });
+    const email = buildQueryEmail({
       deckName: deck.name,
       founderName: deck.founder ?? uploader?.name ?? null,
       questions,
-    });
-    await sendEmail(c.env, {
-      kind: "founder_query",
-      // Prefer the founder's own address (captured at intake in Session 5) over
-      // the uploader's — a staff bulk upload would otherwise mail the analyst.
-      toEmail: deck.founder_email ?? uploader?.email ?? "founder@portal.local",
-      toName: deck.founder ?? uploader?.name ?? null,
       subject,
-      body: emailBody,
+      link: resubmitLink(c.env, token),
+    });
+    const sent = await sendEmail(c.env, {
+      kind: "founder_query",
+      toEmail,
+      toName: deck.founder ?? uploader?.name ?? null,
+      subject: email.subject,
+      body: email.body,
       deckId: deck.id,
       queryId,
     });
 
-    return c.json({ ok: true, queryId, emailStatus: "sent" });
+    return c.json({ ok: true, queryId, emailStatus: sent.status, delivered: sent.status === "sent" });
   },
 );
 

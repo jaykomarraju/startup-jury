@@ -117,6 +117,30 @@ describe("buildQueryEmail (pure)", () => {
     const { body } = buildQueryEmail({ deckName: "GreenGrid", founderName: null, questions: "q" });
     expect(body).toContain("Hi,");
   });
+
+  it("sends the Query screen's letter verbatim under the operator's subject (W7-C, F0216)", () => {
+    const letter = "Dear Founder,\n\nPlease add a team slide.\n\n→ [your secure response link]\n\nWarm regards,";
+    const { subject, body } = buildQueryEmail({
+      deckName: "GreenGrid",
+      founderName: "Meera",
+      questions: letter,
+      subject: "About your team slide",
+      link: "https://app.example/resubmit/tok123",
+    });
+    expect(subject).toBe("About your team slide");
+    expect(body).toBe(letter.replace("[your secure response link]", "https://app.example/resubmit/tok123"));
+    expect(body).not.toContain("Hi Meera");
+  });
+
+  it("puts the response link in the default wrapper too (F0217)", () => {
+    const { body } = buildQueryEmail({
+      deckName: "GreenGrid",
+      questions: "What is your MRR?",
+      link: "https://app.example/resubmit/tok123",
+    });
+    expect(body).toContain("Respond online: https://app.example/resubmit/tok123");
+    expect(body).not.toContain("Please reply through your founder portal");
+  });
 });
 
 describe("buildSignupEmail (pure)", () => {
