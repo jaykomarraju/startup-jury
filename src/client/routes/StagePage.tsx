@@ -958,9 +958,13 @@ export function StagePage({ config: base }: { config: StageConfig }) {
 
   const stat = config.footer?.(stageRows);
   const toolbar = config.toolbar;
-  // The Action column sits where `columns` places it, else last; never on a read-only screen.
+  // The Action column sits where `columns` places it, else last; the BUILT-IN one
+  // (W9-B's transitions cell) is never drawn on a read-only screen. A screen that
+  // declares its OWN column with the id "action" (W9-C's `curation`) keeps it —
+  // read-only suppresses the transitions the screen did not ask for, not a cell it
+  // declared. Either kind counts as already having the column, so it is not doubled.
   const tableColumns: (StageColumn | StageCustomColumn)[] = config.readOnly
-    ? columns.filter((c) => columnId(c) !== "action")
+    ? columns.filter((c) => c !== "action")
     : columns.some((c) => columnId(c) === "action")
       ? columns
       : [...columns, "action"];
