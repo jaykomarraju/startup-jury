@@ -17,6 +17,8 @@ import {
 } from "../../shared/scoring";
 import { loadScoringSettings } from "../config/scoringSettings";
 import { missingIntakeFields, parseMissingFields, type IntakeMatch } from "../../shared/intake";
+// V3-DASH — one timestamp comparison, shared with the Dashboard that reads it.
+import { latestTimestamp } from "../../shared/deckStats";
 import { denyMentor, requireAuth, requireTask } from "../auth/middleware";
 import { detectIntakeFlags, intakeFlagStatement, resolveIntakeContext } from "../intake";
 import { emitNotification } from "../email/outbox";
@@ -51,7 +53,7 @@ const DECK_COLUMNS =
   "d.id, d.name, d.sector, d.stage, d.city, d.founder, d.founder_email, d.founder_phone, " +
   "d.missing_fields, d.intake_flag, d.intake_flag_note, d.related_deck_id, d.content_version, " +
   "d.ai_score, d.signal, d.status, d.assigned_to, d.ai_error, d.ai_attempts, d.ai_failed_at, " +
-  "d.tags, d.created_at";
+  "d.tags, d.created_at, d.updated_at";
 
 // Joined columns: the assignee's name, the program's shortlist floor, and the mean
 // of this deck's human evaluations (the other half of the decision score).
@@ -84,6 +86,16 @@ const DECK_DERIVED =
   // assignee has actually submitted their evaluation yet.
   "(SELECT MAX(pe.created_at) FROM pipeline_events pe WHERE pe.deck_id = d.id AND pe.action = 'assign_jury') AS assigned_at, " +
   "(SELECT COUNT(*) FROM evaluations ev WHERE ev.deck_id = d.id AND ev.evaluator_id IS NOT NULL AND ev.evaluator_id = d.assigned_to) AS assignee_submitted, " +
+  // V3-DASH — the Dashboard's "· 2h ago" row clock, and the sort it drives.
+  // The list is ordered by recent ACTIVITY, not by upload date, so the newest
+  // thing that happened to the deck is needed: its last pipeline event, folded
+  // against the deck's own `updated_at` in `toDeckView` (the two columns are
+  // written in different timestamp formats, so SQL MAX() cannot compare them —
+  // see `latestTimestamp`).
+  "(SELECT MAX(pe.created_at) FROM pipeline_events pe WHERE pe.deck_id = d.id) AS last_event_at, " +
+  // V3-DASH — the row's `.ad-tag.q` "Queried" tag: a clarification letter has
+  // been raised on this deck at least once.
+  "(SELECT COUNT(*) FROM queries qq WHERE qq.deck_id = d.id) AS query_count, " +
   // W7-E — every evaluator on the deck (migration 0058), first assignee included.
   "(SELECT GROUP_CONCAT(da.evaluator_id, '||') FROM deck_assignments da WHERE da.deck_id = d.id) AS assignee_ids, " +
   // Issue 27/29 — the intro call's schedule + status.
@@ -121,6 +133,9 @@ interface DeckRow {
   ai_failed_at: string | null;
   tags?: string | null;
   created_at?: string | null;
+  updated_at?: string | null;
+  last_event_at?: string | null;
+  query_count?: number | null;
   assigned_to?: string | null;
   assigned_to_name?: string | null;
   program_name?: string | null;
@@ -294,6 +309,9 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: Shortli
     onboardingProgress: row.onboarding_progress ?? undefined,
     onboardingLead: row.onboarding_lead ?? undefined,
     uploadedAt: row.created_at ?? undefined,
+    // V3-DASH — the Dashboard sorts by this and prints it as "· 2h ago".
+    lastActivityAt: latestTimestamp(row.last_event_at, row.updated_at, row.created_at),
+    queried: (row.query_count ?? 0) > 0,
     assignedTo: row.assigned_to ?? undefined,
     assignedToName: row.assigned_to_name ?? undefined,
     assigneeIds: [...new Set([...(row.assigned_to ? [row.assigned_to] : []), ...splitList(row.assignee_ids)])],

@@ -161,9 +161,13 @@ for (const user of USERS) {
  */
 const EXPECTED: Record<string, Screen> = {
   // ── incubator/superuser · 25 screens ──
+  // V3-DASH — `AISJ_SuperuserV3.HTM` retitles this screen "Dashboard" and
+  // collapses its four table shapes into two, for the SUPERUSER ONLY. The four
+  // rows below it (admin / PM / PA / jury) are unchanged, and their client
+  // tests say so: those prototypes were not reshared.
   "incubator/superuser/alldecks": {
-    title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "SECTOR", "STATUS"]],
+    title: "Dashboard",
+    tables: [["STARTUP NAME", "FOUNDER", "PHONE", "EMAIL", "CITY", "AI SCORE", "STATUS", "ACTIONS"]],
   },
   "incubator/superuser/upload": { title: "Upload your first pitchdecks", tables: [] },
   "incubator/superuser/query": {

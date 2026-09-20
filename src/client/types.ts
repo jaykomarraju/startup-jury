@@ -88,6 +88,14 @@ export interface DeckView {
   onboardingLead?: string;
   /** ISO timestamp the deck was uploaded. */
   uploadedAt?: string;
+  /**
+   * V3-DASH — the most recent thing that happened to this deck: its last
+   * pipeline event, or its own last edit, or its upload. The superuser
+   * Dashboard sorts on it and prints it as the row's "· 2h ago" clock.
+   */
+  lastActivityAt?: string;
+  /** V3-DASH — a clarification letter has been raised on this deck (`.ad-tag.q`). */
+  queried?: boolean;
   /** Transitions the current user may perform from this deck's stage. */
   actions?: DeckAction[];
 }

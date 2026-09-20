@@ -34,7 +34,17 @@ async function tileValue(page: Page, label: string): Promise<number> {
   return Number(await tile(page, label).locator("span").nth(1).innerText());
 }
 
-test("superuser: the table re-shapes per stat box, a filter narrows it, and the report opens", async ({
+// V3-DASH — `AISJ_SuperuserV3.HTM` reshaped this screen into a Dashboard for
+// the incubator SUPERUSER only. Restated, not weakened: every assertion below
+// still proves what it proved before (the table re-shapes per box, a box
+// narrows the rows to its own count, the report opens from the name) against
+// the new design. The jury test underneath is untouched, and the admin / PM /
+// PA screens — whose prototypes were NOT reshared — are pinned unchanged in
+// `test/client/allDecks.test.tsx` and in `e2e/parity.spec.ts`'s four rows.
+const V3_DEFAULT = ["STARTUP NAME", "FOUNDER", "PHONE", "EMAIL", "CITY", "AI SCORE", "STATUS", "ACTIONS"];
+const V3_SHORTLISTED = ["STARTUP NAME", "AI SCORE", "AVG. SCORE", "SIGNUP STATUS", "ACTIONS"];
+
+test("superuser: the Dashboard's two shapes, the archived exclusion, and the report", async ({
   page,
 }) => {
   test.setTimeout(90_000);
@@ -44,47 +54,60 @@ test("superuser: the table re-shapes per stat box, a filter narrows it, and the 
   // Gate on a populated row, not the heading the loading state also renders.
   const firstName = page.locator("table[data-shape] tbody button[title='Open deck & evaluation report']").first();
   await expect(firstName).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("All decks");
-  await expect.poll(() => headers(page)).toEqual([
-    "STARTUP",
-    "FOUNDER NAME",
-    "EMAIL ID",
-    "PHONE NUMBER",
-    "CITY",
-    "SECTOR",
-    "STATUS",
-  ]);
-  await expect(page.getByText(/^\d+ submissions? · Updated /)).toBeVisible();
-  // Toolbar order: Export, then Program, then Cohort.
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Dashboard");
+  await expect.poll(() => headers(page)).toEqual(V3_DEFAULT);
+  await expect(page.getByText(/^Recent activity · \d+ decks? · Updated /)).toBeVisible();
+  // Toolbar order is unchanged: Export, then Program, then Cohort.
   const toolbar = page.locator(".tbr").first();
   await expect(toolbar.getByRole("button").nth(0)).toHaveText(/Export/);
   await expect(toolbar.getByRole("button").nth(1)).toHaveAccessibleName("Program filter");
   await expect(toolbar.getByRole("button").nth(2)).toHaveAccessibleName("Cohort filter");
 
-  // A stat box narrows the rows to exactly its own count, and re-shapes the table.
+  // The six boxes, in the prototype's order. (Assigned is retained pending Q7.)
+  await expect(page.locator("button[aria-pressed] .u-label")).toHaveText([
+    "Uploaded",
+    "AI Evaluated",
+    "Not AI Evaluated",
+    "Incomplete",
+    "Archived",
+    "Assigned",
+    "Shortlisted",
+  ]);
+
+  // THE DENOMINATOR. Data-independent, so a concurrent spec cannot move it: an
+  // archived deck is excluded from every view but Archived, so no row in the
+  // Uploaded view may carry the Archived tag — and every row in the Archived
+  // view must.
+  const tbody = page.locator("table[data-shape] tbody");
+  await expect(tbody.getByText("Archived", { exact: true })).toHaveCount(0);
+  await tile(page, "Archived").click();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Archived");
+  await expect.poll(() => headers(page)).toEqual(V3_DEFAULT);
+  const archivedCount = await tileValue(page, "Archived");
+  if (archivedCount > 0) {
+    await expect(tbody.getByText("Archived", { exact: true })).toHaveCount(archivedCount);
+  }
+
+  // A stat box narrows the rows to exactly its own count, and Shortlisted is
+  // the one box with its own shape.
   const uploaded = await tileValue(page, "Uploaded");
   await tile(page, "Shortlisted").click();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Shortlisted");
-  await expect.poll(() => headers(page)).toEqual(["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES"]);
+  await expect.poll(() => headers(page)).toEqual(V3_SHORTLISTED);
   const shortlisted = await tileValue(page, "Shortlisted");
   expect(shortlisted).toBeLessThan(uploaded);
   const rows = page.locator("table[data-shape] tbody tr");
   await expect(rows).toHaveCount(Math.max(shortlisted, 1)); // an empty view draws one message row
 
-  await tile(page, "Assigned").click();
-  await expect.poll(() => headers(page)).toEqual([
-    "STARTUP",
-    "STATUS",
-    "AI SCORE",
-    "PARAMETER SCORES",
-    "ASSIGNED TO",
-    "ASSIGNED DATE",
-    "DUE DATE",
-  ]);
+  // Every other box shares the default shape — four shapes collapsed to two.
+  for (const box of ["Not AI Evaluated", "Incomplete", "Assigned"]) {
+    await tile(page, box).click();
+    await expect.poll(() => headers(page)).toEqual(V3_DEFAULT);
+  }
 
-  // The report overlay opens from the name, with the prototype's sections.
+  // The report overlay still opens from the name, with the prototype's sections.
   await tile(page, "AI Evaluated").click();
-  await expect.poll(() => headers(page)).toEqual(["STARTUP", "AI SCORE", "PARAMETER SCORES"]);
+  await expect.poll(() => headers(page)).toEqual(V3_DEFAULT);
   const name = page.locator("table[data-shape] tbody button[title='Open deck & evaluation report']").first();
   const deckName = (await name.innerText()).trim();
   await name.click();
