@@ -177,7 +177,7 @@ export function QueryPage() {
     return map;
   }, [allQueries]);
 
-  // The response IS the list — `isQueryListed` ran on the server, over the same
+  // The response IS the list — `deckListRoute` ran on the server, over the same
   // deck view, so re-filtering here could only ever narrow the server's answer
   // behind its back. A worker test asserts the row set on the RESPONSE.
   const rows = useMemo(() => decks ?? [], [decks]);

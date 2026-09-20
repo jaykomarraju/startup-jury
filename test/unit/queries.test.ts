@@ -5,7 +5,6 @@ import {
   buildQueryMessage,
   clarificationFlow,
   composeFounderLetters,
-  isAssignListed,
   isDeckComplete,
   isQueryListed,
   deckListRoute,
@@ -540,7 +539,7 @@ describe("the Assign / Query partition", () => {
     ];
     for (const deck of decks) {
       for (const opts of [fresh, queried]) {
-        const onAssign = isAssignListed(deck, "incubator", opts);
+        const onAssign = deckListRoute(deck, "incubator", opts) === "assign";
         const onQuery = isQueryListed(deck, opts.queried ? [{ deck_id: "d", founder_response: null, created_at: "2026-09-01T10:00:00Z" }] : [], "incubator");
         expect(onAssign && onQuery).toBe(false);
       }
@@ -552,7 +551,7 @@ describe("the Assign / Query partition", () => {
     // without consulting the mark, so a deck at `complete = 0` with
     // `missing_fields` still set landed on Assign's roster in four requests.
     const walked = { statusId: "ai_evaluated", complete: false, missingFields: ["founderPhone"] as never };
-    expect(isAssignListed(walked, "incubator", fresh)).toBe(false);
+    expect(deckListRoute(walked, "incubator", fresh)).not.toBe("assign");
     expect(isQueryListed(walked, [], "incubator")).toBe(true);
   });
 
@@ -561,7 +560,7 @@ describe("the Assign / Query partition", () => {
     // deck needs re-evaluation, not an evaluator. It stays on Query — which is
     // also what keeps F0214's Responded row from vanishing.
     const fixed = { statusId: "incomplete", complete: false, missingFields: [] as never };
-    expect(isAssignListed(fixed, "incubator", fresh)).toBe(false);
+    expect(deckListRoute(fixed, "incubator", fresh)).not.toBe("assign");
     expect(isQueryListed(fixed, [], "incubator")).toBe(true);
   });
 

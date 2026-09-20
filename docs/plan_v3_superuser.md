@@ -65,8 +65,8 @@ a corrected file or a number. **MEASURE**: prototype unchanged, so the gap is in
 | 3 | Composite formula: hide all but weighted average | **OPEN → Q3** (not built) | `V3-SF`: confirmed byte-identical to v15; all three formulas still offered. NOT shipped — hiding it overrides "match the prototype exactly" and the client marked it *Workaround*. A client test now PINS the three options, so narrowing them is a deliberate edit and never a quiet one. |
 | 4 | AI weight: hide all but 50/50 | **OPEN → Q2** (not built) | `V3-SF`: re-measured and confirmed. Four splits, no `selected` attribute, so **40% AI · 60% Jury is the effective default**, and `migrations/0026` agrees (`ai_weight_pct DEFAULT 40`). NOT shipped: keeping only 50/50 silently re-weights every existing org's composite. Pinned by the same client test as item 3. |
 | 5 | Decks >24 MB not opening | **NOT STARTED → Q8** | Both prototypes say `Max 50 MB`, byte-identical — a **pre-existing** gap, not a v3 change. `MAX_PDF_BYTES = 24 MB` is arithmetic, not arbitrary: ×1.333 base64 ≈ the 32 MB model-input cap. Raising the constant alone makes uploads succeed and **evaluations fail** — strictly worse. Needs the target number and a streaming/Files-API plan. |
-| 6 | Assign: only "Evaluated & Complete" | **BLOCKED → Q91** — readings recorded, nothing built | `panel-assign` is **byte-identical** (md5 `b555211d…`), the assign renderers diff to zero lines, and the string occurs **0 times in either file**. v3 still draws the Incomplete drawer. We are asked to delete UI the reshared prototype still ships. |
-| 7 | Query: only "Evaluated & Incomplete" | **BLOCKED → Q92** — readings recorded, nothing built | Same class. `panel-query`'s entire diff is one deleted select-all checkbox; the renderer is byte-identical and `qRenderList` filters nothing. The string occurs 0 times. |
+| 6 | Assign: only "Evaluated & Complete" | **DONE** — `V4-ROUTE` | Answered 2026-09-20: it is a guard on a BULK ACTION we do not have, so in our architecture it is a routing invariant. `decks.complete` is the mark, written only by `evaluate.ts` and selected by **nothing** until now. Assign's roster is `{ai_evaluated, assigned}` **∧ marked complete**, enforced on the server (`?list=assign`). Measured: `approve_review` walked a deck at `complete = 0` onto the roster in four 200s, and blanking a founder email left one assignable with a required detail missing. Both fixed; the Incomplete drawer stays (the prototype still draws it). |
+| 7 | Query: only "Evaluated & Incomplete" | **DONE** — `V4-ROUTE` | The other half of the same invariant, and **not** Q92's option (a): `QUERYABLE_STAGES` is untouched, so F0214's Responded row does not vanish. The list gains one arm — an evaluated deck that is **not** marked complete — from the same function, whose return type is `"assign" | "query" | null`, so the two lists cannot both hold one deck. `?list=query`, asserted on the response. |
 | 8 | Upload → "Upload & Evaluate", redev | **PARTIAL** — label shipped (`V3-NAV`); the flow is **Q51** | The redev is mostly a **deletion**: `#up-results` is gone and the footer collapses to one button — which is literally `showPanel('alldecks')` — while the screen still promises *"You approve → Credits deducted"*. Worse, a richer inline results card has **CSS and ~110 lines of JS but no markup**; `renderUpResults([0,3,5,7])` runs at load into a swallowed `catch`. **Likely a broken export — ask for a corrected file.** |
 | 9 | Query after Evaluate in sidebar | **DONE** — `V3-NAV` | Already satisfied by §2. Zero-cost. |
 | 10 | Evaluate page redev | **DONE** — `V3-UP` (sidebar `V3-NAV`); entry point **Q6/Q54** | +533 B: new `AI Evaluate` toolbar button, select-all + "N selected" in column 1, sub-line *"evaluated decks move to the Assign screen"*. `evAiEvaluate()` → toast → `showPanel('assign')`. But the screen has no entry point (§2). |
@@ -1975,6 +1975,63 @@ control both lost a worker at **load ~5** — so this is genuine miniflare insta
 `participantColumns: "jury"`, a column set item 14 does not touch, and its parity row was not edited.
 
 ---
+
+### `V4-ROUTE` — items 6 and 7. **Complete.**
+
+**Baselines re-measured off `main` (260bfb0), not copied from the prompt** — its
+numbers are the wave-9 ones and `main` has moved since. Measured by checking
+`260bfb0 -- src test` into this worktree and running the same two gates on the
+same box: unit **2282 passed / 1 skipped**, roles **1180 / 1180** (the prompt
+block's 2069 / 1115 are both stale).
+
+| Session | Items | Migration | typecheck · lint · build | unit | roles | parity | e2e |
+|---|---|---|---|---|---|---|---|
+| `V4-ROUTE` | 6, 7 | **0075 UNUSED — still free**, ceiling stays 74 | clean · clean · clean | **2302 passed / 1 skipped** (2282 + 20) | **1180 / 1180**, unchanged | `parity:tokens` 27/27 · 0 gaps · `parity:nav` 62 known gaps | see below |
+
+The 20 new tests: 9 unit (`test/unit/queries.test.ts` — the mark and the
+partition), 8 worker (`test/worker/route-partition.test.ts` — the partition on
+the RESPONSE), 3 client (two on the Assign drawer, one on the Dashboard mark).
+
+**`roles` was run against a server this session PROVED it owned** — PID from
+`lsof -nP -iTCP:5191 -sTCP:LISTEN`, and that PID's `cwd` confirmed as
+`.../sj-V4-ROUTE` with `lsof -a -p <pid> -d cwd`. Both the baseline run and the
+branch run used the same port and the same check, so neither is the "roles with
+no server" fake pass.
+
+**No parity row moved, and that is a measurement, not an omission.** The three
+rows this session's screens own capture titles and table HEADERS:
+`incubator/superuser/alldecks` (8 headers), `incubator/superuser/query`
+(7 headers), `incubator/superuser/assign` (`tables: []` — column 1 is a `<ul>`
+and the drawer's table is behind a click). The Dashboard's new mark is a tag
+*inside* the Status cell, so no header moves; the Query list's columns are
+untouched. `PARITY_CAPTURE` was therefore not run and no row was rewritten —
+which is also the safest thing to do while siblings are re-capturing theirs.
+
+#### The one infrastructure fact worth adding to §1's list
+
+**`EADDRNOTAVAIL` can kill the dev server before a single test runs.** §8's
+note has it as a symptom seen *inside* a run; here `npm run e2e:serve` itself
+died with `connect EADDRNOTAVAIL 127.0.0.1:65376 - Local (0.0.0.0:0)` at
+`TIME_WAIT ≈ 9,400`, from **wrangler's own internal connect**, before Vite
+bound anything. It looks exactly like a broken worktree — the log ends in a
+wrangler log path and no code frame. The fix was to wait: the same command
+started first time at `TIME_WAIT ≈ 363`. So the documented `< 4,000` rule is
+not only about flaky specs; **above ~9,000 the server will not boot at all.**
+
+#### Ownership: files touched outside the four named in §11
+
+Four, all additive one-liners, and all of them the client half of "the
+Assign/Query list routes":
+
+* `src/server/routes/decks.ts` — `d.complete` in `DECK_COLUMNS`, one `DeckRow`
+  field, one `toDeckView` field, and `?list=` on `GET /`. Lines 62, 132, 283, 337 and 355–415. `V4-SIZE` edits the **upload** route at `:1342`/`:1475`, so the
+  two are far apart; §8's "by-route split on `decks.ts` worked" is the precedent.
+* `src/client/types.ts` — `complete?: boolean` on `DeckView`.
+* `src/client/api.ts` — `list?: "assign" | "query"` on `listDecks`.
+* `test/client/queryPageVc.test.tsx` — its `fetch` mock now honours `?list=`.
+  **VC behaviour is unchanged and asserted so** (`ASSIGNABLE_STAGES.vc` is
+  empty), but the mock had to learn the parameter or the screen got the whole
+  table back.
 
 ## 11. The follow-up wave — three sessions, from the client's 2026-09-20 answers
 

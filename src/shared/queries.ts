@@ -489,21 +489,12 @@ export function deckListRoute(
 }
 
 /**
- * Does this deck belong on the Assign screen's roster of evaluated decks?
- *
- * Column 1 was `statusId ∈ {ai_evaluated, assigned}` alone, which is how (b)
- * and (c) above put a deck marked incomplete in front of an evaluator.
- */
-export function isAssignListed(
-  deck: AreaSource & DeckCompleteness & { statusId?: string },
-  edition: Edition,
-  opts: { queried: boolean } = { queried: false },
-): boolean {
-  return deckListRoute(deck, edition, opts) === "assign";
-}
-
-/**
  * Does this deck belong on the founder queries list?
+ *
+ * A named reading of `deckListRoute`'s Query arm, kept because the suite
+ * written against it (`test/unit/queries.test.ts`, "which decks the list
+ * shows") is the control proving V4-ROUTE left every earlier listing decision
+ * where it was. The Assign arm has no wrapper: nothing needs one.
  *
  *  • A deck with query history stays while it is still in intake or review —
  *    so an ANSWERED query remains listed as Responded, the founder's answer one
