@@ -5,6 +5,7 @@ import decks from "./routes/decks";
 import pipeline from "./routes/pipeline";
 import config from "./routes/config";
 import anchors from "./routes/anchors";
+import aiPrompts from "./routes/aiPrompts"; // V3-AW · AI prompts per area + seat configurability
 import crm from "./routes/crm";
 import billing from "./routes/billing";
 import account from "./routes/account";
@@ -52,6 +53,7 @@ app.get("/api/health", (c) =>
 app.route("/api/auth", auth);
 app.route("/api/config", config);
 app.route("/api/anchors", anchors);
+app.route("/api/ai-prompts", aiPrompts); // V3-AW · Area weights → AI prompt + Seat configurability
 app.route("/api/crm", crm);
 app.route("/api/billing", billing);
 app.route("/api/account", account); // W6-B · My account — the purchase wizard

@@ -26,11 +26,14 @@ const BLOCK_SIZE = LAST - FIRST + 1;
  * 0054–0059**, one per session in letter order (W7-C 0056 — placed at Wave 9
  * integration with its §9 patch, not on its own branch; W7-D 0057, W7-E 0058;
  * the other three needed none); **Wave 8 is 0059–0060** (W8-A 0059, W8-B 0060); **Wave 9 is
- * 0061–0065** in letter order (W9-C 0063, W9-E 0065; A, B and D needed none). Each
+ * 0061–0065** in letter order (W9-C 0063, W9-E 0065; A, B and D needed none);
+ * **the V3 superuser wave is 0066–0074**, one per session in the §7 table order
+ * (V3-NAV 0066 … V3-FLOW 0074), so the ceiling below is the whole wave's
+ * allotment rather than any one session's number. Each
  * wave raises this line, and every parallel session in the wave hits it — expect a
  * one-line merge conflict here and take the highest value.
  */
-const ALLOTMENT_CEILING = 65;
+const ALLOTMENT_CEILING = 74;
 
 const MIGRATIONS = env.TEST_MIGRATIONS;
 

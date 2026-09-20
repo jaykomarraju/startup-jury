@@ -512,6 +512,13 @@ const PROBES: Probe[] = [
   // render from: every workspace member, never a founder (or a mentor).
   { id: "config.paramview", label: "GET /api/config/parameters (what I may configure)", kind: "read", method: "GET", path: "/api/config/parameters",
     allow: ["admin", "program_manager", "program_associate", "jury", "partner", "ic_member", "associate", "analyst"] },
+  // V3-AW — the AI-prompt router (items 11/12). Added because §10 says a new
+  // router that skips this list silently stops being described by the harness
+  // that claims to cover it. The read is every workspace member for the same
+  // reason `config.paramview` is: an evaluator may read the prompt they are
+  // scored against. Never a founder, never the mentor user-type.
+  { id: "prompts.read", label: "GET /api/ai-prompts (AI prompts + seat grid)", kind: "read", method: "GET", path: "/api/ai-prompts",
+    allow: ["admin", "program_manager", "program_associate", "jury", "partner", "ic_member", "associate", "analyst"] },
   { id: "users.list", label: "GET /api/users (roster)", kind: "read", method: "GET", path: "/api/users",
     allow: ["admin"] },
   { id: "billing.read", label: "GET /api/billing (credits & billing)", kind: "read", method: "GET", path: "/api/billing",
@@ -535,6 +542,18 @@ const PROBES: Probe[] = [
   { id: "config.params", label: "PUT /api/config/parameters (edit the core 13)", kind: "write", method: "PUT", path: "/api/config/parameters", body: {},
     allow: ["admin"] },
   { id: "config.credits", label: "POST /api/config/credits/purchase", kind: "write", method: "POST", path: "/api/config/credits/purchase", body: { pack: "__invalid__" },
+    allow: ["admin"] },
+  // V3-AW writes. The ghost id 404s for an authorised caller and the empty
+  // bodies 400 before anything is written, so every one of these is safe to
+  // fire at a live server: `requireTask("adminconsole", "admin")` answers 403
+  // first for everyone else.
+  { id: "prompts.write", label: "PUT /api/ai-prompts/params/:id (edit an AI prompt)", kind: "write", method: "PUT", path: `/api/ai-prompts/params/${GHOST_DECK}`, body: {},
+    allow: ["admin"] },
+  { id: "prompts.restore", label: "POST /api/ai-prompts/params/:id/restore", kind: "write", method: "POST", path: `/api/ai-prompts/params/${GHOST_DECK}/restore`, body: {},
+    allow: ["admin"] },
+  { id: "prompts.restoreall", label: "POST /api/ai-prompts/restore-all", kind: "write", method: "POST", path: "/api/ai-prompts/restore-all", body: {},
+    allow: ["admin"] },
+  { id: "prompts.capability", label: "PUT /api/ai-prompts/capability (seat configurability)", kind: "write", method: "PUT", path: "/api/ai-prompts/capability", body: {},
     allow: ["admin"] },
   // W4-C — the Credits & billing router. Added because §10 says a new router
   // that skips this list silently stops being described by the harness that

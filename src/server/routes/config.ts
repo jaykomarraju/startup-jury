@@ -31,6 +31,11 @@ import {
 import { requireAuth, requireRole, requireTask } from "../auth/middleware";
 import { rescoreEdition } from "../config/rescore";
 import { loadScoringSettings } from "../config/scoringSettings";
+// V3-AW · item 12 — the Seat-configurability grid. The ladder `planAllowsCore`
+// / `planAllowsAdditional` hard-code is now the grid's DEFAULT, so every gate
+// below reads the org's row before it answers. An org that never opens the
+// grid gets byte-identical answers (`test/worker/aiPrompts.test.ts`).
+import { loadSeatCapability } from "./aiPrompts";
 // W3-C — the audit trail. Every mutation below records what changed; the
 // writer swallows its own errors so a trail failure never fails a save.
 import { money, packPriceMinor, recordCreditMovement } from "../audit/log";
@@ -137,10 +142,11 @@ config.get("/summary", async (c) => {
   const s = await loadSettings(c, edition);
   if (!s) return c.json({ error: "not_found" }, 404);
   const params = await loadParams(c, edition);
+  const cap = await loadSeatCapability(c, edition);
   return c.json({
     plan: s.plan,
-    coreConfigEnabled: planAllowsCore(s.plan),
-    additionalEnabled: planAllowsAdditional(s.plan),
+    coreConfigEnabled: planAllowsCore(s.plan, cap.core),
+    additionalEnabled: planAllowsAdditional(s.plan, cap.addl),
     thresholdBest: s.threshold_best,
     thresholdMediocre: s.threshold_mediocre,
     branding: parseBranding(s.branding_json),
@@ -160,10 +166,11 @@ config.get("/", requireTask("adminconsole", "admin"), async (c) => {
   const s = await loadSettings(c, edition);
   if (!s) return c.json({ error: "not_found" }, 404);
   const params = await loadParams(c, edition);
+  const cap = await loadSeatCapability(c, edition);
   return c.json({
     plan: s.plan,
-    coreConfigEnabled: planAllowsCore(s.plan),
-    additionalEnabled: planAllowsAdditional(s.plan),
+    coreConfigEnabled: planAllowsCore(s.plan, cap.core),
+    additionalEnabled: planAllowsAdditional(s.plan, cap.addl),
     creditsBalance: s.credits_balance,
     aiSystemPrompt: s.ai_system_prompt ?? "",
     thresholdBest: s.threshold_best,
@@ -238,8 +245,9 @@ config.get("/parameters", async (c) => {
   const s = await loadSettings(c, edition);
   if (!s) return c.json({ error: "not_found" }, 404);
   const { memberTier, effective } = await memberPlan(c, s.plan);
-  const coreConfigEnabled = planAllowsCore(effective);
-  const additionalEnabled = planAllowsAdditional(effective);
+  const cap = await loadSeatCapability(c, edition);
+  const coreConfigEnabled = planAllowsCore(effective, cap.core);
+  const additionalEnabled = planAllowsAdditional(effective, cap.addl);
   const additionalEditor = await mayConfigureAdditional(c);
 
   const rows = (
@@ -294,10 +302,13 @@ config.put("/parameters", requireRole("admin"), async (c) => {
   const settings = await loadSettings(c, edition);
   if (!settings) return c.json({ error: "not_found" }, 404);
   // Configuring the core 13 weights requires Pro or above (Standard = no config).
-  if (!planAllowsCore(settings.plan)) return c.json({ error: "plan_required" }, 402);
+  const cap = await loadSeatCapability(c, edition);
+  if (!planAllowsCore(settings.plan, cap.core)) return c.json({ error: "plan_required" }, 402);
   // …and so does the member's own seat (§9 `W6-C`, §8 Q116).
   const { effective } = await memberPlan(c, settings.plan);
-  if (!planAllowsCore(effective)) return c.json({ error: "plan_required", scope: "member" }, 402);
+  if (!planAllowsCore(effective, cap.core)) {
+    return c.json({ error: "plan_required", scope: "member" }, 402);
+  }
 
   const body = await readBody<{ params: WeightUpdate[] }>(c);
   const updates = Array.isArray(body.params) ? body.params : [];
@@ -379,7 +390,8 @@ config.put("/parameters", requireRole("admin"), async (c) => {
 async function requirePremium(c: Context<AppEnv>, edition: Edition): Promise<SettingsRow | null> {
   const s = await loadSettings(c, edition);
   if (!s) return null;
-  return planAllowsAdditional(s.plan) ? s : null;
+  const cap = await loadSeatCapability(c, edition);
+  return planAllowsAdditional(s.plan, cap.addl) ? s : null;
 }
 
 /** Validate a submitted owner role for the edition. */
@@ -391,7 +403,8 @@ function validOwner(edition: Edition, role: unknown): Role | null {
 
 /** Guard: the member's own seat must allow the role parameters too (§8 Q116). */
 async function memberAllowsAdditional(c: Context<AppEnv>, s: SettingsRow): Promise<boolean> {
-  return planAllowsAdditional((await memberPlan(c, s.plan)).effective);
+  const cap = await loadSeatCapability(c, c.var.user.edition);
+  return planAllowsAdditional((await memberPlan(c, s.plan)).effective, cap.addl);
 }
 
 /** A description / prompt body field: an empty string clears it, absent keeps it. */
@@ -413,7 +426,8 @@ config.post("/additional-params", requireTask("configparams", "admin", "program_
   const edition = c.var.user.edition;
   const s = await loadSettings(c, edition);
   if (!s) return c.json({ error: "not_found" }, 404);
-  if (!planAllowsAdditional(s.plan)) return c.json({ error: "plan_required" }, 402);
+  const cap = await loadSeatCapability(c, edition);
+  if (!planAllowsAdditional(s.plan, cap.addl)) return c.json({ error: "plan_required" }, 402);
   if (!(await memberAllowsAdditional(c, s))) return c.json({ error: "plan_required", scope: "member" }, 402);
 
   const body = await readBody<{ name: string; roleScope: string; prompt?: string; description?: string }>(c);
@@ -893,7 +907,12 @@ config.put("/plan", requireTask("upgrade", "admin"), async (c) => {
       detail: { from: current.plan, to: body.plan },
     });
   }
-  return c.json({ ok: true, plan: body.plan, additionalEnabled: planAllowsAdditional(body.plan) });
+  const cap = await loadSeatCapability(c, edition);
+  return c.json({
+    ok: true,
+    plan: body.plan,
+    additionalEnabled: planAllowsAdditional(body.plan, cap.addl),
+  });
 });
 
 // ── Admin-granted credits ────────────────────────────────────────────────────
