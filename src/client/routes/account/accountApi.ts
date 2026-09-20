@@ -66,7 +66,15 @@ export const saveProfile = (input: ProfileInput) =>
     body: JSON.stringify(input),
   });
 
-export const placeOrder = (input: { planCode: string; currency: string; paymentMethod: PaymentMethod }) =>
+export const placeOrder = (input: {
+  planCode: string;
+  currency: string;
+  paymentMethod: PaymentMethod;
+  /** V3-PT — units of the plan (a paid-trial pack's deck count). Defaults to 1. */
+  quantity?: number;
+  /** V3-PT — extra decks taken beside a seat, priced by the server. */
+  extraCredits?: number;
+}) =>
   call<OrderResult>("/api/account/orders", { method: "POST", body: JSON.stringify(input) });
 
 export const orderDocumentUrl = (id: string) =>

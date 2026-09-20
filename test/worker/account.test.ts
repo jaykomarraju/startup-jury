@@ -198,6 +198,7 @@ describe("the profile — Account, Org type, Org details", () => {
 
 describe("orders — priced from the published catalogue, charged nothing", () => {
   let inrOrder: AccountOrderView;
+  let usdOrder: AccountOrderView;
 
   it("records an INR credit pack with GST at the configured rate, and grants nothing", async () => {
     const c = await login(ADMIN);
@@ -250,7 +251,8 @@ describe("orders — priced from the published catalogue, charged nothing", () =
     const row = await env.DB.prepare("SELECT taxed, price_version FROM account_orders WHERE intent_id = ?")
       .bind(inrOrder.id)
       .first<{ taxed: number; price_version: number }>();
-    expect(row).toEqual({ taxed: 1, price_version: 1 });
+    // `0073` publishes version 2 — the seat catalogue the reshared prototype sells.
+    expect(row).toEqual({ taxed: 1, price_version: 2 });
   });
 
   it("carries NO GST on a non-INR order", async () => {
@@ -261,6 +263,7 @@ describe("orders — priced from the published catalogue, charged nothing", () =
     });
     expect(res.status).toBe(200);
     const { order } = (await res.json()) as { order: AccountOrderView };
+    usdOrder = order;
     // Standard is published at $12.00 a month.
     expect(order).toMatchObject({
       currency: "USD",
@@ -342,6 +345,92 @@ describe("orders — priced from the published catalogue, charged nothing", () =
     }
   });
 
+  // ── V3-PT · items 15 and 17 ────────────────────────────────────────────────
+
+  /**
+   * The seat SKUs `0073` publishes, ordered through the same route. The two new
+   * quantities are the reason these exist: the client sends COUNTS and the
+   * server prices them, so a crafted request cannot buy 500 credits for nothing.
+   */
+  it("sells a seat for a billing period the old enum cannot spell", async () => {
+    const res = await req("POST", "/api/account/orders", await login(ADMIN), {
+      planCode: "seat_pro_3",
+      currency: "INR",
+      paymentMethod: "upi",
+    });
+    expect(res.status).toBe(200);
+    const { order } = (await res.json()) as { order: AccountOrderView };
+    expect(order).toMatchObject({
+      planCode: "seat_pro_3",
+      group: "subscription",
+      // `price_plans.period` CHECKs three values and "quarter" is not one of
+      // them; `period_months` is what carries it.
+      period: null,
+      periodMonths: 3,
+      units: 125,
+      subtotalMinor: 600_000,
+      taxMinor: 108_000,
+      totalMinor: 708_000,
+    });
+    const row = await env.DB.prepare("SELECT period, period_months FROM account_orders WHERE intent_id = ?")
+      .bind(order.id)
+      .first<{ period: string | null; period_months: number | null }>();
+    expect(row).toEqual({ period: null, period_months: 3 });
+  });
+
+  it("prices extra credits itself, from the tier's annual seat", async () => {
+    const res = await req("POST", "/api/account/orders", await login(ADMIN), {
+      planCode: "seat_standard_12",
+      currency: "INR",
+      paymentMethod: "upi",
+      extraCredits: 250,
+    });
+    expect(res.status).toBe(200);
+    const { order } = (await res.json()) as { order: AccountOrderView };
+    // ₹11,520 / 500 decks = ₹23.04 per credit; 250 credits = ₹5,760.
+    expect(order.subtotalMinor).toBe(1_152_000 + 576_000);
+    expect(order.units).toBe(750);
+  });
+
+  it("multiplies a paid-trial pack by the published per-deck rate", async () => {
+    const res = await req("POST", "/api/account/orders", await login(ADMIN), {
+      planCode: "paid_trial",
+      currency: "INR",
+      paymentMethod: "upi",
+      quantity: 30,
+    });
+    expect(res.status).toBe(200);
+    const { order } = (await res.json()) as { order: AccountOrderView };
+    expect(order.subtotalMinor).toBe(300_000);
+    expect(order.totalMinor).toBe(354_000);
+    expect(order.units).toBe(30);
+    const intent = await env.DB.prepare("SELECT quantity, units FROM billing_payment_intents WHERE id = ?")
+      .bind(order.id)
+      .first<{ quantity: number; units: number }>();
+    expect(intent).toEqual({ quantity: 30, units: 30 });
+  });
+
+  it("refuses a quantity or an extra-credit count it cannot honour", async () => {
+    const c = await login(ADMIN);
+    const post = (body: object) => req("POST", "/api/account/orders", c, body);
+    const cases: Array<[object, number, string]> = [
+      [{ planCode: "paid_trial", currency: "INR", paymentMethod: "upi", quantity: 0 }, 400, "invalid_quantity"],
+      [{ planCode: "paid_trial", currency: "INR", paymentMethod: "upi", quantity: 2.5 }, 400, "invalid_quantity"],
+      [{ planCode: "paid_trial", currency: "INR", paymentMethod: "upi", quantity: -5 }, 400, "invalid_quantity"],
+      [{ planCode: "seat_pro_3", currency: "INR", paymentMethod: "upi", extraCredits: -1 }, 400, "invalid_quantity"],
+      // A seat has no extra-credit rate in a currency its annual row is not sold in.
+      [{ planCode: "pack_50", currency: "INR", paymentMethod: "upi", extraCredits: 125 }, 400, "extras_not_priced"],
+    ];
+    for (const [body, status, error] of cases) {
+      const res = await post(body);
+      expect(res.status, JSON.stringify(body)).toBe(status);
+      expect(await res.json(), JSON.stringify(body)).toMatchObject({ error });
+      }
+    // The negative control: the same order without the bad count goes through.
+    const ok = await post({ planCode: "seat_pro_3", currency: "INR", paymentMethod: "upi" });
+    expect(ok.status).toBe(200);
+  });
+
   it("saves the Organization branch, and then sells it an annual plan", async () => {
     const c = await login(ADMIN);
     const saved = await req("PUT", "/api/account/profile", c, {
@@ -411,9 +500,9 @@ describe("orders — priced from the published catalogue, charged nothing", () =
     expect(html).toContain("₹23,600");
     expect(html).not.toMatch(PER_DECK);
 
-    const list = (await (await req("GET", "/api/account", c)).json()) as { orders: AccountOrderView[] };
-    const usd = list.orders.find((o) => o.currency === "USD")!;
-    const usdHtml = await (await req("GET", `/api/account/orders/${usd.id}/document`, c)).text();
+    // Held from the test that placed it: `GET /api/account` returns the five
+    // most recent orders, and V3-PT's seat orders push this one past that edge.
+    const usdHtml = await (await req("GET", `/api/account/orders/${usdOrder.id}/document`, c)).text();
     expect(usdHtml).not.toContain("GST (");
     expect(usdHtml).toContain("exclusive of local taxes");
   });

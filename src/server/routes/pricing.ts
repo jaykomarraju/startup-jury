@@ -101,6 +101,9 @@ interface PlanDbRow {
   features: string | null;
   units: number | null;
   period: string | null;
+  period_months: number | null;
+  tier: string | null;
+  seats: number | null;
   active: number;
   sort_order: number;
 }
@@ -136,8 +139,8 @@ export async function loadDraft(env: Env): Promise<PriceBook> {
       .all<GroupDbRow>()
       .then((r) => r.results),
     env.DB.prepare(
-      "SELECT id, plan_group, code, name, badge, tagline, features, units, period, active, sort_order " +
-        "FROM price_plans ORDER BY sort_order",
+      "SELECT id, plan_group, code, name, badge, tagline, features, units, period, period_months, " +
+        "tier, seats, active, sort_order FROM price_plans ORDER BY sort_order",
     )
       .all<PlanDbRow>()
       .then((r) => r.results),
@@ -170,6 +173,11 @@ export async function loadDraft(env: Env): Promise<PriceBook> {
       features: p.features,
       units: p.units,
       period: (p.period as BillingPeriod | null) ?? null,
+      // 0073 — `period_months` is the only one of the two that can say
+      // "quarter"; `periodOf()` is what every reader goes through.
+      periodMonths: p.period_months,
+      tier: (p.tier as PricePlanRow["tier"]) ?? null,
+      seats: p.seats,
       active: p.active === 1,
       sortOrder: p.sort_order,
       amounts: book,

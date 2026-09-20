@@ -51,11 +51,17 @@ import {
   type ProgramView,
 } from "../api";
 
+// V3-PT — v3 narrowed step 4 to nominating the account's super user and handed
+// ongoing team management to Admin console → Team & roles. Only the incubator
+// superuser prototype was reshared, so the label follows the same gate the step
+// itself does (`TeamStep`'s `nominateOnly`).
 const STEPS = ["Org type", "Configure", "Select", "Team"] as const;
+const STEPS_SUPERUSER = ["Org type", "Configure", "Select", "Super user"] as const;
 
 /** The steps a seat walks: Org type is an Admin / Super User step only. */
-function stepsFor(seat: Seat): { labels: readonly string[]; first: number } {
-  return seat === "full" ? { labels: STEPS, first: 0 } : { labels: STEPS.slice(1), first: 1 };
+function stepsFor(seat: Seat, nominateOnly = false): { labels: readonly string[]; first: number } {
+  const all = nominateOnly ? STEPS_SUPERUSER : STEPS;
+  return seat === "full" ? { labels: all, first: 0 } : { labels: all.slice(1), first: 1 };
 }
 
 const ORG_TYPES = [
@@ -92,8 +98,9 @@ export function SetupWizard() {
   const edition = user?.edition ?? "incubator";
   const [, setCtx] = useActiveContext(edition);
   const seat = seatFor(user?.role);
+  const nominateOnly = edition === 'incubator' && user?.role === 'superuser';
 
-  const { labels: stepLabels, first: firstStep } = stepsFor(seat);
+  const { labels: stepLabels, first: firstStep } = stepsFor(seat, nominateOnly);
   const [step, setStep] = useState(firstStep);
   const [buying, setBuying] = useState(false);
   const [data, setData] = useState<ProgramsResponse | null>(null);

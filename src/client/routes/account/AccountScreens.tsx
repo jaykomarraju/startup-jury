@@ -17,6 +17,7 @@ import {
   CreditCard,
   Crown,
   Download,
+  FileText,
   Gift,
   Info,
   Landmark,
@@ -24,15 +25,32 @@ import {
   Mail,
   Smartphone,
   TrendingUp,
+  Upload,
   Wallet,
 } from "lucide-react";
-import { applyCopyTokens, formatMinor, type PriceGroupRow, type PricePlanRow, type PublishedPriceBook } from "../../../shared/priceBook";
+import {
+  applyCopyTokens,
+  extraCreditRateMinor,
+  formatMinor,
+  seatPeriodsFor,
+  seatPlanFor,
+  seatTiers,
+  PAID_TRIAL_CODE,
+  type PriceGroupRow,
+  type PricePlanRow,
+  type PublishedPriceBook,
+} from "../../../shared/priceBook";
+import { PLAN_LABELS, type Plan } from "../../../shared/plans";
 import {
   BUSINESS_TYPES,
   COUNTRIES,
   DIAL_CODES,
   EMPLOYEE_BANDS,
+  EXTRA_CREDIT_PACKS,
+  FREE_TRIAL_DECKS,
   PAYMENT_METHODS,
+  SEAT_PERIOD_VIEWS,
+  seatPeriodWord,
   billingCycleLine,
   featureBullets,
   orderStatusLabel,
@@ -57,6 +75,8 @@ const BTN =
   "inline-flex items-center gap-2 rounded-[10px] border px-[22px] py-3 text-[14px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60";
 export const BTN_GO = `${BTN} border-fg bg-surface text-fg hover:bg-ink hover:text-white`;
 export const BTN_GHOST = `${BTN} border-stone-dk bg-surface text-fg-2 hover:border-fg-muted hover:text-fg`;
+/** `.ac-btn-amber` — v3's trial buttons, beside but not instead of Continue. */
+export const BTN_AMBER = `${BTN} border-gold bg-gold-lt text-gold-dk hover:border-gold-dk`;
 const BTN_FULL = "w-full justify-center py-[15px]";
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
@@ -140,13 +160,24 @@ function ContinueButton({
   children = "Continue",
   onClick,
   busy,
+  disabled,
+  testId,
 }: {
   children?: ReactNode;
   onClick: () => void;
   busy?: boolean;
+  /** v3 disables Continue until a billing period has been chosen. */
+  disabled?: boolean;
+  testId?: string;
 }) {
   return (
-    <button type="button" className={BTN_GO} onClick={onClick} disabled={busy}>
+    <button
+      type="button"
+      className={BTN_GO}
+      onClick={onClick}
+      disabled={busy || disabled}
+      data-testid={testId}
+    >
       {busy ? "Saving…" : children} <ArrowRight className="h-4 w-4" aria-hidden="true" />
     </button>
   );
@@ -271,18 +302,18 @@ export interface AccountDraft {
 
 export function AccountScreen({
   draft,
+  trialDecks,
   onChange,
   errors,
-  trialDecks,
   onContinue,
   busy,
   notice,
 }: {
   draft: AccountDraft;
+  /** 0 hides the strip — which is how the incubator superuser sees v3. */
+  trialDecks: number;
   onChange: (patch: Partial<AccountDraft>) => void;
   errors: FieldErrors;
-  /** From the published catalogue; 0 hides the strip. */
-  trialDecks: number;
   onContinue: () => void;
   busy: boolean;
   notice?: string | null;
@@ -412,6 +443,9 @@ export function AccountScreen({
           />
         </div>
       </div>
+      {/* v3 deleted this strip: the trial is a SCREEN of its own now, reached
+          from the seat step, so advertising it here would promise it twice.
+          Every other role's prototype still draws it, so it is gated, not gone. */}
       {trialDecks > 0 && (
         <div className="mt-[22px] flex items-center gap-[11px] rounded-[11px] border border-[var(--ac-green)] bg-[var(--ac-green-lt)] px-4 py-[13px] text-[var(--ac-green-dk)]">
           <Gift className="h-[19px] w-[19px] shrink-0" aria-hidden="true" />
@@ -678,6 +712,21 @@ function CurrencyPicker({
   );
 }
 
+/**
+ * ── Two plan flows live here, and that is deliberate ────────────────────────
+ *
+ * Only the INCUBATOR SUPERUSER prototype was reshared on 2026-09-19. The
+ * incubator admin, program-manager, program-associate and jury files and every
+ * VC file still ship "Choose your plan" — the fixed-pack grid and the
+ * pay-as-you-go ladder below. So V3-PT's seat flow is additive and gated, and
+ * these components stay exactly as they were rather than being replaced:
+ *
+ *   LegacyPlanScreen / LegacyOrgPlanScreen   everyone else, unchanged
+ *   SeatScreen / EnterpriseSeatScreen        incubator superuser (item 17)
+ *
+ * `AccountOverlay` picks between them on one boolean. Deleting the legacy pair
+ * is §4 Q85 — it needs the other five prototypes reshared first.
+ */
 function Price({ book, plan, currency, className }: { book: PublishedPriceBook; plan: PricePlanRow; currency: string; className: string }) {
   const suffix = periodLabel(plan.period);
   return (
@@ -808,7 +857,7 @@ function PackCard({
   );
 }
 
-function TaxNotes({ book, group, currency }: { book: PublishedPriceBook; group: PriceGroupRow | undefined; currency: string }) {
+function TaxNotes({ book, group, currency }: { book: PublishedPriceBook; group?: PriceGroupRow | undefined; currency: string }) {
   const international = currency !== book.baseCurrency;
   return (
     <>
@@ -823,7 +872,450 @@ function TaxNotes({ book, group, currency }: { book: PublishedPriceBook; group: 
   );
 }
 
-export function PlanScreen({
+// ── 2. Seat & pricing (V3-PT, item 17) ───────────────────────────────────────
+
+/**
+ * v3 replaced "Choose your plan" — a segmented control over fixed packs and a
+ * pay-as-you-go ladder — with a two-step **seat then period** choice:
+ *
+ *   #itiers    Standard · Pro · Premium, each with its privilege line
+ *   #iprice    revealed once a seat is picked — Quarter · Half-year · Year
+ *   #ac-extra  revealed with it — 125 / 250 / 375 / 500 extra decks
+ *   footer     Back · Take a 3-deck free trial · Continue to pay
+ *
+ * The two footer buttons stay disabled until a PERIOD is chosen, which is what
+ * `acPickTier` does (it disables both again on every tier change) and what
+ * `acPickPeriod` undoes. Nothing here names a price: every figure is a row of
+ * the published catalogue, which Price configuration's three cards write.
+ */
+
+/** `.ac-plan` in the tier grid — a seat, priced only once a period is chosen. */
+function TierCard({
+  tier,
+  name,
+  privilege,
+  badge,
+  features,
+  selected,
+  onSelect,
+}: {
+  tier: Plan;
+  name: string;
+  privilege: string | null;
+  badge: string | null;
+  features: string[];
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      data-testid={`ac-tier-${tier}`}
+      onClick={onSelect}
+      className={`relative flex flex-col justify-start rounded-[13px] border-[1.5px] px-4 py-[18px] text-left transition-colors ${
+        selected ? "border-gold bg-gold-lt" : "border-stone-dk bg-surface hover:border-gold/60"
+      }`}
+    >
+      {badge && (
+        <span className="absolute -top-2.5 right-3.5 rounded-full bg-gold px-2.5 py-[3px] text-[10px] font-semibold text-white">
+          {badge}
+        </span>
+      )}
+      <span className={`block text-[15px] font-semibold ${selected ? "text-gold-dk" : "text-fg"}`}>{name}</span>
+      {privilege && (
+        <span className="mb-3 mt-[3px] block text-[11px] font-bold leading-[1.4] text-gold-dk">{privilege}</span>
+      )}
+      <Bullets items={features} className="gap-[9px] text-[12.5px]" />
+    </button>
+  );
+}
+
+/** `#iperiods` — the billing-period cards, priced per seat. */
+function PeriodCard({
+  months,
+  label,
+  sub,
+  best,
+  priceLabel,
+  decks,
+  selected,
+  onSelect,
+}: {
+  months: number;
+  label: string;
+  sub: string;
+  best?: boolean;
+  priceLabel: string;
+  decks: number | null;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      data-testid={`ac-period-${months}`}
+      onClick={onSelect}
+      className={`relative flex flex-col justify-start rounded-[13px] border-[1.5px] px-4 py-[18px] text-left transition-colors ${
+        selected ? "border-gold bg-gold-lt" : "border-stone-dk bg-surface hover:border-gold/60"
+      }`}
+    >
+      {best && (
+        <span className="absolute -top-2.5 right-3.5 rounded-full bg-gold px-2.5 py-[3px] text-[10px] font-semibold text-white">
+          Best value
+        </span>
+      )}
+      <span className={`block text-[15px] font-semibold ${selected ? "text-gold-dk" : "text-fg"}`}>{label}</span>
+      <span className={`mb-3.5 mt-[3px] block text-[25px] font-bold ${selected ? "text-gold-dk" : "text-fg"}`}>
+        {priceLabel}
+        <small className="text-[12px] font-normal text-fg-muted"> /seat</small>
+      </span>
+      <Bullets
+        items={[...(decks !== null ? [`${decks} decks included`] : []), sub]}
+        className="gap-[9px] text-[12.5px]"
+      />
+    </button>
+  );
+}
+
+/**
+ * `#ac-extra` / `#ac-orgextra` — "Add extra decks (optional)".
+ *
+ * One credit evaluates one deck. The rate is DERIVED from the annual seat price
+ * (`extraCreditRate`), so an administrator who edits that price in Price
+ * configuration moves this too — the prototype hard codes 23.04 / 30.72 / 40.96
+ * and states in a comment that they are the annual price over 500 decks.
+ */
+function ExtraCredits({
+  rateMinor,
+  symbol,
+  tierName,
+  selected,
+  onToggle,
+  testId,
+}: {
+  rateMinor: number;
+  symbol: string;
+  tierName: string;
+  selected: number;
+  onToggle: (credits: number) => void;
+  testId: string;
+}) {
+  if (rateMinor <= 0) return null;
+  return (
+    <div className="mt-5 border-t border-dashed border-stone-dk pt-[18px]" data-testid={testId}>
+      <div className="mb-2 text-[11px] font-bold uppercase tracking-[.05em] text-fg-muted">
+        Add extra decks (optional)
+      </div>
+      <p className="mb-2.5 text-[11px] leading-[1.5] text-fg-2">
+        1 credit = 1 deck evaluation · priced at your <b>{tierName}</b> plan rate (≈
+        {formatMinor(Math.round(rateMinor), symbol)}/credit). A plan is required to buy credits.
+      </p>
+      <div
+        role="group"
+        aria-label="Extra deck credits"
+        className="grid grid-cols-4 gap-[9px] max-[560px]:grid-cols-2"
+      >
+        {EXTRA_CREDIT_PACKS.map((credits) => {
+          const on = selected === credits;
+          return (
+            <button
+              key={credits}
+              type="button"
+              aria-pressed={on}
+              data-testid={`ac-extra-${credits}`}
+              onClick={() => onToggle(on ? 0 : credits)}
+              className={`rounded-[10px] border-[1.5px] bg-surface px-1.5 py-[11px] text-center transition-colors ${
+                on ? "border-gold bg-gold-lt" : "border-stone-dk hover:border-gold"
+              }`}
+            >
+              <span className="block font-mono text-[15px] font-bold text-fg">{credits}</span>
+              <span className="block text-[9px] text-fg-muted">credits</span>
+              <span className="mt-[5px] block font-mono text-[11px] font-bold text-gold-dk">
+                {formatMinor(Math.round(rateMinor * credits), symbol)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export interface SeatChoice {
+  tier: Plan | null;
+  months: number | null;
+  extraCredits: number;
+}
+
+export function SeatScreen({
+  book,
+  choice,
+  onTier,
+  onPeriod,
+  onExtra,
+  currencies,
+  currency,
+  onCurrency,
+  onBack,
+  onTrial,
+  onContinue,
+}: {
+  book: PublishedPriceBook;
+  choice: SeatChoice;
+  onTier: (t: Plan) => void;
+  onPeriod: (months: number) => void;
+  onExtra: (credits: number) => void;
+  currencies: string[];
+  currency: string;
+  onCurrency: (c: string) => void;
+  onBack: () => void;
+  onTrial: () => void;
+  onContinue: () => void;
+}) {
+  const symbol = symbolFor(book, currency);
+  const tiers = seatTiers(book);
+  const chosen = choice.tier;
+  const periods = chosen ? seatPeriodsFor(book, chosen) : [];
+  const selectedPlan = chosen && choice.months ? seatPlanFor(book, chosen, choice.months) : undefined;
+  const rate = chosen ? extraCreditRateMinor(book, chosen, currency) ?? 0 : 0;
+  const ready = selectedPlan !== undefined;
+
+  return (
+    <Card>
+      <Heading
+        title="Choose your seat"
+        sub="Pick a seat type — its pricing appears once selected. Billed per seat, per period."
+      />
+      <CurrencyPicker book={book} currencies={currencies} value={currency} onChange={onCurrency} />
+
+      {tiers.length === 0 ? (
+        <Note amber>No seat is on sale in {currency} right now. Choose another currency, or contact us.</Note>
+      ) : (
+        <div
+          role="radiogroup"
+          aria-label="Seat type"
+          data-testid="ac-tiers"
+          className="mt-[22px] grid grid-cols-3 gap-3.5 max-[680px]:grid-cols-1"
+        >
+          {tiers.map((tier) => {
+            // Every period row of a tier carries the same name, privilege line
+            // and features; the first one is as good as any for the card.
+            const any = seatPlanFor(book, tier, seatPeriodsFor(book, tier)[0] ?? 0);
+            return (
+              <TierCard
+                key={tier}
+                tier={tier}
+                name={any?.name ?? PLAN_LABELS[tier]}
+                privilege={any?.tagline ?? null}
+                badge={any?.badge ?? null}
+                features={any ? featureBullets(any) : []}
+                selected={chosen === tier}
+                onSelect={() => onTier(tier)}
+              />
+            );
+          })}
+        </div>
+      )}
+
+      {chosen && (
+        <div className="mt-[22px] border-t border-dashed border-stone-dk pt-5" data-testid="ac-periods">
+          <div className="mb-0.5 text-[11px] font-bold uppercase tracking-[.05em] text-fg-muted">
+            Billing period · per seat
+          </div>
+          <div
+            role="radiogroup"
+            aria-label="Billing period"
+            className="mt-2.5 grid grid-cols-3 gap-3.5 max-[680px]:grid-cols-1"
+          >
+            {SEAT_PERIOD_VIEWS.filter((v) => periods.includes(v.months)).map((v) => {
+              const plan = seatPlanFor(book, chosen, v.months);
+              if (!plan) return null;
+              return (
+                <PeriodCard
+                  key={v.months}
+                  months={v.months}
+                  label={v.label}
+                  sub={v.sub}
+                  best={v.best}
+                  decks={plan.units}
+                  priceLabel={formatMinor(plan.amounts[currency] ?? 0, symbol)}
+                  selected={choice.months === v.months}
+                  onSelect={() => onPeriod(v.months)}
+                />
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {chosen && (
+        <ExtraCredits
+          testId="ac-extra"
+          rateMinor={rate}
+          symbol={symbol}
+          tierName={PLAN_LABELS[chosen]}
+          selected={choice.extraCredits}
+          onToggle={onExtra}
+        />
+      )}
+
+      <TaxNotes book={book} group={undefined} currency={currency} />
+
+      <Foot>
+        <BackButton onClick={onBack} />
+        <button
+          type="button"
+          className={BTN_AMBER}
+          disabled={!ready}
+          data-testid="ac-take-trial"
+          onClick={onTrial}
+        >
+          <Gift className="h-4 w-4" aria-hidden="true" />
+          Take a {FREE_TRIAL_DECKS}-deck free trial
+        </button>
+        <ContinueButton onClick={onContinue} disabled={!ready}>
+          Continue to pay
+        </ContinueButton>
+      </Foot>
+    </Card>
+  );
+}
+
+export function EnterpriseSeatScreen({
+  book,
+  plans,
+  planCode,
+  onPlan,
+  extraCredits,
+  onExtra,
+  currencies,
+  currency,
+  onCurrency,
+  onBack,
+  onTrial,
+  onContinue,
+}: {
+  book: PublishedPriceBook;
+  plans: PricePlanRow[];
+  planCode: string | null;
+  onPlan: (code: string) => void;
+  extraCredits: number;
+  onExtra: (credits: number) => void;
+  currencies: string[];
+  currency: string;
+  onCurrency: (c: string) => void;
+  onBack: () => void;
+  onTrial: () => void;
+  onContinue: () => void;
+}) {
+  const symbol = symbolFor(book, currency);
+  const seatCounts = plans.map((p) => p.seats).filter((n): n is number => n !== null);
+  // `renderOrgExtra()` prices an organisation's extra decks at the PREMIUM rate.
+  const rate = extraCreditRateMinor(book, "premium", currency) ?? 0;
+  return (
+    <Card>
+      <Heading
+        title="Choose your Enterprise plan"
+        sub={
+          seatCounts.length > 0 ? (
+            <>
+              Pick the seat count for your organisation —{" "}
+              {seatCounts.map((n, i) => (
+                <span key={n}>
+                  {i > 0 && (i === seatCounts.length - 1 ? " or " : ", ")}
+                  <b>{n}</b>
+                </span>
+              ))}{" "}
+              Premium seats, billed annually with AI pre-score credits included.
+            </>
+          ) : undefined
+        }
+      />
+      <CurrencyPicker book={book} currencies={currencies} value={currency} onChange={onCurrency} />
+      {plans.length === 0 ? (
+        <Note amber>
+          No organisation plan is on sale in {currency} right now. Choose another currency, or contact us.
+        </Note>
+      ) : (
+        <div
+          role="radiogroup"
+          aria-label="Enterprise plans"
+          data-testid="ac-orgplans"
+          className="mt-[22px] grid gap-3.5 [grid-template-columns:repeat(auto-fit,minmax(210px,1fr))] max-[680px]:grid-cols-1"
+        >
+          {plans.map((plan) => {
+            const seats = plan.seats ?? 0;
+            const selected = plan.code === planCode;
+            return (
+              <button
+                key={plan.code}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                data-testid={`ac-plan-${plan.code}`}
+                onClick={() => onPlan(plan.code)}
+                className={`relative flex flex-col justify-start rounded-[13px] border-[1.5px] px-4 py-[18px] text-left transition-colors ${
+                  selected ? "border-gold bg-gold-lt" : "border-stone-dk bg-surface hover:border-gold/60"
+                }`}
+              >
+                <span className={`block text-[15px] font-semibold ${selected ? "text-gold-dk" : "text-fg"}`}>
+                  {plan.name}
+                </span>
+                <span className={`mb-3.5 mt-[3px] block text-[25px] font-bold ${selected ? "text-gold-dk" : "text-fg"}`}>
+                  {formatMinor(plan.amounts[currency] ?? 0, symbol)}
+                  <small className="ml-1 text-[12px] font-semibold"> Annual + GST</small>
+                </span>
+                <Bullets
+                  items={[
+                    `${seats} seats — all Premium`,
+                    ...(plan.units !== null
+                      ? [`${plan.units.toLocaleString("en-IN")} decks / year (${seats > 0 ? Math.round(plan.units / seats) : 0} per seat)`]
+                      : []),
+                    ...featureBullets(plan),
+                  ]}
+                  className="gap-[9px] text-[12.5px]"
+                />
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <ExtraCredits
+        testId="ac-orgextra"
+        rateMinor={rate}
+        symbol={symbol}
+        tierName={PLAN_LABELS.premium}
+        selected={extraCredits}
+        onToggle={onExtra}
+      />
+      <TaxNotes book={book} group={undefined} currency={currency} />
+      <Foot>
+        <BackButton onClick={onBack} />
+        <button
+          type="button"
+          className={BTN_AMBER}
+          data-testid="ac-take-trial"
+          onClick={onTrial}
+          disabled={planCode === null}
+        >
+          <Gift className="h-4 w-4" aria-hidden="true" />
+          Take a {FREE_TRIAL_DECKS}-deck free trial
+        </button>
+        <ContinueButton onClick={onContinue} disabled={planCode === null}>
+          Continue to pay
+        </ContinueButton>
+      </Foot>
+    </Card>
+  );
+}
+
+// ── 2c. The pre-V3 plan screens, for every role whose prototype still has one ─
+
+export function LegacyPlanScreen({
   book,
   accountType,
   groups,
@@ -949,7 +1441,7 @@ export function PlanScreen({
   );
 }
 
-export function OrgPlanScreen({
+export function LegacyOrgPlanScreen({
   book,
   group,
   plans,
@@ -1001,6 +1493,201 @@ export function OrgPlanScreen({
   );
 }
 
+
+// ── 2b. The free trial, and the paid one (V3-PT) ─────────────────────────────
+
+/**
+ * `#acs-trial` — three free decks, used one at a time.
+ *
+ * The prototype's counter is local state that resets on every visit
+ * (`renderTrial` sets `iTrialLeft = 3` unconditionally). This screen is the
+ * same: nothing is spent and nothing is recorded — it is a demonstration of
+ * what the trial gives you before you pay. Once all three are used it offers
+ * the two ways forward the prototype offers, and no others.
+ */
+export function TrialScreen({
+  planName,
+  used,
+  onUse,
+  onBack,
+  onPayChosen,
+  onPaidTrial,
+}: {
+  planName: string;
+  used: number;
+  onUse: () => void;
+  onBack: () => void;
+  onPayChosen: () => void;
+  onPaidTrial: () => void;
+}) {
+  const left = Math.max(FREE_TRIAL_DECKS - used, 0);
+  const done = left === 0;
+  return (
+    <Card>
+      <Heading
+        title={`Your ${FREE_TRIAL_DECKS}-deck free trial`}
+        sub={
+          <>
+            Evaluate up to {FREE_TRIAL_DECKS} decks free on your <b>{planName}</b>. When your trial
+            decks are used, payment unlocks for the plan you chose.
+          </>
+        }
+      />
+      <div className="px-0 pb-0.5 pt-2 text-center">
+        <div
+          data-testid="ac-trial-count"
+          className="font-mono text-[52px] font-bold leading-none text-[var(--ac-green-dk)]"
+        >
+          {left}
+        </div>
+        <div className="text-[12px] text-fg-2">free decks remaining</div>
+      </div>
+      <div className="my-5 flex justify-center gap-3" data-testid="ac-trial-decks">
+        {Array.from({ length: FREE_TRIAL_DECKS }, (_, i) => {
+          const spent = i < used;
+          return (
+            <span
+              key={i}
+              data-used={spent ? "true" : "false"}
+              aria-label={spent ? `Trial deck ${i + 1}, used` : `Trial deck ${i + 1}, unused`}
+              className={`flex h-[66px] w-[52px] items-center justify-center rounded-[9px] border-2 ${
+                spent
+                  ? "border-solid border-olive bg-olive-lt text-olive-dk"
+                  : "border-dashed border-stone-dk bg-surface text-stone-dk"
+              }`}
+            >
+              {spent ? (
+                <CircleCheck className="h-6 w-6" aria-hidden="true" />
+              ) : (
+                <FileText className="h-6 w-6" aria-hidden="true" />
+              )}
+            </span>
+          );
+        })}
+      </div>
+      {done && (
+        <div className="mt-1.5 rounded-[11px] border border-gold bg-gold-lt px-4 py-3.5" data-testid="ac-trial-done">
+          <div className="mb-[11px] text-center text-[12.5px] font-semibold text-gold-dk">
+            Trial complete — how would you like to continue?
+          </div>
+          <div className="flex flex-wrap justify-center gap-2.5">
+            <button type="button" className={BTN_GO} onClick={onPayChosen} data-testid="ac-pay-chosen">
+              <CreditCard className="h-4 w-4" aria-hidden="true" />
+              Pay for the plan chosen
+            </button>
+            <button type="button" className={BTN_AMBER} onClick={onPaidTrial} data-testid="ac-try-paid">
+              <Gift className="h-4 w-4" aria-hidden="true" />
+              Try paid trials
+            </button>
+          </div>
+        </div>
+      )}
+      <Foot>
+        <BackButton onClick={onBack} />
+        <button
+          type="button"
+          className={BTN_AMBER}
+          onClick={onUse}
+          disabled={done}
+          data-testid="ac-use-trial-deck"
+        >
+          <Upload className="h-4 w-4" aria-hidden="true" />
+          Use a trial deck
+        </button>
+      </Foot>
+    </Card>
+  );
+}
+
+/** `#acs-paidtrial` — 10 to 50 decks at the catalogue's paid-trial rate. */
+export function PaidTrialScreen({
+  book,
+  currency,
+  packs,
+  rateMinor,
+  selected,
+  onSelect,
+  onBack,
+  onContinue,
+}: {
+  book: PublishedPriceBook;
+  currency: string;
+  packs: readonly number[];
+  rateMinor: number;
+  selected: number;
+  onSelect: (decks: number) => void;
+  onBack: () => void;
+  onContinue: () => void;
+}) {
+  const symbol = symbolFor(book, currency);
+  const rate = formatMinor(rateMinor, symbol);
+  // A catalogue with no paid-trial rate in this currency cannot sell one. Say
+  // so: without this the packs all read zero and Continue would do nothing.
+  if (rateMinor <= 0) {
+    return (
+      <Card>
+        <Heading title="Try a paid trial" />
+        <Note amber>
+          A paid trial is not sold in {currency} right now. Choose another currency, or go back and
+          pay for the plan you chose.
+        </Note>
+        <Foot>
+          <BackButton onClick={onBack} />
+        </Foot>
+      </Card>
+    );
+  }
+  return (
+    <Card>
+      <Heading
+        title="Try a paid trial"
+        sub={
+          <>
+            Not ready to commit to a full plan? Buy a small credit pack and keep evaluating — <b>{rate} per deck</b>. 1
+            credit evaluates 1 deck, and credits never expire. Extend your trial before choosing a longer plan.
+          </>
+        }
+      />
+      <div
+        role="radiogroup"
+        aria-label="Paid trial packs"
+        data-testid="ac-paid-packs"
+        className="my-[18px] flex flex-wrap gap-3"
+      >
+        {packs.map((decks) => {
+          const on = selected === decks;
+          return (
+            <button
+              key={decks}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              data-testid={`ac-paid-pack-${decks}`}
+              onClick={() => onSelect(decks)}
+              className={`min-w-[108px] flex-1 rounded-xl border-[1.5px] bg-surface px-3 py-3.5 text-center transition-colors ${
+                on ? "border-olive bg-olive-lt" : "border-stone-dk hover:border-gold"
+              }`}
+            >
+              <span className="block font-mono text-[26px] font-bold text-fg">{decks}</span>
+              <span className="block text-[10.5px] uppercase tracking-[.05em] text-fg-muted">decks</span>
+              <span className="mt-1.5 block text-[14px] font-bold text-olive-dk">
+                {formatMinor(rateMinor * decks, symbol)}
+              </span>
+              <span className="mt-0.5 block text-[10px] text-fg-muted">{rate} / deck</span>
+            </button>
+          );
+        })}
+      </div>
+      <Foot>
+        <BackButton onClick={onBack} />
+        <ContinueButton onClick={onContinue} disabled={selected === 0}>
+          Continue to payment
+        </ContinueButton>
+      </Foot>
+    </Card>
+  );
+}
+
 // ── 4. Payment ───────────────────────────────────────────────────────────────
 
 const METHOD_ICONS: Record<PaymentMethod, ReactNode> = {
@@ -1010,18 +1697,73 @@ const METHOD_ICONS: Record<PaymentMethod, ReactNode> = {
   wallet: <Wallet className="h-[17px] w-[17px] text-fg-2" aria-hidden="true" />,
 };
 
-/** The summary's sub-line: who is buying, and on what terms. */
+/**
+ * The summary's sub-line: who is buying, and on what terms.
+ *
+ * v3's `renderPayment` has three branches and this has the same three: a paid
+ * trial states its deck count and rate, an enterprise plan its seat count, and
+ * a seat the period it is billed on.
+ */
 function orderSubLine(accountType: AccountType, quote: OrderQuote): string {
   const who = accountType === "organization" ? "Organization" : "Individual";
-  if (quote.group === "enterprise") return `${who} · annual`;
+  if (isPaidTrial(quote)) return `${quote.quantity} decks`;
+  if (quote.group === "enterprise") {
+    return quote.plan.seats !== null
+      ? `${who} · ${quote.plan.seats} Premium seats · annual`
+      : `${who} · annual`;
+  }
+  const months = quote.plan.periodMonths;
+  if (months !== null) return `${who} · per ${seatPeriodWord(months)}`;
   if (quote.group === "credit_pack") return `${who} · pay-as-you-go`;
   return `${who} · ${quote.plan.period === "year" ? "annual" : "monthly"}`;
 }
 
+/** A paid-trial order is the only one that buys MORE THAN ONE of its plan. */
+function isPaidTrial(quote: OrderQuote): boolean {
+  return quote.plan.code === PAID_TRIAL_CODE;
+}
+
 function planLineLabel(quote: OrderQuote): string {
-  if (quote.group === "credit_pack" && quote.plan.units !== null) return `${quote.plan.units} credits`;
+  if (isPaidTrial(quote)) return `Trial credits (${quote.quantity} decks)`;
   if (quote.group === "enterprise") return "Annual plan";
+  if (quote.plan.tier !== null) return `${quote.plan.name} seat`;
+  if (quote.group === "credit_pack" && quote.plan.units !== null) return `${quote.plan.units} credits`;
   return "Plan";
+}
+
+/**
+ * The lines v3 draws between the plan line and GST — Seats, Decks included and
+ * whatever extra decks were taken. They are FACTS of the quote, not prices, so
+ * they carry no money except the extras' own line.
+ */
+function orderDetailLines(quote: OrderQuote, money: (m: number) => string): { key: string; label: string; value: string }[] {
+  if (isPaidTrial(quote)) return [];
+  const out: { key: string; label: string; value: string }[] = [];
+  if (quote.group === "enterprise" && quote.plan.seats !== null) {
+    out.push({ key: "seats", label: "Seats", value: `${quote.plan.seats} · all Premium` });
+  }
+  if (quote.plan.periodMonths !== null && quote.group !== "enterprise") {
+    const view = SEAT_PERIOD_VIEWS.find((v) => v.months === quote.plan.periodMonths);
+    out.push({ key: "period", label: "Billing period", value: view?.label ?? seatPeriodWord(quote.plan.periodMonths) });
+  }
+  if (quote.plan.units !== null) {
+    out.push({
+      key: "decks",
+      label: "Decks included",
+      value: `${(quote.plan.units * quote.quantity).toLocaleString("en-IN")} decks`,
+    });
+  }
+  if (quote.extraCredits > 0) {
+    out.push({
+      key: "extra",
+      label:
+        quote.group === "enterprise"
+          ? `Extra decks (${quote.extraCredits})`
+          : `Extra credits (${quote.extraCredits})`,
+      value: money(quote.extraMinor),
+    });
+  }
+  return out;
 }
 
 export function PaymentScreen({
@@ -1130,8 +1872,18 @@ export function PaymentScreen({
         </div>
         <div className="mt-[13px] flex justify-between text-[13px] text-fg-2">
           <span>{planLineLabel(quote)}</span>
-          <b className="text-fg">{money(breakdown.subtotalMinor)}</b>
+          <b className="text-fg">{money(quote.amountMinor * quote.quantity)}</b>
         </div>
+        {orderDetailLines(quote, money).map((line) => (
+          <div
+            key={line.key}
+            className="mt-[13px] flex justify-between text-[13px] text-fg-2"
+            data-testid={`ac-line-${line.key}`}
+          >
+            <span>{line.label}</span>
+            <b className="text-fg">{line.value}</b>
+          </div>
+        ))}
         {breakdown.taxed ? (
           <div className="mt-[13px] flex justify-between text-[13px] text-fg-2" data-testid="ac-gst-line">
             <span>GST ({breakdown.ratePct}%){breakdown.inclusive ? " incl." : ""}</span>
@@ -1152,10 +1904,18 @@ export function PaymentScreen({
         <div className="mt-[5px] text-right text-[10.5px] text-fg-muted">
           {breakdown.taxed ? "GST-compliant invoice provided" : "Exclusive of local taxes"}
         </div>
-        {book.trial.decks > 0 && (
-          <div className="mt-[15px] flex items-center gap-2 rounded-[9px] border border-[var(--ac-green)] bg-[var(--ac-green-lt)] px-[13px] py-[11px] text-[11.5px] text-[var(--ac-green-dk)]">
+        {/* v3's `.free` line states what the ORDER grants, not what the free
+            trial does — `renderPayment` prints "N decks available with your
+            plan" and, for a paid trial, "N decks · credits never expire". */}
+        {quote.unitsTotal !== null && quote.unitsTotal > 0 && (
+          <div
+            data-testid="ac-decks-line"
+            className="mt-[15px] flex items-center gap-2 rounded-[9px] border border-[var(--ac-green)] bg-[var(--ac-green-lt)] px-[13px] py-[11px] text-[11.5px] text-[var(--ac-green-dk)]"
+          >
             <CircleCheck className="h-[15px] w-[15px] shrink-0" aria-hidden="true" />
-            {book.trial.decks} free trial decks included
+            {isPaidTrial(quote)
+              ? `${quote.unitsTotal.toLocaleString("en-IN")} decks · credits never expire`
+              : `${quote.unitsTotal.toLocaleString("en-IN")} decks available with your plan`}
           </div>
         )}
       </aside>
@@ -1200,11 +1960,19 @@ export function ReceiptScreen({
       ),
     },
     { k: "Reference ID", v: <span className="font-mono text-[12px]">{order.id}</span>, testId: "ac-receipt-ref" },
-    { k: "Billing cycle", v: billingCycleLine(order.period) },
+    { k: "Billing cycle", v: billingCycleLine(order.period, order.periodMonths) },
     { k: "Payment method", v: method ? `${method.label} · on the provider's page` : "—" },
     { k: "Status", v: orderStatusLabel(order.status), testId: "ac-receipt-status" },
   ];
-  if (book.trial.decks > 0) rows.splice(4, 0, { k: "Free decks", v: `${book.trial.decks} decks included` });
+  // v3 made `ac-suc-decks` dynamic: the row states what THIS ORDER grants, not
+  // a constant three. An order that grants nothing metered has no row at all.
+  if (order.units !== null && order.units > 0) {
+    rows.splice(4, 0, {
+      k: "Decks",
+      testId: "ac-receipt-decks",
+      v: `${order.units.toLocaleString("en-IN")} decks ready to use`,
+    });
+  }
 
   return (
     <Card className="text-center">

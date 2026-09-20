@@ -435,3 +435,97 @@ describe("the buy-seats sub-flow", () => {
     expect(screen.getByRole("button", { name: /Continue to payment/ })).toBeDisabled();
   });
 });
+
+// ── V3-PT · item 16, the super user's narrower step 4 ────────────────────────
+
+/**
+ * v3 turned step 4 into **Nominate your super user**. Everything above this
+ * block is the admin's step, unchanged — `AISJ_ICAdmin_V6` still contains
+ * `su-addmember` and `su-seatbar`, so it must render exactly as it did.
+ */
+describe("the super user's team step", () => {
+  /** The signed-in principal, not the roster row — `SUPER` above is that. */
+  const SUPER_USER: AuthUser = {
+    id: "u_super",
+    name: "Priya Sharma",
+    initials: "PS",
+    role: "superuser",
+    edition: "incubator",
+  };
+
+  it("is the nomination, the handoff card and the seat bar — nothing else", async () => {
+    mockApi(seatsView());
+    renderTeam({ user: SUPER_USER });
+    const bar = await screen.findByTestId("seat-bar");
+    expect(bar).toHaveTextContent("2 total users · 3 seats left for nomination");
+    expect(screen.getByTestId("superbox")).toHaveTextContent("Super user — priya.sharma@firm.com");
+
+    expect(screen.getByRole("heading", { name: "Nominate your super user" })).toBeInTheDocument();
+    expect(screen.getByTestId("su-team-sub")).toHaveTextContent(
+      "Nominate the account’s super user. Adding team members and assigning Standard / Pro / Premium seats is done in Team & roles.",
+    );
+    const handoff = screen.getByTestId("su-handoff");
+    expect(handoff).toHaveTextContent("Ongoing team management lives in Team & roles");
+    expect(within(handoff).getByRole("link", { name: /Open Team & roles/ })).toHaveAttribute(
+      "href",
+      "/app/admin/tm",
+    );
+
+    // Everything v3 deleted, asserted ABSENT rather than assumed gone.
+    expect(screen.queryByRole("heading", { name: "Add team members" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Add$/ })).toBeNull();
+    expect(screen.queryByText("You — account owner")).toBeNull();
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.queryAllByTestId("seat-member")).toHaveLength(0);
+    expect(screen.queryByLabelText("Plan for the new member")).toBeNull();
+
+    // The footer is unchanged.
+    expect(screen.getByRole("button", { name: "Skip for now" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Confirm & go to dashboard/ })).toBeInTheDocument();
+  });
+
+  it("draws no roster, however many members the workspace has", async () => {
+    const jury = member({ id: "u_j", name: "Rajesh Kumar", email: "rajesh.kumar@firm.com" });
+    mockApi(seatsView({ members: [VIEWER, SUPER, jury] }));
+    renderTeam({ user: SUPER_USER });
+    await screen.findByTestId("seat-bar");
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByText("rajesh.kumar@firm.com")).toBeNull();
+  });
+
+  it("the individual panel points at the upgrade, and its copy names Team & roles", async () => {
+    mockApi(seatsView());
+    renderTeam({ user: SUPER_USER });
+    await screen.findByTestId("seat-bar");
+    fireEvent.click(screen.getByRole("button", { name: "Individual plan" }));
+    expect(screen.getByTestId("su-team-sub")).toHaveTextContent(
+      "Individual plans are single-seat. Upgrade to Enterprise to nominate a super user and manage a team in Team & roles.",
+    );
+    expect(screen.getByRole("link", { name: /Upgrade to Enterprise/ })).toHaveAttribute("href", "/app/account");
+  });
+
+  /**
+   * The negative control. `AISJ_ICAdmin_V6` and every VC file still contain
+   * `su-addmember`, so this is what tells the difference between "narrowed for
+   * the super user" and "narrowed for everybody".
+   */
+  it("an ADMIN's step 4 is untouched — the owner card, the roster and the add row", async () => {
+    mockApi(seatsView());
+    renderTeam();
+    await screen.findByTestId("seat-bar");
+    expect(screen.getByRole("heading", { name: "Add team members" })).toBeInTheDocument();
+    expect(screen.getByText("You — account owner")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Add$/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /View all members/ })).toBeInTheDocument();
+    expect(screen.queryByTestId("su-handoff")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Nominate your super user" })).toBeNull();
+  });
+
+  it("a VC super user's step 4 is untouched too — the VC edition was not rescoped", async () => {
+    mockApi(seatsView());
+    renderTeam({ edition: "vc", user: { ...SUPER_USER, edition: "vc" } });
+    await screen.findByTestId("seat-bar");
+    expect(screen.getByRole("heading", { name: "Add team members" })).toBeInTheDocument();
+    expect(screen.queryByTestId("su-handoff")).toBeNull();
+  });
+});

@@ -246,7 +246,9 @@ const EXPECTED: Record<string, Screen> = {
       ["ROLE", "MNG PARTNER", "IC", "PARTNER", "INV. ASSOC", "ANALYST"],
     ],
   },
-  "incubator/superuser/billing": { title: "Choose your plan", tables: [] },
+  // V3-PT item 17 — v3's "Choose your seat" is the incubator SUPERUSER's screen
+  // and nobody else's; the admin and VC rows below still read "Choose your plan".
+  "incubator/superuser/billing": { title: "Choose your seat", tables: [] },
   "incubator/superuser/contactadmin": { title: "Contact Admin", tables: [] },
   "incubator/superuser/contactteam": { title: "Contact team", tables: [] },
   "incubator/superuser/support": {

@@ -464,12 +464,22 @@ describe("price configuration", () => {
     const { results } = await env.DB.prepare(
       "SELECT plan_group, COUNT(*) n FROM price_plans GROUP BY plan_group ORDER BY plan_group",
     ).all<{ plan_group: string; n: number }>();
+    // V3-PT (`0073`) ADDS the seat catalogue and removes nothing: credit_pack
+    // gains the paid-trial rate, subscription the 9 (tier × period) seats, and
+    // enterprise the 3 seat-count plans. The legacy rows are still here on
+    // purpose — `src/shared/seats.ts` prices a purchased seat from the
+    // subscription plans CODED `standard` / `pro`, and the seat screens filter
+    // on `tier` / `seats` rather than deleting anything.
     expect(results).toEqual([
-      { plan_group: "credit_pack", n: 3 },
-      { plan_group: "enterprise", n: 5 },
+      { plan_group: "credit_pack", n: 3 + 1 },
+      { plan_group: "enterprise", n: 5 + 3 },
       { plan_group: "free_trial", n: 1 },
-      { plan_group: "subscription", n: 2 },
+      { plan_group: "subscription", n: 2 + 9 },
     ]);
+    const legacy = await env.DB.prepare(
+      "SELECT COUNT(*) n FROM price_plans WHERE code IN ('standard', 'pro', 'pack_10', 'pack_50', 'pack_100') AND active = 1",
+    ).first<{ n: number }>();
+    expect(legacy!.n).toBe(5);
     const pro = await env.DB.prepare(
       "SELECT amount_minor FROM price_amounts WHERE plan_id = 'pp_pro' AND currency = 'INR'",
     ).first<{ amount_minor: number }>();

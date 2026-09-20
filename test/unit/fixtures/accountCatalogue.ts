@@ -15,6 +15,9 @@ function plan(over: Partial<PricePlanRow> & Pick<PricePlanRow, "code" | "group" 
     features: null,
     units: null,
     period: null,
+    periodMonths: null,
+    tier: null,
+    seats: null,
     active: true,
     sortOrder: 0,
     amounts: {},
@@ -56,6 +59,25 @@ export function catalogueFixture(): PublishedPriceBook {
       plan({ code: "pack_250", group: "credit_pack", name: "250-unit pack", units: 250, period: "one_time", active: false, sortOrder: 8, amounts: { INR: 6_000_000, USD: 72_000, GBP: 56_000 } }),
       plan({ code: "ent_100", group: "enterprise", name: "100 units / year", features: "Entry Enterprise · +config access", units: 100, period: "year", sortOrder: 9, amounts: { INR: 6_000_000, USD: 72_000, GBP: 56_600 } }),
       plan({ code: "ent_500", group: "enterprise", name: "500 units / year", badge: "Best value", units: 500, period: "year", sortOrder: 10, amounts: { INR: 20_000_000, USD: 239_900, GBP: 188_800 } }),
+
+      // ── V3-PT · the seat catalogue `0073` seeds ────────────────────────────
+      // A seat SKU is (tier, periodMonths); an enterprise seat plan is (seats).
+      // The legacy rows above stay ON PURPOSE: the seat screens select on those
+      // two columns, so the old rows are filtered out rather than deleted, and
+      // the fixture proves it.
+      plan({ code: "paid_trial", group: "credit_pack", name: "Paid trial", units: 1, sortOrder: 20, amounts: { INR: 10_000, USD: 120, GBP: 94 } }),
+      plan({ code: "seat_standard_3", group: "subscription", name: "Standard", tagline: "Cannot configure evaluation parameters", features: "AI pre-scores each deck · 13-area weighted rubric", units: 125, periodMonths: 3, tier: "standard", sortOrder: 21, amounts: { INR: 450_000, USD: 5_396, GBP: 4_248 } }),
+      plan({ code: "seat_standard_6", group: "subscription", name: "Standard", tagline: "Cannot configure evaluation parameters", features: "AI pre-scores each deck · 13-area weighted rubric", units: 250, periodMonths: 6, tier: "standard", sortOrder: 22, amounts: { INR: 720_000, USD: 8_633, GBP: 6_797 } }),
+      plan({ code: "seat_standard_12", group: "subscription", name: "Standard", tagline: "Cannot configure evaluation parameters", features: "AI pre-scores each deck · 13-area weighted rubric", units: 500, period: "year", periodMonths: 12, tier: "standard", sortOrder: 23, amounts: { INR: 1_152_000, USD: 13_812, GBP: 10_875 } }),
+      plan({ code: "seat_pro_3", group: "subscription", name: "Pro", badge: "Most chosen", tagline: "Configure the 13 core parameters", features: "Everything in Standard · Override score & remark", units: 125, periodMonths: 3, tier: "pro", sortOrder: 24, amounts: { INR: 600_000, USD: 7_194, GBP: 5_664 } }),
+      plan({ code: "seat_pro_6", group: "subscription", name: "Pro", badge: "Most chosen", tagline: "Configure the 13 core parameters", features: "Everything in Standard · Override score & remark", units: 250, periodMonths: 6, tier: "pro", sortOrder: 25, amounts: { INR: 960_000, USD: 11_510, GBP: 9_062 } }),
+      plan({ code: "seat_pro_12", group: "subscription", name: "Pro", badge: "Most chosen", tagline: "Configure the 13 core parameters", features: "Everything in Standard · Override score & remark", units: 500, period: "year", periodMonths: 12, tier: "pro", sortOrder: 26, amounts: { INR: 1_536_000, USD: 18_417, GBP: 14_500 } }),
+      plan({ code: "seat_premium_3", group: "subscription", name: "Premium", tagline: "13 core + 3 additional parameters", features: "Everything in Pro · Priority support & onboarding", units: 125, periodMonths: 3, tier: "premium", sortOrder: 27, amounts: { INR: 800_000, USD: 9_592, GBP: 7_552 } }),
+      plan({ code: "seat_premium_6", group: "subscription", name: "Premium", tagline: "13 core + 3 additional parameters", features: "Everything in Pro · Priority support & onboarding", units: 250, periodMonths: 6, tier: "premium", sortOrder: 28, amounts: { INR: 1_280_000, USD: 15_347, GBP: 12_083 } }),
+      plan({ code: "seat_premium_12", group: "subscription", name: "Premium", tagline: "13 core + 3 additional parameters", features: "Everything in Pro · Priority support & onboarding", units: 500, period: "year", periodMonths: 12, tier: "premium", sortOrder: 29, amounts: { INR: 2_048_000, USD: 24_556, GBP: 19_333 } }),
+      plan({ code: "ent_s5", group: "enterprise", name: "Family Office Plan", tagline: "Annual · all Premium seats", units: 2_500, period: "year", periodMonths: 12, seats: 5, sortOrder: 30, amounts: { INR: 8_000_000, USD: 95_920, GBP: 75_520 } }),
+      plan({ code: "ent_s10", group: "enterprise", name: "Enterprise Plan", tagline: "Annual · all Premium seats", units: 5_000, period: "year", periodMonths: 12, seats: 10, sortOrder: 31, amounts: { INR: 16_000_000, USD: 191_840, GBP: 151_040 } }),
+      plan({ code: "ent_s15", group: "enterprise", name: "Large Organisation Plan", tagline: "Annual · all Premium seats", units: 7_500, period: "year", periodMonths: 12, seats: 15, sortOrder: 32, amounts: { INR: 24_000_000, USD: 287_760, GBP: 226_560 } }),
     ],
     tax: { gstRatePct: 18, gstRegistration: "29ABCDE1234F1Z5", pricesIncludeGst: false, showInternationalTaxNotice: true },
     trial: { decks: 3, expiryDays: 0, showOnPricingPage: true },

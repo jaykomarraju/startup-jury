@@ -24,6 +24,9 @@ function plan(over: Partial<PricePlanRow> = {}): PricePlanRow {
     features: "20 decks/mo · All 13 areas",
     units: null,
     period: "month",
+    periodMonths: null,
+    tier: null,
+    seats: null,
     active: true,
     sortOrder: 2,
     // GBP is FX-derived (99 900 × 0.00944 = 943); USD is typed over, which is
@@ -137,6 +140,46 @@ function book(over: Partial<PriceBook> = {}): PriceBook {
         amounts: { INR: 6000000, USD: 72000, GBP: 56600 },
         overrides: ["USD", "GBP"],
       }),
+
+      // ── V3-PT · the rows the prototype's three cards edit ──────────────────
+      plan({ id: "pp_paid_trial", code: "paid_trial", group: "credit_pack", name: "Paid trial", badge: null, features: null, period: null, units: 1, sortOrder: 20, amounts: { INR: 10000, USD: 120, GBP: 94 }, overrides: [] }),
+      ...(["standard", "pro", "premium"] as const).flatMap((tier, ti) =>
+        ([3, 6, 12] as const).map((m, mi) =>
+          plan({
+            id: `pp_seat_${tier}_${m}`,
+            code: `seat_${tier}_${m}`,
+            group: "subscription",
+            name: tier === "standard" ? "Standard" : tier === "pro" ? "Pro" : "Premium",
+            badge: null,
+            features: null,
+            period: m === 12 ? "year" : null,
+            periodMonths: m,
+            tier,
+            units: m === 3 ? 125 : m === 6 ? 250 : 500,
+            sortOrder: 21 + ti * 3 + mi,
+            // 4500/7200/11520 · 6000/9600/15360 · 8000/12800/20480, ×100.
+            amounts: { INR: [[450000, 720000, 1152000], [600000, 960000, 1536000], [800000, 1280000, 2048000]][ti][mi] },
+            overrides: [],
+          }),
+        ),
+      ),
+      ...([5, 10, 15] as const).map((seats, i) =>
+        plan({
+          id: `pp_ent_s${seats}`,
+          code: `ent_s${seats}`,
+          group: "enterprise",
+          name: ["Family Office Plan", "Enterprise Plan", "Large Organisation Plan"][i],
+          badge: null,
+          features: null,
+          period: "year",
+          periodMonths: 12,
+          seats,
+          units: seats * 500,
+          sortOrder: 30 + i,
+          amounts: { INR: [8000000, 16000000, 24000000][i] },
+          overrides: [],
+        }),
+      ),
     ],
     tax: {
       gstRatePct: 18,
@@ -431,5 +474,166 @@ describe("adding a currency", () => {
     );
     // Priced from the base at the rate just entered: 99 900 × 0.0155 = S$15.48.
     expect(screen.getByTestId("pc-amount-standard-SGD")).toHaveValue(15.48);
+  });
+});
+
+// ── V3-PT · item 15, the prototype's three cards ─────────────────────────────
+
+/**
+ * v3 rebuilt `s-pc` from a 235-byte iframe around a 37 KB base64 document into
+ * a 2 KB inline section: `Paid trial`, `Individual plans — ₹ per period`,
+ * `Enterprise plans — ₹ annual`, and one `Save & apply to My Account`.
+ *
+ * Every literal below is copied from the decoded prototype rather than imported
+ * from the component, so renaming a heading fails here.
+ */
+describe("the seat-pricing cards", () => {
+  function cardTable(testId: string): HTMLElement {
+    return within(screen.getByTestId(testId)).getByRole("table");
+  }
+
+  it("draws the three cards, in the prototype's order and with its column headers", async () => {
+    mount();
+    await screen.findByTestId("pc-individual-plans");
+
+    expect(screen.getByTestId("pc-paid-trial")).toHaveTextContent("Paid trial");
+    expect(screen.getByTestId("pc-paid-trial")).toHaveTextContent("Per-deck rate (₹)");
+    expect(screen.getByTestId("pc-individual-plans")).toHaveTextContent("Individual plans — ₹ per period");
+    expect(screen.getByTestId("pc-enterprise-plans")).toHaveTextContent("Enterprise plans — ₹ annual");
+
+    expect(headers(cardTable("pc-individual-plans"))).toEqual([
+      "Seat",
+      "Quarterly",
+      "Half-yearly",
+      "Annual",
+    ]);
+    expect(headers(cardTable("pc-enterprise-plans"))).toEqual(["Plan", "Seats", "Annual price"]);
+
+    // The three cards come before everything the v3 section does not have.
+    const order = Array.from(document.querySelectorAll("[data-testid]"))
+      .map((e) => e.getAttribute("testid") ?? e.getAttribute("data-testid"))
+      .filter((id): id is string =>
+        ["pc-paid-trial", "pc-individual-plans", "pc-enterprise-plans", "pc-apply", "pc-beyond-prototype"].includes(
+          id ?? "",
+        ),
+      );
+    expect(order).toEqual([
+      "pc-paid-trial",
+      "pc-individual-plans",
+      "pc-enterprise-plans",
+      "pc-apply",
+      "pc-beyond-prototype",
+    ]);
+  });
+
+  it("shows every one of the thirteen prices in WHOLE rupees, as the prototype's inputs do", async () => {
+    mount();
+    await screen.findByTestId("pc-individual-plans");
+    expect(screen.getByTestId("pc-paid-rate")).toHaveValue(100);
+    // 3 tiers × 3 periods, `PRICING_ADMIN.ind` verbatim.
+    expect(screen.getByTestId("pc-seat-standard-3")).toHaveValue(4500);
+    expect(screen.getByTestId("pc-seat-standard-6")).toHaveValue(7200);
+    expect(screen.getByTestId("pc-seat-standard-12")).toHaveValue(11520);
+    expect(screen.getByTestId("pc-seat-pro-3")).toHaveValue(6000);
+    expect(screen.getByTestId("pc-seat-pro-6")).toHaveValue(9600);
+    expect(screen.getByTestId("pc-seat-pro-12")).toHaveValue(15360);
+    expect(screen.getByTestId("pc-seat-premium-3")).toHaveValue(8000);
+    expect(screen.getByTestId("pc-seat-premium-6")).toHaveValue(12800);
+    expect(screen.getByTestId("pc-seat-premium-12")).toHaveValue(20480);
+    // `PRICING_ADMIN.ent`, with the seat count as a read-only column.
+    expect(screen.getByTestId("pc-ent-5")).toHaveValue(80000);
+    expect(screen.getByTestId("pc-ent-10")).toHaveValue(160000);
+    expect(screen.getByTestId("pc-ent-15")).toHaveValue(240000);
+    const rows = within(cardTable("pc-enterprise-plans")).getAllByRole("row").slice(1);
+    expect(
+      rows.map((r) =>
+        within(r)
+          .getAllByRole("cell")
+          .slice(0, 2)
+          .map((c) => c.textContent),
+      ),
+    ).toEqual([
+      ["Family Office Plan", "5"],
+      ["Enterprise Plan", "10"],
+      ["Large Organisation Plan", "15"],
+    ]);
+  });
+
+  it("an edited price is SAVED and then PUBLISHED by one click — a draft is invisible to My Account", async () => {
+    const sent = mockFetch();
+    mount();
+    await screen.findByTestId("pc-individual-plans");
+
+    fireEvent.change(screen.getByTestId("pc-seat-pro-12"), { target: { value: "17000" } });
+    fireEvent.change(screen.getByTestId("pc-paid-rate"), { target: { value: "125" } });
+    fireEvent.click(screen.getByTestId("pc-apply"));
+
+    await waitFor(() => expect(sent.filter((c) => c.url.endsWith("/publish"))).toHaveLength(1));
+    const draft = sent.find((c) => c.url.endsWith("/draft"));
+    const plans = draft?.body.plans as { id: string; amounts: Record<string, number> }[];
+    // Whole rupees in, minor units out.
+    expect(plans.find((p) => p.id === "pp_seat_pro_12")?.amounts.INR).toBe(1700000);
+    expect(plans.find((p) => p.id === "pp_paid_trial")?.amounts.INR).toBe(12500);
+    // The draft goes first: publishing an unsaved draft would publish the old prices.
+    expect(sent.map((c) => c.url.replace(/^.*\/api\/pricing/, ""))).toEqual(["/draft", "/publish"]);
+    expect(await screen.findByTestId("pc-notice")).toHaveTextContent("Saved — applied to My Account");
+  });
+
+  it("does not publish when the save is refused", async () => {
+    const sent: { url: string; method: string }[] = [];
+    const draft = book();
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (method !== "GET") {
+        sent.push({ url, method });
+        return new Response(JSON.stringify({ errors: ["A price is not a whole number."] }), { status: 400 });
+      }
+      return new Response(
+        JSON.stringify({
+          draft,
+          published: null,
+          dirty: false,
+          errors: [],
+          lastSavedAt: null,
+          versions: [],
+          previousVersion: null,
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    mount();
+    await screen.findByTestId("pc-individual-plans");
+    fireEvent.change(screen.getByTestId("pc-ent-10"), { target: { value: "170000" } });
+    fireEvent.click(screen.getByTestId("pc-apply"));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0].url).toContain("/draft");
+    expect(sent.some((c) => c.url.endsWith("/publish"))).toBe(false);
+    expect(await screen.findByText("A price is not a whole number.")).toBeInTheDocument();
+  });
+
+  it("a catalogue with no seat rows says so rather than drawing empty inputs", async () => {
+    const bare = book();
+    bare.plans = bare.plans.filter((p) => p.tier === null && p.seats === null && p.code !== "paid_trial");
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          draft: bare,
+          published: null,
+          dirty: false,
+          errors: [],
+          lastSavedAt: null,
+          versions: [],
+          previousVersion: null,
+        }),
+        { status: 200 },
+      ),
+    ) as typeof fetch;
+    mount();
+    await screen.findByTestId("pc-individual-plans");
+    expect(screen.getByTestId("pc-paid-trial")).toHaveTextContent("No paid-trial rate is in the catalogue.");
+    expect(within(cardTable("pc-individual-plans")).queryAllByRole("row")).toHaveLength(1);
+    expect(within(cardTable("pc-enterprise-plans")).queryAllByRole("row")).toHaveLength(1);
   });
 });

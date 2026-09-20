@@ -27,11 +27,13 @@ const BLOCK_SIZE = LAST - FIRST + 1;
  * integration with its §9 patch, not on its own branch; W7-D 0057, W7-E 0058;
  * the other three needed none); **Wave 8 is 0059–0060** (W8-A 0059, W8-B 0060); **Wave 9 is
  * 0061–0065** in letter order (W9-C 0063, W9-E 0065; A, B and D needed none);
- * **the V3 superuser wave is 0066–0074**, one per session in the order of
- * `docs/plan_v3_superuser.md` §7 (V3-NAV 0066 … V3-FLOW 0074). Each wave raises
- * this line to the WAVE's ceiling, not to the session's own number, and every
- * parallel session in the wave hits it — expect a one-line merge conflict here
- * and take the highest value.
+ * **the V3 superuser wave is 0066–0074**, one per session in the order
+ * `docs/plan_v3_superuser.md` §7 lists them (V3-NAV 0066 … V3-PT 0073,
+ * V3-FLOW 0074) — a session that needs no migration leaves its number unused,
+ * and only 0071 / 0072 / 0073 were taken. Each wave raises this line to the
+ * WAVE's ceiling, not to any one session's number, and every parallel session
+ * in the wave hits it — expect a one-line merge conflict here and take the
+ * HIGHEST value.
  */
 const ALLOTMENT_CEILING = 74;
 

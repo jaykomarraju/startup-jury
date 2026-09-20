@@ -108,6 +108,16 @@ beforeAll(async () => {
   }
 });
 
+/**
+ * The version the MIGRATIONS leave live. `0047` seeded version 1; V3-PT's
+ * `0073` publishes version 2 with the seat catalogue, because the account
+ * overlay reads the published document and seat SKUs that exist only in the
+ * draft would leave a fresh deployment with nothing to sell. Every assertion
+ * about a version number is written against this rather than a literal, so the
+ * next migration that publishes moves one line.
+ */
+const SEEDED_VERSION = 2;
+
 let admin = "";
 beforeEach(async () => {
   const stmts = [
@@ -128,11 +138,12 @@ beforeEach(async () => {
 });
 
 describe("the seeded catalogue", () => {
-  it("publishes version 1, and it is exactly the seeded draft", async () => {
-    // `0047` seeds the published document as a literal. If someone edits a seed
-    // row and forgets that line, the two diverge — and this is where it shows.
+  it("publishes the seeded draft, exactly — including V3-PT's seat rows", async () => {
+    // `0047` seeds the published document as a literal, and `0073` replaces it
+    // with version 2 the same way. If someone edits a seed row in either and
+    // forgets that line, the two diverge — and this is where it shows.
     const state = await editor(admin);
-    expect(state.published?.version).toBe(1);
+    expect(state.published?.version).toBe(SEEDED_VERSION);
     expect(state.dirty).toBe(false);
     expect(priceBooksEqual(state.draft, state.published as PriceBook)).toBe(true);
   });
@@ -187,7 +198,7 @@ describe("a draft is invisible until it is published", () => {
     // The reader's endpoint — what Credits & billing and Buy credits call.
     const live = await published(admin).then((r) => r.json<PublishedPriceBook>());
     expect(standardInr(live)).toBe(wasLive);
-    expect(live.version).toBe(1);
+    expect(live.version).toBe(SEEDED_VERSION);
   });
 
   it("makes the draft live, and only then, on publish", async () => {
@@ -200,7 +211,7 @@ describe("a draft is invisible until it is published", () => {
 
     const live = await published(admin).then((r) => r.json<PublishedPriceBook>());
     expect(standardInr(live)).toBe(129900);
-    expect(live.version).toBe(2);
+    expect(live.version).toBe(SEEDED_VERSION + 1);
     expect((await editor(admin)).dirty).toBe(false);
   });
 });
@@ -225,8 +236,9 @@ describe("publishing is atomic", () => {
       version: number;
       status: string;
     }>();
-    expect(rows.results).toHaveLength(1);
-    expect(rows.results[0]).toMatchObject({ version: 1, status: "published" });
+    expect(rows.results.filter((r) => r.status === "published")).toEqual([
+      { version: SEEDED_VERSION, status: "published" },
+    ]);
   });
 
   it("rolls the whole batch back when one statement in it fails", async () => {
@@ -246,7 +258,7 @@ describe("publishing is atomic", () => {
     const live = await env.DB.prepare(
       "SELECT version FROM pricing_versions WHERE status = 'published'",
     ).first<{ version: number }>();
-    expect(live?.version).toBe(1);
+    expect(live?.version).toBe(SEEDED_VERSION);
   });
 
   it("can never have two live versions", async () => {
@@ -265,7 +277,7 @@ describe("publishing is atomic", () => {
 
     // A reader always sees one COMPLETE catalogue, never a fragment.
     const live = await published(admin).then((r) => r.json<PublishedPriceBook>());
-    expect(live.version).toBe(4);
+    expect(live.version).toBe(SEEDED_VERSION + 3);
     expect(new Set(live.groups.map((g) => g.group))).toEqual(
       new Set(["free_trial", "subscription", "credit_pack", "enterprise"]),
     );
@@ -289,13 +301,24 @@ describe("a publish is reversible", () => {
 
     const live = await published(admin).then((r) => r.json<PublishedPriceBook>());
     expect(standardInr(live)).toBe(original);
-    expect(live.version).toBe(3); // append-only history, not a resurrected row
+    expect(live.version).toBe(SEEDED_VERSION + 2); // append-only, not a resurrected row
 
     // The draft an administrator was working on is untouched by a rollback.
     expect(standardInr((await editor(admin)).draft)).toBe(500000);
   });
 
   it("refuses a rollback when there is nothing to go back to", async () => {
+    // `0073` leaves a superseded version 1 behind, so a rollback from the
+    // seeded state now SUCCEEDS — which is the point of publishing reversibly.
+    // The property under test is the empty-history one, so the history is
+    // emptied first rather than the assertion being weakened.
+    const before = await SELF.fetch(`${BASE}/api/pricing/rollback`, {
+      method: "POST",
+      headers: { cookie: admin },
+    });
+    expect(before.status).toBe(200);
+
+    await env.DB.prepare("DELETE FROM pricing_versions WHERE status <> 'published'").run();
     const res = await SELF.fetch(`${BASE}/api/pricing/rollback`, {
       method: "POST",
       headers: { cookie: admin },
@@ -385,7 +408,7 @@ describe("authorization", () => {
     const res = await published(associate);
     expect(res.status).toBe(200);
     const live = await res.json<PublishedPriceBook>();
-    expect(live.version).toBe(1);
+    expect(live.version).toBe(SEEDED_VERSION);
     // The read carries the catalogue and nothing else: no draft, no history.
     expect(Object.keys(live)).not.toContain("draft");
     expect(Object.keys(live)).not.toContain("versions");
