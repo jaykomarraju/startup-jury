@@ -24,13 +24,34 @@ export const PLAN_PRIVILEGES: Record<Plan, string> = {
 
 const PLAN_RANK: Record<Plan, number> = { standard: 0, pro: 1, premium: 2 };
 
-/** Configuring the 13 core weighted areas requires Pro or above. */
-export function planAllowsCore(plan: Plan): boolean {
+/** One row of the Seat-configurability grid: may this tier configure this set? */
+export type PlanCapability = Readonly<Record<Plan, boolean>>;
+
+/**
+ * Configuring the 13 core weighted areas requires Pro or above **by default**.
+ *
+ * V3 item 12 made that ladder configurable. The v3 console's *Seat
+ * configurability* card (`cfg-table`, inside the base64 admin console) turns
+ * "which tier may configure which parameter set" into six toggles, and its
+ * stated defaults — "Standard — none · Pro — core only · Premium — core +
+ * additional" — are precisely `PLAN_RANK`'s ladder. So this function and its
+ * sibling keep their signature and their answer: pass no capability and
+ * nothing has changed. `src/server/routes/config.ts` passes the org's
+ * persisted grid (`seat_capabilities`, migration 0071) instead.
+ *
+ * The grid is per-tier booleans, not a rank, so an administrator may now make
+ * it non-monotonic (Standard on, Pro off). That is what the prototype's six
+ * independent toggles allow, and it is why these read a cell rather than
+ * comparing ranks.
+ */
+export function planAllowsCore(plan: Plan, capability?: PlanCapability): boolean {
+  if (capability) return capability[plan] === true;
   return PLAN_RANK[plan] >= PLAN_RANK.pro;
 }
 
-/** The role-scoped additional / informational parameters require Premium. */
-export function planAllowsAdditional(plan: Plan): boolean {
+/** The role-scoped additional / informational parameters require Premium by default. */
+export function planAllowsAdditional(plan: Plan, capability?: PlanCapability): boolean {
+  if (capability) return capability[plan] === true;
   return PLAN_RANK[plan] >= PLAN_RANK.premium;
 }
 

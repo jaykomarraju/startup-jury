@@ -80,6 +80,10 @@ a corrected file or a number. **MEASURE**: prototype unchanged, so the gap is in
 | 11 | Core Parameters: AI prompts per seat | **BUILD** (console) | In the decoded console: Area-weights header `<th>Type</th>` → `<th>AI prompt</th>`, every one of the 13 rows gains an `AI prompt` button, plus `Restore all core AI prompts`. "prompt" occurs **91× in admin-v3 vs 7× in admin-v15**. Note the outer `panel-coreparams` drops `Type` *without* adding the column — the two surfaces disagree. |
 | 12 | Configurability toggles under Area Weights | **BUILD** (console) | New: `Seat configurability` card, columns `Parameter set · Standard · Pro · Premium`, rows `Core parameters` / `Addl. parameters`. Defaults stated: *Standard — none · Pro — core only · Premium — core + additional.* It is an **edit permission**, not per-tier prompt content. |
 | 13 | Visibility of other's evaluations | **DONE** (`V3-SF`) | Both matrices built, persisted (`score_visibility`, migration 0072) and **enforced on the server** — `GET /decks/:id/report` and all three analytics reports filter the response payload. Defaults are the prototype's own printed toggle state; four incubator cells therefore move against the old rank ladder (**Q71**). Cards are incubator-superuser only: `admin/s-fw.html` is byte-identical (md5 `c3b534ba…`) in **every** prototype that was not reshared. Negative control run and recorded in §8. |
+| 10 | Evaluate page redev | **BUILD + DECIDE entry** | +533 B: new `AI Evaluate` toolbar button, select-all + "N selected" in column 1, sub-line *"evaluated decks move to the Assign screen"*. `evAiEvaluate()` → toast → `showPanel('assign')`. But the screen has no entry point (§2). |
+| 11 | Core Parameters: AI prompts per seat | **DONE** (`V3-AW`) | Console `s-wt`: `<th>Type</th>` → `<th>AI prompt</th>`, a `wt-prompt-btn` on each of the 13 rows opening an inline editor (Edit ↔ Save, `Restore default`), and `Restore all core AI prompts`. The role cards' 4th column `Permit configuration` → `AI prompt`, plus `Restore all additional-parameter prompts` — **the additional half is not in §3's original scope note but is half the diff**: v3 deletes the three static role cards and renders them from `ADDL` via `addlRender()`. **What was missing was the DEFAULT, not the prompts**: `parameters.prompt` has existed since `0013` and `0027` wrote a real extraction prompt into all 26 core rows + 18 additional. Migration `0071` adds `prompt_default`. Superuser-only — see Q64. |
+| 12 | Configurability toggles under Area Weights | **DONE** (`V3-AW`) | Section `Configurability` → card `Seat configurability`: `Parameter set · Standard · Pro · Premium` × `Core parameters` / `Addl. parameters`. **The prototype's stated defaults are already the application's hard-coded ladder** — `planAllowsCore` / `planAllowsAdditional` in `src/shared/plans.ts` are byte-for-byte "Standard — none · Pro — core only · Premium — core + additional". So item 12 is *making that ladder data*: `seat_capabilities` (0071), a capability argument those two functions now take (defaulting to today's answer), and every gate in `config.ts` reading it. Enforced server-side — 402 on the WRITE, with the negative control run. v3 also **deletes the per-parameter `Permit configuration` pill** this replaces, and its sub-line sentence with it. |
+| 13 | Visibility of other's evaluations | **BUILD** (console) — highest risk | New `Visibility for Incubator` (4×4) and `Visibility for VC` (5×5) matrices, *"Viewer (row) → can see scores of (column)"*. Footnote: *"Super User & Program Manager see everyone; Program Associate and Jury Member see no one — jury members cannot see each other (blind evaluation) until turned on here."* **This is the `role-boundary-leaks` class — enforce server-side, negative control mandatory.** |
 | 14 | Intro calls scheduling flow | **MEASURE** | `panel-introcalls` is +410 B of **CSS only** (jury-pipeline flow-tag styles), and all 16 `nc*` functions are **byte-identical**. The client is right that our flow diverges — but from **v15**. This is a build defect nobody has measured. |
 | 15 | Price config control panel | **BUILD** (console) | Rebuilt from an iframe into an inline section: `Paid trial`, `Individual plans — ₹ per period`, `Enterprise plans — ₹ annual`, and `Save & apply to My Account`. |
 | 16 | Setup → Team & Roles realigned | **BUILD** | Wizard step 4 becomes *Nominate your super user*; the add-member block is deleted (−45 lines) and replaced by a handoff card to **Team & roles**, which gains an inline add-member form. |
@@ -107,6 +111,59 @@ Four of these are *"delete something the client previously asked us to build"*.
   is the single `Evaluate & Go to Dashboard →` button the whole design? Credits are deducted here.
 - **Q6 — Evaluate entry point (item 10).** The screen is orphaned in v3. Where is it reached from?
 - **Q7 — Assigned stat box (item 19).** Deleting it reverses Aug-2026 issue 4. Confirm.
+### `V3-AW` (items 11, 12) — Q61–Q66
+
+- **Q61 — Which surface wins for the `Type` column?** Confirmed by measurement: the outer
+  `panel-coreparams` drops `Type` and goes to **four** columns (`# · Evaluation area · Weight % ·
+  Visual`), while the console's `s-wt` replaces it with **`AI prompt`** and stays at five. Both are
+  in the v3 file; they simply disagree. **Built: the console only.** `ConfigPage.tsx` (the outer
+  `/app/coreparams` screen) is not in any session's ownership this wave and is untouched, so its
+  four `e2e/parity.spec.ts` rows still read `["#","EVALUATION AREA","TYPE","WEIGHT %","VISUAL"]`
+  and needed no re-capture. If the client wants the outer panel aligned too, that is a one-column
+  deletion in `ConfigPage.tsx` **plus** four parity rows — and it must be done by one session,
+  because those rows are shared with admin/PM/PA/jury whose prototypes still show `Type`.
+- **Q62 — Whose 13 core prompts?** *(the real decision in item 11, and it changes scores)*
+  The prototype ships `CORE_PROMPTS` — thirteen section headings ("What can kill this?", "Does the
+  business make sense?") each followed by an identical 200-character tail about the follow-up
+  email. The application already has thirteen *different* ones per edition, written by `0027`
+  (W2-B) as extraction instructions ("Look for credible TAM/SAM/SOM built bottom-up and a reachable
+  beachhead. Flag top-down-only sizing."), and `evaluate.ts` renders them into every rubric.
+  **Adopting the prototype's would change what the model is asked on every incubator deck.** So
+  `0071` takes each org's CURRENT prompt as its shipped default — `Restore default` returns you to
+  the text you were evaluating against — and the prototype's thirteen are recorded verbatim and
+  **unapplied** in `src/shared/aiPrompts.ts` as `PROTOTYPE_CORE_PROMPTS`, asserted intact by
+  `test/worker/aiPrompts.test.ts`. If the client confirms they are the intended content, applying
+  them is one migration; **it is a re-score event, so it needs the same yes/no as Q2.**
+- **Q63 — Does the VC edition get any of this?** Built as **no**. `AISJ_VC_Superuser_V8`'s own
+  console still draws `<th>Type</th>` with no prompt button and no `cfg-table` (checked in the
+  split), and §7 says every VC test passes unchanged. `seat_capabilities` seeds VC rows at today's
+  ladder so nothing moves there either. One line in `usesV3AreaWeights` if that is wrong.
+- **Q64 — And the incubator ADMIN?** Built as **no**, for the same reason: `AISJ_ICAdmin_V6`'s
+  console is the old section, and only admin + superuser can open the console at all
+  (`canOpenAdminConsole`). So the screen is forked on `edition === "incubator" && role ===
+  "superuser"`, with a client test asserting the admin still gets `Type` and `Permit
+  configuration`. Note the consequence: **an admin can no longer reach the prompt editors at all.**
+  If admins are meant to edit prompts, the fork needs widening — the server already allows them
+  (`requireTask("adminconsole", "admin")` + a Pro seat), so it is a UI change only.
+- **Q65 — Do the AI+ / AI++ / AI+++ badges stay?** Built as **yes**, against the prototype.
+  v3's `addlRender()` drops them and the `Set total: max 30` footer. The footer went (its sentence
+  is duplicated in the sub-line above, so nothing was lost); the badges stayed, because F0078 put
+  them there deliberately, `AssignPage.tsx` and the report still print AI+ / AI++ / AI+++, and
+  nothing else on the screen says which role produces which. That same rewritten block is also
+  demonstrably careless — its prose says the three owners are *Super User*, Program Manager and
+  Jury Member while its own JS renders *Program Associate*, Program Manager and Jury Member, which
+  is what the repo already has. Removal is one `{!v3 && …}` if the client wants it.
+- **Q66 — Who grants `config_permitted` now?** *(a live permission the prototype's deletion drops)*
+  The `Permit configuration` pill v3 removes is not decoration. `parameters.config_permitted` is a
+  **per-parameter** grant that lets an owner role edit its own additional parameter from *My
+  Parameters* — `config.ts:280` and `:560` read it, and `PUT /api/config/additional-params/:id`
+  refuses without it. The Seat-configurability grid does NOT replace it: the grid is per **tier**,
+  the pill is per **parameter**, and the two answer different questions.
+  Built so the grant survives: the pill still renders for the incubator admin and the VC superuser,
+  and the route is untouched. But **an incubator superuser can no longer grant or revoke it** —
+  only an admin can. If a superuser must keep that control, the cleanest fix is to move the pill
+  into the row's AI-prompt expander rather than restore the column.
+
 - **Q8 — Upload size (item 5).** Target ceiling, and acceptance that >24 MB decks cannot be AI-evaluated
   without a streaming/Files-API change.
 
@@ -509,7 +566,22 @@ TEST + GATE
   (`ps -eo args | grep -E "playwright test|vitest"`); run e2e on YOUR `E2E_PORT`.
   Before diagnosing ANY e2e failure, `grep -c "Network connection lost"` the run log — the dev server
   drops connections under load and takes unrelated specs with it; its tell is `Received: undefined`
-  from a `toHaveCount`. Zero drops means look at the code. Never conclude from a red run at load 40+
+  from a `toHaveCount`. Zero drops means look at the code.
+  **`V3-AW` found a SECOND infrastructure tell that grep misses entirely, and MEASURED its cause** —
+  the box runs out of EPHEMERAL PORTS and the Vite plugin can no longer reach its own worker. macOS
+  has 16,384 of them (`sysctl net.inet.ip.portrange` → 49152–65535), and **ONE full e2e run burns
+  thousands**: this session watched `TIME_WAIT` (`netstat -an | grep -c TIME_WAIT`) go from **15 to
+  14,603 with only TWO worktrees running, at load 4.5**, and peak at **15,382 — 94 % of the whole
+  range** — while a single run logged **192** `fetch failed`s before dying at 85/224. So the
+  threshold is far lower than "don't run nine at once": **two concurrent `test:e2e` runs already
+  saturate this machine.** It is NOT CPU (load was 4–6 throughout the worst of it) and raising a
+  timeout cannot help. **Practical rule: check `netstat -an | grep -c TIME_WAIT` BEFORE you start.**
+  Under ~4,000 the run is sound; over ~10,000 do not bother — it drains in minutes once runs stop. It surfaces as `[vite] Internal server error:
+  fetch failed` from **undici inside `Miniflare.dispatchFetch`**, and a test sees it as a page whose
+  title is literally `"Internal Server Error"`, or as `EADDRNOTAVAIL` when the server will not boot
+  at all. So grep for **`fetch failed` and `Internal Server Error`** as well. The giveaway that it
+  is not your code: **no frame from `src/` anywhere in the trace**, and the set of failing
+  roles/screens CHANGES between runs of the same tree. Never conclude from a red run at load 40+
   without re-running the file alone AND an untouched spec as a control.
   Traps this codebase has actually paid for: gate client assertions on a POPULATED element, never a
   heading the loading branch also renders; never locate an element by the attribute your click is
@@ -1163,3 +1235,113 @@ which shares `UploadPage` and was not rescoped.
 A session that wants a single clean number should expect roughly **226 total, ~218 green, the
 remainder rotating interference**. Reducing it is a suite-wide serialisation question, not this
 session's — it is already §9's long-running `coverage.spec.ts` thread.
+One row per session, with the gate it MEASURED (never a gate copied from a prompt).
+
+### `V3-AW` — items 11 and 12
+
+**Shipped.** `src/client/routes/admin/AreaWeights.tsx` · `src/shared/aiPrompts.ts` (new) ·
+`src/server/routes/aiPrompts.ts` (new, mounted at `/api/ai-prompts`) ·
+`src/client/routes/admin/aiPromptsApi.ts` (new) · `migrations/0071_ai_prompts_seat_capability.sql` ·
+the capability argument on `src/shared/plans.ts` and its nine readers in `src/server/routes/config.ts` ·
+five probes in `scripts/role-matrix.ts` · `test/worker/aiPrompts.test.ts` (26) ·
+`test/client/areaWeights.test.tsx` (24).
+
+**Three things the BUILD block did not say, found by decoding:**
+
+1. **The additional-parameter half is as big as the core half.** §3 item 11 describes the 13 core
+   rows. v3 *also* deletes the three hard-coded role cards (`Super User` / `Program Manager` /
+   `Jury Member`, each with a `Permit configuration` column) and renders them from a new `ADDL`
+   object via `addlRender()` — with `AI prompt` in place of the permit pill, a
+   `Restore all additional-parameter prompts` button, real parameter names and five rubric anchors
+   each. `ADDL` is shared with section `s-rb`, which nobody owns (§9).
+2. **Nothing was missing except a default.** `parameters.prompt` has existed since `0013`, and
+   `0027` (W2-B) wrote a real extraction prompt into **all 26 core rows and all 18 additional
+   ones** — `evaluate.ts` renders every one into the rubric. The premise "core areas have no
+   prompt", which `0013`'s own comment still states, was superseded four migrations later. So item
+   11 is the EDITOR plus the thing a `Restore default` needs and the schema never had:
+   `prompt_default`. See Q62 for why the prototype's own thirteen were recorded and not applied.
+3. **Item 12's stated defaults already ARE the code.** `planAllowsCore` / `planAllowsAdditional`
+   have hard-coded "Standard — none · Pro — core only · Premium — core + additional" since
+   `plans.ts` was written. Item 12 is making that ladder data, not inventing a rule — which is why
+   the migration can seed the grid and assert that nothing changes.
+
+**And one constraint the block did not state:** the console is reachable by **admin as well as
+superuser** (`canOpenAdminConsole`), and neither `AISJ_ICAdmin_V6` nor `AISJ_VC_Superuser_V8` was
+reshared — both still draw `<th>Type</th>`, no prompt button, no `cfg-table` (checked in the
+split). Rendering v3 for everyone would have changed a screen for roles whose design the client did
+not revise. The section is forked on `edition === "incubator" && role === "superuser"`
+(`usesV3AreaWeights`), and the client test asserts BOTH sides. Q64/Q63 record it; Q66 records the
+one thing the fork costs.
+
+**Enforcement.** The grid is a permission, so it is enforced on the server and asserted on the
+response, never by not-rendering: `402 plan_required` on the write, in `/api/ai-prompts` *and* in the
+`config.ts` gates it now feeds. **Negative control run, twice** — disabling the gate in
+`aiPrompts.ts` reddens 4 tests, disabling the `config.ts` wiring reddens 2, and both go green again
+when restored.
+
+**Measured gate** (this worktree, `sj-V3-AW`, Node 22.23.1):
+
+| Leg | Result |
+|---|---|
+| `npm run typecheck` | clean (all three projects) |
+| `npm run lint` | clean |
+| `npm test` | **2119 passed · 0 failed · 1 skipped** (81.6 s). Exactly baseline 2069 + 26 worker + 24 client. An earlier run of the same tree showed one failure in `test/client/teamRoles.test.tsx` ("Transfer ownership" rendering its loading branch); it passed 21/21 alone, the file is untouched here, and it is green in this run — ambient load, as the `e2e-load-sensitivity` note predicts. |
+| `npm run build` | clean |
+| `npm run roles` | **1180 / 1180, 0 failed.** Baseline 1115 + the 5 new probes × 13 seed accounts = 1180. Run against a server proved mine by PID and cwd (`lsof -a -p <pid> -d cwd`). |
+| `npm run test:e2e` | **One real regression found and fixed; no clean full-suite number obtainable on this box.** See the paragraph below — every failure is accounted for individually, and the blocker is measured, not guessed. |
+| Visual | both designs screenshotted at `/app/admin?section=wt` — superuser (AI prompt column, expander, Configurability grid, both Restore buttons) and admin (Type, Core chips, Permit configuration, `Set total: max 30`). |
+
+### The e2e leg, in full — what was measured and what was not
+
+**Run 1** (3 worktrees, load 9–16, 12.2 min): `193 passed · 4 failed · 18 flaky · 9 did not run`.
+Every one of the four was chased to a cause rather than re-run until green:
+
+| Failure | Verdict |
+|---|---|
+| `vc-calls.spec.ts:75` | **REAL, and mine.** Fixed — see below. Now `17/17` with `nav.spec.ts` as control. |
+| `agreements.spec.ts:174` | Environmental. Passes alone. |
+| `signup-config.spec.ts:72` | Environmental. Passes alone. |
+| `parity.spec.ts` *vc/admin* | Environmental. Passes alone in 37.7 s. |
+
+The one real bug is worth the next session's attention because nothing about it looks like a bug:
+`e2e/vc-calls.spec.ts:78` records every request whose URL `.includes("/prompts")` and asserts the
+list is EMPTY on the VC Partner call screen — it guards `GET /api/calls/:id/prompts`, the AI
+questions. **In `vite dev` a source module is fetched over HTTP**, so Playwright counts it, and the
+new client file `promptsApi.ts` was served at `/src/client/routes/admin/promptsApi.ts` — which
+contains `/prompts`. **A VC spec went red because of a FILENAME**, on a screen that never calls the
+route. Fixed by renaming this session's own files (`aiPromptsApi.ts`, `aiPrompts.ts`,
+`/api/ai-prompts`), never by touching a VC test, since §7 requires those to pass unchanged. §9
+carries the general form and the one-line hardening for that matcher.
+
+**Runs 2–6 could not produce a clean full-suite number, and the reason is measured.** Six attempts
+across ~3 hours. The last began on a genuinely idle box — **`TIME_WAIT` 15, load 3.4**, the only such
+window in the whole wave — and still degraded: 64/224 after ~50 minutes with 50 `fetch failed`s, by
+which point `TIME_WAIT` was 14,603 **with just this run and one sibling**. That is what establishes
+the threshold above, and why waiting for a quieter box was never going to work while any sibling was
+active: the suite is self-limiting at two concurrent runs. Every
+subsequent `parity.spec.ts` role-walk that failed passed when run alone (`vc/admin` 37.7 s,
+`incubator/program_associate` 28.7 s, `incubator/program_manager`, `vc/superuser` on retry), and
+the SET of failing roles changed on every run of the identical tree — the signature of contention,
+not of a defect. The mechanism is ephemeral-port exhaustion (see the TEST + GATE note above): a
+fourth attempt never started at all, dying on `EADDRNOTAVAIL` with 14,106 sockets in `TIME_WAIT`.
+
+**So: the full suite has not been observed green on one run of this branch, and this row does not
+claim it has.** What IS established is that no failure seen at any point traces to this session's
+code except the one that was fixed, and that the specs touching this session's surfaces
+(`scoring-framework`, `config`, `parameters`, `vc-calls`, `nav`, `parity`) pass individually. **V3
+integration must run the full suite on a quiet box before merging this branch** — that is the one
+piece of my own gate I am handing on rather than closing.
+
+`e2e/parity.spec.ts` needed **no re-capture**, and that was PROVED rather than reasoned. The walk
+visits nav slugs with no query string, so `<edition>/<role>/admin` records whatever the console's
+DEFAULT section draws — and `DEFAULT_ADMIN_SECTION = "fw"` (Scoring framework), not `wt`. Since item
+12 adds a `<table>`, that distinction matters: signing in against my own server and reading
+`/app/admin` with no `?section=` (the walk's exact request) returned **`tables=[]` for incubator
+superuser, incubator admin AND vc superuser** — the Seat-configurability grid is not on that page.
+The four `coreparams` rows belong to `ConfigPage.tsx`, which is untouched (Q61).
+
+**A trap worth the next session's five minutes.** `test/worker/apply-migrations.ts` says "each
+test's isolated D1 snapshot" and the pool's `isolatedStorage` defaults to `true`, so it is natural
+to assume worker tests start clean. **They do not** — probed with a two-test file: the second sees
+the first's `UPDATE`. Four of this session's gate tests failed on inherited state and read exactly
+like an authorisation bug. Filed in `docs/plan_parity.md` §9.
