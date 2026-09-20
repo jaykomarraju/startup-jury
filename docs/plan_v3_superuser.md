@@ -1865,3 +1865,180 @@ control both lost a worker at **load ~5** — so this is genuine miniflare insta
 
 `incubator/jury` failed once and is **not** this session's: the jury screen renders
 `participantColumns: "jury"`, a column set item 14 does not touch, and its parity row was not edited.
+
+---
+
+## 11. The follow-up wave — three sessions, from the client's 2026-09-20 answers
+
+Run all three at once; ownership is disjoint. `main` ends at migration **0073**
+and `ALLOTMENT_CEILING` is **74** (0074 was allotted to `V3-FLOW` and never used).
+
+| Session | Item | Owns | Migration |
+|---|---|---|---|
+| `V4-WEIGHT` | 3, 4 | `admin/ScoringFramework.tsx` · `src/shared/scoring.ts` · `EvalScorecard.tsx` | 0074 |
+| `V4-ROUTE` | 6, 7 | `src/shared/queries.ts` · `AssignPage.tsx` · `QueryPage.tsx` · the Assign/Query list routes | 0075 |
+| `V4-SIZE` | 5 | `src/server/decks/versions.ts` · `UploadPage.tsx` + `upload/**` · `src/server/ai/evaluate.ts` | 0076 |
+
+Shared: `docs/plan_v3_superuser.md` (append to §4.1 and §9) and `e2e/parity.spec.ts`
+(re-capture ONLY your own rows; never delete one you did not capture).
+`DashboardPage.tsx` belongs to **`V4-ROUTE`** — if `V4-WEIGHT` needs a column
+there it is a §9 request, not an edit.
+
+### `V4-WEIGHT` — make the AI weight observable. Do NOT hide the options.
+
+```
+You are running session V4-WEIGHT. You have no prior context.
+Read docs/plan_v3_superuser.md §4.1 IN FULL before anything else — it contains a
+measurement that reverses the obvious reading of this task, twice.
+
+THE TASK IS NOT what the client's change list says. He asked for every AI-weight
+option except 50:50 to be HIDDEN. He then explained why: "nothing was changing
+when I changed from 40:60 or 50:50 or any other option, I saw no difference."
+That is a bug report, and he has since said keeping the options is fine.
+
+WHAT IS ALREADY MEASURED (test/worker/ai-weight-effect.test.ts — read it first):
+  · The control IS wired. `decisionScore` moves: seed decks go 7.95 -> 7.88 and
+    8.75 -> 8.73 across the whole 0% -> 50% sweep.
+  · STORED scores do not move, and that is CORRECT — the weight blends at read
+    time and `rescoreEdition` must not rewrite history. Do not "fix" that.
+  · So the defect is VISIBILITY, for two reasons:
+      (a) magnitude — AI and jury scores sit close on real data, so the entire
+          sweep moves the number by ~0.02-0.07, under the rounding cells show;
+      (b) placement — `decisionScore` renders as "Avg. score" on Shortlisted /
+          Stage / Calls / IcVote / Evaluate, and NOT in the V3 Dashboard's
+          default columns, which is where an admin changing the setting is
+          looking. `blendScore()` has two call sites, both a live preview in
+          `EvalScorecard` while an evaluator is mid-score.
+
+BUILD
+  1. In the admin console's Score composition block, show the consequence of the
+     control AS IT IS CHANGED: for a handful of real decks, the blended score at
+     the current setting vs the selected one ("FinStack 7.95 -> 7.88"). The
+     operator must be able to see the setting do something without leaving the
+     screen. Read from the same helper the screens use — `decisionScore` in
+     src/shared/scoring.ts — never a second implementation of the blend.
+  2. Make the default 50:50 for NEW programmes/cohorts only. His words, exactly:
+     "If you are making 50:50 as default, previous cohorts will remain same. only
+     the new program or cohorts would take effect." Existing rows keep their
+     stored `ai_weight_pct`; only newly created ones default to 50. If that needs
+     a column, take migration 0074 and raise ALLOTMENT_CEILING from 74 in the
+     SAME commit.
+  3. Leave all four options in `AI_WEIGHT_CHOICES` (src/shared/types.ts:236) and
+     all three composite formulas. Hiding them is explicitly withdrawn.
+
+CONSTRAINTS
+  - Do not change `rescoreEdition`, and do not make the weight rewrite stored
+    scores. A re-weight must never retro-score a cohort.
+  - `DashboardPage.tsx` is `V4-ROUTE`'s this wave. If the right answer is "put
+    Avg. score on the Dashboard", that is a §9 request with an exact diff.
+  - One blend implementation only: `blendScore` / `decisionScore`.
+
+TEST
+  - Extend test/worker/ai-weight-effect.test.ts rather than replacing it: the
+    preview's numbers must equal `decisionScore` at that weight, for the same
+    decks. Negative control — revert the preview wiring and watch it fail.
+  - Worker: a new programme defaults to 50; an existing one is untouched by the
+    change. Assert the OLD row's value is still what it was.
+  - **The trap this task already sprang once:** the first test here compared only
+    `aiScore` and `humanAverage`, passed, and implied the control was dead. A
+    green test that omits the field the feature writes is worse than none.
+```
+
+### `V4-ROUTE` — complete goes to Assign, incomplete goes to Query
+
+```
+You are running session V4-ROUTE. You have no prior context.
+Read docs/plan_v3_superuser.md §4.1 IN FULL first.
+
+THE CLIENT'S RULE, verbatim (2026-09-20):
+  "in the stat box of 'Evaluated' only the ones that are marked 'complete' in the
+   status column have to be sent to 'assign', even if someone selects all and
+   chooses to click 'send to assign' in the last column. Similarly, the ones that
+   are marked 'incomplete' have to go to 'Query', even if someone selects all
+   clicks 'send to query'."
+
+READ THIS BEFORE YOU DESIGN ANYTHING — the affordance he is describing does not
+exist in our build, and that is deliberate:
+  · There is NO multi-select and NO bulk send on the Dashboard table.
+  · `Send to Assign` is not even offered per-row: `V3_EXCLUDED_ACTIONS` in
+    DashboardPage.tsx withholds `assign_jury`, with a documented reason (its Q32)
+    — the transition would move a deck to Assigned with `assigned_to` still NULL,
+    and our Assign screen already lists every `ai_evaluated` deck by stage.
+  · Our Query screen lists by `isQueryListed` in src/shared/queries.ts — stage +
+    flag derived, not by an explicit "send to query" click.
+
+So in OUR architecture his rule is a ROUTING INVARIANT, not a button guard:
+**a deck marked complete belongs on Assign; one marked incomplete belongs on
+Query; and the two lists must partition, never overlap.** Build it that way.
+
+BUILD
+  1. Establish where "complete" / "incomplete" actually comes from for an
+     evaluated deck (`computeResult`, the `incomplete` stage, `missing_fields` —
+     find it; do not assume) and write the mapping down in §4.1.
+  2. Enforce the partition on the SERVER, in the list each screen reads, so it
+     holds however the deck got there. Assert it on the RESPONSE, not the DOM.
+  3. If — and only if — the measurement in step 1 shows a deck can currently
+     appear on BOTH screens, that is the defect he is describing; fix it and say
+     so with the before/after counts.
+  4. Do NOT add a bulk select-all + Send to Assign to satisfy the letter of his
+     sentence. If you believe the affordance should exist, write it up in §4.1 as
+     a question for him with what it would cost — do not build it on inference.
+     `V3-DASH` withheld it for a stated reason and that reason still stands.
+
+CONSTRAINTS
+  - You own `DashboardPage.tsx` this wave; `V4-WEIGHT` may send you a §9 request
+    for an Avg. score column. Migration 0075 if you need one (ceiling 74 -> raise
+    in the same commit).
+
+TEST
+  - Worker: the partition, both directions — a complete deck is in Assign's list
+    and NOT in Query's; an incomplete one the reverse. Negative control: break
+    the predicate and watch both fail.
+  - Unit: the complete/incomplete mapping from step 1.
+```
+
+### `V4-SIZE` — 50 MB, and the evaluation path that has to come with it
+
+```
+You are running session V4-SIZE. You have no prior context.
+Read docs/plan_v3_superuser.md §4.1 first.
+
+The client's answer: "For now, let's set it to 50MB. We will review after the
+beta launch how it goes."
+
+THE CONSTRAINT THAT MAKES THIS MORE THAN A CONSTANT (do not skip):
+  `MAX_PDF_BYTES = 24 * 1024 * 1024` (src/server/decks/versions.ts:23) is
+  arithmetic, not an arbitrary cap. A PDF is base64-encoded into the model
+  request at x1.333, so 24 MB is what fits under the model's input ceiling.
+  **Raising the constant alone makes uploads SUCCEED and AI evaluation FAIL** —
+  strictly worse than today's honest refusal at 24 MB.
+
+BUILD, in this order
+  1. MEASURE the real ceiling first and write it into §4.1: what the model
+     actually accepts, and what our own request path does with a 50 MB file
+     (src/server/ai/evaluate.ts — find where the deck is encoded and sent). Do
+     not take the 32 MB figure on trust; verify it.
+  2. Make a >24 MB deck evaluable, or make its failure explicit and recoverable.
+     Acceptable outcomes, in preference order:
+       (a) it evaluates — via the provider's file/upload API or chunking;
+       (b) it uploads, is clearly marked "too large to AI-evaluate", and can be
+           scored manually without blocking the pipeline.
+     (b) is a legitimate answer if (a) is genuinely out of reach this wave — but
+     it must be a DECISION recorded in §4.1, not silence.
+  3. Only then raise the limit to 50 MB, in every place that states it —
+     including the copy the user reads (`MAX_DECK_SIZE_LABEL`) and the 413 path
+     (`decks.ts:1342`, `:1475`). Grep for the old number; the dropzone text in
+     the prototype already says "Max 50 MB" and has always disagreed with us.
+
+CONSTRAINTS
+  - UploadPage and upload/** are SHARED WITH THE VC EDITION, which was not
+    rescoped: every VC upload and intake test must pass unchanged.
+  - Migration 0076 if you need one (ceiling 74 -> raise in the same commit).
+
+TEST
+  - Worker: a file just under and just over the NEW limit (413 with the right
+    error), and the >24 MB evaluation path doing whatever step 2 decided —
+    asserted, not assumed.
+  - E2E: the upload screen states 50 MB wherever it states a size.
+  - Report the real numbers from step 1 in §4.1 whatever they turn out to be.
+```
