@@ -65,6 +65,14 @@ export function classifyEvalError(reason: string | null | undefined): string | n
   if (r.includes("r2 object missing") || r.includes("no r2 key")) return "Deck PDF is missing";
   if (r.includes("deck not found")) return "Deck record is missing";
   if (r.includes("submit_evaluation")) return "AI returned an unusable response";
+  // V4-SIZE — the deck reached the model and the model refused it on size:
+  // a 413 `request_too_large`, or the page/context ceiling a very large PDF
+  // can still hit via the Files API. Distinct from "AI evaluation failed"
+  // because the recovery is different: re-running will not help, splitting
+  // the deck or scoring it by hand will.
+  if (r.includes("413") || r.includes("request_too_large") || r.includes("too large")) {
+    return "Deck is too large for AI evaluation";
+  }
   if (/\b5\d\d\b/.test(r)) return "AI provider unavailable";
   return "AI evaluation failed";
 }

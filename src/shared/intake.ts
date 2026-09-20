@@ -83,8 +83,8 @@ export const INTAKE_RESULTS_LABELS: Record<IntakeField, string> = {
 
 /** The largest deck PDF intake accepts. `src/server/decks/versions.ts` enforces
  *  its own `MAX_PDF_BYTES`; a worker test pins the two equal so the Upload
- *  screen's "up to 24 MB" can never drift from the limit that rejects. */
-export const MAX_DECK_PDF_BYTES = 24 * 1024 * 1024;
+ *  screen's "Max 50 MB" can never drift from the limit that rejects. */
+export const MAX_DECK_PDF_BYTES = 50 * 1024 * 1024;
 
 export interface IntakeDetails {
   founder?: string | null;

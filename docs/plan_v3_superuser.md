@@ -67,6 +67,11 @@ a corrected file or a number. **MEASURE**: prototype unchanged, so the gap is in
 | 5 | Decks >24 MB not opening | **NOT STARTED → Q8** | Both prototypes say `Max 50 MB`, byte-identical — a **pre-existing** gap, not a v3 change. `MAX_PDF_BYTES = 24 MB` is arithmetic, not arbitrary: ×1.333 base64 ≈ the 32 MB model-input cap. Raising the constant alone makes uploads succeed and **evaluations fail** — strictly worse. Needs the target number and a streaming/Files-API plan. |
 | 6 | Assign: only "Evaluated & Complete" | **DONE** — `V4-ROUTE` | Answered 2026-09-20: it is a guard on a BULK ACTION we do not have, so in our architecture it is a routing invariant. `decks.complete` is the mark, written only by `evaluate.ts` and selected by **nothing** until now. Assign's roster is `{ai_evaluated, assigned}` **∧ marked complete**, enforced on the server (`?list=assign`). Measured: `approve_review` walked a deck at `complete = 0` onto the roster in four 200s, and blanking a founder email left one assignable with a required detail missing. Both fixed; the Incomplete drawer stays (the prototype still draws it). |
 | 7 | Query: only "Evaluated & Incomplete" | **DONE** — `V4-ROUTE` | The other half of the same invariant, and **not** Q92's option (a): `QUERYABLE_STAGES` is untouched, so F0214's Responded row does not vanish. The list gains one arm — an evaluated deck that is **not** marked complete — from the same function, whose return type is `"assign" | "query" | null`, so the two lists cannot both hold one deck. `?list=query`, asserted on the response. |
+| 3 | Composite formula: hide all but weighted average | **OPEN → Q3** (not built) | `V3-SF`: confirmed byte-identical to v15; all three formulas still offered. NOT shipped — hiding it overrides "match the prototype exactly" and the client marked it *Workaround*. A client test now PINS the three options, so narrowing them is a deliberate edit and never a quiet one. |
+| 4 | AI weight: hide all but 50/50 | **OPEN → Q2** (not built) | `V3-SF`: re-measured and confirmed. Four splits, no `selected` attribute, so **40% AI · 60% Jury is the effective default**, and `migrations/0026` agrees (`ai_weight_pct DEFAULT 40`). NOT shipped: keeping only 50/50 silently re-weights every existing org's composite. Pinned by the same client test as item 3. |
+| 5 | Decks >24 MB not opening | **DONE** — `V4-SIZE` | Limit is **50 MB** (his answer), and the evaluation path came with it: `evaluateDeck` weighs each request and sends anything over the inline ceiling via the **Files API** (`file_id`, 500 MB per file) instead of base64, so a >24 MB deck evaluates rather than 413-ing. The old arithmetic was not merely conservative — **24 MB serialized to 5,344 B OVER the 32 MB cap**, so a deck at the advertised limit was already being refused, and the envelope varies per org so no constant could be right. Measurements, the page/context residual and the two prototype items still unmet (PPTX, 60 slides) in §4.1 Q8. |
+| 6 | Assign: only "Evaluated & Complete" | **BLOCKED → Q91** — readings recorded, nothing built | `panel-assign` is **byte-identical** (md5 `b555211d…`), the assign renderers diff to zero lines, and the string occurs **0 times in either file**. v3 still draws the Incomplete drawer. We are asked to delete UI the reshared prototype still ships. |
+| 7 | Query: only "Evaluated & Incomplete" | **BLOCKED → Q92** — readings recorded, nothing built | Same class. `panel-query`'s entire diff is one deleted select-all checkbox; the renderer is byte-identical and `qRenderList` filters nothing. The string occurs 0 times. |
 | 8 | Upload → "Upload & Evaluate", redev | **PARTIAL** — label shipped (`V3-NAV`); the flow is **Q51** | The redev is mostly a **deletion**: `#up-results` is gone and the footer collapses to one button — which is literally `showPanel('alldecks')` — while the screen still promises *"You approve → Credits deducted"*. Worse, a richer inline results card has **CSS and ~110 lines of JS but no markup**; `renderUpResults([0,3,5,7])` runs at load into a swallowed `catch`. **Likely a broken export — ask for a corrected file.** |
 | 9 | Query after Evaluate in sidebar | **DONE** — `V3-NAV` | Already satisfied by §2. Zero-cost. |
 | 10 | Evaluate page redev | **DONE** — `V3-UP` (sidebar `V3-NAV`); entry point **Q6/Q54** | +533 B: new `AI Evaluate` toolbar button, select-all + "N selected" in column 1, sub-line *"evaluated decks move to the Assign screen"*. `evAiEvaluate()` → toast → `showPanel('assign')`. But the screen has no entry point (§2). |
@@ -622,6 +627,90 @@ the screen — which is why the prototype still draws both. **Our reading of
 (base64 x1.333 vs the 32 MB model-input cap). Raising the limit alone makes
 uploads succeed and evaluation fail.
 
+### Q8 (item 5) measured — `V4-SIZE`, 2026-09-20. The ceiling is real, and **24 MB was already one envelope past it.**
+
+The prompt said to verify the 32 MB figure rather than take it on trust. Verified,
+and then measured against our own serialized request — which is where the
+interesting part was.
+
+**What the API actually imposes** (platform.claude.com, read 2026-09-20):
+
+| Limit | Value | Where |
+|---|---|---|
+| `POST /v1/messages` request body | **32 MB**, then `413 request_too_large` | API overview → Request size limits |
+| Pages per request | **600** (100 when the context window is under 1M) | PDF support |
+| Files API, per file | **500 MB**, free, no beta header | Files API → Storage limits |
+| Files API, per org | 1 TB | Files API → Storage limits |
+
+So the old comment's arithmetic — 32 × 3/4 = 24 — was the right idea. **It was
+also wrong by the envelope, in the losing direction.** Measured on our own path
+(`test/worker/deck-size.test.ts`, a 22-parameter rubric):
+
+| Raw PDF | base64 | Full request body | Under 32 MB? |
+|---|---|---|---|
+| 23 MB | 32,156,332 | 32,161,676 | yes |
+| **24 MB — the old limit** | 33,554,432 | **33,559,776** | **no, by 5,344 B** |
+| 50 MB | 69,905,068 | 69,910,412 | no, by 2.1× |
+
+24 MB of PDF base64-encodes to *precisely* 32 MB, leaving nothing at all for the
+system prompt, the user prompt and the tool schema. **A deck at exactly the
+limit the server advertised was accepted by us and refused by the model.** The
+largest deck that actually fit was 25,161,816 B — and not even that reliably,
+because the envelope is not a constant: it grows with the org's custom
+`ai_system_prompt`, the parameter count and the rubric band text. A long custom
+prompt moves the true ceiling without anyone touching a number.
+
+**So the fix is not a second magic number.** `evaluateDeck` now weighs the
+request it is about to send (`inlineRequestBytes`, which serializes the real
+envelope rather than a copy of it that could drift) and routes on the answer:
+
+* **fits** → inline base64 `document` block, byte-identical to before;
+* **does not fit** → `POST /v1/files` (500 MB ceiling, free), then a
+  `{type:"file", file_id}` source. Measured on the wire: the Messages request
+  drops from ~70 MB to **under 64 KB** for a 30 MB deck. The upload carries
+  `expires_in_seconds: 3600`, so an evaluation never leaks into the org's
+  storage quota — including when it throws, which a delete-afterwards would not
+  have covered.
+
+Deciding in `evaluateDeck` rather than inside `callAnthropic` is deliberate: it
+is the only place the raw bytes exist, so a large deck never has its ~70 MB
+base64 string built at all. (Locally the worker runtime survived building one —
+69,905,068 chars in 764 ms — but production Workers cap an isolate at 128 MB and
+that path would have needed ~180 MB.)
+
+**Outcome (a), then — a >24 MB deck evaluates.** (b) was not needed as the
+answer, but it is kept underneath as the backstop, because a 50 MB PDF can still
+exceed the 600-page cap or the context window, and the docs say so explicitly:
+*"Requests with large PDFs can also fail before reaching the page limit, even
+when using the Files API."* Those land in the existing failure machinery
+(`recordEvalFailure` → retry → DLQ → `markEvalTerminal`, credit refunded), and
+`classifyEvalError` now names the cause — **"Deck is too large for AI
+evaluation"** rather than the generic "AI evaluation failed" — because the
+recovery differs: re-running will not help, splitting the deck or scoring it by
+hand will.
+
+**Only then, 50 MB.** `MAX_PDF_BYTES` and `MAX_DECK_PDF_BYTES` are both
+50 × 1024 × 1024, a worker test still pins them equal, and every size the user
+reads now derives from that one constant. Two of them did not before: the
+founder resubmit 413 (`resubmit.ts`) and the founder page's hint
+(`ResubmitPage.tsx`) each carried the literal "24 MB", and a client test asserted
+the literal back — three places that would have gone stale silently. The Upload
+screen was already protected via `MAX_DECK_SIZE_LABEL`; the resubmit path now is
+too. **No migration: nothing here persists new state, so `0076` is unused and
+`ALLOTMENT_CEILING` stays at 74.**
+
+**Two things the prototype states that we still do not, both out of scope here
+and neither a size limit.** Its dropzone reads *"PDF or PPTX · Max 50 MB · 60
+slides"*. We accept PDF only — `document` blocks do not take .pptx at all, so
+that is a conversion feature, not a constant — and we enforce no slide cap. The
+size half of that line now agrees with us for the first time.
+
+**Open, for the client.** The 50 MB figure is his ("we will review after the
+beta launch how it goes"). Worth knowing at that review: nothing in the transport
+now stops 100 MB or more — the Files API takes 500 MB — so the next limit is a
+product and cost decision (a bigger deck is more input tokens per evaluation),
+not a technical one, until the 600-page cap is reached.
+
 **Approach approved.** *"This approach works, so that we don't duplicate errors."*
 Superuser first; the other roles follow once these screens are signed off.
 
@@ -991,6 +1080,13 @@ those rules would delete — `V3-FLOW` recorded both readings and correctly
 refused to infer), and item 5 (needs a target ceiling plus acceptance that
 >24 MB cannot be AI-evaluated without streaming work). Item 8's label shipped;
 its flow is Q51.
+
+**Amended 2026-09-20 by the follow-up wave.** The client answered all five, so
+none is waiting on him any more (§4.1). **Item 5 is now DONE** — he gave 50 MB,
+and the acceptance this paragraph anticipated turned out not to be needed: the
+Files API carries a >24 MB deck, so it evaluates rather than being refused
+(`V4-SIZE`, §4.1 Q8). Items 3, 4, 6 and 7 are `V4-WEIGHT`'s and `V4-ROUTE`'s in
+the same wave. **Fourteen done.**
 
 ## 9. Progress — measured gates, one row per session
 
@@ -2305,6 +2401,51 @@ Assign/Query list routes":
   **VC behaviour is unchanged and asserted so** (`ASSIGNABLE_STAGES.vc` is
   empty), but the mock had to learn the parameter or the screen got the whole
   table back.
+### `V4-SIZE` — item 5, the 50 MB limit and the evaluation path under it
+
+| Session | Items | State | Measured gate | Notes |
+|---|---|---|---|---|
+| `V4-SIZE` | 5 | **done** | typecheck ✓ · lint ✓ · **unit 2296 passed / 1 skipped / 0 failed**, exit 0 (inherited baseline measured on `main` at `260bfb0` in the same hour: **2282 / 1** — exactly the +14 of `test/worker/deck-size.test.ts`) · build ✓ · **e2e 229 tests: 224 passed · 5 flaky · 0 failed, exit 0 in 7.5 min** · `parity:tokens` **0 gaps** ✓ · `parity:nav` **62 known gaps** ✓ · `roles` **not run, and not required**: no route, no permission, no probe and no nav item changed — the only gate touched is a byte size | Migration **0076 allotted and NOT used**; `ALLOTMENT_CEILING` untouched at **74**. `e2e/parity.spec.ts` **not re-captured, and correctly so** — it snapshots `title` + `tables` per screen and the upload rows carry `tables: []`; the hint text this session changed is not in any row, and all 12 parity walks passed. 247 rows, unchanged. |
+
+**The defect this session found is not the one it was sent to fix.** §4.1 has the
+numbers; the short version is that `MAX_PDF_BYTES = 24 MB` was not merely
+conservative, it was **over** the model's ceiling by the size of the request
+envelope, so a deck at exactly the advertised limit was accepted by us and
+refused by the API. Raising it to 50 MB without the Files API transport would
+have been the failure the prompt predicted; leaving it at 24 MB would have kept
+a smaller version of the same one.
+
+**The e2e leg, stated as it happened.** Exit 0, no test failed twice, and the
+one test this session added passed on its first attempt. The 5 flaky are all in
+files this session did not touch (`calls`, `branding` ×4, `evaluate-stage-report`,
+`scoring-framework` ×2) and all passed on retry. **The cause is the ambient-load
+tell, confirmed by the grep the block prescribes and then by the one it does
+not:** `Network connection lost` **0**, `Internal Server Error` **0**,
+`EADDRNOTAVAIL` **0** — and **`fetch failed` 80**, which is `V3-AW`'s
+ephemeral-port finding and is exactly what the documented grep misses.
+`TIME_WAIT` was **2,673** before the run began (a sibling V4 session was
+working) against the 13 this session started from. Zero `src/` frames appear in
+any trace. So the run is sound and the flakes are the machine.
+
+**Negative controls, all four run and all four red.** (1) Force `inline = true`
+— the transport test fails, which is the guard against the exact
+"uploads succeed, evaluation fails" regression. (2) `MAX_PDF_BYTES` back to
+24 MB — the constant assertion and the Upload/intake pin both fail. (3) Drop the
+`classifyEvalError` branch — the classification test fails, and the four
+untouched classifications still pass, so the new branch swallows nothing. (4)
+`MAX_DECK_PDF_BYTES` back to 24 MB — the new e2e sweep fails twice (once on
+retry), proving it is not passing vacuously.
+
+**Edits outside this session's three owned files, placed and flagged** (all
+required by the BUILD block's "raise the limit in every place that states it",
+and none owned by `V4-WEIGHT` or `V4-ROUTE` this wave): `src/shared/intake.ts`
+(the constant), `src/shared/uploadReview.ts` (one stale comment; the label
+already derived), `src/server/routes/resubmit.ts` + `src/client/routes/ResubmitPage.tsx`
+(the two hardcoded "24 MB" strings, now derived), `test/client/resubmit.test.tsx`
+(asserted the literal back), and one branch in `src/server/ai/health.ts`
+(`classifyEvalError`). `src/server/routes/decks.ts` needed **no** edit — its
+three 413 paths already read `MAX_PDF_BYTES`. Mirrored as §9 rows in
+`docs/plan_parity.md`.
 
 ## 11. The follow-up wave — three sessions, from the client's 2026-09-20 answers
 

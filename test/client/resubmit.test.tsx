@@ -3,6 +3,9 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import ResubmitPage from "../../src/client/routes/ResubmitPage";
 import { ApiError, getResubmit, postResubmit, type ResubmitView } from "../../src/client/api";
+// V4-SIZE — the size in this assertion is derived, not typed, so raising the
+// limit moves the test with the product instead of reddening it.
+import { MAX_DECK_SIZE_LABEL } from "../../src/shared/uploadReview";
 
 // The public founder page (Session 6). It is deliberately outside AuthProvider
 // and AppShell, so it renders bare — only the two public fetchers are stubbed.
@@ -151,12 +154,17 @@ describe("ResubmitPage (public founder page)", () => {
     expect(postResubmit).not.toHaveBeenCalled();
 
     vi.mocked(postResubmit).mockRejectedValue(
-      new ApiError(413, { error: "pdf_too_large", message: "That PDF is larger than 24 MB." }),
+      new ApiError(413, {
+        error: "pdf_too_large",
+        message: `That PDF is larger than ${MAX_DECK_SIZE_LABEL}.`,
+      }),
     );
     fireEvent.change(container.querySelector('input[type="file"]')!, {
       target: { files: [new File(["%PDF-1.4"], "big.pdf", { type: "application/pdf" })] },
     });
     fireEvent.click(screen.getByRole("button", { name: /upload & re-score/i }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/larger than 24 MB/i);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      new RegExp(`larger than ${MAX_DECK_SIZE_LABEL}`, "i"),
+    );
   });
 });

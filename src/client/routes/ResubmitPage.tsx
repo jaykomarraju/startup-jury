@@ -17,6 +17,7 @@ import { AlertTriangle, CheckCircle2, FileText, Loader2, ShieldCheck, Upload } f
 import { Badge, Button, Card, Logo } from "../components";
 import { ApiError, getResubmit, postResubmit, type ResubmitView } from "../api";
 import { INTAKE_FIELD_LABELS } from "../../shared/intake";
+import { MAX_DECK_SIZE_LABEL } from "../../shared/uploadReview";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -279,7 +280,7 @@ export default function ResubmitPage() {
           )}
 
           <p className="text-xs text-fg-muted">
-            PDF only, up to 24 MB. Your previous versions are kept — nothing is overwritten. This
+            PDF only, up to {MAX_DECK_SIZE_LABEL}. Your previous versions are kept — nothing is overwritten. This
             link works until {formatDate(view.expiresAt)}.
           </p>
         </form>

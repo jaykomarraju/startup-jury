@@ -18,9 +18,23 @@ import { LOW_CREDIT_THRESHOLD } from "../../shared/notifications";
 // W4-C — the ledger row behind every credit this application spends.
 import { recordLedgerEntry } from "../billing/ledger";
 
-// Anthropic caps a Messages request at 32 MB; the PDF is base64-encoded (~1.33×)
-// into one request, so keep the raw deck comfortably under that.
-export const MAX_PDF_BYTES = 24 * 1024 * 1024;
+/**
+ * The largest deck PDF the application accepts. **50 MB** — the client's
+ * 2026-09-20 answer ("For now, let's set it to 50MB. We will review after the
+ * beta launch how it goes"), and what the prototype's dropzone has said all
+ * along while we enforced 24.
+ *
+ * This number is no longer load-bearing for the AI, and that is the point.
+ * It used to be `32 × 3/4`: the Messages endpoint caps a request body at 32 MB
+ * and a base64 `document` block expands the PDF by 4/3, so 24 MB was the
+ * largest deck that could be inlined — and raising it alone would have made
+ * uploads succeed and evaluation fail. `src/server/ai/evaluate.ts` now weighs
+ * each request and sends anything that does not fit via the Files API (500 MB
+ * per file) instead, so this is a product limit rather than a transport one.
+ * Keep it equal to `MAX_DECK_PDF_BYTES` in `src/shared/intake.ts`; a worker
+ * test pins the two.
+ */
+export const MAX_PDF_BYTES = 50 * 1024 * 1024;
 
 export function isPdf(file: unknown): file is File {
   return (
