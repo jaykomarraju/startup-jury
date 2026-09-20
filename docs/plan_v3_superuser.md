@@ -665,7 +665,7 @@ the link was not. `test/client/allDecks.test.tsx` now pins it for the SUPERUSER
 (hidden, reachable) and the ADMIN (never hidden). Negative control: reverting to
 `navForUser` fails the superuser case and leaves the admin case green.
 
-### Two e2e runs, and why only one counts
+### The e2e leg — stated as it happened, because a clean full run was never obtained
 
 The first ran **52.3 min** (normally ~12) during heavy contention, with
 `TIME_WAIT` at **11,371** against macOS's ~16,384 ephemeral range — the
@@ -680,6 +680,33 @@ at **7 passed in 19.5 s**, `TIME_WAIT` back to 3. Environmental.
 you the result is about the machine. Check `netstat -an | grep -c TIME_WAIT`
 before `grep`-ing for `Network connection lost` — at exhaustion the drop
 signatures barely appear (2 in a 52-minute run) while everything still fails.
+
+**Three full runs of this identical tree, none clean, and the failing SET
+differed every time:**
+
+| Run | Wall-clock | Result | `fetch failed` | TIME_WAIT |
+|---|---|---|---|---|
+| 1 | 52.3 min | 2 failed / 226 passed — `home`, `evaluate-workbench` | 2 | 11,371 |
+| 2 | killed | — | 73 by test 62 | 12,721 |
+| 3 | **6.0 min** | 2 failed · 7 flaky / 218 passed — `branding` ×2 | **210** | 0 → 9,175 |
+
+**A single full run burns ~9,000 of the 16,384 ephemeral ports by itself**, so
+run 3 started drained and still finished starved. Note run 3's wall-clock was
+NORMAL — the 4× heuristic does not catch it, and `Network connection lost` was
+**0** while `fetch failed` was 210. **`fetch failed` is the reliable signature;
+wall-clock and `Network connection lost` are both capable of looking fine.**
+
+**Every failure was verified individually on a drained box, with untouched
+controls alongside** — `home` + `evaluate-workbench` + `upload` = **7/7 in
+19.5 s**; `branding` + `calls` + `coverage` = **30/31 in 1.4 min** (the one
+failure being a `/login` page that never rendered, 45 `fetch failed` in that
+run); that founder test alone = **1 passed in 13.5 s, 0 `fetch failed`**.
+
+**What this means for the record: the e2e leg was NOT obtained as a single
+green full run on this machine.** What was obtained is every constituent spec
+passing on a drained box, a failing set that reshuffles between identical runs,
+and zero failures whose trace contains a frame from `src/`. That is the honest
+state — recorded rather than rounded up to green.
 
 ### Document hygiene
 
