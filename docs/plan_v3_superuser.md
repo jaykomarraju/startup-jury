@@ -145,6 +145,11 @@ Run all nine at once. The partition is by FILE, so no session waits on another.
 | `V3-PT`   | 15, 16, 17 | `admin/PriceConfiguration.tsx` · `admin/TeamRoles.tsx` · `SetupWizard.tsx` · My account | 0073 |
 | `V3-FLOW` | 6, 7, 14 | `AssignPage.tsx` · `QueryPage.tsx` · `CallsPage.tsx` incubator configs | 0074 |
 
+**Ordering: there is none. Start all nine at once.** `parity:nav`/`parity:tokens` are not in the green
+gate, and no vitest or Playwright test reads `parity-lib` or the prototype files — so no session's work
+depends on another's landing. The only real contention is the GATE: nine concurrent gates turn a
+~6-minute suite into a 40-minute one. Stagger those, not the starts.
+
 **`main` ends at migration 0065 and `ALLOTMENT_CEILING` is 65.** Take only your number, and raise the
 ceiling in `test/worker/migrations-w1b.test.ts` in the SAME commit if you use it.
 
@@ -222,9 +227,11 @@ BUILD
      `scripts/parity-lib.ts:38` currently reads
        { dir: "AISJ_IC_SuserV15", edition: "incubator", role: "superuser" }
      Point the superuser row at the v3 file (already committed at
-     docs/prototype/source/incubator/AISJ_SuperuserV3.HTM). **Until this lands, every change the other
-     eight sessions make from v3 registers as a brand-new parity gap.** This is the single most
-     unblocking commit in the wave — do it first and say so in §8.
+     docs/prototype/source/incubator/AISJ_SuperuserV3.HTM). Until it is repointed, `npm run parity:nav`
+     compares your sidebar against the OLD prototype and reports every correct change as a gap.
+     **This blocks only YOU** — `parity:nav` and `parity:tokens` are not in the green gate, and no
+     vitest or Playwright test reads `parity-lib` or the prototypes, so the other eight sessions are
+     unaffected either way. Do it first because your own work is unreadable until you do.
   2. Superuser-only labels, via `labelOverrides`, NOT by changing `label`:
        alldecks -> "Dashboard" (icon "LayoutDashboard"; NavIcon already maps it)
        upload   -> "Upload & Evaluate"
