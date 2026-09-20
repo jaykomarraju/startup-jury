@@ -58,6 +58,12 @@ export interface WizardProps {
   notice: string | null;
   onViewDetails: () => void;
   onReview: () => void;
+  /**
+   * V3 item 8 renames the forward button "Evaluate & Go to Dashboard →" for the
+   * incubator superuser. Optional, so every other role — and the VC edition,
+   * which was not rescoped — keeps "Go to dashboard →" unchanged.
+   */
+  forwardLabel?: string;
 }
 
 export function Wizard(props: WizardProps) {
@@ -143,7 +149,7 @@ export function Wizard(props: WizardProps) {
                 </button>
               )}
               <button type="button" className={BTN_NEXT} onClick={props.onReview}>
-                Go to dashboard →
+                {props.forwardLabel ?? "Go to dashboard →"}
               </button>
             </div>
           </div>

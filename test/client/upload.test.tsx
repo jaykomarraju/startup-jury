@@ -304,6 +304,80 @@ describe("Uploaded decks — AI-extracted details", () => {
   });
 });
 
+describe("V3 item 8 — Upload & Evaluate, the half the export supports", () => {
+  const SU = () => principal("superuser", ["upload", "query", "adminconsole"]);
+
+  it("renames the wizard's forward button for the incubator superuser only", async () => {
+    mount(SU());
+    expect(await screen.findByRole("button", { name: "Evaluate & Go to Dashboard →" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Go to dashboard →" })).toBeNull();
+  });
+
+  it.each([
+    ["a Program Manager", PM],
+    ["a Program Associate", PA],
+    ["an admin", ADMIN],
+    ["a VC partner", () => principal("partner", ["upload"], "vc")],
+    ["a VC superuser — the VC edition was not rescoped", () => principal("superuser", ["upload"], "vc")],
+  ])("leaves %s on the unchanged label", async (_label, who) => {
+    mount(who());
+    expect(await screen.findByRole("button", { name: "Go to dashboard →" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Evaluate & Go to Dashboard →" })).toBeNull();
+  });
+
+  it("offers Send to Evaluate from the results card — the prototype's only route to that screen", () => {
+    render(
+      <MemoryRouter>
+        <ResultsScreen
+          workspaceSector="FinTech"
+          onBack={() => {}}
+          showSendToEvaluate
+          uploaded={[
+            {
+              key: "a",
+              name: "TaxPilot",
+              fileName: "taxpilot.pdf",
+              size: 1000,
+              file: null,
+              source: "bulk",
+              context: { sector: "FinTech" },
+              slides: 10,
+              issues: [],
+              checked: false,
+              markedIncomplete: false,
+              deckId: "deck_a",
+              flags: {},
+              sentToQuery: false,
+            },
+          ]}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("link", { name: "Send to Evaluate →" })).toHaveAttribute("href", "/app/evaluate");
+  });
+
+  it("offers it to nobody else, and never with an empty batch", () => {
+    const { rerender } = render(
+      <MemoryRouter>
+        <ResultsScreen uploaded={[]} workspaceSector={null} onBack={() => {}} />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByRole("link", { name: "Send to Evaluate →" })).toBeNull();
+    rerender(
+      <MemoryRouter>
+        <ResultsScreen uploaded={[]} workspaceSector={null} onBack={() => {}} showSendToEvaluate />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByRole("link", { name: "Send to Evaluate →" })).toBeNull();
+  });
+
+  it("keeps the review step and its cost preview — credits are never spent unpreviewed (Q51)", async () => {
+    mount(SU());
+    fireEvent.click(await screen.findByRole("button", { name: "Evaluate & Go to Dashboard →" }));
+    expect(await screen.findByRole("heading", { name: "Review uploaded decks" })).toBeInTheDocument();
+  });
+});
+
 describe("the founder's Upload", () => {
   it("shares none of the staff screen's credits, review or CRM surfaces", async () => {
     mount(principal("founder", []));

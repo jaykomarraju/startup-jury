@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
-import { Download, Filter, Hand, ListChecks, Settings, UserCheck, X } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { Download, Filter, Hand, ListChecks, Settings, Sparkles, UserCheck, X } from "lucide-react";
 import { EvaluationReportModal, PanelFrame, ToolbarButton } from "../components";
 import { EvalScorecard, type AiParamScore } from "../components/EvalScorecard";
 import { useToast } from "../components/Toast";
@@ -13,6 +13,7 @@ import {
   listRecommendations,
   getDeck,
   getMyScores,
+  rescoreDeck,
   setRecommendation,
   submitJuryScores,
   transitionDeck,
@@ -57,6 +58,30 @@ import { scoringSettings } from "./admin/scoringApi";
  *
  * The status select is the evaluator's RECOMMENDATION (0057), not a stage move;
  * see that migration's header for why.
+ *
+ * V3 (item 10) reshaped the toolbar and column 1 for the INCUBATOR SUPERUSER
+ * only — `AISJ_SuperuserV3` `panel-evaluate` is +533 bytes over v15 and every
+ * one of them is here: an `AI Evaluate` toolbar button (`ev-ai-btn`), a
+ * select-all checkbox with an `N selected` counter in column 1's head
+ * (`ev-chk-all` / `ev-col1-count`), a per-row checkbox, and a new sub-line.
+ * Nothing else in the panel changed, so nothing else here does: admin, program
+ * manager, program associate and jury still ship the v15 design, and so does
+ * every VC role (VC has its own `VcEvaluatePage`).
+ *
+ * The prototype's `evAiEvaluate()` is `d.evaluated = true` on an in-memory
+ * array. The repo's one AI-evaluation trigger is `POST /decks/:id/rescore`,
+ * which refuses a deck whose content AND criteria are both unchanged
+ * (`already_scored`) — so "AI Evaluate" re-runs what a criteria or content
+ * change has actually invalidated and says plainly what it skipped. The guard
+ * refuses on metadata alone, before any R2 read or AI call, which is what makes
+ * the prototype's "nothing selected evaluates ALL" safe to keep verbatim.
+ * `/rescore` as it stands reserves no credit — `reserveCredits` is called on the
+ * upload paths and in `addDeckVersion`, not here. That is the repo's behaviour
+ * today, not a guarantee; this button is the first one-click way to reach it in
+ * bulk, so it is flagged in plan_parity §9 rather than relied on. The
+ * prototype's queue for this screen is the freshly-uploaded population
+ * (`addToEvaluate` from Upload); ours is `assigned` / `jury_evaluation`. v3
+ * does not touch that renderer, so neither do we — see Q52.
  */
 
 const STATUS_OPTIONS: { value: EvaluateRecommendation; label: string }[] = [
@@ -90,10 +115,23 @@ const BAND_TONE: Record<string, string> = {
 
 type Detail = { kind: "additional"; index: number } | { kind: "core"; key: string } | null;
 
+/**
+ * V3 reshaped this screen for the incubator SUPERUSER alone. Every other role
+ * — and the VC edition, which was not rescoped — keeps the v15 surface.
+ */
+function isV3Evaluate(edition: string | undefined, role: string | undefined): boolean {
+  return edition === "incubator" && role === "superuser";
+}
+
 export function EvaluatePage() {
   const { user } = useAuth();
   const can = usePermissions();
   const { showToast } = useToast();
+  const navigate = useNavigate();
+  const v3 = isV3Evaluate(user?.edition, user?.role);
+  /** V3 column 1's checkboxes. Ids, not indices — the list re-filters. */
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [aiBusy, setAiBusy] = useState(false);
   const [decks, setDecks] = useState<DeckView[] | null>(null);
   const [params, setParams] = useState<RubricParameter[]>([]);
   const [anchors, setAnchors] = useState<RubricAnchor[]>([]);
@@ -356,6 +394,64 @@ export function EvaluatePage() {
     }
   }
 
+  // ── V3 item 10 — column 1's checkboxes and the AI Evaluate button ────────
+  // Counted over the VISIBLE rows, not over `picked`: the prototype has no
+  // working Filter, so its count and its batch are the same set. Ours must be
+  // too, or "2 selected" sits above a button that would evaluate one.
+  const pickedRows = rows.filter((d) => picked.has(d.id));
+  const allPicked = rows.length > 0 && pickedRows.length === rows.length;
+
+  function togglePick(id: string) {
+    setPicked((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  /** `evToggleAll()` — any row unticked ticks them all, else clears. */
+  function toggleAll() {
+    setPicked(allPicked ? new Set() : new Set(rows.map((d) => d.id)));
+  }
+
+  /**
+   * `evAiEvaluate()`. Nothing selected evaluates ALL of them, exactly as the
+   * prototype does, then lands on Assign. `rescoreDeck` is the repo's only
+   * AI-evaluation trigger and it blocks a re-run that would change nothing —
+   * those decks are reported, not silently counted as evaluated.
+   */
+  async function aiEvaluate() {
+    const batch = pickedRows.length > 0 ? pickedRows : rows;
+    if (batch.length === 0 || aiBusy) return;
+    setAiBusy(true);
+    let done = 0;
+    let unchanged = 0;
+    let failed = 0;
+    try {
+      for (const deck of batch) {
+        const outcome = await rescoreDeck(deck.id);
+        if (outcome.ok) done += 1;
+        else if (outcome.reason === "already_scored") unchanged += 1;
+        else failed += 1;
+      }
+    } finally {
+      setAiBusy(false);
+    }
+    setPicked(new Set());
+    await load();
+    await loadRecommendations();
+    const skipped = [
+      unchanged > 0 ? `${unchanged} already scored` : null,
+      failed > 0 ? `${failed} could not be evaluated` : null,
+    ].filter(Boolean);
+    showToast(
+      `${done} deck${done === 1 ? "" : "s"} evaluated — sent to Assign${skipped.length ? ` · ${skipped.join(" · ")}` : ""}`,
+      failed > 0 ? "error" : "success",
+    );
+    navigate("/app/assign");
+  }
+
   const roleName = user ? roleLabel(user.edition, user.role) : "";
   const canConfigureCore = user ? canAccessNav(user.edition, user.role, "coreparams", can) : false;
   const canConfigureMine = user ? canAccessNav(user.edition, user.role, "myparams", can) : false;
@@ -373,9 +469,24 @@ export function EvaluatePage() {
     <PanelFrame
       flush
       title="Evaluate"
-      subtitle="Click a deck to open its evaluation report · set its status alongside"
+      subtitle={
+        v3 ? (
+          <>
+            Select decks and click <b>AI Evaluate</b> · evaluated decks move to the Assign screen. Click a deck to
+            open its report.
+          </>
+        ) : (
+          "Click a deck to open its evaluation report · set its status alongside"
+        )
+      }
       actions={
         <>
+          {v3 && (
+            <ToolbarButton primary onClick={() => void aiEvaluate()} disabled={aiBusy || rows.length === 0}>
+              <Sparkles className="h-3 w-3" aria-hidden="true" />
+              AI Evaluate
+            </ToolbarButton>
+          )}
           <ToolbarButton
             onClick={() => setShowFilter((v) => !v)}
             aria-expanded={showFilter}
@@ -436,10 +547,34 @@ export function EvaluatePage() {
             className="flex min-h-0 flex-col border-line bg-surface lg:w-[260px] lg:min-w-[260px] lg:border-r"
             aria-label="Decks"
           >
-            <div className="border-b border-line px-[13px] py-2.5">
-              <div className="text-[9px] font-semibold uppercase tracking-[0.07em] text-fg-muted" data-testid="ev-decks-label">
-                {rows.length} {rows.length === 1 ? "deck" : "decks"} · click to open report
-              </div>
+            <div className="flex items-center gap-2 border-b border-line px-[13px] py-2.5">
+              {v3 ? (
+                <>
+                  {/* `ev-chk-all` + `.ev-col1-lbl` — one control, two hit areas. */}
+                  <input
+                    type="checkbox"
+                    id="ev-chk-all"
+                    className="h-[15px] w-[15px] shrink-0 cursor-pointer accent-olive"
+                    aria-label="Select all decks"
+                    checked={allPicked}
+                    disabled={rows.length === 0}
+                    onChange={toggleAll}
+                  />
+                  <label
+                    htmlFor="ev-chk-all"
+                    className="flex-1 cursor-pointer text-[9px] font-semibold uppercase tracking-[0.07em] text-fg-muted"
+                  >
+                    Select all
+                  </label>
+                  <span className="whitespace-nowrap text-[10px] font-semibold text-olive-dk" data-testid="ev-col1-count">
+                    {pickedRows.length} selected
+                  </span>
+                </>
+              ) : (
+                <div className="text-[9px] font-semibold uppercase tracking-[0.07em] text-fg-muted" data-testid="ev-decks-label">
+                  {rows.length} {rows.length === 1 ? "deck" : "decks"} · click to open report
+                </div>
+              )}
             </div>
             {decks !== null && rows.length === 0 ? (
               <div className="flex flex-col items-center gap-2 px-6 py-10 text-center text-fg-muted">
@@ -463,6 +598,17 @@ export function EvaluatePage() {
                         active ? "border-l-olive bg-olive-lt" : "border-l-transparent"
                       }`}
                     >
+                      {v3 && (
+                        // `.ev-chk` — stopPropagation in the prototype; here it
+                        // is simply a sibling of the row button, never inside it.
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 h-[15px] w-[15px] shrink-0 cursor-pointer accent-olive"
+                          aria-label={`Select ${deck.name}`}
+                          checked={picked.has(deck.id)}
+                          onChange={() => togglePick(deck.id)}
+                        />
+                      )}
                       <button
                         type="button"
                         onClick={() => openDeck(deck)}
