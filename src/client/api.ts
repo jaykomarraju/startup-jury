@@ -148,6 +148,12 @@ export interface DeckReportMatrix {
   /** W7-D — the stage the report was laid out for (spec §8.4 / §13). */
   stage?: ReportStage;
   stageAware?: boolean;
+  /**
+   * Blind scoring (F0106) withheld the AI column from this viewer — they are an
+   * evaluator who has not submitted for this deck yet. Set by the report route,
+   * exactly as `GET /api/decks/:id` sets it on the deck detail.
+   */
+  aiScoreWithheld?: boolean;
   scoring?: { scoreScale: ScoreScale };
 }
 

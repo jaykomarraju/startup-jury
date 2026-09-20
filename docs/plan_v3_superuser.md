@@ -60,7 +60,7 @@ a corrected file or a number. **MEASURE**: prototype unchanged, so the gap is in
 
 | # | Item | State | Evidence / why |
 |---|---|---|---|
-| 1 | Eval report consistent at each stage | **DECIDE** | v3 **deletes** stage-awareness: `__introCols`, `__jTot` and the `__roleBlock` stage switch are gone; colspan hard-coded 5. That reverses **W7-D and Issue 24**, which are server-enforced (`decks.ts` `reportLayout(edition, stage, role)`). |
+| 1 | Eval report consistent at each stage | **DONE** (visual) · **DECIDE** (modes) | **Corrected by reading the decoded renderer** — v3 does not delete stage-awareness, it narrows it. `__introCols`/`__jTot` go, so **Jury Avg.** and **Avg.** vanish and the core table is five columns at EVERY stage (colspan 5) — that is item 1 itself. But `suevSections(stage)` SURVIVES and v3 *edits* it (§8, Q21). W7-D and Issue 24 are intact. Visual parity + v3's new `hideAi` report built; the editable/read-only mode shifts are Q23. |
 | 2 | Jury pipeline status repeating | **BUILD** | Cleanest item. Markup diff is one line: `-<th>Status</th>`. The repeat was the row pill *plus* the per-juror `jp-jstat` pills. Action options drop 5→2 (Send to intro calls · Reassign/add jury), then the cell becomes a flow tag. |
 | 3 | Composite formula: hide all but weighted average | **DECIDE** | Console still offers all three, byte-identical to v15. Client marked it *Workaround* — an explicit override of "match the prototype exactly". Record it or the next parity audit reverts it. |
 | 4 | AI weight: hide all but 50/50 | **DECIDE** | Console offers 40/30/50/0 and **has no `selected` attribute, so 40% AI · 60% Jury is the effective default** — and `migrations/0026` agrees (`ai_weight_pct DEFAULT 40`). Keeping only 50/50 **silently re-weights every existing org's composite.** Needs a yes/no on re-scoring. |
@@ -134,6 +134,26 @@ by diffing `_sidebar.html`, which is 2 changed lines; none of them is nav work, 
 - **F-NAV-3 — the Dashboard badge became dynamic.** `<span class="bx bx-b">24</span>` →
   `<span class="bx bx-b" id="sb-dash-count">7</span>`. The id has no writer anywhere in v3, so it is a
   binding the prototype declares and never fills. Sidebar badges are W1-A's; `V3-DASH` owns the count.
+### V3-REP (Q21–Q23)
+
+- **Q21 — Q1 has an answer, and it is in the prototype.** §3's "v3 deletes stage-awareness" was read off
+  a grep. The decoded renderer says something narrower: `__introCols` and `__jTot` are deleted, so the
+  **Jury Avg.** and **Avg.** columns are gone and the core table is five columns at every stage — which
+  IS "consistent at each stage". `suevSections(stage)` is **not** deleted; v3 rewrites it (see Q23) and
+  drops only `jurypipeline`. So Q1 resolves to reading (b) — *same visual design, stage-appropriate
+  content* — and `reportStage.ts` and the route's `stage` parameter stay. **Confirm and Q1 closes.**
+- **Q22 — the build has TWO report surfaces; the prototype has one.** `EvaluationDrawer` is the
+  `openReport()` replica (3 call sites, deck pane + tiles + parameter table); `EvaluationReportModal` is
+  the Aug-2026 issue-20/23/24 column-per-evaluator matrix (9 call sites, 7 screens). v3 has no
+  counterpart to the second. Merging them is not props-additive and rewrites seven screens four sibling
+  sessions are editing right now, so V3-REP pinned BOTH to the v3 column shape and left the split alone.
+  **Which one is "the evaluation report" the client is looking at?**
+- **Q23 — v3 lets the superuser EDIT the PA and PM sections; this build does not.** `suevSections` in
+  the superuser file: `assign` moves `editable('pa')+readOnly('pm')+juryDone()` → `editable('pa')+
+  editable('pm')`, and `intro` moves `readOnly('pa')` → `editable('pa')`. `reportLayout`'s `own()` marks
+  a section `editable` only when `role === viewer`, so a superuser gets both read-only. That is a
+  permission change in the `role-boundary-leaks` class, not a visual one, and it was NOT made on an
+  inference. **Is the superuser meant to score on a program associate's behalf?**
 
 ---
 
@@ -570,3 +590,104 @@ patch is applied. `Sidebar.tsx` is not this session's to edit. Three §9 rows ar
 `docs/plan_parity.md`, and **the first is a P0 regression this session caused**: `DashboardPage.tsx:922`
 resolves a route through `navForUser`, which no longer means "can reach", so the incubator superuser
 loses the report modal's "Score in Evaluate" link until that one-word patch lands.
+### `V3-REP` — item 1, the evaluation report
+
+**Item 1 is not what §3 said it was, and the correction matters.** §3 was scoped off a grep and
+reported that v3 "deletes stage-awareness". The decoded renderer — `window.openReport`, the SECOND
+definition in `_scripts.js` (v3 ~4042 / v15 ~3713; the earlier one is overwritten and is a 5-line
+stub) — says something narrower. The whole diff is 27 lines:
+
+| v15 → v3 | What it is |
+|---|---|
+| `__introCols` and `__jTot` deleted | The **Jury Avg.** and **Avg.** columns go. The core table is now `Parameter · Weight · AI · My score · ⌄` at EVERY stage, colspan hard-coded 5. **This is item 1 itself.** |
+| new `opts.hideAi` | A whole new report state: the deck the AI has not evaluated yet. Four pieces of copy, all verbatim below. |
+| `suevSections(stage)` **kept**, and edited | `assign`: `editable(pa)+readOnly(pm)+juryDone()` → `editable(pa)+editable(pm)`. `intro`: `readOnly(pa)` → `editable(pa)`. |
+| `jurypipeline` dropped from `suevStage()` and from the roleBlock list | One stage retired. |
+
+So **v3 answers Q1 in favour of reading (b)** — *same visual design, stage-appropriate content*. It
+does not delete `reportStage.ts`, the `?stage=` parameter or `reportLayout`; it deletes the columns
+that made the table a different SHAPE per stage. W7-D and Issue 24 are not reversed. See §4 Q21.
+
+**Built** (props-additive throughout — neither `EvaluationDrawer`'s nor `EvaluationReportModal`'s
+signature changed, so the seven screens four siblings are editing are untouched):
+
+1. **The v3 column shape, pinned at three stages.** The drawer never had `__introCols`, so nothing
+   needed deleting — but nothing asserted it either. `test/client/reportV3.test.tsx` now pins the
+   five headers as literals copied from the decoded markup and asserts the SAME set at `assign`,
+   `intro` and `default`, for both surfaces. Negative control: re-adding a `Jury Avg.` column fails
+   3 of 12 tests.
+2. **`hideAi`, verbatim.** Before the AI has run, the report keeps all 13 rows instead of emptying
+   the table: AI cells `—`, tile sub-line *"Run AI Evaluate to score"*, overall remarks *"Not
+   evaluated yet. Click **AI Evaluate** on the Evaluate page to generate the AI scores and remarks —
+   they'll then appear here and on the Assign page."*, expanded row *"Not evaluated yet — run AI
+   Evaluate to generate the AI remark."* Rows come from the report route's `core`, which lists every
+   active parameter whether or not anyone scored it (pinned in `test/worker/report-v3.test.ts`).
+   Blind scoring (F0106) empties the same cells for an unrelated reason and keeps its own wording.
+3. **The `custBlock` table.** Four columns and an expanding row (`Parameter · Weight · My score · ⌄`
+   → *"My remarks for this parameter"*), and the section's small print is now the prototype's three
+   variants chosen by mode: *"{Role} · from My Parameters · auto-filled by assigned role"* /
+   *"· read only"* / *"· completed by jury"* + a **Submitted** badge.
+4. **The hint verbatim** — *"tap any parameter to read the AI remark and add yours"* (was "…and your
+   own").
+
+**Found while building it, and fixed: blind scoring did not hold on this route.** `GET
+/api/decks/:id` withholds the AI score from an evaluator who has not submitted, and Wave 2
+integration closed the same hole on the LIST route, noting that *"withholding on the detail route
+alone does not make scoring independent"*. **`GET /decks/:id/report` was never given the rule** — and
+it is the widest of the three, because seven screens render the report and `EvaluationReportModal`
+draws `data.core` directly. Measured on the seed before the fix, with `show_ai_score_to_jury = 0`:
+the juror's deck detail correctly said `aiScoreWithheld: true, scores: []`, while the report handed
+the same juror **13 of 13 AI cells with their rationales**. Now dropped server-side; the response
+carries `aiScoreWithheld` and both surfaces say why. Three tests, and the negative control is in the
+pair itself — same juror, same deck, toggle on and off, and the *row count* moves, not a mean.
+**Note for integration:** this widens the known org-wide window in `e2e/scoring-framework.spec.ts`
+(plan_parity §8 Q17) from one route to two. No spec asserts the report's AI column inside it.
+
+**Not done, deliberately:**
+- **The `suevSections` mode shifts (§4 Q23)** — v3 lets the superuser EDIT the PA and PM sections;
+  `reportLayout`'s `own()` gives `editable` only for the viewer's own role. That is a permission
+  change in the `role-boundary-leaks` class, not a visual one, and not something to infer.
+- **Migration 0067 was NOT used** — `hideAi` is derivable from data the route already returns.
+  0067 is free for whoever needs it; `ALLOTMENT_CEILING` untouched at 65.
+- **`Pitch deck` was never missing.** `DeckPdfViewer` already draws the prototype's `.jr-deck-h`
+  title with its icon and "· N slides". Adding a second one broke `e2e/upload.spec.ts:143` on a
+  strict-mode violation and was reverted. The prototype puts **Research** inside that header row;
+  this build has it above. One line, in `DeckPdfViewer.tsx`, which is not this session's file.
+- **Additional-parameter Weight reads "Informational", not a percentage.** Every additional
+  parameter is seeded `weight = 0` (migration 0013) because they do not enter the composite; the
+  prototype's role parameters carry invented weights. "0%" would state the opposite of what it means.
+- **The two report surfaces were not merged** — §4 Q22.
+
+**Measured gate** (own worktree, `E2E_PORT=5207`, Node 22, eight siblings live on the box):
+
+| Leg | Result | Baseline |
+|---|---|---|
+| `typecheck` | clean | clean |
+| `lint` | clean | clean |
+| `npm test` | **2096 passed · 1 skipped** | 2069 · 1 |
+| `build` | clean | clean |
+| `roles` | **1115 / 1115**, own server on :5209 (PID + cwd checked) | 1115 / 1115 |
+| `test:e2e` | **210 passed · 1 failed · 13 flaky** | ~224 |
+
+New tests: `test/client/reportV3.test.tsx` (15) · `test/worker/report-v3.test.ts` (12) — +27.
+
+**Read the e2e number with its control.** The box carried all nine sessions at once and the dev
+server dropped connections throughout: **409 `[vite] Internal server error: fetch failed`** in that
+run. The tell here is NOT `"Network connection lost"` (0 occurrences) — it is that string, and a
+`locator('h1')` that finds **no element at all**, i.e. a page that never rendered.
+
+The one failure, `crm-sync.spec.ts:193 a non-admin is refused the CRM API`, touches nothing this
+session owns, and a *different* test in that same file failed on the previous run — the signature of
+load, not a regression. Run alone with `--workers=1`: **`crm-sync.spec.ts` + `evaluate-stage-report.spec.ts`
+= 9/9 passed in 18.8s, zero server errors.**
+
+The control the plan asks for, run on **`main`** with none of this work on it:
+`e2e/parity.spec.ts --workers=1` → **3 hard failures** (vc/superuser, vc/admin, vc/associate) + 3
+flaky, 191 server errors. The same spec on this branch: 2 failures, then flaky-only. **`main` is
+strictly worse than this branch on the spec most often blamed.** Nothing here is a code fault.
+
+One real regression WAS caught by e2e and fixed: the duplicate `Pitch deck` heading — see "Not done".
+
+**Files touched outside this session's four:** `src/client/api.ts` — one additive optional field on
+`DeckReportMatrix`; `test/client/allDecks.test.tsx` — one assertion the v3 copy supersedes. Both are
+§9 rows in `docs/plan_parity.md`.

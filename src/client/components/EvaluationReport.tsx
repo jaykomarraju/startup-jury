@@ -307,6 +307,19 @@ export function EvaluationReportModal({
 
           {data && (
             <>
+              {data.aiScoreWithheld && (
+                <div
+                  className="m-4 flex items-start gap-2 rounded-lg border border-line bg-surface-2 px-3 py-2.5 text-xs text-fg-muted"
+                  data-testid="report-ai-withheld"
+                >
+                  <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    Blind scoring is on — the AI column appears once you submit your own evaluation
+                    for this deck.
+                  </span>
+                </div>
+              )}
+
               {data.hiddenEvaluators > 0 && (
                 <div className="m-4 flex items-start gap-2 rounded-lg border border-line bg-surface-2 px-3 py-2.5 text-xs text-fg-muted">
                   <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
