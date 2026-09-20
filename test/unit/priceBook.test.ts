@@ -2,17 +2,27 @@ import { describe, it, expect } from "vitest";
 import {
   convertMinor,
   deriveAmounts,
+  enterpriseSeatPlans,
+  extraCreditRateMinor,
   formatMinor,
   gstMinor,
   listedPlans,
+  monthsOf,
   normalisePriceBook,
+  paidTrialPlan,
   perDeckArtefacts,
+  periodOf,
   priceBooksEqual,
+  seatPeriodsFor,
+  seatPlanFor,
+  seatPlans,
+  seatTiers,
   taxBreakdown,
   validatePriceBook,
   type PriceBook,
   type PricePlanRow,
 } from "../../src/shared/priceBook";
+import type { Plan } from "../../src/shared/plans";
 
 /**
  * W4-D — the price book's pure logic.
@@ -35,6 +45,9 @@ function plan(over: Partial<PricePlanRow> = {}): PricePlanRow {
     features: null,
     units: null,
     period: "month",
+    periodMonths: null,
+    tier: null,
+    seats: null,
     active: true,
     sortOrder: 1,
     amounts: { INR: 99900, USD: 1200 },
@@ -260,5 +273,111 @@ describe("comparison", () => {
     expect(priceBooksEqual(a, book({ plans: [plan({ amounts: { INR: 99800, USD: 1200 } })] }))).toBe(
       false,
     );
+  });
+});
+
+// ── V3-PT · the seat catalogue ───────────────────────────────────────────────
+
+/**
+ * `migrations/0073` adds three columns rather than widening two CHECKs, and
+ * everything the seat screens do selects on them. These tests hold the two
+ * properties that make that safe: `periodOf` reads the new column FIRST, and
+ * the selectors return the new rows and ONLY the new rows.
+ */
+describe("V3-PT · periods, tiers and seats", () => {
+  function seat(tier: Plan, months: number, inr: number, units: number): PricePlanRow {
+    return plan({
+      id: `pp_seat_${tier}_${months}`,
+      code: `seat_${tier}_${months}`,
+      group: "subscription",
+      name: tier,
+      units,
+      // A quarterly or half-yearly row CANNOT store its period in the old
+      // column — that is the whole reason `periodMonths` exists.
+      period: months === 12 ? "year" : null,
+      periodMonths: months,
+      tier,
+      sortOrder: 20 + months,
+      amounts: { INR: inr },
+      overrides: [],
+    });
+  }
+
+  const seatBook = (): PriceBook =>
+    book({
+      plans: [
+        // Legacy rows: no tier, no seats. They must survive every selector.
+        plan({ id: "pp_standard", code: "standard", period: "month", sortOrder: 1 }),
+        plan({ id: "pp_ent_500", code: "ent_500", group: "enterprise", name: "500 units / year", units: 500, period: "year", sortOrder: 2, amounts: { INR: 20_000_000 }, overrides: [] }),
+        seat("standard", 3, 450_000, 125),
+        seat("standard", 12, 1_152_000, 500),
+        seat("pro", 6, 960_000, 250),
+        seat("pro", 12, 1_536_000, 500),
+        plan({ id: "pp_paid_trial", code: "paid_trial", group: "credit_pack", name: "Paid trial", units: 1, period: null, sortOrder: 40, amounts: { INR: 10_000 }, overrides: [] }),
+        plan({ id: "pp_ent_s10", code: "ent_s10", group: "enterprise", name: "Enterprise Plan", units: 5_000, period: "year", periodMonths: 12, seats: 10, sortOrder: 50, amounts: { INR: 16_000_000 }, overrides: [] }),
+        plan({ id: "pp_ent_s5", code: "ent_s5", group: "enterprise", name: "Family Office Plan", units: 2_500, period: "year", periodMonths: 12, seats: 5, sortOrder: 51, amounts: { INR: 8_000_000 }, overrides: [] }),
+      ],
+    });
+
+  it("periodOf reads periodMonths first, and falls back to the legacy column", () => {
+    expect(periodOf({ period: null, periodMonths: 3 })).toBe("quarter");
+    expect(periodOf({ period: null, periodMonths: 6 })).toBe("half_year");
+    expect(periodOf({ period: "year", periodMonths: 12 })).toBe("year");
+    // Legacy rows are untouched.
+    expect(periodOf({ period: "month", periodMonths: null })).toBe("month");
+    expect(periodOf({ period: "one_time", periodMonths: null })).toBe("one_time");
+    expect(periodOf({ period: null, periodMonths: null })).toBeNull();
+    // A months value the map does not know falls back rather than inventing one.
+    expect(periodOf({ period: "year", periodMonths: 7 })).toBe("year");
+    expect(monthsOf({ period: "month", periodMonths: null })).toBe(1);
+    expect(monthsOf({ period: "one_time", periodMonths: null })).toBeNull();
+  });
+
+  it("seatPlans selects on `tier`, so the legacy monthly rows stay out of the seat screens", () => {
+    const b = seatBook();
+    expect(seatPlans(b).map((p) => p.code)).toEqual([
+      "seat_standard_3",
+      "seat_standard_12",
+      "seat_pro_6",
+      "seat_pro_12",
+    ]);
+    // `standard` is still IN the catalogue — src/shared/seats.ts prices a
+    // purchased seat from it — just not on the seat screen.
+    expect(b.plans.some((p) => p.code === "standard" && p.active)).toBe(true);
+    expect(seatTiers(b)).toEqual(["standard", "pro"]);
+    expect(seatPeriodsFor(b, "standard")).toEqual([3, 12]);
+    expect(seatPeriodsFor(b, "pro")).toEqual([6, 12]);
+    expect(seatPeriodsFor(b, "premium")).toEqual([]);
+    expect(seatPlanFor(b, "pro", 12)?.code).toBe("seat_pro_12");
+    expect(seatPlanFor(b, "pro", 3)).toBeUndefined();
+  });
+
+  it("an inactive seat row is not sold", () => {
+    const b = seatBook();
+    b.plans = b.plans.map((p) => (p.code === "seat_pro_6" ? { ...p, active: false } : p));
+    expect(seatPeriodsFor(b, "pro")).toEqual([12]);
+  });
+
+  it("enterpriseSeatPlans selects on `seats`, ascending, and skips the unit tiers", () => {
+    const b = seatBook();
+    expect(enterpriseSeatPlans(b).map((p) => p.code)).toEqual(["ent_s5", "ent_s10"]);
+    expect(enterpriseSeatPlans(b).map((p) => p.seats)).toEqual([5, 10]);
+    expect(b.plans.some((p) => p.code === "ent_500")).toBe(true);
+  });
+
+  it("the extra-credit rate is the ANNUAL seat price over its included decks", () => {
+    const b = seatBook();
+    // ₹15,360 / 500 decks = ₹30.72 — the prototype's ICREDIT_RATE.pro exactly.
+    expect(extraCreditRateMinor(b, "pro", "INR")).toBeCloseTo(3072, 6);
+    expect(extraCreditRateMinor(b, "standard", "INR")).toBeCloseTo(2304, 6);
+    // Premium has no annual seat here, and a tier with none has no rate.
+    expect(extraCreditRateMinor(b, "premium", "INR")).toBeNull();
+    // Nor does a currency the annual seat is not priced in.
+    expect(extraCreditRateMinor(b, "pro", "USD")).toBeNull();
+  });
+
+  it("finds the paid-trial rate by its code", () => {
+    expect(paidTrialPlan(seatBook())?.amounts.INR).toBe(10_000);
+    expect(paidTrialPlan(book())).toBeUndefined();
   });
 });

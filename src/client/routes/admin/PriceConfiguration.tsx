@@ -13,6 +13,7 @@ import {
   ReceiptText,
   RotateCcw,
   Rocket,
+  Save,
   User,
 } from "lucide-react";
 import { Card, Button } from "../../components";
@@ -21,12 +22,17 @@ import {
   activeCurrencies,
   applyCopyTokens,
   deriveAmounts,
+  enterpriseSeatPlans,
   formatMinor,
   fxRateFor,
   groupOf,
   listedPlans,
   normalisePriceBook,
+  paidTrialPlan,
   plansInGroup,
+  seatPlanFor,
+  seatPeriodsFor,
+  seatTiers,
   PERIOD_SUFFIX,
   PLAN_GROUPS,
   priceBooksEqual,
@@ -38,6 +44,7 @@ import {
   type PricePlanRow,
   type PublishedPriceBook,
 } from "../../../shared/priceBook";
+import { PLAN_LABELS, type Plan } from "../../../shared/plans";
 
 /**
  * Admin console → Organisation → **Price configuration** (`admin/s-pc.html`).
@@ -300,8 +307,8 @@ export function PriceConfigurationSection() {
   );
   const errors = useMemo(() => (book ? validatePriceBook(book) : []), [book]);
 
-  const save = useCallback(async () => {
-    if (!book) return;
+  const save = useCallback(async (): Promise<boolean> => {
+    if (!book) return false;
     setSaving(true);
     setError(null);
     try {
@@ -329,10 +336,11 @@ export function PriceConfigurationSection() {
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { errors?: string[] };
         setError(body.errors?.join(" ") ?? "The draft could not be saved.");
-        return;
+        return false;
       }
       await load(true);
       setNotice("Draft saved. Publish when you are ready for it to go live.");
+      return true;
     } finally {
       setSaving(false);
     }
@@ -356,6 +364,33 @@ export function PriceConfigurationSection() {
     }
   }, [load]);
 
+  /**
+   * The prototype's `prSave()` — one button that makes the new prices the ones
+   * My Account shows. Here that is save-then-publish, because the account
+   * screens read the PUBLISHED catalogue and a draft is invisible to them by
+   * design. A save that fails stops before the publish: half of this would be
+   * worse than none of it.
+   */
+  const apply = useCallback(async () => {
+    const saved = await save();
+    if (!saved) return;
+    setPublishing(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/pricing/publish", { method: "POST" });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { errors?: string[] };
+        setError(body.errors?.join(" ") ?? "The catalogue could not be published.");
+        return;
+      }
+      const body = (await res.json()) as { published: PublishedPriceBook };
+      await load(true);
+      setNotice(`Saved — applied to My Account as version ${body.published.version}.`);
+    } finally {
+      setPublishing(false);
+    }
+  }, [save, load]);
+
   const rollback = useCallback(async () => {
     setPublishing(true);
     setError(null);
@@ -378,7 +413,7 @@ export function PriceConfigurationSection() {
   useAdminSave({
     dirty: dirty && errors.length === 0,
     saving,
-    onSave: save,
+    onSave: () => void save(),
     hint: errors.length > 0 ? errors[0] : dirty ? undefined : "No unsaved price changes.",
   });
 
@@ -396,7 +431,7 @@ export function PriceConfigurationSection() {
 
   return (
     <div className="flex flex-col gap-4">
-      <Heading />
+      <Heading baseCurrency={book.baseCurrency} />
 
       {/* The prototype's topbar actions. The console shell owns Save; Preview
           and Publish belong to this section and live at the top of its body. */}
@@ -475,6 +510,25 @@ export function PriceConfigurationSection() {
       {showPreview ? (
         <PricingPreview draft={book} published={payload.published} dirty={dirty || payload.dirty} />
       ) : null}
+
+      {/* ── V3-PT · the prototype's three cards, in its order ── */}
+      <SeatPricingCards book={book} edit={edit} onApply={apply} busy={saving || publishing} />
+
+      {/* ── Everything below is NOT in the v3 section ─────────────────────────
+          The reshared prototype's `s-pc` is the three cards above and nothing
+          else: no currency bar, no FX panel, no plan/pack catalogues, no tax
+          card. They are kept because the rest of the product still reads them —
+          the account wizard's currency picker, `priceBreakdown`'s GST, and the
+          `standard`/`pro` subscription rows `src/shared/seats.ts` prices a
+          purchased seat from. Removing them is §4 Q82, not an inference. */}
+      <div className="mt-2 flex items-start gap-2 rounded-lg border border-line bg-surface-2 px-3 py-2.5 text-[11.5px] leading-relaxed text-fg-2">
+        <Info className="mt-px h-3.5 w-3.5 shrink-0" style={{ color: "var(--ac-olive, #4A6644)" }} />
+        <span data-testid="pc-beyond-prototype">
+          Below: the currencies, exchange rates, catalogues and tax behind those
+          prices. The signup flow reads them even though this section&apos;s
+          three cards do not show them.
+        </span>
+      </div>
 
       {/* ── Active currencies ── */}
       <Card className="flex flex-wrap items-center gap-3 p-3.5">
@@ -638,13 +692,193 @@ export function PriceConfigurationSection() {
   );
 }
 
-function Heading() {
+// ── V3-PT · the prototype's three cards (item 15) ────────────────────────────
+
+/**
+ * The reshared superuser prototype (2026-09-19) rebuilt `s-pc` from a 235-byte
+ * iframe around a 37 KB base64 document (`PC_B64`, still defined in v3 and no
+ * longer loaded by anything) into a 2,134-byte inline section with exactly
+ * three editable cards and one button:
+ *
+ *   Paid trial                        `pr-paid`  — one per-deck rate
+ *   Individual plans — ₹ per period   `pr-ind`   — Seat × Quarterly/Half-yearly/Annual
+ *   Enterprise plans — ₹ annual       `pr-ent`   — Plan · Seats · Annual price
+ *   Save & apply to My Account        `prSave()`
+ *
+ * Every number is stated in WHOLE RUPEES here, as the prototype's `<input
+ * type="number">` is; the book stores minor units, so each field converts on
+ * the way in and out. Only the base currency is editable on these three cards —
+ * the prototype has no currency notion at all, and the other currencies stay on
+ * the FX derivation below.
+ *
+ * `prSave()` posts `{type:'aisjPricing'}` to the account overlay and the
+ * overlay re-renders immediately. Here the equivalent of "applies to My Account"
+ * is a PUBLISH: the account screens read `GET /api/pricing/published`, and a
+ * draft they cannot see is not applied to anything. So this one button saves
+ * the draft and then publishes it, which is the promise the label makes.
+ */
+function SeatPricingCards({
+  book,
+  edit,
+  onApply,
+  busy,
+}: {
+  book: PriceBook;
+  edit: (fn: (b: PriceBook) => PriceBook) => void;
+  onApply: () => void;
+  busy: boolean;
+}) {
+  const base = book.baseCurrency;
+  const symbol = book.currencies.find((c) => c.code === base)?.symbol ?? "₹";
+  const paid = paidTrialPlan(book);
+  const tiers = seatTiers(book);
+  const enterprise = enterpriseSeatPlans(book);
+
+  /** Whole units in, minor units out — one place, so no card rounds twice. */
+  const setPrice = (planId: string, major: number) =>
+    edit((b) => ({
+      ...b,
+      plans: b.plans.map((p) =>
+        p.id === planId ? { ...p, amounts: { ...p.amounts, [base]: Math.round(major * 100) } } : p,
+      ),
+    }));
+  const major = (plan: PricePlanRow | undefined) =>
+    plan ? Math.round((plan.amounts[base] ?? 0) / 100) : 0;
+
+  // The period columns a tier is actually sold on. Every tier the seed ships
+  // has all three, but a catalogue that drops one must not draw a blank input
+  // that writes nowhere — so the columns are the UNION of what is sold.
+  const months = Array.from(new Set(tiers.flatMap((t) => seatPeriodsFor(book, t)))).sort(
+    (a, b) => a - b,
+  );
+  const MONTH_LABEL: Record<number, string> = { 3: "Quarterly", 6: "Half-yearly", 12: "Annual" };
+
+  return (
+    <>
+      <Card className="overflow-hidden" data-testid="pc-paid-trial">
+        <CardHead icon={<Gift className="h-4 w-4" />} name="Paid trial" sub={null} tag={null} />
+        <div className="flex items-center gap-3 px-4 py-3.5">
+          <label className="text-[12px] text-fg-2" htmlFor="pc-paid-rate">
+            Per-deck rate ({symbol})
+          </label>
+          {paid ? (
+            <NumberField
+              label={`Paid trial per-deck rate in ${base}`}
+              testId="pc-paid-rate"
+              width={120}
+              value={major(paid)}
+              onCommit={(v) => setPrice(paid.id, v)}
+            />
+          ) : (
+            <span className="text-[12px] text-fg-muted">
+              No paid-trial rate is in the catalogue.
+            </span>
+          )}
+        </div>
+      </Card>
+
+      <Card className="overflow-hidden" data-testid="pc-individual-plans">
+        <CardHead
+          icon={<User className="h-4 w-4" />}
+          name={`Individual plans — ${symbol} per period`}
+          sub={null}
+          tag={null}
+        />
+        <table className="w-full border-collapse">
+          <thead>
+            <tr className="border-b-[1.5px] border-line">
+              <th className={TH}>Seat</th>
+              {months.map((m) => (
+                <th key={m} className={TH}>
+                  {MONTH_LABEL[m] ?? `${m} months`}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {tiers.map((tier) => (
+              <tr key={tier} className="border-b border-line last:border-b-0">
+                <td className={`${TD} font-medium text-fg`}>{PLAN_LABELS[tier as Plan]}</td>
+                {months.map((m) => {
+                  const plan = seatPlanFor(book, tier, m);
+                  return (
+                    <td key={m} className={TD}>
+                      {plan ? (
+                        <NumberField
+                          label={`${PLAN_LABELS[tier as Plan]} seat, ${MONTH_LABEL[m] ?? m + " months"}, in ${base}`}
+                          testId={`pc-seat-${tier}-${m}`}
+                          width={120}
+                          value={major(plan)}
+                          onCommit={(v) => setPrice(plan.id, v)}
+                        />
+                      ) : (
+                        <span className="text-[11px] text-fg-muted">Not sold</span>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <Card className="overflow-hidden" data-testid="pc-enterprise-plans">
+        <CardHead
+          icon={<Building2 className="h-4 w-4" />}
+          name={`Enterprise plans — ${symbol} annual`}
+          sub={null}
+          tag={null}
+        />
+        <table className="w-full border-collapse">
+          <thead>
+            <tr className="border-b-[1.5px] border-line">
+              <th className={TH}>Plan</th>
+              <th className={TH}>Seats</th>
+              <th className={TH}>Annual price</th>
+            </tr>
+          </thead>
+          <tbody>
+            {enterprise.map((plan) => (
+              <tr key={plan.id} className="border-b border-line last:border-b-0">
+                <td className={`${TD} font-medium text-fg`}>{plan.name}</td>
+                <td className={`${TD} font-mono text-fg-2`}>{plan.seats}</td>
+                <td className={TD}>
+                  <NumberField
+                    label={`${plan.name} annual price in ${base}`}
+                    testId={`pc-ent-${plan.seats}`}
+                    width={120}
+                    value={major(plan)}
+                    onCommit={(v) => setPrice(plan.id, v)}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <div className="flex items-center gap-2.5">
+        <Button variant="primary" onClick={onApply} disabled={busy} data-testid="pc-apply">
+          <Save className="h-3.5 w-3.5" />
+          Save &amp; apply to My Account
+        </Button>
+      </div>
+    </>
+  );
+}
+
+function Heading({ baseCurrency = "INR" }: { baseCurrency?: string }) {
   return (
     <div>
       <h2 className="text-base font-semibold tracking-tight text-fg">Price configuration</h2>
+      {/* v3's `sec-sub`, verbatim — plus the one thing it does not say and this
+          screen must, because the prototype has no draft at all: Save & apply
+          publishes, and nothing below those three cards is live until it does. */}
       <p className="mt-0.5 max-w-3xl text-[13px] text-fg-muted">
-        The master price book behind every plan, pack and enterprise tier — currencies, exchange
-        rates and tax. Changes are a draft until you publish them.
+        Set prices centrally — <strong>changes apply to the My Account signup flow immediately</strong>.
+        All prices in {baseCurrency}, exclusive of GST. Edits below the three cards are a draft
+        until you publish them.
       </p>
     </div>
   );

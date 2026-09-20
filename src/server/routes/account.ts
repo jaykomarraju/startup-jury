@@ -170,6 +170,7 @@ interface OrderRow {
   created_at: string;
   plan_group: AccountOrderView["group"];
   period: AccountOrderView["period"];
+  period_months: number | null;
   payment_method: AccountOrderView["paymentMethod"];
   account_type: AccountType;
   taxed: number;
@@ -178,7 +179,7 @@ interface OrderRow {
 const ORDER_SELECT =
   "SELECT i.id, i.plan_code, i.plan_name, i.units, i.currency, i.subtotal_minor, i.tax_minor, " +
   "i.total_minor, i.gst_rate_pct, i.status, i.checkout_url, i.created_at, o.plan_group, o.period, " +
-  "o.payment_method, o.account_type, o.taxed " +
+  "o.period_months, o.payment_method, o.account_type, o.taxed " +
   "FROM account_orders o JOIN billing_payment_intents i ON i.id = o.intent_id ";
 
 function toOrder(r: OrderRow): AccountOrderView {
@@ -188,6 +189,7 @@ function toOrder(r: OrderRow): AccountOrderView {
     planName: r.plan_name,
     group: r.plan_group,
     period: r.period,
+    periodMonths: r.period_months,
     units: r.units,
     currency: r.currency,
     subtotalMinor: r.subtotal_minor,
@@ -360,6 +362,12 @@ account.post("/orders", async (c) => {
   if (!/^[A-Z]{3}$/.test(currency)) return c.json({ error: "currency_required" }, 400);
   if (!isPaymentMethod(body.paymentMethod)) return c.json({ error: "payment_method_required" }, 400);
   const paymentMethod = body.paymentMethod;
+  // V3-PT — the two quantities a v3 order can carry: a paid-trial pack's deck
+  // count and the extra credits taken beside a seat. Both are PRICED HERE from
+  // the published catalogue, never from anything the client sent; a client that
+  // sends a non-integer is refused rather than coerced.
+  const quantity = typeof body.quantity === "number" ? body.quantity : undefined;
+  const extraCredits = typeof body.extraCredits === "number" ? body.extraCredits : undefined;
 
   const profile = await readProfile(c.env, edition);
   if (!profile) return c.json({ error: "account_required" }, 409);
@@ -367,9 +375,11 @@ account.post("/orders", async (c) => {
   const book = await publishedBook(c.env);
   if (!book) return c.json({ error: "not_published" }, 503);
 
-  const quote = quoteOrder(book, planCode, currency, profile.accountType);
+  const quote = quoteOrder(book, planCode, currency, profile.accountType, { quantity, extraCredits });
   if ("error" in quote) {
     const status = quote.error === "unknown_plan" ? 404 : 400;
+    // 400 for every other refusal, including the two V3-PT added: a bad
+    // quantity and extras the catalogue cannot price.
     return c.json({ error: quote.error }, status);
   }
 
@@ -378,16 +388,17 @@ account.post("/orders", async (c) => {
     purpose: PURPOSE[quote.group],
     planCode: quote.plan.code,
     planName: quote.plan.name,
-    units: quote.plan.units,
-    quantity: 1,
+    units: quote.unitsTotal,
+    quantity: quote.quantity,
     currency: quote.currency,
     money: quote.breakdown,
     actorId,
   });
 
   await c.env.DB.prepare(
-    "INSERT INTO account_orders (intent_id, edition, account_type, plan_group, period, payment_method, taxed, " +
-      "price_version, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO account_orders (intent_id, edition, account_type, plan_group, period, period_months, " +
+      "payment_method, taxed, price_version, created_by, created_at) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   )
     .bind(
       intent.id,
@@ -395,6 +406,7 @@ account.post("/orders", async (c) => {
       profile.accountType,
       quote.group,
       quote.plan.period,
+      quote.plan.periodMonths,
       paymentMethod,
       quote.breakdown.taxed ? 1 : 0,
       book.version,
@@ -497,7 +509,7 @@ ${row("Reference", order.id)}
 ${row("Billed to", billedTo)}
 ${row("Plan", order.planName)}
 ${order.units !== null ? row("Credits", String(order.units)) : ""}
-${row("Billing cycle", billingCycleLine(order.period))}
+${row("Billing cycle", billingCycleLine(order.period, order.periodMonths))}
 ${row("Status", orderStatusLabel(order.status))}
 <tr><th>Subtotal</th><td>${amount(order.subtotalMinor)}</td></tr>
 ${order.taxed ? `<tr><th>GST (${escapeHtml(String(order.ratePct))}%)</th><td>${amount(order.taxMinor)}</td></tr>` : ""}

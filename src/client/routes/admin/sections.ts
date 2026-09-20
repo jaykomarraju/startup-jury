@@ -199,8 +199,10 @@ const ORGANISATION: AdminSection[] = [
     group: "Organisation",
     icon: "IndianRupee",
     heading: "Price configuration",
+    // v3's own `sec-sub`, verbatim. The old one advertised "per-deck rates",
+    // which §8 Q1 retired on 2026-09-11 and no surface has shown since.
     subtitle:
-      "The price book behind every plan, pack and enterprise SKU — per-deck rates, currencies and tax.",
+      "Set prices centrally — changes apply to the My Account signup flow immediately. All prices in INR, exclusive of GST.",
     placeholder: {
       owner: "W4-D",
       contents: [

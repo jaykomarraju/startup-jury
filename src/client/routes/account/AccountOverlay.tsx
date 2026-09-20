@@ -36,10 +36,20 @@ import { useAuth } from "../../auth/useAuth";
 import { usePermissions } from "../../auth/usePermissions";
 import { useBranding } from "../../theme/useBranding";
 import { landingNavId } from "../../../shared/nav";
-import type { PlanGroupId, PublishedPriceBook } from "../../../shared/priceBook";
+import {
+  enterpriseSeatPlans,
+  isSeatCatalogueRow,
+  paidTrialPlan,
+  seatPlanFor,
+  type PlanGroupId,
+  type PublishedPriceBook,
+} from "../../../shared/priceBook";
+import { PLAN_LABELS, type Plan } from "../../../shared/plans";
 import {
   INDIVIDUAL_GROUPS,
   ORGANIZATION_GROUPS,
+  PAID_TRIAL_PACKS,
+  FREE_TRIAL_DECKS,
   billableCurrencies,
   nextAfterAccount,
   planScreenFor,
@@ -69,13 +79,17 @@ import {
   AccountScreen as AccountStep,
   BTN_GHOST,
   Card,
+  EnterpriseSeatScreen,
+  LegacyOrgPlanScreen,
+  LegacyPlanScreen,
   OrgDetailsScreen,
-  OrgPlanScreen,
   OrgTypeScreen,
+  PaidTrialScreen,
   PaymentScreen,
-  PlanScreen,
   ReceiptScreen,
+  SeatScreen,
   Stepper,
+  TrialScreen,
   type AccountDraft,
   type OrgDraft,
 } from "./AccountScreens";
@@ -170,10 +184,25 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
   const [pendingPayment, setPendingPayment] = useState(false);
 
   const [currency, setCurrency] = useState<string>("INR");
+  /**
+   * V3-PT — the seat choice, `iTier` / `iPeriod` / `iExtra`.
+   *
+   * The prototype disables both footer buttons on every tier change and
+   * re-enables them only when a period is picked (`acPickTier` → `acPickPeriod`),
+   * so `months` is cleared with the tier rather than carried across.
+   */
   const [individualGroup, setIndividualGroup] = useState<PlanGroupId>(
     entry === "buy-credits" ? "credit_pack" : "subscription",
   );
   const [planCode, setPlanCode] = useState<string | null>(null);
+  const [tier, setTier] = useState<Plan | null>(null);
+  const [months, setMonths] = useState<number | null>(null);
+  const [extraCredits, setExtraCredits] = useState(0);
+  /** `iPaidPack` — decks of the paid trial, 0 while none is chosen. */
+  const [paidPack, setPaidPack] = useState(0);
+  /** `iTrialLeft`, counted up rather than down. Local, spends nothing. */
+  const [trialUsed, setTrialUsed] = useState(0);
+  const [orgPlanCode, setOrgPlanCode] = useState<string | null>(null);
   const [method, setMethod] = useState<PaymentMethod>("upi");
   const [orderError, setOrderError] = useState<string | null>(null);
   const [order, setOrder] = useState<AccountOrderView | null>(null);
@@ -261,27 +290,43 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
     containerRef.current?.scrollTo?.({ top: 0 });
   }, [screen]);
 
+  /**
+   * **Only the incubator superuser prototype was reshared** (2026-09-19). The
+   * incubator admin, program manager, program associate and jury files, and
+   * every VC file, still draw "Choose your plan" over fixed packs and the
+   * pay-as-you-go ladder — so v3's seat flow is gated to exactly one audience
+   * and everyone else's screens render as they did yesterday. Widening this is
+   * §4 Q85; it needs the other prototypes reshared first.
+   */
+  const seatFlow = edition === "incubator" && role === "superuser";
+
   // ── The catalogue, projected ─────────────────────────────────────────────
   const currencies = useMemo(() => (book ? billableCurrencies(book) : []), [book]);
+
+  // ── The legacy projection, for every audience v3 did not rescope ─────────
   const individualGroups = useMemo(
-    () => (book ? sellableGroups(book, INDIVIDUAL_GROUPS, currency) : []),
-    [book, currency],
+    () => (book && !seatFlow ? sellableGroups(book, INDIVIDUAL_GROUPS, currency) : []),
+    [book, currency, seatFlow],
   );
-  const orgGroup = useMemo(
-    () => (book ? sellableGroups(book, ORGANIZATION_GROUPS, currency)[0] ?? book.groups.find((g) => g.group === "enterprise") : undefined),
-    [book, currency],
+  const legacyOrgGroup = useMemo(
+    () =>
+      book && !seatFlow
+        ? (sellableGroups(book, ORGANIZATION_GROUPS, currency)[0] ??
+          book.groups.find((g) => g.group === "enterprise"))
+        : undefined,
+    [book, currency, seatFlow],
   );
   const plansByGroup = useMemo(() => {
     const out: Record<string, ReturnType<typeof purchasablePlans>> = {};
-    if (!book) return out;
-    for (const g of [...INDIVIDUAL_GROUPS, ...ORGANIZATION_GROUPS]) out[g] = purchasablePlans(book, g, currency);
+    if (!book || seatFlow) return out;
+    for (const g of [...INDIVIDUAL_GROUPS, ...ORGANIZATION_GROUPS]) {
+      // The seat SKUs belong to the new screens; the old ones never drew them.
+      out[g] = purchasablePlans(book, g, currency).filter((p) => !isSeatCatalogueRow(p));
+    }
     return out;
-  }, [book, currency]);
-
+  }, [book, currency, seatFlow]);
   const activeIndividual =
     individualGroups.find((g) => g.group === individualGroup) ?? individualGroups[0];
-
-  /** Default selection on a plan screen: the first badged row (the catalogue's featured one), else the first. */
   const defaultPlanFor = useCallback(
     (group: PlanGroupId): string | null => {
       const plans = plansByGroup[group] ?? [];
@@ -289,24 +334,87 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
     },
     [plansByGroup],
   );
+  const legacyScreenGroup: PlanGroupId | undefined = seatFlow
+    ? undefined
+    : screen === "orgplan"
+      ? "enterprise"
+      : screen === "plan"
+        ? activeIndividual?.group
+        : undefined;
+  const legacySelectedCode = useMemo(() => {
+    if (seatFlow) return null;
+    if (!legacyScreenGroup) return planCode;
+    const plans = plansByGroup[legacyScreenGroup] ?? [];
+    return plans.some((p) => p.code === planCode) ? planCode : defaultPlanFor(legacyScreenGroup);
+  }, [seatFlow, legacyScreenGroup, plansByGroup, planCode, defaultPlanFor]);
 
-  // The selection, always valid for the screen it is shown on. Derived during
-  // render rather than repaired in an effect: an effect leaves one committed
-  // frame with nothing selected, and a Continue clicked in that frame did nothing.
-  const screenGroup: PlanGroupId | undefined =
-    screen === "orgplan" ? "enterprise" : screen === "plan" ? activeIndividual?.group : undefined;
-  const selectedCode = useMemo(() => {
-    if (!screenGroup) return planCode;
-    const plans = plansByGroup[screenGroup] ?? [];
-    return plans.some((p) => p.code === planCode) ? planCode : defaultPlanFor(screenGroup);
-  }, [screenGroup, plansByGroup, planCode, defaultPlanFor]);
+  /** `#ac-orgplans` — the three enterprise seat-count plans, ascending. */
+  const orgPlans = useMemo(
+    () => (book ? enterpriseSeatPlans(book).filter((p) => (p.amounts[currency] ?? 0) > 0) : []),
+    [book, currency],
+  );
 
   const accountType = account?.accountType ?? "individual";
+
+  /**
+   * The selection, always valid for the screen it is shown on. Derived during
+   * render rather than repaired in an effect: an effect leaves one committed
+   * frame with nothing selected, and a Continue clicked in that frame did nothing.
+   *
+   * The INDIVIDUAL branch starts with nothing chosen — v3's footer buttons are
+   * disabled until a seat AND a period have been picked, so defaulting one in
+   * would enable a Continue the prototype keeps shut. The ORGANISATION branch
+   * keeps the old default (`acOrgPlanKey = 's10'`, the middle card), because
+   * `renderOrgPlans` draws one selected on arrival.
+   */
+  const orgSelected = useMemo(() => {
+    if (orgPlans.length === 0) return null;
+    if (orgPlanCode && orgPlans.some((p) => p.code === orgPlanCode)) return orgPlanCode;
+    return (orgPlans[Math.min(1, orgPlans.length - 1)] ?? orgPlans[0]).code;
+  }, [orgPlans, orgPlanCode]);
+
+  const seatPlan = useMemo(
+    () => (book && tier && months ? seatPlanFor(book, tier, months) : undefined),
+    [book, tier, months],
+  );
+
+  /**
+   * What the person is buying right now. Three shapes share one quote:
+   *   a paid-trial pack (`paidPack` decks of `paid_trial`),
+   *   an enterprise plan (+ extra decks at the Premium rate), or
+   *   a seat for a period (+ extra decks at its own tier's rate).
+   */
   const quote = useMemo(() => {
-    if (!book || !selectedCode) return null;
-    const q = quoteOrder(book, selectedCode, currency, accountType);
+    if (!book) return null;
+    if (!seatFlow) {
+      if (!legacySelectedCode) return null;
+      const legacy = quoteOrder(book, legacySelectedCode, currency, accountType);
+      return "error" in legacy ? null : legacy;
+    }
+    let code: string | null = null;
+    let extras: { quantity?: number; extraCredits?: number } = {};
+    if (paidPack > 0) {
+      code = paidTrialPlan(book)?.code ?? null;
+      extras = { quantity: paidPack };
+    } else if (accountType === "organization") {
+      code = orgSelected;
+      extras = { extraCredits };
+    } else if (seatPlan) {
+      code = seatPlan.code;
+      extras = { extraCredits };
+    }
+    if (!code) return null;
+    const q = quoteOrder(book, code, currency, accountType, extras);
     return "error" in q ? null : q;
-  }, [book, selectedCode, currency, accountType]);
+  }, [book, seatFlow, legacySelectedCode, paidPack, accountType, orgSelected, seatPlan, extraCredits, currency]);
+
+  /** The plan name the trial screen puts in "free on your <b>…</b>". */
+  const chosenPlanName =
+    accountType === "organization"
+      ? (orgPlans.find((p) => p.code === orgSelected)?.name ?? "Enterprise Plan")
+      : tier
+        ? `${PLAN_LABELS[tier]} plan`
+        : "selected plan";
 
   // ── Transitions ──────────────────────────────────────────────────────────
   const go = (next: AccountScreen) => {
@@ -394,7 +502,7 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
       setSaved(true);
       // A credit pack chosen before the account existed goes straight to payment;
       // otherwise an organisation chooses its annual plan (`acs-orgplan`).
-      const packChosen = pendingPayment && quote && quote.group !== "enterprise";
+      const packChosen = pendingPayment && quote !== null && quote.group !== "enterprise";
       setPendingPayment(false);
       go(packChosen ? "payment" : "orgplan");
     } catch (err) {
@@ -406,9 +514,8 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
 
   function continueToPayment() {
     if (!quote) return;
-    setPlanCode(quote.plan.code);
     if (!saved) {
-      // "Buy credits" opens on the plan step; the order needs to know who is
+      // "Buy credits" opens on the seat step; the order needs to know who is
       // buying, so the Account screen comes next and then returns here.
       setPendingPayment(true);
       setNotice("Add your account details, then continue to payment.");
@@ -418,12 +525,29 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
     go("payment");
   }
 
+  /** `acTrialBack()` — the trial screens go back to whichever plan screen sent them. */
+  const planScreen: AccountScreen = accountType === "organization" ? "orgplan" : "plan";
+
+  /** The amber "Take a 3-deck free trial" button on both plan screens. */
+  function takeTrial() {
+    setPaidPack(0);
+    setTrialUsed(0);
+    go("trial");
+  }
+
   async function pay() {
     if (!quote) return;
     setBusy(true);
     setOrderError(null);
     try {
-      const res = await placeOrder({ planCode: quote.plan.code, currency: quote.currency, paymentMethod: method });
+      const res = await placeOrder({
+        planCode: quote.plan.code,
+        currency: quote.currency,
+        paymentMethod: method,
+        // Sent so the server can PRICE them; it never trusts a price from here.
+        quantity: quote.quantity,
+        extraCredits: quote.extraCredits,
+      });
       setOrder(res.order);
       go("success");
     } catch (err) {
@@ -435,7 +559,7 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
 
   if (!user) return null;
 
-  const steps = stepperFor(accountType, screen);
+  const steps = stepperFor(accountType, screen, seatFlow);
 
   let body: ReactNode;
   if (loadError) {
@@ -465,9 +589,9 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
     body = (
       <AccountStep
         draft={account}
+        trialDecks={seatFlow ? 0 : book.trial.decks}
         onChange={(patch) => setAccount((a) => (a ? { ...a, ...patch } : a))}
         errors={errors}
-        trialDecks={book.trial.decks}
         onContinue={continueFromAccount}
         busy={busy}
         notice={notice}
@@ -489,12 +613,27 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
       />
     );
   } else if (screen === "orgplan") {
-    body = (
-      <OrgPlanScreen
+    body = seatFlow ? (
+      <EnterpriseSeatScreen
         book={book}
-        group={orgGroup}
+        plans={orgPlans}
+        planCode={orgSelected}
+        onPlan={setOrgPlanCode}
+        extraCredits={extraCredits}
+        onExtra={setExtraCredits}
+        currencies={currencies}
+        currency={currency}
+        onCurrency={setCurrency}
+        onBack={() => go("orgdetails")}
+        onTrial={takeTrial}
+        onContinue={continueToPayment}
+      />
+    ) : (
+      <LegacyOrgPlanScreen
+        book={book}
+        group={legacyOrgGroup}
         plans={plansByGroup.enterprise ?? []}
-        planCode={selectedCode}
+        planCode={legacySelectedCode}
         onPlan={setPlanCode}
         currencies={currencies}
         currency={currency}
@@ -504,8 +643,27 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
       />
     );
   } else if (screen === "plan") {
-    body = (
-      <PlanScreen
+    body = seatFlow ? (
+      <SeatScreen
+        book={book}
+        choice={{ tier, months, extraCredits }}
+        onTier={(t) => {
+          // `acPickTier` clears the period, which is what disables both footer
+          // buttons again — a Pro quarter must not silently become a Premium one.
+          setTier(t);
+          setMonths(null);
+        }}
+        onPeriod={setMonths}
+        onExtra={setExtraCredits}
+        currencies={currencies}
+        currency={currency}
+        onCurrency={setCurrency}
+        onBack={() => go("account")}
+        onTrial={takeTrial}
+        onContinue={continueToPayment}
+      />
+    ) : (
+      <LegacyPlanScreen
         book={book}
         accountType={accountType}
         groups={individualGroups}
@@ -515,12 +673,42 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
           setPlanCode(defaultPlanFor(g.group));
         }}
         plansByGroup={plansByGroup}
-        planCode={selectedCode}
+        planCode={legacySelectedCode}
         onPlan={setPlanCode}
         currencies={currencies}
         currency={currency}
         onCurrency={setCurrency}
         onBack={() => go("account")}
+        onContinue={continueToPayment}
+      />
+    );
+  } else if (screen === "trial") {
+    body = (
+      <TrialScreen
+        planName={chosenPlanName}
+        used={trialUsed}
+        onUse={() => setTrialUsed((n) => Math.min(n + 1, FREE_TRIAL_DECKS))}
+        onBack={() => go(planScreen)}
+        onPayChosen={() => {
+          setPaidPack(0);
+          go("payment");
+        }}
+        onPaidTrial={() => {
+          setPaidPack(0);
+          go("paidtrial");
+        }}
+      />
+    );
+  } else if (screen === "paidtrial") {
+    body = (
+      <PaidTrialScreen
+        book={book}
+        currency={currency}
+        packs={PAID_TRIAL_PACKS}
+        rateMinor={paidTrialPlan(book)?.amounts[currency] ?? 0}
+        selected={paidPack}
+        onSelect={setPaidPack}
+        onBack={() => go("trial")}
         onContinue={continueToPayment}
       />
     );
@@ -534,7 +722,9 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         onMethod={setMethod}
         paymentConfigured={state.paymentConfigured}
         onPay={pay}
-        onBack={() => go(planScreenFor(accountType, quote.group))}
+        onBack={() =>
+          go(seatFlow ? (paidPack > 0 ? "paidtrial" : planScreen) : planScreenFor(accountType, quote.group))
+        }
         busy={busy}
         error={orderError}
       />
@@ -557,7 +747,7 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         <h1 className="text-[23px] font-bold leading-[1.2] text-fg">Choose your plan</h1>
         <p className="mt-3 text-[13.5px] text-fg-2">That selection is no longer available.</p>
         <div className="mt-[26px] flex justify-end">
-          <button type="button" className={BTN_GHOST} onClick={() => go(accountType === "organization" ? "orgplan" : "plan")}>
+          <button type="button" className={BTN_GHOST} onClick={() => go(planScreen)}>
             Back to plan selection
           </button>
         </div>

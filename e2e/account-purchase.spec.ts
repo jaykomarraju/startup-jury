@@ -5,8 +5,14 @@ import { test, expect, type Page } from "@playwright/test";
  *
  * Both branches the prototype depicts, walked end to end to a receipt:
  *
- *   Individual   (incubator superuser) Account → Plan (credit packs) → Payment → Done, in INR
+ *   Individual   (incubator superuser) Account → Seat & pricing → Payment → Done, in INR
  *   Organization (vc admin)            Account → Org type → Org details → Plan → Payment → Done, in USD
+ *
+ * V3-PT rebuilt the middle step FOR THE INCUBATOR SUPERUSER ONLY: v3 sells a
+ * SEAT for a PERIOD, so that walk picks a tier and then a billing period from
+ * the seat catalogue `0073` publishes. The VC admin's walk below is the pre-V3
+ * screen, unchanged, because the VC edition was not rescoped — the two tests
+ * together are what proves the gate holds in a real browser.
  *
  * And the rules the screen exists to get right, pinned so a build that loses one
  * fails here:
@@ -17,7 +23,8 @@ import { test, expect, type Page } from "@playwright/test";
  *   GST  — on the INR order, and none on the USD one.
  *   §8 Q1 — no per-deck figure anywhere in the flow.
  *
- * The prices asserted are the published seed's credit pack and enterprise rows.
+ * The prices asserted are the published seed's seat, credit-pack and
+ * enterprise rows.
  * `price-configuration.spec.ts` temporarily republishes the STANDARD subscription
  * only, so neither is touched by it. Each test saves its edition's account
  * profile and records one intent; it grants no credits, so nothing needs undoing,
@@ -62,7 +69,7 @@ async function steps(page: Page): Promise<string[]> {
   );
 }
 
-test("an individual buys a credit pack through to a receipt (INR, with GST)", async ({ page }) => {
+test("an individual buys a seat through to a receipt (INR, with GST)", async ({ page }) => {
   test.setTimeout(120_000);
   await login(page, "priya.sharma@demo.startupjury.ai"); // incubator superuser
   await page.goto("/app/account");
@@ -72,30 +79,36 @@ test("an individual buys a credit pack through to a receipt (INR, with GST)", as
   await expect(page.getByRole("heading", { level: 1, name: "Create your account" })).toBeVisible();
   await expect(page.getByLabel("Work email")).toHaveValue("priya.sharma@demo.startupjury.ai");
   await page.getByTestId("ac-type-individual").click();
-  expect(await steps(page)).toEqual(["Account", "Plan", "Payment"]);
+  // V3-PT — v3 renamed the individual branch's middle step.
+  expect(await steps(page)).toEqual(["Account", "Seat & pricing", "Payment"]);
   await expectNoCardField(page);
 
   await page.getByLabel("Designation (optional for individuals)").fill("Programme Director");
   await page.getByRole("button", { name: "Continue" }).click();
 
-  // ── Plan: the published credit packs ──
-  await expect(page.getByRole("heading", { level: 1, name: "Choose your plan" })).toBeVisible();
-  await page.getByRole("tab", { name: "Pay-as-you-go credit packs" }).click();
-  await expect(page.getByTestId("ac-plan-pack_10")).toContainText("10 credits");
-  await expect(page.getByTestId("ac-plan-pack_10")).toContainText("₹5,000");
-  await expect(page.getByTestId("ac-plan-pack_50")).toContainText("50 credits");
-  await expect(page.getByTestId("ac-plan-pack_100")).toContainText("100 credits");
+  // ── Seat & pricing: the published seat SKUs (`0073`) ──
+  await expect(page.getByRole("heading", { level: 1, name: "Choose your seat" })).toBeVisible();
+  // Both footer buttons are shut until a seat AND a period are chosen.
+  await expect(page.getByTestId("ac-take-trial")).toBeDisabled();
+  await expect(page.getByRole("button", { name: /Continue to pay/ })).toBeDisabled();
+  await page.getByTestId("ac-tier-pro").click();
+  await expect(page.getByTestId("ac-period-3")).toContainText("₹6,000");
+  await expect(page.getByTestId("ac-period-3")).toContainText("125 decks included");
+  await expect(page.getByTestId("ac-period-12")).toContainText("₹15,360");
   expect(await overlay.innerText()).not.toMatch(PER_DECK);
-  await page.getByTestId("ac-plan-pack_10").click();
-  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByTestId("ac-period-3").click();
+  await expect(page.getByRole("button", { name: /Continue to pay/ })).toBeEnabled();
+  await page.getByRole("button", { name: /Continue to pay/ }).click();
 
   // ── Payment ──
   await expect(page.getByRole("heading", { level: 1, name: "Complete payment" })).toBeVisible();
   const summary = page.getByTestId("ac-order-summary");
-  await expect(summary).toContainText("10-unit pack");
+  await expect(summary).toContainText("Pro seat");
+  await expect(page.getByTestId("ac-line-period")).toContainText("Quarter");
+  await expect(page.getByTestId("ac-line-decks")).toContainText("125 decks");
   await expect(page.getByTestId("ac-gst-line")).toContainText("GST (18%)");
-  await expect(page.getByTestId("ac-gst-line")).toContainText("₹900");
-  await expect(page.getByTestId("ac-total")).toHaveText("₹5,900");
+  await expect(page.getByTestId("ac-gst-line")).toContainText("₹1,080");
+  await expect(page.getByTestId("ac-total")).toHaveText("₹7,080");
   await page.getByTestId("ac-pm-card").click();
   await expect(page.getByTestId("ac-pm-card")).toHaveAttribute("aria-checked", "true");
   await expectNoCardField(page);
@@ -103,8 +116,9 @@ test("an individual buys a credit pack through to a receipt (INR, with GST)", as
 
   // ── Receipt ──
   await expect(page.getByRole("heading", { level: 1, name: "Order recorded" })).toBeVisible();
-  expect(await steps(page)).toEqual(["Account", "Plan", "Done"]);
-  await expect(page.getByTestId("ac-receipt-amount")).toContainText("₹5,900");
+  expect(await steps(page)).toEqual(["Account", "Seat & pricing", "Done"]);
+  await expect(page.getByTestId("ac-receipt-amount")).toContainText("₹7,080");
+  await expect(page.getByTestId("ac-receipt-decks")).toContainText("125 decks ready to use");
   await expect(page.getByTestId("ac-receipt-amount")).toContainText("(incl. GST)");
   await expect(page.getByTestId("ac-receipt-status")).toHaveText("Recorded — not charged");
   await expect(page.getByTestId("ac-receipt-ref")).toContainText("pi_");
@@ -118,7 +132,7 @@ test("an individual buys a credit pack through to a receipt (INR, with GST)", as
   const html = await doc.text();
   expect(html).toContain("Pro-forma invoice");
   expect(html).toContain("NOT A TAX INVOICE");
-  expect(html).toContain("₹5,900");
+  expect(html).toContain("₹7,080");
 
   // X closes the overlay and returns to the app.
   await page.getByRole("button", { name: "Back to dashboard" }).click();
@@ -157,10 +171,13 @@ test("an organisation buys an annual plan through to a receipt (USD, no GST)", a
   await page.getByRole("button", { name: "Create account" }).click();
 
   // ── Org plan, in USD ──
+  // This is a VC ADMIN: the VC edition was not rescoped, so the screen is the
+  // pre-V3 one and the seat-count plans `0073` published are NOT drawn here.
   await expect(page.getByRole("heading", { level: 1, name: "Choose your plan" })).toBeVisible();
   expect(await steps(page)).toEqual(["Account", "Org type", "Org details", "Plan", "Payment", "Done"]);
   await page.getByRole("radio", { name: /USD/ }).click();
   await expect(page.getByTestId("ac-plan-ent_100")).toContainText("$720");
+  await expect(page.getByTestId("ac-plan-ent_s10")).toHaveCount(0);
   await page.getByTestId("ac-plan-ent_100").click();
   await page.getByRole("button", { name: "Continue" }).click();
 

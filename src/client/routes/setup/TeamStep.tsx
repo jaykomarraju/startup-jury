@@ -13,6 +13,24 @@
 //          published catalogue by `GET /api/seats`, and tax is the server's
 //          `priceBreakdown`, re-derived client-side by the same shared function.
 
+//
+// ── V3-PT · item 16 ─────────────────────────────────────────────────────────
+// v3 turned this step into **Nominate your super user**: the tab bar, the owner
+// card, the add-member row and the member list are deleted (−45 lines) and
+// replaced by a handoff card to Team & roles, and `renderTeam()` shrinks to one
+// call, `renderSuper()`.
+//
+// ONLY the incubator superuser prototype was reshared. `AISJ_ICAdmin_V6` still
+// contains `su-addmember` and `su-seatbar`, so an ADMIN's step 4 must render
+// exactly as it did yesterday — which is why both layouts are here and
+// `nominateOnly` picks between them, rather than one replacing the other.
+//
+// Nothing an existing workspace has is stranded by the narrower layout: every
+// member the add-member row created went through `POST /api/seats/members`,
+// which forwards to `POST /api/users` and then sets `plan_tier` — ordinary
+// `users` rows that Team & roles has always listed, with the same invite
+// lifecycle and the same plan pill (§4 Q81, answered by measurement).
+
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -20,6 +38,7 @@ import {
   ArrowRight,
   ArrowUpCircle,
   CircleCheck,
+  ExternalLink,
   Info,
   Lock,
   Mail,
@@ -139,6 +158,8 @@ export function TeamStep({
   onFlowChange?: (buying: boolean) => void;
 }) {
   const manages = seat === "full";
+  /** V3-PT — the reshared prototype's audience, and nobody else (§4 Q85). */
+  const nominateOnly = edition === "incubator" && user.role === "superuser";
   const [view, setView] = useState<SeatsView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [screen, setScreenState] = useState<Screen>("team");
@@ -492,7 +513,110 @@ export function TeamStep({
     );
   }
 
-  // ── The team step ──────────────────────────────────────────────────────────
+  // ── The team step, v3: nominate a super user and hand off ──────────────────
+  if (nominateOnly) {
+    return (
+      <Card>
+        <h2 className="text-[23px] font-bold leading-tight text-fg">Nominate your super user</h2>
+        <p className="mt-1 text-[13.5px] text-fg-muted" data-testid="su-team-sub">
+          {plan === "enterprise" ? (
+            <>
+              Nominate the account&rsquo;s <b>super user</b>. Adding team members and assigning
+              Standard / Pro / Premium seats is done in <b>Team &amp; roles</b>.
+            </>
+          ) : (
+            <>
+              Individual plans are single-seat. Upgrade to Enterprise to nominate a super user and
+              manage a team in Team &amp; roles.
+            </>
+          )}
+        </p>
+
+        <div
+          className="mt-[18px] flex flex-wrap items-center gap-3 rounded-[13px] border border-stone-dk bg-offwhite px-4 py-4"
+          data-testid="su-handoff"
+        >
+          <Users className="h-5 w-5 shrink-0 text-olive-dk" aria-hidden="true" />
+          <p className="min-w-[240px] flex-1 text-[12.5px] leading-relaxed text-fg-2">
+            Ongoing team management lives in <b>Team &amp; roles</b> — the single place to add or
+            remove people, change roles, and reassign the super user later.
+          </p>
+          <Link
+            to="/app/admin/tm"
+            className="inline-flex items-center gap-2 rounded-[10px] border border-stone-dk bg-surface px-[18px] py-2.5 text-[13px] font-semibold text-fg-2 hover:border-fg-muted hover:text-fg"
+          >
+            <ExternalLink className="h-4 w-4" aria-hidden="true" /> Open Team &amp; roles
+          </Link>
+        </div>
+
+        <div
+          className="mt-5 flex max-w-[430px] gap-1.5 rounded-[11px] border border-stone-dk bg-stone p-[5px]"
+          role="group"
+          aria-label="Plan type"
+        >
+          {(["individual", "enterprise"] as const).map((p) => (
+            <button
+              key={p}
+              type="button"
+              aria-pressed={plan === p}
+              onClick={() => setPlan(p)}
+              className={`flex-1 rounded-lg p-[11px] text-[13px] ${
+                plan === p ? "bg-surface font-semibold text-fg shadow-sm" : "text-fg-muted"
+              }`}
+            >
+              {p === "individual" ? "Individual plan" : "Enterprise plan"}
+            </button>
+          ))}
+        </div>
+
+        {plan === "individual" ? (
+          <div>
+            <div className="mt-[18px] rounded-[13px] border border-gold bg-gold-lt p-[22px]">
+              <h3 className="flex items-center gap-2 text-base font-semibold text-gold-dk">
+                <User className="h-4 w-4" /> Individual plan · single seat
+              </h3>
+              <p className="mt-2 max-w-[560px] text-[13px] leading-relaxed text-fg-2">
+                Individual plans include one seat — yours. Inviting colleagues, assigning roles, and
+                sharing cohorts are Enterprise features. Upgrade anytime to build out your team.
+              </p>
+              <Link
+                to="/app/account"
+                className="mt-[15px] inline-flex items-center gap-2 rounded-[10px] bg-gold-dk px-[22px] py-3 text-sm font-semibold text-white hover:bg-gold"
+              >
+                <ArrowUpCircle className="h-4 w-4" /> Upgrade to Enterprise
+              </Link>
+            </div>
+            <div className="mt-4 flex items-center gap-3 rounded-xl border border-stone-dk bg-offwhite px-4 py-[15px]">
+              <Avatar email={viewer?.email ?? ""} />
+              <div className="min-w-0 flex-1">
+                <b className="block text-[13.5px] text-fg">{viewer?.email}</b>
+                <span className="text-[11.5px] text-fg-muted">{viewer?.roleLabel} · you</span>
+              </div>
+              <span className="rounded-full bg-stone px-[11px] py-[3px] text-[11px] font-semibold text-fg-2">
+                Owner
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <SuperBox superuser={superuser} viewer={viewer} />
+            {/* The seat bar stays: it is the only entry to buying a seat, and v3
+                offers no replacement for it. Moving it to Team & roles is §4 Q84. */}
+            <SeatBar view={view} onBuy={openBuy} />
+            {hint?.warn && (
+              <p role="alert" className="mt-3 text-xs text-gold-dk">
+                {hint.text}
+              </p>
+            )}
+          </div>
+        )}
+
+        <TeamFooter onFinish={onFinish} />
+      </Card>
+    );
+  }
+
+  // ── The team step, pre-V3: every role whose prototype still draws it ───────
   const noSuper = !superuser;
   return (
     <Card>

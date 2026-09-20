@@ -93,13 +93,31 @@ interface Sent {
   body: Record<string, unknown>;
 }
 
-function mockApi(edition: Edition, users: UserView[]) {
+function mockApi(
+  edition: Edition,
+  users: UserView[],
+  /** V3-PT — how `PUT /api/users/:id/tier` answers, when a test needs it to refuse. */
+  over: { tier?: { status: number; body: unknown } } = {},
+) {
   const sent: Sent[] = [];
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? "GET";
     if (method !== "GET") {
       sent.push({ url, method, body: JSON.parse(String(init?.body ?? "{}")) });
+    }
+    if (url === "/api/users" && method === "POST") {
+      return json({
+        user: { id: "u_new", name: "Ananya Iyer", email: "ananya.iyer@firm.com" },
+        tempPassword: "aisj-abc123",
+        invite: { delivered: false, status: "skipped" },
+      });
+    }
+    if (/\/tier$/.test(url) && over.tier) {
+      return new Response(JSON.stringify(over.tier.body), {
+        status: over.tier.status,
+        headers: { "content-type": "application/json" },
+      });
     }
     if (url.startsWith("/api/permissions")) {
       if (method === "PUT") return json({ ok: true, updated: 1, cells: [] });
@@ -375,6 +393,89 @@ describe("member roster (F0064 / F0123 / F0148)", () => {
     expect(
       screen.getByRole("textbox", { name: "Designation for kabir@startupjury.vc" }),
     ).toBeInTheDocument();
+  });
+
+  /**
+   * V3-PT item 16 — the Seat select v3 added to this form (`#tm-add-plan`).
+   *
+   * The wizard's add-member block was deleted with the rest of its step, and it
+   * was the ONLY place a seat tier could be chosen at invite time. So the form
+   * posts to `/api/seats/members` — the route that refuses at capacity and
+   * records the seat — rather than to `/api/users`, which does neither.
+   */
+  async function openInvite(name: string, email: string) {
+    renderSection(<TeamRolesSection />, "incubator");
+    await screen.findByText(/Active members/);
+    fireEvent.click(screen.getByRole("button", { name: /Invite member/ }));
+    fireEvent.change(screen.getByPlaceholderText("Priya Sharma"), { target: { value: name } });
+    fireEvent.change(screen.getByPlaceholderText("colleague@company.com"), { target: { value: email } });
+  }
+
+  it("creates the member, then assigns the seat the form chose — two steps, in that order", async () => {
+    const sent = mockApi("incubator", [member()]);
+    await openInvite("Ananya Iyer", "ananya.iyer@firm.com");
+
+    const seat = screen.getByRole("combobox", { name: "Seat for the new member" });
+    expect(Array.from(seat.querySelectorAll("option")).map((o) => o.textContent)).toEqual([
+      "Standard",
+      "Pro",
+      "Premium",
+    ]);
+    fireEvent.change(seat, { target: { value: "premium" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send invite" }));
+
+    await waitFor(() => expect(sent.length).toBeGreaterThan(1));
+    // Creation is `POST /api/users`, exactly as it was — routing it through the
+    // seat route would have added a capacity refusal this screen cannot answer.
+    expect(sent[0]).toMatchObject({ url: "/api/users", method: "POST" });
+    expect(sent[0].body).toMatchObject({ name: "Ananya Iyer", email: "ananya.iyer@firm.com" });
+    expect(sent[0].body).not.toHaveProperty("tier");
+    expect(sent[1]).toMatchObject({ url: "/api/seats/members/u_new/tier", method: "PUT" });
+    expect(sent[1].body).toEqual({ tier: "premium" });
+  });
+
+  it("does not call the seat route at all for the default tier", async () => {
+    const sent = mockApi("incubator", [member()]);
+    await openInvite("Dev Patel", "dev.patel@firm.com");
+    fireEvent.click(screen.getByRole("button", { name: "Send invite" }));
+    await waitFor(() => expect(sent.length).toBeGreaterThan(0));
+    expect(sent.map((c) => c.url)).toEqual(["/api/users"]);
+  });
+
+  it("a seat refused at capacity keeps the invite and says the member is on Standard", async () => {
+    const sent = mockApi("incubator", [member()], {
+      tier: {
+        status: 409,
+        body: { error: "seat_limit_reached", message: "No Premium seats left — buy a Premium seat." },
+      },
+    });
+    await openInvite("Ananya Iyer", "ananya.iyer@firm.com");
+    fireEvent.change(screen.getByRole("combobox", { name: "Seat for the new member" }), {
+      target: { value: "premium" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send invite" }));
+
+    await waitFor(() => expect(sent.length).toBeGreaterThan(1));
+    // The member exists — the invite is not lost over a seat…
+    expect(await screen.findByText(/Invited Ananya Iyer/)).toBeInTheDocument();
+    // …and the reason is not swallowed either.
+    expect(screen.getByTestId("invite-seat-note")).toHaveTextContent("No Premium seats left");
+    expect(screen.getByTestId("invite-seat-note")).toHaveTextContent("hold a Standard seat until one is free");
+  });
+
+  it("a mentor holds no seat, so the Seat select is disabled and no tier is sent", async () => {
+    const sent = mockApi("incubator", [member()]);
+    await openInvite("Dev Patel", "dev.patel@firm.com");
+    fireEvent.change(screen.getByRole("combobox", { name: "User type" }), { target: { value: "mentor" } });
+    expect(screen.getByRole("combobox", { name: "Seat for the new member" })).toBeDisabled();
+    fireEvent.change(screen.getByRole("combobox", { name: "Seat for the new member" }), {
+      target: { value: "premium" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send invite" }));
+
+    await waitFor(() => expect(sent.length).toBeGreaterThan(0));
+    expect(sent.map((c) => c.url)).toEqual(["/api/users"]);
+    expect(sent[0].body).toMatchObject({ userType: "mentor" });
   });
 
   it("does not offer row actions on the account owner or on yourself", async () => {

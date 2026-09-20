@@ -27,6 +27,8 @@
  * are editable data, never a network call (§1.3).
  */
 
+import type { Plan } from "./plans";
+
 /** Every price is stated in the base currency first; the rest derive from it. */
 export const BASE_CURRENCY = "INR";
 
@@ -40,13 +42,52 @@ export const PLAN_GROUPS: readonly PlanGroupId[] = [
   "enterprise",
 ];
 
-export type BillingPeriod = "month" | "year" | "one_time";
+/**
+ * The period a plan bills on.
+ *
+ * `quarter` and `half_year` arrive with V3-PT's seat model and exist ONLY in
+ * this type — `price_plans.period` still CHECKs the original three tokens,
+ * because widening a SQLite CHECK means rebuilding the table and `price_plans`
+ * is the parent of `price_amounts … ON DELETE CASCADE`. A quarterly seat is
+ * stored as `period = NULL, period_months = 3`, which the old CHECK already
+ * accepts, and `periodOf()` is what every reader goes through. See
+ * `migrations/0073_seat_pricing_v3.sql`.
+ */
+export type BillingPeriod = "month" | "quarter" | "half_year" | "year" | "one_time";
 
 export const PERIOD_SUFFIX: Record<BillingPeriod, string> = {
   month: "/mo",
+  quarter: "/quarter",
+  half_year: "/half-year",
   year: "/year",
   one_time: "",
 };
+
+/** The prototype's `IPERIODS` keys, in its order: Quarter · Half-year · Year. */
+export const SEAT_PERIOD_MONTHS: readonly number[] = [3, 6, 12];
+
+const MONTHS_TO_PERIOD: Record<number, BillingPeriod> = {
+  1: "month",
+  3: "quarter",
+  6: "half_year",
+  12: "year",
+};
+
+/**
+ * A plan's real period. `periodMonths` WINS where both are present, because it
+ * is the only one of the two that can say "quarter".
+ */
+export function periodOf(plan: Pick<PricePlanRow, "period" | "periodMonths">): BillingPeriod | null {
+  if (plan.periodMonths != null) return MONTHS_TO_PERIOD[plan.periodMonths] ?? plan.period;
+  return plan.period;
+}
+
+export function monthsOf(plan: Pick<PricePlanRow, "period" | "periodMonths">): number | null {
+  if (plan.periodMonths != null) return plan.periodMonths;
+  if (plan.period === "month") return 1;
+  if (plan.period === "year") return 12;
+  return null;
+}
 
 export interface CurrencyRow {
   code: string;
@@ -106,7 +147,25 @@ export interface PricePlanRow {
   features: string | null;
   /** Decks included. NULL for a subscription, which is metered by its own rules. */
   units: number | null;
+  /**
+   * The legacy period token. NULL on a quarterly or half-yearly plan — the
+   * column's CHECK cannot spell either. Read `periodOf()`, never this.
+   */
   period: BillingPeriod | null;
+  /** 3 · 6 · 12 on a seat SKU; NULL on everything that predates V3-PT. */
+  periodMonths: number | null;
+  /**
+   * `standard` · `pro` · `premium` on a SEAT SKU, NULL on everything else. The
+   * prototype's "Choose your seat" screen is (tier × period), so a tier is a
+   * fact about the row rather than something parsed out of its code.
+   */
+  tier: Plan | null;
+  /**
+   * Premium seats included, on an ENTERPRISE seat plan (5 · 10 · 15); NULL
+   * elsewhere. The prototype's enterprise table shows it as a read-only column
+   * beside the one editable price.
+   */
+  seats: number | null;
   active: boolean;
   sortOrder: number;
   /** Currency code → minor units. Every active currency has an entry. */
@@ -294,6 +353,92 @@ export function plansInGroup(book: PriceBook, group: PlanGroupId): PricePlanRow[
 
 export function groupOf(book: PriceBook, group: PlanGroupId): PriceGroupRow | undefined {
   return book.groups.find((g) => g.group === group);
+}
+
+// ── V3-PT · the seat catalogue ───────────────────────────────────────────────
+
+/**
+ * The prototype's `Individual plans — ₹ per period` table, as rows.
+ *
+ * A seat SKU is any active subscription plan that carries a `tier`, which is
+ * exactly what `0073` seeds and nothing that predates it has. Selecting on the
+ * COLUMN rather than on a code prefix is what keeps the legacy `standard` /
+ * `pro` monthly plans — which `src/shared/seats.ts` still prices a purchased
+ * seat from — out of the seat screens without deleting them.
+ */
+export function seatPlans(book: PriceBook): PricePlanRow[] {
+  return book.plans.filter((p) => p.group === "subscription" && p.tier !== null && p.active);
+}
+
+/** The seat SKU for one (tier, months) cell, or undefined if it is not sold. */
+export function seatPlanFor(book: PriceBook, tier: Plan, months: number): PricePlanRow | undefined {
+  return seatPlans(book).find((p) => p.tier === tier && p.periodMonths === months);
+}
+
+/** The tiers the catalogue actually sells a seat for, in `PLAN_ORDER`. */
+export function seatTiers(book: PriceBook): Plan[] {
+  const order: readonly Plan[] = ["standard", "pro", "premium"];
+  const sold = new Set(seatPlans(book).map((p) => p.tier));
+  return order.filter((t) => sold.has(t));
+}
+
+/** The billing periods sold for `tier`, ascending — 3 · 6 · 12 months. */
+export function seatPeriodsFor(book: PriceBook, tier: Plan): number[] {
+  return seatPlans(book)
+    .filter((p) => p.tier === tier && p.periodMonths !== null)
+    .map((p) => p.periodMonths as number)
+    .sort((a, b) => a - b);
+}
+
+/**
+ * The prototype's `Enterprise plans — ₹ annual` table: the three seat-count
+ * plans, ascending by seats. Selected on `seats`, so the legacy `ent_100…500`
+ * unit tiers stay in the catalogue and off the screen.
+ */
+export function enterpriseSeatPlans(book: PriceBook): PricePlanRow[] {
+  return book.plans
+    .filter((p) => p.group === "enterprise" && p.seats !== null && p.active)
+    .sort((a, b) => (a.seats as number) - (b.seats as number));
+}
+
+/** The prototype's `Paid trial` card: one plan, whose price is the deck rate. */
+export const PAID_TRIAL_CODE = "paid_trial";
+
+/**
+ * True for every row `0073` added — the nine seats, the three enterprise seat
+ * plans and the paid-trial rate.
+ *
+ * Only the incubator SUPERUSER prototype was reshared, so the pre-V3 plan
+ * screens every other role still sees must draw NONE of them. One predicate,
+ * used by both sides, is what keeps the two lists from drifting: add a seat SKU
+ * and it appears on the new screens and stays off the old ones, automatically.
+ */
+export function isSeatCatalogueRow(plan: PricePlanRow): boolean {
+  return plan.tier !== null || plan.seats !== null || plan.code === PAID_TRIAL_CODE;
+}
+
+export function paidTrialPlan(book: PriceBook): PricePlanRow | undefined {
+  return book.plans.find((p) => p.code === PAID_TRIAL_CODE);
+}
+
+/**
+ * `ICREDIT_RATE` — what one extra deck costs on a tier, in minor units.
+ *
+ * The prototype states it as "annual plan price / 500 included decks" and hard
+ * codes 23.04 / 30.72 / 40.96. Deriving it from the ANNUAL seat SKU keeps the
+ * two in step when an administrator edits the annual price, which is the whole
+ * point of item 15 feeding item 17. Returns null when the tier has no annual
+ * seat priced in `currency`.
+ */
+export function extraCreditRateMinor(
+  book: PriceBook,
+  tier: Plan,
+  currency: string,
+): number | null {
+  const annual = seatPlanFor(book, tier, 12);
+  const price = annual?.amounts[currency];
+  if (!annual || price === undefined || !annual.units) return null;
+  return price / annual.units;
 }
 
 /**

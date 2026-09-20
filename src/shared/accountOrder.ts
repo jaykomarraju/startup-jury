@@ -24,7 +24,9 @@
 import {
   plansInGroup,
   groupOf,
+  extraCreditRateMinor,
   listedPlans,
+  type BillingPeriod,
   type PlanGroupId,
   type PricePlanRow,
   type PriceGroupRow,
@@ -48,11 +50,25 @@ export type AccountScreen =
   | "orgdetails"
   | "orgplan"
   | "plan"
+  /** V3-PT · `#acs-trial` — the three free decks, used one at a time. */
+  | "trial"
+  /** V3-PT · `#acs-paidtrial` — buy 10–50 more decks at the paid-trial rate. */
+  | "paidtrial"
   | "payment"
   | "success";
 
-/** `_scripts.js` `STEPS_IND` / `STEPS_ENT`, verbatim. */
+/**
+ * `_scripts.js` `STEPS_IND` / `STEPS_ENT`, verbatim.
+ *
+ * v3 renamed the individual branch's middle step from "Plan" to "Seat &
+ * pricing", but ONLY the incubator superuser prototype was reshared — every
+ * other role's file still says "Plan". So the label is a parameter of
+ * `stepperFor`, not a constant, and `STEPS_INDIVIDUAL` stays what it was.
+ */
 export const STEPS_INDIVIDUAL = ["Account", "Plan", "Payment"] as const;
+
+/** v3's `STEPS_IND`, for the incubator superuser. */
+export const STEPS_INDIVIDUAL_SEATS = ["Account", "Seat & pricing", "Payment"] as const;
 export const STEPS_ORGANIZATION = [
   "Account",
   "Org type",
@@ -75,15 +91,30 @@ export interface StepView {
  * not belong to the branch (the individual `plan` step reached from the
  * organisation branch through "Buy credits") takes the branch's Plan position.
  */
-export function stepperFor(type: AccountType, screen: AccountScreen): StepView[] {
+export function stepperFor(
+  type: AccountType,
+  screen: AccountScreen,
+  /** True for the incubator superuser, whose middle step v3 renamed. */
+  seatFlow = false,
+): StepView[] {
   const labels: string[] =
-    type === "organization" ? [...STEPS_ORGANIZATION] : [...STEPS_INDIVIDUAL];
+    type === "organization"
+      ? [...STEPS_ORGANIZATION]
+      : [...(seatFlow ? STEPS_INDIVIDUAL_SEATS : STEPS_INDIVIDUAL)];
   const index =
     type === "organization"
-      ? { account: 0, orgtype: 1, orgdetails: 2, orgplan: 3, plan: 3, payment: 4, success: 5 }[screen]
-      : { account: 0, orgtype: 0, orgdetails: 0, orgplan: 1, plan: 1, payment: 2, success: 2 }[screen];
+      ? {
+          account: 0, orgtype: 1, orgdetails: 2, orgplan: 3, plan: 3,
+          trial: 3, paidtrial: 3, payment: 4, success: 5,
+        }[screen]
+      : {
+          account: 0, orgtype: 0, orgdetails: 0, orgplan: 1, plan: 1,
+          trial: 1, paidtrial: 1, payment: 2, success: 2,
+        }[screen];
   const onSuccess = screen === "success";
-  if (onSuccess && type === "individual") labels[2] = "Done";
+  // v3 relabels the LAST step, not index 2 — the individual branch's labels are
+  // three long today but the expression must not care.
+  if (onSuccess && type === "individual") labels[labels.length - 1] = "Done";
   return labels.map((label, i) => ({
     label,
     state: onSuccess || i < index ? "done" : i === index ? "active" : "todo",
@@ -380,15 +411,56 @@ export type QuoteError =
   | "unknown_plan"
   | "plan_not_purchasable"
   | "not_priced_in_currency"
-  | "organization_required";
+  | "organization_required"
+  | "invalid_quantity"
+  | "extras_not_priced";
 
 export interface OrderQuote {
   plan: PricePlanRow;
   group: Exclude<PlanGroupId, "free_trial">;
   currency: string;
-  /** The stated price in `currency`, as the catalogue publishes it. */
+  /** The stated price of ONE unit in `currency`, as the catalogue publishes it. */
   amountMinor: number;
+  /**
+   * How many of the plan were ordered. 1 for a seat or an enterprise plan; the
+   * deck count for a paid-trial pack, which the prototype sells in 10s (`PAID_PACKS`).
+   */
+  quantity: number;
+  /** `IEXTRA_PACKS` — extra decks bought on top, at the tier's credit rate. */
+  extraCredits: number;
+  /** What those extra decks cost, in minor units. Zero when none were taken. */
+  extraMinor: number;
+  /** Decks the order grants in total: `units × quantity + extraCredits`. */
+  unitsTotal: number | null;
+  /** `amountMinor × quantity + extraMinor`, before tax. */
+  subtotalMinor: number;
   breakdown: TaxBreakdown;
+}
+
+/** The two quantities a v3 order can carry beyond the plan itself. */
+export interface OrderExtras {
+  quantity?: number;
+  extraCredits?: number;
+}
+
+/**
+ * The extra-credit rate for the plan being bought, in minor units per deck.
+ *
+ * The prototype hard codes `ICREDIT_RATE` as 23.04 / 30.72 / 40.96 and says in
+ * a comment where they came from: the ANNUAL plan price divided by its 500
+ * included decks. Deriving it keeps the rate honest when an administrator edits
+ * that annual price in Price configuration — which is the whole point of item
+ * 15 feeding item 17. An enterprise order uses the Premium rate, exactly as
+ * `renderOrgExtra()` does.
+ */
+export function extraCreditRate(
+  book: PublishedPriceBook,
+  plan: PricePlanRow,
+  currency: string,
+): number {
+  const tier = plan.group === "enterprise" ? "premium" : plan.tier;
+  if (!tier) return 0;
+  return extraCreditRateMinor(book, tier, currency) ?? 0;
 }
 
 /**
@@ -403,6 +475,7 @@ export function quoteOrder(
   planCode: string,
   currency: string,
   accountType: AccountType,
+  extras: OrderExtras = {},
 ): OrderQuote | { error: QuoteError } {
   const plan = book.plans.find((p) => p.code === planCode);
   if (!plan) return { error: "unknown_plan" };
@@ -415,13 +488,36 @@ export function quoteOrder(
   if (!billableCurrencies(book).includes(currency) || amountMinor <= 0) {
     return { error: "not_priced_in_currency" };
   }
+
+  const quantity = normaliseCount(extras.quantity, 1);
+  const extraCredits = normaliseCount(extras.extraCredits, 0);
+  if (quantity < 1) return { error: "invalid_quantity" };
+  if (extraCredits < 0) return { error: "invalid_quantity" };
+  // A rate of 0 means the catalogue has no annual seat to derive one from, so
+  // extra credits cannot be priced — refusing beats charging nothing for them.
+  const rate = extraCredits > 0 ? extraCreditRate(book, plan, currency) : 0;
+  if (extraCredits > 0 && rate <= 0) return { error: "extras_not_priced" };
+  const extraMinor = Math.round(rate * extraCredits);
+  const subtotalMinor = amountMinor * quantity + extraMinor;
+
   return {
     plan,
     group: plan.group,
     currency,
     amountMinor,
-    breakdown: priceBreakdown(amountMinor, taxSettingsOf(book.tax), currency),
+    quantity,
+    extraCredits,
+    extraMinor,
+    unitsTotal: plan.units === null ? (extraCredits || null) : plan.units * quantity + extraCredits,
+    subtotalMinor,
+    breakdown: priceBreakdown(subtotalMinor, taxSettingsOf(book.tax), currency),
   };
+}
+
+/** A count from a request body: a non-negative integer, or NaN to be refused. */
+function normaliseCount(v: number | undefined, fallback: number): number {
+  if (v === undefined) return fallback;
+  return Number.isInteger(v) ? v : -1;
 }
 
 // ── The receipt ──────────────────────────────────────────────────────────────
@@ -433,7 +529,9 @@ export interface AccountOrderView {
   planCode: string | null;
   planName: string;
   group: Exclude<PlanGroupId, "free_trial">;
-  period: "month" | "year" | "one_time" | null;
+  period: BillingPeriod | null;
+  /** 3 · 6 · 12 on a seat order; NULL on everything that predates V3-PT. */
+  periodMonths: number | null;
   units: number | null;
   currency: string;
   subtotalMinor: number;
@@ -449,19 +547,69 @@ export interface AccountOrderView {
   createdAt: string;
 }
 
-/** The receipt's "Billing cycle" line. Stated from the plan's period, never a date we invent. */
-export function billingCycleLine(period: AccountOrderView["period"]): string {
-  if (period === "year") return "Annual subscription · renews yearly";
-  if (period === "month") return "Monthly subscription · renews monthly";
+/**
+ * The receipt's "Billing cycle" line. Stated from the plan's period, never a
+ * date we invent. `periodMonths` wins where both are present — it is the only
+ * one of the two that can say "quarter" (`migrations/0073`).
+ */
+export function billingCycleLine(
+  period: AccountOrderView["period"],
+  periodMonths: number | null = null,
+): string {
+  const p = periodMonths != null ? periodFromMonths(periodMonths) ?? period : period;
+  if (p === "year") return "Annual subscription · renews yearly";
+  if (p === "half_year") return "Billed per half-year · renews every 6 months";
+  if (p === "quarter") return "Billed per quarter · renews every 3 months";
+  if (p === "month") return "Monthly subscription · renews monthly";
   return "One-time purchase · credits never expire";
+}
+
+function periodFromMonths(months: number): BillingPeriod | null {
+  if (months === 1) return "month";
+  if (months === 3) return "quarter";
+  if (months === 6) return "half_year";
+  if (months === 12) return "year";
+  return null;
 }
 
 /** The label a plan's price carries beside it on a card ("/mo", "Annual"). */
 export function periodLabel(period: PricePlanRow["period"]): string {
   if (period === "month") return "/mo";
+  if (period === "quarter") return "/quarter";
+  if (period === "half_year") return "/half-year";
   if (period === "year") return "Annual";
   return "";
 }
+
+/** The prototype's `IPERIODS` — label, sub-line and its "Best value" flag. */
+export const SEAT_PERIOD_VIEWS: readonly {
+  months: number;
+  label: string;
+  sub: string;
+  best?: true;
+}[] = [
+  { months: 3, label: "Quarter", sub: "3 months" },
+  { months: 6, label: "Half-year", sub: "6 months" },
+  { months: 12, label: "Year", sub: "12 months", best: true },
+];
+
+/** `IPLABEL` — the word after "per" on the payment and receipt lines. */
+export function seatPeriodWord(months: number | null): string {
+  if (months === 3) return "quarter";
+  if (months === 6) return "half-year";
+  if (months === 12) return "year";
+  if (months === 1) return "month";
+  return "period";
+}
+
+/** The prototype's `IEXTRA_PACKS` — the extra-credit pack sizes, in decks. */
+export const EXTRA_CREDIT_PACKS: readonly number[] = [125, 250, 375, 500];
+
+/** The prototype's `PAID_PACKS` — the paid trial's deck counts. */
+export const PAID_TRIAL_PACKS: readonly number[] = [10, 20, 30, 40, 50];
+
+/** The prototype's free trial: three decks, used one at a time. */
+export const FREE_TRIAL_DECKS = 3;
 
 /** Human status for a recorded order. Never "Paid" unless a provider said so. */
 export function orderStatusLabel(status: AccountOrderView["status"]): string {

@@ -28,7 +28,11 @@ import {
 } from "./teamApi";
 import { creatableStaffRoles, roleLabel, type Edition, type Role } from "../../../shared/roles";
 import { PERMISSION_TASKS, PERMISSION_TASK_GROUPS } from "../../../shared/types";
-import { PLAN_LABELS, type Plan } from "../../../shared/plans";
+import { PLANS, PLAN_LABELS, type Plan } from "../../../shared/plans";
+import { setMemberTier } from "../../seatsApi";
+
+/** `users.plan_tier`'s column default (`0052`): what a new member holds. */
+const DEFAULT_TIER: Plan = "standard";
 
 /**
  * Admin console → Organisation → **Team & roles** (prototype `admin/s-tm.html`).
@@ -442,6 +446,12 @@ interface IssuedCredential {
   tempPassword?: string;
   invite: InviteResult;
   verb: "invited" | "resent";
+  /**
+   * V3-PT — why the chosen seat could not be assigned, when it could not. The
+   * member exists either way, on the default tier; the invite is not lost over
+   * a seat, and the reason is not swallowed either.
+   */
+  seatNote?: string | null;
 }
 
 function MembersCard({ edition, rows, loadError, plan, reload, selfId }: MembersCardProps) {
@@ -811,6 +821,13 @@ function InviteRow({
   const [userType, setUserType] = useState<"staff" | "mentor">("staff");
   // The least-privileged creatable role, so nobody is made an admin by default.
   const [role, setRole] = useState<Role>(roleOptions[roleOptions.length - 1]);
+  /**
+   * V3-PT item 16 — the Seat select v3 added to this form (`#tm-add-plan`).
+   * The wizard's add-member block is gone, and with it the only place a seat
+   * tier could be chosen at invite time; without this, every member Team &
+   * roles creates would silently land on `users.plan_tier`'s default.
+   */
+  const [tier, setTier] = useState<Plan>(DEFAULT_TIER);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -819,6 +836,11 @@ function InviteRow({
     setBusy(true);
     setError(null);
     try {
+      // Creation stays on `POST /api/users`, unchanged. Routing it through the
+      // SEAT route instead would have added a capacity refusal this screen has
+      // never had and has no Buy-seats control to answer with (§4 Q84) — a
+      // tightening nobody asked for, and it broke `e2e/roles.spec.ts` at once
+      // because every tier in the seed is full.
       const res = await createUser({
         name,
         email,
@@ -826,12 +848,26 @@ function InviteRow({
         role: userType === "staff" ? role : undefined,
         title: title || undefined,
       });
+      // The seat is a SECOND, non-fatal step. A refusal here leaves a created
+      // member on the default tier — which is exactly what this form did
+      // yesterday — and says so rather than losing the invite.
+      let seatNote: string | null = null;
+      if (userType === "staff" && tier !== DEFAULT_TIER) {
+        try {
+          await setMemberTier(res.user.id, tier);
+        } catch (err) {
+          seatNote =
+            (err instanceof ApiError && typeof err.body.message === "string" ? err.body.message : null) ??
+            `A ${PLAN_LABELS[tier]} seat could not be assigned.`;
+        }
+      }
       await onInvited({
         name: res.user.name,
         email: res.user.email,
         tempPassword: res.tempPassword,
         invite: res.invite,
         verb: "invited",
+        seatNote,
       });
     } catch (err) {
       setError(
@@ -912,6 +948,22 @@ function InviteRow({
             ))}
           </select>
         </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-meta font-medium text-fg-muted">Seat</span>
+          <select
+            aria-label="Seat for the new member"
+            className="sj-input h-9 disabled:opacity-50"
+            value={tier}
+            onChange={(e) => setTier(e.target.value as Plan)}
+            disabled={userType === "mentor"}
+          >
+            {PLANS.map((t) => (
+              <option key={t} value={t}>
+                {PLAN_LABELS[t]}
+              </option>
+            ))}
+          </select>
+        </label>
         <Button type="submit" variant="primary" disabled={busy}>
           {busy ? "Inviting…" : "Send invite"}
         </Button>
@@ -976,6 +1028,12 @@ function CredentialNotice({
           Dismiss
         </Button>
       </div>
+      {issued.seatNote && (
+        <p className="mt-2 text-xs text-gold-dk" data-testid="invite-seat-note" role="alert">
+          {issued.seatNote} They hold a {PLAN_LABELS[DEFAULT_TIER]} seat until one is free — change
+          it from their row once you have bought one.
+        </p>
+      )}
     </div>
   );
 }

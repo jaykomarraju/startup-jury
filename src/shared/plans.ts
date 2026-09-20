@@ -66,7 +66,13 @@ export function isPlan(v: unknown): v is Plan {
 /** The four catalogue groups `price_plans.plan_group` holds. */
 export type PlanGroup = "free_trial" | "subscription" | "credit_pack" | "enterprise";
 
-export type BillingPeriod = "month" | "year" | "one_time";
+/**
+ * V3-PT widened this with `quarter` and `half_year` so the seat catalogue and
+ * the plan tiers keep ONE period vocabulary. The DB column is unchanged — see
+ * `periodOf()` and `migrations/0073_seat_pricing_v3.sql` for why a quarterly
+ * plan stores `period = NULL, period_months = 3`.
+ */
+export type BillingPeriod = "month" | "quarter" | "half_year" | "year" | "one_time";
 
 /** One published price: a catalogue row resolved into a single currency. */
 export interface PublishedPlan {
