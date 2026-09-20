@@ -225,7 +225,7 @@ gaps, e2e ~224.
 
 | Session | Items | Migration | typecheck · lint | unit | roles | e2e | notes |
 |---|---|---|---|---|---|---|---|
-| `V3-SF` | 13 done · 3, 4 recorded | 0072 | clean · clean | **2093 passed / 1 skipped** (+24) | **1115 / 1115** | _pending — see below_ | negative control run on all four filters, the console gate and the audit trail |
+| `V3-SF` | 13 done · 3, 4 recorded | 0072 | clean · clean | **2093 passed / 1 skipped** (+24) | **1115 / 1115** | **209 passed · 15 flaky · 2 failed** of 226 (+2) — both failures are dev-server casualties, see below | negative control run on all four filters, the console gate and the audit trail |
 
 ### `V3-SF` — what the negative control actually proved
 
@@ -244,6 +244,31 @@ carries a programme-associate evaluation, so the row set never moves and a
 count assertion would pass with the filter gone. That is the vacuous-test shape
 Wave 9 integration caught on the first issue-21 test, and it is the reason this
 file asserts cell OWNERS on the report rather than column headers alone.
+
+### `V3-SF` — the e2e run, stated as it happened
+
+One real regression, found and fixed; everything else is the machine.
+
+**The real one.** `DEFAULT_ADMIN_SECTION` is `"fw"`, so `/app/admin` with no `?section=` lands on
+Scoring framework — which had carried no `<table>` at all until item 13 and now carries two. The
+walk failed with `incubator/superuser/admin table headers`, reproducibly, on both attempts. Fixed by
+re-capturing that ONE row and unioning the two header sets beside the Team & roles set already
+there. The same read returns `tables: []` for `incubator/admin`, which is the superuser gate working,
+so that row was deliberately left alone. `grep -c "table headers"` is **0** across all three runs
+since.
+
+**The machine.** The box carried three to five sibling e2e runs throughout. Each run logged
+**319–375 `[vite] Internal server error: fetch failed`**, and the two remaining failures are that and
+nothing else: `incubator/superuser/scoredrift` read its title as **`"Sign in"`** (the session was
+dropped mid-walk) and `incubator/admin/incuration` read **`"Internal Server Error"`**. Neither screen
+is one this session touches. Note for the next session: **`grep -c "Network connection lost"` returned
+ZERO in every one of these runs** — the drop's tell in this vite version is `fetch failed`, plus
+`Internal Server Error` or `Sign in` appearing as a page TITLE, and 180 s timeouts on `/login`
+itself. Grep for both strings.
+
+Per the protocol, the failing file was re-run alone with an untouched spec as a control:
+`coverage.spec.ts`, which this session does not touch, failed the same way in the same run. That is
+what separates the two causes.
 
 ### `V3-SF` — measurements worth keeping
 
