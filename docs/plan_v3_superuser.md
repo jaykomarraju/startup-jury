@@ -260,12 +260,15 @@ TEST + GATE
   drops connections under load and takes unrelated specs with it; its tell is `Received: undefined`
   from a `toHaveCount`. Zero drops means look at the code.
   **`V3-AW` found a SECOND infrastructure tell that grep misses entirely, and MEASURED its cause** —
-  with several worktree servers up the box runs out of EPHEMERAL PORTS, and the Vite plugin can no
-  longer reach its own worker. macOS has 16,384 of them (`sysctl net.inet.ip.portrange` → 49152–65535);
-  with three or four worktrees running e2e this session watched `TIME_WAIT`
-  (`netstat -an | grep -c TIME_WAIT`) climb 4,376 → 11,514 → **15,382, which is 94 % of the whole
-  range**, and a single run logged **192** `fetch failed`s before it was killed at 85/224. That is the real ceiling behind "stagger the gates": it is not CPU, and raising
-  a timeout cannot help. It surfaces as `[vite] Internal server error:
+  the box runs out of EPHEMERAL PORTS and the Vite plugin can no longer reach its own worker. macOS
+  has 16,384 of them (`sysctl net.inet.ip.portrange` → 49152–65535), and **ONE full e2e run burns
+  thousands**: this session watched `TIME_WAIT` (`netstat -an | grep -c TIME_WAIT`) go from **15 to
+  14,603 with only TWO worktrees running, at load 4.5**, and peak at **15,382 — 94 % of the whole
+  range** — while a single run logged **192** `fetch failed`s before dying at 85/224. So the
+  threshold is far lower than "don't run nine at once": **two concurrent `test:e2e` runs already
+  saturate this machine.** It is NOT CPU (load was 4–6 throughout the worst of it) and raising a
+  timeout cannot help. **Practical rule: check `netstat -an | grep -c TIME_WAIT` BEFORE you start.**
+  Under ~4,000 the run is sound; over ~10,000 do not bother — it drains in minutes once runs stop. It surfaces as `[vite] Internal server error:
   fetch failed` from **undici inside `Miniflare.dispatchFetch`**, and a test sees it as a page whose
   title is literally `"Internal Server Error"`, or as `EADDRNOTAVAIL` when the server will not boot
   at all. So grep for **`fetch failed` and `Internal Server Error`** as well. The giveaway that it
@@ -574,10 +577,12 @@ route. Fixed by renaming this session's own files (`aiPromptsApi.ts`, `aiPrompts
 `/api/ai-prompts`), never by touching a VC test, since §7 requires those to pass unchanged. §9
 carries the general form and the one-line hardening for that matcher.
 
-**Runs 2–5 could not produce a clean full-suite number, and the reason is measured.** Five attempts
-were made across ~2 hours, including one begun at the quietest moment of the whole wave (load 5.84,
-`TIME_WAIT` 6,481, one sibling): it reached 31/224 before a sibling restarted and it had already
-logged 53 `fetch failed`s, so it was killed rather than left to burn ports the siblings also need. Every
+**Runs 2–6 could not produce a clean full-suite number, and the reason is measured.** Six attempts
+across ~3 hours. The last began on a genuinely idle box — **`TIME_WAIT` 15, load 3.4**, the only such
+window in the whole wave — and still degraded: 64/224 after ~50 minutes with 50 `fetch failed`s, by
+which point `TIME_WAIT` was 14,603 **with just this run and one sibling**. That is what establishes
+the threshold above, and why waiting for a quieter box was never going to work while any sibling was
+active: the suite is self-limiting at two concurrent runs. Every
 subsequent `parity.spec.ts` role-walk that failed passed when run alone (`vc/admin` 37.7 s,
 `incubator/program_associate` 28.7 s, `incubator/program_manager`, `vc/superuser` on retry), and
 the SET of failing roles changed on every run of the identical tree — the signature of contention,
