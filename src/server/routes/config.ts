@@ -694,13 +694,95 @@ config.put("/additional-params/:id/permit", requireTask("configparams", "admin",
 // (the three-score view, the workbench's input scale) needs them — so the read
 // is open to any authed non-founder. Writing is admin-only.
 
-/** The composition controls: changing one invalidates every stored AI run. */
+/**
+ * The composition controls: changing one invalidates every stored AI run.
+ *
+ * **`aiWeightPct` is deliberately NOT one of them (V4-WEIGHT).** It used to be,
+ * and that was wrong in a way that cost the client a bug report. `rescoreEdition`
+ * reads `compositeFormula` and the parameter weights — it has zero references to
+ * `ai_weight_pct`, because the split is applied when a score is READ, not when
+ * it is stored. So a split-only save re-computed every stored total to exactly
+ * the value it already had, and in doing so ran
+ * `UPDATE decks SET ai_score = ?, signal = ?, updated_at = ?` over the entire
+ * edition: it told the operator "N decks re-scored", bumped every deck's
+ * `updated_at` — which the V3 Dashboard sorts by — and moved not one number.
+ * That is a re-weight retro-touching a cohort, which the client ruled out:
+ * *"previous cohorts will remain same"*.
+ *
+ * The scale and the formula stay: both genuinely change what is stored.
+ */
 function compositionChanged(before: ScoringSettings, after: ScoringSettings): boolean {
   return (
-    before.scoreScale !== after.scoreScale ||
-    before.compositeFormula !== after.compositeFormula ||
-    before.aiWeightPct !== after.aiWeightPct
+    before.scoreScale !== after.scoreScale || before.compositeFormula !== after.compositeFormula
   );
+}
+
+/**
+ * The decks the **AI weight** control's before/after preview is drawn from
+ * (V4-WEIGHT, item 3/4).
+ *
+ * The client's report was that changing the split showed him nothing. It was
+ * never inert — the blend is applied at read time and `decisionScore` does move
+ * — but the number it moves is not on the screen where the control lives, and
+ * on real data the whole 0 %→50 % sweep is worth ~0.02–0.07. So the console
+ * shows the movement itself, on real decks, as the select changes.
+ *
+ * Only decks whose split actually COMES from the organisation are eligible: a
+ * deck in a programme or cohort that carries its own `ai_weight_pct` (0074) is
+ * not moved by this control at all, and showing it here would be a lie. The
+ * ones with the widest AI-vs-jury gap come first, because they are the decks
+ * the setting moves MOST — the honest ceiling of the effect, not a flattering
+ * sample. The raw halves go to the client, which blends them through the same
+ * `decisionScore` every other screen uses.
+ */
+interface WeightPreviewRow {
+  id: string;
+  name: string;
+  ai_score: number | null;
+  human_avg: number | null;
+}
+
+const WEIGHT_PREVIEW_LIMIT = 5;
+
+async function loadWeightPreview(db: D1Database, edition: Edition) {
+  const [rows, pinned] = await Promise.all([
+    db
+      .prepare(
+        "SELECT id, name, ai_score, human_avg FROM (" +
+          "SELECT d.id AS id, d.name AS name, d.ai_score AS ai_score, " +
+          "(SELECT AVG(e.weighted_total) FROM evaluations e " +
+          " WHERE e.deck_id = d.id AND e.evaluator_id IS NOT NULL) AS human_avg " +
+          "FROM decks d " +
+          "LEFT JOIN programs pr ON pr.id = d.program_id " +
+          "LEFT JOIN cohorts  co ON co.id = d.cohort_id " +
+          "WHERE d.edition = ? AND d.ai_score IS NOT NULL " +
+          "  AND pr.ai_weight_pct IS NULL AND co.ai_weight_pct IS NULL" +
+          ") WHERE human_avg IS NOT NULL " +
+          "ORDER BY ABS(ai_score - human_avg) DESC, name LIMIT ?",
+      )
+      .bind(edition, WEIGHT_PREVIEW_LIMIT)
+      .all<WeightPreviewRow>(),
+    db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM decks d " +
+          "LEFT JOIN programs pr ON pr.id = d.program_id " +
+          "LEFT JOIN cohorts  co ON co.id = d.cohort_id " +
+          "WHERE d.edition = ? AND COALESCE(co.ai_weight_pct, pr.ai_weight_pct) IS NOT NULL",
+      )
+      .bind(edition)
+      .first<{ n: number }>(),
+  ]);
+  return {
+    decks: rows.results.map((r) => ({
+      id: r.id,
+      name: r.name,
+      aiScore: r.ai_score,
+      humanAverage: r.human_avg,
+    })),
+    // Decks this control cannot move, because their programme or cohort carries
+    // its own split. The console says so rather than leaving them unexplained.
+    pinnedDecks: pinned?.n ?? 0,
+  };
 }
 
 /** GET /api/config/scoring — the org's scoring framework (any authed staff). */
@@ -716,13 +798,16 @@ config.get("/scoring", async (c) => {
   // regardless of which edition the viewer is in. They are RESOLVED, so the
   // console renders the state the report route actually enforces. Reading them
   // is safe for any staff role: a matrix says who may see whom, never a score.
-  const [incubator, vc] = await Promise.all([
+  const [incubator, vc, weightPreview] = await Promise.all([
     loadScoreVisibility(c.env.DB, "incubator"),
     loadScoreVisibility(c.env.DB, "vc"),
+    loadWeightPreview(c.env.DB, edition),
   ]);
   return c.json({
     scoring: settings,
     visibility: { incubator, vc },
+    // V4-WEIGHT — real decks for the AI-weight control's before/after strip.
+    weightPreview,
     // The two cohort-rating thresholds live on org_settings and are rendered in
     // the same card (0026's header explains why they stay there).
     thresholdBest: s?.threshold_best ?? 7,

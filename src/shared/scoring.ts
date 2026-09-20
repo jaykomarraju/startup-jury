@@ -141,6 +141,104 @@ export function blendScore(ai: number, human: number, aiWeightPct = 50): number 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Which split applies — cohort → programme → organisation (V4-WEIGHT, 0074)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The client, 2026-09-20: *"If you are making 50:50 as default, previous
+// cohorts will remain same. only the new program or cohorts would take
+// effect."* `org_scoring_settings.ai_weight_pct` is one row per edition and the
+// blend is applied at READ time, so moving it re-blends every deck ever
+// uploaded. A new-things-only default therefore has to live on the new thing:
+// `programs.ai_weight_pct` / `cohorts.ai_weight_pct` (migration 0074), NULL on
+// every row that predates it.
+//
+// This is the same fallback shape `shortlistFloor` already uses for
+// `programs.shortlist_min`, with one more level because he named both.
+
+/**
+ * The split a programme or cohort created from now on is stamped with — the
+ * client's 50:50. Written by `POST /api/programs` and `POST
+ * /api/programs/:id/cohorts`; deliberately NOT a column DEFAULT, because
+ * SQLite's `ALTER TABLE ADD COLUMN … DEFAULT` backfills the rows that already
+ * exist and would re-weight exactly the previous cohorts he ruled out.
+ */
+export const NEW_PROGRAMME_AI_WEIGHT_PCT = 50;
+
+export type AiWeightSource = "cohort" | "program" | "org";
+
+/**
+ * The AI weight a deck's blend actually uses: its cohort's if that cohort has
+ * one, else its programme's, else the organisation's. `source` is what the
+ * screens say out loud — an evaluator looking at a blended number is entitled
+ * to know which split produced it.
+ */
+export function aiWeightFor(
+  cohortPct: number | null | undefined,
+  programPct: number | null | undefined,
+  orgPct: number,
+): { pct: number; source: AiWeightSource } {
+  if (typeof cohortPct === "number" && Number.isFinite(cohortPct)) {
+    return { pct: cohortPct, source: "cohort" };
+  }
+  if (typeof programPct === "number" && Number.isFinite(programPct)) {
+    return { pct: programPct, source: "program" };
+  }
+  return { pct: orgPct, source: "org" };
+}
+
+/**
+ * One row of the admin console's **before / after** preview for the AI-weight
+ * control — the whole point of V4-WEIGHT.
+ *
+ * The client's report was *"nothing was changing when I changed from 40:60 or
+ * 50:50 or any other option, I saw no difference."* The control was wired all
+ * along; its effect was simply never on screen where it is set, and on real
+ * data the whole 0 %→50 % sweep moves a blended score by ~0.02–0.07. So the
+ * console shows the movement itself, for real decks, as the select changes.
+ *
+ * It computes through `decisionScore` — the SAME helper `GET /api/decks`, the
+ * shortlist hint and the pipeline transition use — so the preview can never
+ * become a second, agreeing-by-accident implementation of the blend.
+ */
+export interface ReweightInput {
+  id: string;
+  name: string;
+  aiScore: number | null;
+  humanAverage: number | null;
+}
+
+export interface ReweightRow {
+  id: string;
+  name: string;
+  /** The blended decision score at the saved split. */
+  from: number;
+  /** The blended decision score at the split currently selected. */
+  to: number;
+  /** `to - from`, rounded the way both ends are. */
+  delta: number;
+}
+
+export function reweightPreview(
+  decks: readonly ReweightInput[],
+  fromPct: number,
+  toPct: number,
+): ReweightRow[] {
+  const rows: ReweightRow[] = [];
+  for (const d of decks) {
+    // BOTH halves, not just a non-null `decisionScore`. A deck with an AI score
+    // and no jury score blends to the AI score at every split, so it would draw
+    // as "8.2 → 8.2" — the exact impression ("I saw no difference") this strip
+    // exists to correct, printed by the strip itself.
+    if (typeof d.aiScore !== "number" || typeof d.humanAverage !== "number") continue;
+    const from = decisionScore(d.aiScore, [d.humanAverage], fromPct);
+    const to = decisionScore(d.aiScore, [d.humanAverage], toPct);
+    if (from === null || to === null) continue;
+    rows.push({ id: d.id, name: d.name, from, to, delta: round2(to - from) });
+  }
+  return rows;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Score scale — the display / input surface (canonical storage stays 0–10)
 // ═══════════════════════════════════════════════════════════════════════════
 

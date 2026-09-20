@@ -26,6 +26,7 @@ import {
   toDisplayScale,
   overrideNeedsRationale,
   shortlistFloor,
+  aiWeightFor,
 } from "../../shared/scoring";
 import { RUBRIC_BANDS } from "../../shared/types";
 import { loadScoringSettings } from "../config/scoringSettings";
@@ -279,14 +280,20 @@ async function checkShortlistFloor(
   // shortlist threshold (F0187), which the programme floor merely overrides.
   const row = await c.env.DB.prepare(
     "SELECT d.ai_score AS ai_score, p.name AS program_name, p.shortlist_min AS shortlist_min, " +
+      // V4-WEIGHT (0074) — the same two columns `routes/decks.ts` reads, for the
+      // same reason: the transition must blend at the split the hint blended at.
+      "p.ai_weight_pct AS program_ai_weight_pct, co.ai_weight_pct AS cohort_ai_weight_pct, " +
       "(SELECT AVG(e.weighted_total) FROM evaluations e WHERE e.deck_id = d.id AND e.evaluator_id IS NOT NULL) AS human_avg " +
-      "FROM decks d LEFT JOIN programs p ON p.id = d.program_id WHERE d.id = ?",
+      "FROM decks d LEFT JOIN programs p ON p.id = d.program_id " +
+      "LEFT JOIN cohorts co ON co.id = d.cohort_id WHERE d.id = ?",
   )
     .bind(deckId)
     .first<{
       ai_score: number | null;
       program_name: string | null;
       shortlist_min: number | null;
+      program_ai_weight_pct: number | null;
+      cohort_ai_weight_pct: number | null;
       human_avg: number | null;
     }>();
   if (!row) return null;
@@ -301,7 +308,7 @@ async function checkShortlistFloor(
   const score = decisionScore(
     row.ai_score,
     typeof row.human_avg === "number" ? [row.human_avg] : [],
-    scoring.aiWeightPct,
+    aiWeightFor(row.cohort_ai_weight_pct, row.program_ai_weight_pct, scoring.aiWeightPct).pct,
   );
   // An unscored deck can never clear a floor a PROGRAMME deliberately set —
   // that is the shipped guardrail's contract. The org-wide threshold is a bar a

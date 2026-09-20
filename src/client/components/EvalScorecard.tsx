@@ -143,6 +143,7 @@ function ScoreRow({
   comment,
   onChangeComment,
   scoring,
+  aiWeightPct,
   threeScore,
   weightLabel,
 }: {
@@ -156,6 +157,14 @@ function ScoreRow({
   comment: string;
   onChangeComment?: (key: string, value: string) => void;
   scoring: ScoringSettings;
+  /**
+   * V4-WEIGHT — the split THIS deck is blended at (its cohort's, its
+   * programme's, or the org's). Required rather than defaulted for the reason
+   * `decisionScore`'s third argument is: a call site that quietly falls back to
+   * the org value shows a juror a different Average from the one the server
+   * judges them on, which is exactly the W7-A defect.
+   */
+  aiWeightPct: number;
   threeScore: boolean;
   /** What the Weight cell says — "8%" for a core area, "Info" for an additional one. */
   weightLabel: string;
@@ -164,7 +173,7 @@ function ScoreRow({
   const bounds = SCORE_SCALE_BOUNDS[scoring.scoreScale];
   const scored = value != null;
   const shown = scored ? snapToScale(value, scoring.scoreScale) : null;
-  const avg = ai != null && scored ? blendScore(ai.value, value, scoring.aiWeightPct) : null;
+  const avg = ai != null && scored ? blendScore(ai.value, value, aiWeightPct) : null;
   const needsRationale =
     onChangeComment != null &&
     scored &&
@@ -297,6 +306,12 @@ export function EvalScorecard({
   saved,
   onSave,
 }: EvalScorecardProps) {
+  // V4-WEIGHT (0074) — the split this deck is actually judged at. The server
+  // resolved it (cohort → programme → organisation) and sent it on the deck;
+  // the page's `scoring` is the ORG-wide framework, which is the right answer
+  // for the scale, the 3-score view and the rationale rule, and the wrong one
+  // for the blend as soon as a programme or cohort carries its own split.
+  const aiWeightPct = deck.aiWeightPct ?? scoring.aiWeightPct;
   const [rescoring, setRescoring] = useState(false);
   const [rescoreMsg, setRescoreMsg] = useState<{ tone: "info" | "success"; text: string } | null>(null);
 
@@ -311,7 +326,7 @@ export function EvalScorecard({
     params.map((p) => {
       const ai = aiScores.get(p.key)?.value;
       const my = values[p.key] ?? 0;
-      return { weight: p.weight, value: ai != null ? blendScore(ai, my, scoring.aiWeightPct) : my };
+      return { weight: p.weight, value: ai != null ? blendScore(ai, my, aiWeightPct) : my };
     }),
     scoring.compositeFormula,
   );
@@ -436,7 +451,13 @@ export function EvalScorecard({
               <span className="text-sm font-normal text-fg-muted">{denom}</span>
             </div>
             <div className="text-[10px] text-fg-muted">
-              {scoring.aiWeightPct}% AI · {100 - scoring.aiWeightPct}% jury, live
+              {aiWeightPct}% AI · {100 - aiWeightPct}% jury, live
+              {/* Where the split came from. An evaluator whose deck follows its
+                  own programme or cohort split would otherwise have no way to
+                  tell why this reads differently from the console's setting. */}
+              {deck.aiWeightSource && deck.aiWeightSource !== "org" && (
+                <> · {deck.aiWeightSource === "cohort" ? "cohort" : "programme"} split</>
+              )}
             </div>
           </div>
         )}
@@ -480,6 +501,7 @@ export function EvalScorecard({
                 comment={comments[p.key] ?? ""}
                 onChangeComment={onChangeComment}
                 scoring={scoring}
+                aiWeightPct={aiWeightPct}
                 threeScore={threeScore}
               />
             ))}
@@ -511,6 +533,7 @@ export function EvalScorecard({
                     comment={comments[p.key] ?? ""}
                     onChangeComment={onChangeComment}
                     scoring={scoring}
+                    aiWeightPct={aiWeightPct}
                     threeScore={threeScore}
                   />
                 ))}

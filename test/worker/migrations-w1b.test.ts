@@ -30,12 +30,14 @@ const BLOCK_SIZE = LAST - FIRST + 1;
  * **the V3 superuser wave is 0066–0074**, one per session in the order
  * `docs/plan_v3_superuser.md` §7 lists them (V3-NAV 0066 … V3-PT 0073,
  * V3-FLOW 0074) — a session that needs no migration leaves its number unused,
- * and only 0071 / 0072 / 0073 were taken. Each wave raises this line to the
- * WAVE's ceiling, not to any one session's number, and every parallel session
- * in the wave hits it — expect a one-line merge conflict here and take the
- * HIGHEST value.
+ * and only 0071 / 0072 / 0073 were taken (0074 was allotted to V3-FLOW and
+ * never used, so the V4 wave re-allots it); **the V4 follow-up wave is
+ * 0074-0076** (V4-WEIGHT 0074, V4-ROUTE 0075, V4-SIZE 0076). Each wave raises
+ * this line to the WAVE's ceiling, not to any one session's number, and every
+ * parallel session in the wave hits it — expect a one-line merge conflict here
+ * and take the HIGHEST value.
  */
-const ALLOTMENT_CEILING = 74;
+const ALLOTMENT_CEILING = 76;
 
 const MIGRATIONS = env.TEST_MIGRATIONS;
 

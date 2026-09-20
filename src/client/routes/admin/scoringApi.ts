@@ -8,7 +8,7 @@
  * a later tidy-up, not a behaviour change (§9).
  */
 import { ApiError, type ConfigParam } from "../../api";
-import type { ScoringSettings } from "../../../shared/scoring";
+import type { ReweightInput, ScoringSettings } from "../../../shared/scoring";
 import type { VisibilityMatrix } from "../../../shared/scoreVisibility";
 import type { Edition } from "../../../shared/roles";
 
@@ -31,6 +31,20 @@ function send<T>(method: string, path: string, body: unknown): Promise<T> {
 /** V3 item 13 — both `Score visibility matrix` cards, RESOLVED by the server. */
 export type VisibilityByEdition = Record<Edition, VisibilityMatrix>;
 
+/**
+ * V4-WEIGHT — the real decks the **AI weight** control previews against, and
+ * how many decks it cannot move because their programme or cohort carries its
+ * own split (migration 0074).
+ *
+ * The server sends the two HALVES of the blend, never a blended number: the
+ * console blends them with `decisionScore`, the same helper every screen and
+ * the shortlist transition use, so the preview cannot drift from the truth.
+ */
+export interface WeightPreview {
+  decks: ReweightInput[];
+  pinnedDecks: number;
+}
+
 export interface ScoringFrameworkView {
   scoring: ScoringSettings;
   visibility: VisibilityByEdition;
@@ -39,6 +53,7 @@ export interface ScoringFrameworkView {
   thresholdMediocre: number;
   /** False for a staff role that may read the framework but not change it. */
   editable: boolean;
+  weightPreview?: WeightPreview;
 }
 
 /** GET /api/config/scoring — any authed non-founder. */

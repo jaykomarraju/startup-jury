@@ -1,5 +1,6 @@
 import type { DeckSignal } from "./theme/signals";
 import type { IntakeField, IntakeFlag } from "../shared/intake";
+import type { AiWeightSource } from "../shared/scoring";
 
 /**
  * Client-side view model for a deck row/card. This is a presentational shape used
@@ -29,6 +30,16 @@ export interface DeckView {
   aiScore?: number;
   /** AI + jury composite average — the number the shortlist floor is judged on. */
   decisionScore?: number;
+  /**
+   * V4-WEIGHT (migration 0074) — the AI/jury split `decisionScore` above was
+   * actually blended at, and where it came from: this deck's cohort, its
+   * programme, or the organisation's Scoring framework. A screen showing the
+   * blended number can therefore say which split produced it, and the
+   * evaluator workbench can blend live at the SAME one rather than at the
+   * org's (which is the W7-A hint-vs-transition divergence, client side).
+   */
+  aiWeightPct?: number;
+  aiWeightSource?: AiWeightSource;
   /** The program's minimum shortlist score, when one is configured. */
   shortlistMin?: number;
   /** True when the deck sits below its program's shortlist floor. */
