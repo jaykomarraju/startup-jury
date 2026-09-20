@@ -182,7 +182,17 @@ export function evaluationRank(edition: Edition, role: Role): number {
   return EVALUATION_RANK[edition][role] ?? 0;
 }
 
-/** May `viewer` see the scores an evaluator holding `target` submitted? */
+/**
+ * May `viewer` see the scores an evaluator holding `target` submitted?
+ *
+ * **This is now the FALLBACK, not the rule.** V3 item 13 made the answer
+ * configurable — the admin console's `Score visibility matrix` — so the server
+ * asks `canSeeEvaluatorScoresIn` in `shared/scoreVisibility.ts` and only lands
+ * here for a pair no matrix draws, which is what keeps `admin` (rank 99, in
+ * neither edition's 4×4 / 5×5) seeing the whole workspace exactly as before.
+ * Call this directly only when you mean "the ladder", never when you mean
+ * "may they see it".
+ */
 export function canSeeEvaluatorScores(edition: Edition, viewer: Role, target: Role): boolean {
   if (viewer === target) return true;
   return evaluationRank(edition, viewer) >= evaluationRank(edition, target);

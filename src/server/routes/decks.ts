@@ -6,7 +6,8 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition, Role } from "../../shared/roles";
-import { canSeeEvaluatorScores, evaluationRank, isAssignableEvaluator, roleLabel } from "../../shared/roles";
+import { evaluationRank, isAssignableEvaluator, roleLabel } from "../../shared/roles";
+import { canSeeEvaluatorScoresIn } from "../../shared/scoreVisibility";
 import { getStage, allowedTransitions } from "../../pipeline";
 import {
   decisionScore,
@@ -16,6 +17,7 @@ import {
   type ScoringSettings,
 } from "../../shared/scoring";
 import { loadScoringSettings } from "../config/scoringSettings";
+import { loadScoreVisibility } from "../config/scoreVisibility";
 import { missingIntakeFields, parseMissingFields, type IntakeMatch } from "../../shared/intake";
 // V3-DASH — one timestamp comparison, shared with the Dashboard that reads it.
 import { latestTimestamp } from "../../shared/deckStats";
@@ -857,12 +859,21 @@ decks.get("/:id/report", async (c) => {
   // were always on.
   //
   // Off, an evaluator sees the AI column and their own, and nothing else. On,
-  // the Aug-2026 issue-21 hierarchy still applies on top: peers at or below
-  // your rank, never above. The two are a conjunction, not a replacement, which
-  // is what "respect EVALUATION_RANK either way" means. Roles that oversee
-  // rather than score — admin, superuser — are outside the toggle entirely.
+  // the role rule below still applies on top: the two are a conjunction, not a
+  // replacement. Roles that oversee rather than score — admin, superuser — are
+  // outside the toggle entirely.
   const scoring = await loadScoringSettings(c.env.DB, edition);
   const peerRestricted = !scoring.jurySeesPeerScores && isAssignableEvaluator(edition, role);
+
+  // ── The role rule (V3 item 13) ────────────────────────────────────────────
+  // What used to be the fixed `EVALUATION_RANK` ladder is now the admin
+  // console's configurable `Score visibility matrix` — "Viewer (row) → can see
+  // scores of (column)". The filter stays HERE, on the server: a viewer's
+  // browser never receives a column the matrix denies, and never receives its
+  // CELLS either (see the `visibleEvaluators` pass below). Pairs the matrix
+  // does not draw — `admin` is in neither edition's — fall through to the
+  // ladder, so nothing outside the 4×4 / 5×5 changed.
+  const visibility = await loadScoreVisibility(c.env.DB, edition);
 
   // ── Blind scoring (F0106) — the third route that has to hold it ───────────
   // "Show AI score to jury before they score" · off for blind independent jury
@@ -894,10 +905,11 @@ decks.get("/:id/report", async (c) => {
   }) => {
     if (!person.evaluator_id || seenEvaluators.has(person.evaluator_id)) return;
     const evaluatorRole = (person.evaluator_role ?? "") as Role;
-    // Issue 21 — your own column is always visible; anyone above you is not.
+    // Issue 21 / item 13 — your own column is always visible whatever the
+    // matrix says: identity beats role. The matrix decides everyone else.
     const visible =
       person.evaluator_id === viewerId ||
-      (!peerRestricted && canSeeEvaluatorScores(edition, role, evaluatorRole));
+      (!peerRestricted && canSeeEvaluatorScoresIn(visibility, edition, role, evaluatorRole));
     if (!visible) {
       hidden += 1;
       seenEvaluators.set(person.evaluator_id, {

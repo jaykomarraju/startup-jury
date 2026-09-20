@@ -5,6 +5,10 @@ import { ScoringFrameworkSection } from "../../src/client/routes/admin/ScoringFr
 import { AreaWeightsSection } from "../../src/client/routes/admin/AreaWeights";
 import { AdminSaveContext, type AdminSaveState } from "../../src/client/routes/admin/saveContext";
 import { DEFAULT_SCORING_SETTINGS } from "../../src/shared/scoring";
+import {
+  DEFAULT_VISIBILITY,
+  VISIBILITY_ROLES,
+} from "../../src/shared/scoreVisibility";
 import { getConfig, updateWeights, updateAdditionalParam } from "../../src/client/api";
 import {
   getScoringFramework,
@@ -41,12 +45,12 @@ function principal(role: Role = "admin", edition: Edition = "incubator"): AuthUs
 }
 
 /** Captures whatever the section registers with the console's title-bar Save. */
-function mountSection(node: React.ReactNode, role: Role = "admin") {
+function mountSection(node: React.ReactNode, role: Role = "admin", edition: Edition = "incubator") {
   const saved: { state: AdminSaveState | null } = { state: null };
   const view = render(
     <AuthContext.Provider
       value={{
-        user: principal(role),
+        user: principal(role, edition),
         loading: false,
         login: vi.fn(),
         logout: vi.fn(),
@@ -97,6 +101,7 @@ const ADDITIONAL = [
 beforeEach(() => {
   vi.mocked(getScoringFramework).mockResolvedValue({
     scoring: { ...DEFAULT_SCORING_SETTINGS },
+    visibility: structuredClone(DEFAULT_VISIBILITY),
     thresholdBest: 7,
     thresholdMediocre: 5,
     editable: true,
@@ -104,6 +109,7 @@ beforeEach(() => {
   vi.mocked(saveScoringFramework).mockResolvedValue({
     ok: true,
     scoring: { ...DEFAULT_SCORING_SETTINGS },
+    visibility: structuredClone(DEFAULT_VISIBILITY),
     rescored: { decks: 2, evaluations: 3 },
   });
   vi.mocked(setConfigPermitted).mockResolvedValue({ ok: true, id: "a2", permitted: true });
@@ -189,6 +195,30 @@ describe("Scoring framework section", () => {
     expect(select.value).toBe("40");
   });
 
+  it("still offers all three composite formulas — V3 items 3/4 are NOT shipped (§4 Q2/Q3)", async () => {
+    // The client's list asks to hide everything but `Weighted average` and
+    // `50% AI · 50% Jury`, and marked both *Workaround* — an explicit override
+    // of "match the prototype exactly". The v3 console is BYTE-IDENTICAL to
+    // v15 here: all three formulas, all four splits, and the AI-weight select
+    // carries no `selected` attribute, so `40% AI · 60% Jury` is the effective
+    // default and `migrations/0026` agrees (`ai_weight_pct DEFAULT 40`).
+    //
+    // Shipping the hide would silently re-weight every existing org's
+    // composite, so it waits on Q2. This test is the tripwire: narrowing
+    // either select is a deliberate edit here, never a quiet one.
+    mountSection(<ScoringFrameworkSection />);
+    const formula = (await screen.findByLabelText("Composite formula")) as HTMLSelectElement;
+    expect([...formula.options].map((o) => o.textContent)).toEqual([
+      "Weighted average (default)",
+      "Unweighted average",
+      "Median",
+    ]);
+    expect(formula.value).toBe("weighted_average");
+    const weight = screen.getByLabelText("AI weight in composite") as HTMLSelectElement;
+    expect(weight.options).toHaveLength(4);
+    expect(weight.value).toBe("40");
+  });
+
   it("previews the three cohort bands and clamps Poor to Best as you type", async () => {
     mountSection(<ScoringFrameworkSection />);
     const preview = await screen.findByTestId("threshold-preview");
@@ -214,6 +244,9 @@ describe("Scoring framework section", () => {
     await waitFor(() =>
       expect(saveScoringFramework).toHaveBeenCalledWith(
         expect.objectContaining({ aiPreScoringEnabled: false }),
+        // V3 item 13 — the matrices ride this same save. Nothing was flipped
+        // here, so no cell is sent and every one keeps following the default.
+        {},
       ),
     );
     // The cohort bands are saved with it — they are one card in the prototype.
@@ -224,6 +257,7 @@ describe("Scoring framework section", () => {
   it("is read-only for a role that may see it but not change it", async () => {
     vi.mocked(getScoringFramework).mockResolvedValue({
       scoring: { ...DEFAULT_SCORING_SETTINGS },
+      visibility: structuredClone(DEFAULT_VISIBILITY),
       thresholdBest: 7,
       thresholdMediocre: 5,
       editable: false,
@@ -242,6 +276,170 @@ describe("Scoring framework section", () => {
 });
 
 // ── Area weights ─────────────────────────────────────────────────────────────
+
+// ── V3 item 13 · the score visibility matrices ───────────────────────────────
+
+/**
+ * The two `Score visibility matrix` cards the v3 superuser prototype adds to
+ * `s-fw` (decoded from `ADMIN_B64`; a grep of the .HTM finds none of it).
+ *
+ * The literals below are copied from that decoded markup rather than imported
+ * from the component, so a rename in the component fails the test instead of
+ * silently renaming the assertion with it.
+ *
+ * These cards are INCUBATOR SUPERUSER only: `admin/s-fw.html` is byte-identical
+ * (md5 c3b534ba…) in every prototype that was not reshared — the incubator
+ * admin, PM and PA, and both VC consoles — so those roles must keep rendering
+ * exactly the section they render today. The last test here is that control.
+ */
+describe("Score visibility matrices (V3 item 13)", () => {
+  const SU: [Role, Edition] = ["superuser", "incubator"];
+
+  async function mountAsSuperuser() {
+    const r = mountSection(<ScoringFrameworkSection />, ...SU);
+    await screen.findByText("Visibility for Incubator");
+    return r;
+  }
+
+  it("draws both matrices with the prototype's titles, caption and headers", async () => {
+    await mountAsSuperuser();
+
+    expect(screen.getByText("Visibility for Incubator")).toBeInTheDocument();
+    expect(screen.getByText("Visibility for VC")).toBeInTheDocument();
+    expect(screen.getByText("Score visibility matrix")).toBeInTheDocument();
+    expect(screen.getByText("Score visibility matrix — Investor")).toBeInTheDocument();
+    expect(screen.getAllByText("Viewer (row) → can see scores of (column)")).toHaveLength(2);
+
+    const [inc, vc] = screen.getAllByRole("table");
+    const headers = (t: HTMLElement) =>
+      [...within(t).getAllByRole("columnheader")].map((h) => h.textContent);
+    expect(headers(inc)).toEqual(["Role", "Super User", "Program Mgr", "Program Assoc", "Jury Member"]);
+    expect(headers(vc)).toEqual(["Role", "Mng Partner", "IC", "Partner", "Inv. Assoc", "Analyst"]);
+
+    const rows = (t: HTMLElement) => [...within(t).getAllByRole("rowheader")].map((h) => h.textContent);
+    expect(rows(inc)).toEqual(["Super User", "Program Manager", "Program Associate", "Jury Member"]);
+    expect(rows(vc)).toEqual([
+      "Managing Partner",
+      "IC member",
+      "Partner/Principal",
+      "Inv. Associate",
+      "Analyst",
+    ]);
+
+    // One switch per cell: 4×4 + 5×5, plus the nine toggles of the three cards.
+    expect(within(inc).getAllByRole("switch")).toHaveLength(VISIBILITY_ROLES.incubator.length ** 2);
+    expect(within(vc).getAllByRole("switch")).toHaveLength(VISIBILITY_ROLES.vc.length ** 2);
+  });
+
+  it("carries the prototype's two footnotes verbatim", async () => {
+    await mountAsSuperuser();
+    expect(
+      screen.getByText(
+        "Defaults: Super User & Program Manager see everyone; Program Associate and Jury Member see no one — jury members cannot see each other (blind evaluation) until turned on here.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Defaults: Managing Partner, IC member and Partner/Principal see everyone; Inv. Associate and Analyst see no one until turned on here.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the matrix the SERVER resolved, not a client-side default", async () => {
+    // The server is the only authority on this state — it is what the report
+    // route enforces. Feed a non-default cell and the screen must show it.
+    const served = structuredClone(DEFAULT_VISIBILITY);
+    served.incubator.jury!.jury = true;
+    served.incubator.superuser!.jury = false;
+    vi.mocked(getScoringFramework).mockResolvedValue({
+      scoring: { ...DEFAULT_SCORING_SETTINGS },
+      visibility: served,
+      thresholdBest: 7,
+      thresholdMediocre: 5,
+      editable: true,
+    });
+    await mountAsSuperuser();
+    expect(screen.getByRole("switch", { name: "Jury Member can see Jury Member scores" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByRole("switch", { name: "Super User can see Jury Member scores" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+  });
+
+  it("shows the prototype's shipped toggle state for an org that has set nothing", async () => {
+    await mountAsSuperuser();
+    // "Super User & Program Manager see everyone…"
+    for (const col of ["Super User", "Program Mgr", "Program Assoc", "Jury Member"]) {
+      for (const row of ["Super User", "Program Manager"]) {
+        expect(screen.getByRole("switch", { name: `${row} can see ${col} scores` })).toHaveAttribute(
+          "aria-checked",
+          "true",
+        );
+      }
+      // "…Program Associate and Jury Member see no one."
+      for (const row of ["Program Associate", "Jury Member"]) {
+        expect(screen.getByRole("switch", { name: `${row} can see ${col} scores` })).toHaveAttribute(
+          "aria-checked",
+          "false",
+        );
+      }
+    }
+  });
+
+  it("sends ONLY the flipped cells, so untouched ones keep following the default", async () => {
+    const { saved } = await mountAsSuperuser();
+    fireEvent.click(screen.getByRole("switch", { name: "Jury Member can see Program Assoc scores" }));
+    expect(screen.getByRole("switch", { name: "Jury Member can see Program Assoc scores" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(saved.state?.dirty).toBe(true);
+
+    await saved.state!.onSave();
+    expect(saveScoringFramework).toHaveBeenCalledWith(
+      expect.objectContaining({ aiWeightPct: 40 }),
+      { incubator: { jury: { program_associate: true } } },
+    );
+  });
+
+  it("is read-only for a superuser the server says may not edit", async () => {
+    vi.mocked(getScoringFramework).mockResolvedValue({
+      scoring: { ...DEFAULT_SCORING_SETTINGS },
+      visibility: structuredClone(DEFAULT_VISIBILITY),
+      thresholdBest: 7,
+      thresholdMediocre: 5,
+      editable: false,
+    });
+    await mountAsSuperuser();
+    expect(screen.getByRole("switch", { name: "Jury Member can see Jury Member scores" })).toBeDisabled();
+  });
+
+  it("the roles whose prototype was NOT reshared see the section exactly as today", async () => {
+    // `admin/s-fw.html` is byte-identical across the incubator admin, PM and PA
+    // and both VC consoles. None of them gains a matrix; all of them keep the
+    // "Jury can see each other's scores" toggle the v3 superuser screen drops.
+    for (const [role, edition] of [
+      ["admin", "incubator"],
+      ["program_manager", "incubator"],
+      ["jury", "incubator"],
+      ["superuser", "vc"],
+      ["admin", "vc"],
+    ] as Array<[Role, Edition]>) {
+      const { view } = mountSection(<ScoringFrameworkSection />, role, edition);
+      await screen.findByText("AI engine behaviour");
+      expect(screen.queryByText("Visibility for Incubator")).not.toBeInTheDocument();
+      expect(screen.queryByText("Visibility for VC")).not.toBeInTheDocument();
+      expect(screen.queryByRole("table")).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("switch", { name: "Jury can see each other's scores" }),
+      ).toBeInTheDocument();
+      view.unmount();
+    }
+  });
+});
 
 describe("Area weights section", () => {
   it("renders the prototype's five columns, the Core pill and a mono index", async () => {

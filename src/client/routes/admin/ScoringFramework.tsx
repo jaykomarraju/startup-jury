@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Cpu, Calculator, Eye } from "lucide-react";
+import { Cpu, Calculator, Eye, ScanEye } from "lucide-react";
 import { Card } from "../../components";
+import { useAuth } from "../../auth/useAuth";
 import { updateThresholds } from "../../api";
 import {
   DEFAULT_SCORING_SETTINGS,
@@ -19,11 +20,19 @@ import {
   type CompositeFormula,
   type ScoreScale,
 } from "../../../shared/types";
+import type { Edition, Role } from "../../../shared/roles";
+import {
+  VISIBILITY_COLUMN_LABELS,
+  VISIBILITY_ROLES,
+  VISIBILITY_ROW_LABELS,
+  type VisibilityMatrix,
+} from "../../../shared/scoreVisibility";
 import { useAdminSave } from "./saveContext";
 import {
   getScoringFramework,
   invalidateScoringSettings,
   saveScoringFramework,
+  type VisibilityByEdition,
 } from "./scoringApi";
 
 /**
@@ -130,8 +139,138 @@ function fmt1(n: number): string {
   return (Math.round(n * 10) / 10).toFixed(1);
 }
 
+/**
+ * V3 item 13 — one `Score visibility matrix` card.
+ *
+ * The decoded console's `.vs-table`: a row per viewing role, a column per role
+ * whose scores are shown, and a `.tog` in every cell including the diagonal,
+ * which is the blind-evaluation control ("jury ↔ jury"). Labels are the
+ * prototype's own — the row header spells `Program Manager` out and the column
+ * header abbreviates it to `Program Mgr`.
+ *
+ * The state rendered here is what the SERVER resolved and enforces, never a
+ * client-side guess: `GET /api/config/scoring` returns the matrix with stored
+ * cells layered onto the defaults. Nothing on this screen restricts anything
+ * by itself — the filtering is in `GET /api/decks/:id/report` and the three
+ * analytics reports.
+ */
+function VisibilityMatrixCard({
+  edition,
+  title,
+  caption,
+  sub,
+  footnote,
+  matrix,
+  onToggle,
+  disabled,
+}: {
+  edition: Edition;
+  title: string;
+  caption: ReactNode;
+  sub: ReactNode;
+  footnote: string;
+  matrix: VisibilityMatrix;
+  onToggle: (viewer: Role, target: Role, next: boolean) => void;
+  disabled: boolean;
+}) {
+  const roles = VISIBILITY_ROLES[edition];
+  const rowLabel = (r: Role) => VISIBILITY_ROW_LABELS[edition][r] ?? r;
+  const colLabel = (r: Role) => VISIBILITY_COLUMN_LABELS[edition][r] ?? r;
+  return (
+    <>
+      <div className="mt-2">
+        <h3 className="text-[13.5px] font-semibold text-fg">{title}</h3>
+        <p className="mt-0.5 max-w-3xl text-[12px] text-fg-muted">{sub}</p>
+      </div>
+      <Card>
+        <CardTitle icon={<ScanEye className="h-[15px] w-[15px]" />}>{caption}</CardTitle>
+        <div className="mb-1.5 text-[9px] font-bold uppercase tracking-[0.05em] text-fg-muted">
+          Viewer (row) → can see scores of (column)
+        </div>
+        <div className="max-w-[40rem] overflow-x-auto">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr>
+                <th
+                  scope="col"
+                  className="border-b-[1.5px] border-line px-2.5 py-2 text-left align-bottom text-[9px] font-bold uppercase tracking-[0.04em] text-fg-muted"
+                >
+                  Role
+                </th>
+                {roles.map((r) => (
+                  <th
+                    key={r}
+                    scope="col"
+                    className="border-b-[1.5px] border-line px-2.5 py-2 text-center align-bottom text-[9px] font-bold uppercase tracking-[0.04em] text-fg-muted"
+                  >
+                    {colLabel(r)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {roles.map((viewer) => (
+                <tr key={viewer}>
+                  <th
+                    scope="row"
+                    className="border-b border-surface-2 px-2.5 py-2.5 text-left text-[12px] font-semibold text-fg last:border-0"
+                  >
+                    {rowLabel(viewer)}
+                  </th>
+                  {roles.map((target) => {
+                    const on = matrix[viewer]?.[target] === true;
+                    return (
+                      <td
+                        key={target}
+                        className="border-b border-surface-2 px-2.5 py-2.5 text-center align-middle last:border-0"
+                      >
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={on}
+                          // Spelled out so the control is addressable by what it
+                          // GRANTS, not by its position in a grid.
+                          aria-label={`${rowLabel(viewer)} can see ${colLabel(target)} scores`}
+                          disabled={disabled}
+                          onClick={() => onToggle(viewer, target, !on)}
+                          className="inline-flex h-[18px] w-[34px] items-center rounded-full p-[2px] transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                          style={{ background: on ? "var(--ac-olive, #4A6644)" : "var(--color-line)" }}
+                        >
+                          <span
+                            className="h-[14px] w-[14px] rounded-full bg-white transition-transform"
+                            style={{ transform: on ? "translateX(16px)" : "translateX(0)" }}
+                          />
+                        </button>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-3 text-[11px] text-fg-muted">{footnote}</p>
+      </Card>
+    </>
+  );
+}
+
 export function ScoringFrameworkSection() {
+  const { user } = useAuth();
+  // V3 item 13 — the matrices are INCUBATOR SUPERUSER only. `admin/s-fw.html`
+  // is byte-identical (md5 c3b534ba…) in every prototype that was not reshared
+  // — the incubator admin, PM and PA, and BOTH VC consoles — so those roles
+  // must keep rendering exactly the section they render today. Only
+  // `AISJ_SuperuserV3` carries the two `Score visibility matrix` cards.
+  const showMatrices = user?.role === "superuser" && user.edition === "incubator";
   const [settings, setSettings] = useState<ScoringSettings | null>(null);
+  const [visibility, setVisibility] = useState<VisibilityByEdition | null>(null);
+  // Only the cells the superuser actually flipped are SENT. Posting the whole
+  // resolved grid would materialise every default as a stored row, pinning the
+  // prototype's defaults for an org that never touched them — the point of the
+  // sparse table (migration 0072) is that an untouched cell keeps following
+  // `DEFAULT_VISIBILITY`.
+  const [visibilityEdits, setVisibilityEdits] = useState<Partial<VisibilityByEdition>>({});
   const [best, setBest] = useState(7);
   const [poor, setPoor] = useState(5);
   const [editable, setEditable] = useState(false);
@@ -145,6 +284,7 @@ export function ScoringFrameworkSection() {
     getScoringFramework()
       .then((r) => {
         setSettings(r.scoring);
+        setVisibility(r.visibility);
         setBest(r.thresholdBest);
         setPoor(r.thresholdMediocre);
         setEditable(r.editable);
@@ -158,6 +298,29 @@ export function ScoringFrameworkSection() {
     setRescored(null);
   }, []);
 
+  const toggleVisibility = useCallback(
+    (edition: Edition, viewer: Role, target: Role, next: boolean) => {
+      setVisibility((v) =>
+        v
+          ? {
+              ...v,
+              [edition]: {
+                ...v[edition],
+                [viewer]: { ...v[edition][viewer], [target]: next },
+              },
+            }
+          : v,
+      );
+      setVisibilityEdits((e) => ({
+        ...e,
+        [edition]: { ...e[edition], [viewer]: { ...e[edition]?.[viewer], [target]: next } },
+      }));
+      setDirty(true);
+      setRescored(null);
+    },
+    [],
+  );
+
   const save = useCallback(async () => {
     if (!settings) return;
     setSaving(true);
@@ -167,10 +330,14 @@ export function ScoringFrameworkSection() {
       // pair outright, so clamp before sending rather than surfacing a 400.
       const safePoor = Math.min(poor, best);
       const [framework] = await Promise.all([
-        saveScoringFramework(settings),
+        saveScoringFramework(settings, visibilityEdits),
         updateThresholds(best, safePoor),
       ]);
       setPoor(safePoor);
+      // The server re-resolves and returns the matrix it will now enforce —
+      // take ITS answer, so the screen can never drift from the filter.
+      setVisibility(framework.visibility);
+      setVisibilityEdits({});
       setRescored(framework.rescored.decks);
       invalidateScoringSettings();
       setDirty(false);
@@ -179,7 +346,7 @@ export function ScoringFrameworkSection() {
     } finally {
       setSaving(false);
     }
-  }, [settings, best, poor]);
+  }, [settings, visibilityEdits, best, poor]);
 
   useAdminSave(
     settings && editable
@@ -466,6 +633,50 @@ export function ScoringFrameworkSection() {
           sub="AI generates tailored questions for jury to use during startup calls"
         />
       </Card>
+
+      {/* ── V3 item 13 · the two score visibility matrices ───────────────── */}
+      {showMatrices && visibility && (
+        <>
+          <VisibilityMatrixCard
+            edition="incubator"
+            title="Visibility for Incubator"
+            caption="Score visibility matrix"
+            sub={
+              <>
+                Control who can see whose scores. Each <strong className="text-fg">row</strong> is a
+                role <em>viewing</em>; each <strong className="text-fg">column</strong> is the role{" "}
+                <em>whose scores</em> are shown. Toggle a cell on to let the row role see that
+                column role&apos;s scores. The diagonal controls whether members of the same role
+                (e.g. jury ↔ jury) can see each other&apos;s scores.
+              </>
+            }
+            footnote="Defaults: Super User & Program Manager see everyone; Program Associate and Jury Member see no one — jury members cannot see each other (blind evaluation) until turned on here."
+            matrix={visibility.incubator}
+            onToggle={(viewer, target, next) =>
+              toggleVisibility("incubator", viewer, target, next)
+            }
+            disabled={ro}
+          />
+          <VisibilityMatrixCard
+            edition="vc"
+            title="Visibility for VC"
+            caption="Score visibility matrix — Investor"
+            sub={
+              <>
+                Same template for the investor workspace. Each{" "}
+                <strong className="text-fg">row</strong> is a role <em>viewing</em>; each{" "}
+                <strong className="text-fg">column</strong> is the role <em>whose scores</em> are
+                shown. The diagonal controls whether members of the same role can see each
+                other&apos;s scores.
+              </>
+            }
+            footnote="Defaults: Managing Partner, IC member and Partner/Principal see everyone; Inv. Associate and Analyst see no one until turned on here."
+            matrix={visibility.vc}
+            onToggle={(viewer, target, next) => toggleVisibility("vc", viewer, target, next)}
+            disabled={ro}
+          />
+        </>
+      )}
 
       {saveError && <p className="text-[12.5px] text-signal-flagged">{saveError}</p>}
       {rescored !== null && (

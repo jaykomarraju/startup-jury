@@ -32,8 +32,8 @@
  */
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
-import type { Edition } from "../../shared/roles";
-import { roleLabel } from "../../shared/roles";
+import type { Edition, Role } from "../../shared/roles";
+import { editionLabel, roleLabel } from "../../shared/roles";
 import type { ScoringSettings } from "../../shared/scoring";
 import { recordAudit, changedFragment, pct, type AuditEntry } from "./log";
 
@@ -185,6 +185,44 @@ export async function auditScoringFramework(
   }
 
   await recordAudit(c, ...entries);
+}
+
+/**
+ * V3 item 13 — a change to the `Score visibility matrix`.
+ *
+ * One entry per CELL that moved, because a permission grant is the thing a
+ * reader of the log actually needs to find: "who decided that a juror may read
+ * the programme associate's scores, and when?". The settings above are audited
+ * by name for the same reason; this is the control that replaced the
+ * `peer_scores_toggled` line for the superuser's console.
+ */
+export interface VisibilityChange {
+  edition: Edition;
+  viewer: string;
+  target: string;
+  from: boolean;
+  to: boolean;
+}
+
+export async function auditScoreVisibility(
+  c: Context<AppEnv>,
+  changes: readonly VisibilityChange[],
+): Promise<void> {
+  if (changes.length === 0) return;
+  await recordAudit(
+    c,
+    ...changes.map((ch) => ({
+      category: "config" as const,
+      action: "score_visibility_changed",
+      summary:
+        `${editionLabel(ch.edition)} — ${roleLabel(ch.edition, ch.viewer as Role)} ` +
+        `${ch.to ? "can now see" : "can no longer see"} ` +
+        `${roleLabel(ch.edition, ch.target as Role)} scores`,
+      detail: { ...ch },
+      targetType: "score_visibility",
+      targetId: `${ch.edition}:${ch.viewer}:${ch.target}`,
+    })),
+  );
 }
 
 // ── Cohort rating thresholds ─────────────────────────────────────────────────
