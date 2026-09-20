@@ -79,6 +79,8 @@ a corrected file or a number. **MEASURE**: prototype unchanged, so the gap is in
 | 17 | My account → Pricing revisited | **MEASURE** | The account overlay grew 56,019 → 71,008 bytes (**517 diff lines, unread**). It is item 15's other end: `prSave()` → `postMessage({type:'aisjPricing'})` → `acRefreshPricing()`. Do not let anyone estimate this without reading it. |
 | 18 | All decks → "Dashboard" | **DONE** (V3-NAV, sidebar) · screen is V3-DASH | Verbatim. Superuser-only per the client, so use `labelOverrides`, not `label`. |
 | 19 | Dashboard stat boxes + screens | **BUILD + DECIDE** | Six boxes, new order/labels/colours: Uploaded · AI Evaluated · Not AI Evaluated · Incomplete · **Archived** · Shortlisted. **`Assigned` is deleted — reversing Aug-2026 issue 4**, which is quoted in `deckStats.ts:166-167`. Tables collapse 4 shapes → 2. Archived is excluded from every other count, so the tile **denominator changes**. |
+| 18 | All decks → "Dashboard" | **DONE** (screen) / `V3-NAV` (sidebar) | `V3-DASH`: the `<h1>` is "Dashboard" for the incubator superuser only; `updateTitle()`'s `(activeStat !== 'all') ? statPart : 'Dashboard'` reproduced, context suffix intact. The sidebar LABEL is `V3-NAV`'s. |
+| 19 | Dashboard stat boxes + screens | **DONE**, except the Assigned deletion (**Q7**) | `V3-DASH`: `v3DeckStats` / `matchesV3Stat` in `deckStats.ts`, superuser-only. Six boxes in prototype order with the static sub-labels and the prototype's colours (Shortlisted moved `--green` → `--purple`). **Denominator fixed**: `adUpdateStats`'s `c.all` is the NON-archived count, so an archived deck is counted once and excluded from every other tile and every other view — pinned at both layers with the negative control run (`22 to be 33`). Tables collapsed 4 → 2 (`v3Default` 8 cols shared by every box but Shortlisted; `v3Shortlisted` 5 cols), rows sort by `lastActivityAt` desc with the "· 2h ago" clock, and each row carries an `Actions ▾` select (Q32). **`Assigned` is RETAINED** pending Q7 — one constant, `ASSIGNED_TILE_RETAINED_PENDING_Q7`. |
 
 ---
 
@@ -154,6 +156,41 @@ by diffing `_sidebar.html`, which is 2 changed lines; none of them is nav work, 
   a section `editable` only when `role === viewer`, so a superuser gets both read-only. That is a
   permission change in the `role-boundary-leaks` class, not a visual one, and it was NOT made on an
   inference. **Is the superuser meant to score on a program associate's behalf?**
+### `V3-DASH` (Q31–Q34)
+
+- **Q31 — `lastActivityAt` is DERIVED, not stored.** The prototype's `adData[].act` is a hand-placed
+  integer with a hand-written `actLbl` ("2h ago"). Nothing here records "last activity", so
+  `GET /api/decks` now computes it as the latest of: the deck's last `pipeline_events.created_at`, its
+  own `decks.updated_at`, and `decks.created_at`. That means a **tag edit or a contact correction
+  re-sorts a row to the top**, because both bump `updated_at`. If "activity" is meant to be pipeline
+  movement ONLY, drop `updated_at` from `latestTimestamp(...)` in `toDeckView` — one argument.
+  *(No migration needed; 0068 was allotted to this session and is UNUSED, still free.)*
+- **Q32 — what the `Actions ▾` select offers.** The prototype's four options are `Send to Assign` ·
+  `Send to Query` · `Edit` · `Archive`, against in-memory data with no pipeline behind them. Two of
+  them are not transitions this app has from an arbitrary stage — `archive` is reachable only from
+  `rejected`, and `assign_jury` only from `ai_evaluated` — so offering them verbatim would produce a
+  menu whose entries 403. The select therefore lists **`deck.actions`**: the transitions the SERVER
+  says this role may make from this deck's stage, plus `Edit` (the prototype's inline contact edit) on
+  the default shape only. Confirm, or give the four literal options and the routes behind them.
+  **Two transitions are withheld even where the server permits them** — the same two `StagePage`
+  withholds. `assign_jury`: `POST /decks/:id/transition` would move the deck to Assigned with
+  `assigned_to` still NULL, because only `POST /decks/:id/assign` sets an evaluator. Nothing is lost,
+  since our Assign screen already lists every deck at `ai_evaluated` — the prototype's "Send to
+  Assign" pushes a row onto an in-memory list and has no work to do here. `complete_signup`: the
+  sign-up bypass. Both are pinned by tests asserting the option is ABSENT.
+- **Q33 — the Shortlisted shape's `Signup status` is READ-ONLY.** `adSetSignup` writes
+  `In progress / Completed / Delayed / Dropped` to an in-memory field that resets on reload; neither
+  "Delayed" nor "Dropped" has any backing state here, and making the cell writable would reintroduce
+  the sign-up bypass `StagePage.actionCell` deliberately removed ("a sign-up completes on the
+  countersign, not on a click"). The cell reads the real sign-up record's status instead. Confirm, or
+  say what Delayed and Dropped mean in the sign-up workflow.
+- **Q34 — three states, thirteen stages.** `adData[].state` is one of `aieval` / `noteval` /
+  `incomplete`, and the three must partition the live decks or the tiles stop summing to Uploaded.
+  Read here as: *incomplete* = the existing Incomplete predicate (`statusId === "incomplete" ||
+  signal === "flagged"`), so no deck changes box on the way to the new design; *aieval* = at
+  `ai_evaluated` or past it, **or** carrying a score — off the STAGE first, so blind scoring cannot
+  empty the box; *noteval* = `uploaded` / `pending_ai` / `manual_review`. Note this puts a **rejected**
+  deck under AI Evaluated, which is true but may not be wanted on a dashboard.
 
 ---
 
@@ -691,3 +728,113 @@ One real regression WAS caught by e2e and fixed: the duplicate `Pitch deck` head
 **Files touched outside this session's four:** `src/client/api.ts` — one additive optional field on
 `DeckReportMatrix`; `test/client/allDecks.test.tsx` — one assertion the v3 copy supersedes. Both are
 §9 rows in `docs/plan_parity.md`.
+| Session | State | Items | Measured gate | Notes |
+|---|---|---|---|---|
+| `V3-DASH` | **done** (branch `parity/V3-DASH`, not merged) | **18** (screen half) and **19** closed, except the Assigned deletion which is held on **Q7** | typecheck ✓ · lint ✓ · **`npm test` 2098 passed / 1 skipped** ✓ (baseline 2069/1 → +29: 12 unit · 6 worker · 11 client) · build ✓ · **e2e 212 passed / 0 failed / 12 flaky** ✓ (9.1 min, load 3, port 5241) · **roles 1115/1115, 0 failed** ✓ (port 5242, PID's cwd `lsof`-proved to be this worktree) | Two e2e runs — see "The e2e result". |
+
+### What landed
+
+**`src/shared/deckStats.ts`** — a third incubator set at the foot of the file: `v3DeckStats`,
+`matchesV3Stat`, `v3DeckState`, `isArchivedDeck`, `latestTimestamp`. It is **superuser-only**;
+`STAT_ORDER` and `build()` are untouched, so admin / PM / PA and the whole VC edition keep the six
+they have. The computed sub-label helpers (`uploadedSince`, the `pct`-based `sub`s) therefore do NOT
+die with v3's static prose — those roles still use them.
+
+**The denominator.** `adUpdateStats`'s `c.all` is the count of NON-archived decks, and every bar
+divides by it — Archived's own bar included. `build()` divides by `decks.length`, which is correct
+for the old sets (they have no archived exclusion) and silently wrong for these, so the v3 set has
+its own builder rather than another `STAT_ORDER` row. Every tile's count now comes from
+`matchesV3Stat` — the same predicate the table filter uses — so a tile cannot disagree with the rows
+its own view draws, and that is asserted as a loop over all seven keys.
+
+**Both negative controls were run, and the first version of one test was decoration.**
+Reverting `active.length` → `decks.length` fails with `expected 22 to be 33` (unit) and
+`Uploaded: "7"` (client); removing the `if (isArchivedDeck(deck)) return false` guard fails six
+tests across both layers. The worker test's "format trap" case, however, **passed with the broken
+implementation** on its first draft, because its two timestamps were on different DAYS — and once the
+dates differ, lexicographic order happens to agree with real order. Re-cut onto a single day in both
+directions; it now fails as `expected '2026-06-02T09:00:00.000Z' to be '2026-06-02 15:00:00'`.
+
+**`GET /api/decks`** gains `lastActivityAt` and `queried` (Q31). No migration: **0068 was allotted to
+this session and is UNUSED, still free.** `lastActivityAt` is folded in TypeScript with
+`latestTimestamp()`, never with SQL `MAX()` — D1 writes `datetime('now')` and `toISOString()` into
+columns that get compared here, and " " sorts below "T", so a lexicographic max returns the ISO value
+whatever the real order.
+
+**`DashboardPage.tsx`** — `isV3Dash` gates the whole change on `incubator` + `superuser`. Title
+"Dashboard", the six boxes with the prototype's static prose and colours (Shortlisted `--green` →
+`--purple`), two table shapes replacing four, rows sorted by activity with the `· 2h ago` clock, the
+`Actions ▾` select (Q32), the inline contact edit, and the read-only Sign-up status (Q33). Aug-2026
+issue 2's tag chips stay on the row: item 19 names exactly what the collapse drops and tags are not
+on that list.
+
+### Tests, and what they are for
+
+`test/client/allDecks.test.tsx`'s `mount()` default role moved **superuser → admin**, so every
+pre-existing assertion in that file now stands as the proof that the un-reshared design did not move,
+and a new block adds `admin` · `program_manager` · `program_associate` each asserting All decks, the
+v15 six, the founder-details headers, the v15 denominator (7, archived included) and no row-action
+select — plus the jury's My Pipeline. `test/worker/alldecks-v3-activity.test.ts` is new.
+`e2e/parity.spec.ts`: **one row re-captured**, `incubator/superuser/alldecks`; the four sibling
+incubator rows untouched. `e2e/all-decks.spec.ts`'s superuser test was **restated, not weakened** —
+same three things proved (the table re-shapes per box, a box narrows the rows to its own count, the
+report opens from the name) against the new design, plus a data-independent archived-exclusion check.
+No other e2e spec needed touching: `programs`, `coverage`, `csp`, `config` and `audit-log` walk
+`alldecks` as the **admin**, `upload` as the **program associate**, and `chrome` asserts only shell
+geometry.
+
+### Two transitions the row menu withholds
+
+`assign_jury` and `complete_signup` — the same two `StagePage` withholds, for the same reasons.
+`POST /decks/:id/transition` would apply `assign_jury` **without an evaluator**, stranding the deck at
+Assigned with `assigned_to` NULL (only `POST /decks/:id/assign` sets one); nothing is lost, because
+our Assign screen already lists every deck at `ai_evaluated`, so the prototype's "Send to Assign" —
+a push onto an in-memory list — has no work to do here. `complete_signup` is the sign-up bypass.
+Both are pinned by tests asserting the option is ABSENT.
+
+### The e2e result, read honestly
+
+**Run 2, at load 3 on a quiet box: 212 passed · 0 FAILED · 12 flaky (9.1 min). The gate is green.**
+`incubator/superuser` passed **first try** — not even flaky — as did both `e2e/all-decks.spec.ts`
+tests. Run 2 carried **271** `fetch failed` (more than twice run 1's 112) and still failed nothing,
+which is the clearest statement of what that noise is: endemic to this dev server, absorbed by the
+one configured retry, and unrelated to any assertion.
+
+**A mechanism, not a guess.** Minutes after run 1, starting an ordinary dev server on this box for
+the roles probe died at `connect EADDRNOTAVAIL 127.0.0.1:54647` while applying migration 0037 — the
+machine could not allocate a local ephemeral port. Vite proxies to miniflare's workerd over exactly
+such a socket, so `undici` → `miniflare.dispatchFetch` → `fetch failed` is that same exhaustion seen
+from the other side. Nine sibling worktrees running gates concurrently is what exhausts it. The
+server booted first try once the box was quiet.
+
+**Run 1, for the record — 3 failed · 3 flaky · 218 passed at load 15–40, and not one of the six named
+a column set or a title.**
+All six are `e2e/parity.spec.ts` role walks or a login, and the run log carries **112
+`[vite] Internal server error: fetch failed`** out of `miniflare.dispatchFetch`. The preserved
+`error-context.md` snapshots show the page served was **vite's own error page** — `heading "Internal
+Server Error"` / `heading "fetch failed"` — so the app was never reached. The three that got far
+enough to name a screen name `account`, `issues` and `contactadmin`; the other three are `h1
+element(s) not found` and `locator.fill` timeouts on a dead page.
+
+This is the §9 infra pattern `plan_parity.md` records, **with a different signature**: that row says
+the tell is `Network connection lost` and `Received: undefined`, and BOTH runs had **zero** of those.
+On this vite/undici build it surfaces as `fetch failed` and `Received: "Internal Server Error"`.
+**Grep for BOTH** — a session that greps only the recorded string will conclude "zero drops, look at
+the code" and go hunting a defect that is not there.
+
+**The positive evidence that this branch is not the cause:** `alldecks` is item **0** of the
+superuser walk and the assertion is inside the loop — the failing retry reached `account`, item
+**18**. Screens 0–17 passed, so the new `Dashboard` title and the new 8-column header set were
+observed and matched before the server died. `incubator/program_associate` and `vc/superuser` are
+roles this branch does not touch at all.
+
+Run-1 artefacts (log + all nine `error-context.md`) were preserved to this session's scratchpad
+BEFORE run 2 — Playwright clears `test-results/` at the start of the next run, and `plan_parity.md`
+§9 records that snapshot being lost twice before.
+
+### `npm run roles` — 1115/1115, unchanged
+
+No gate changed here: no route guard, no nav item, no permission. Confirmed rather than assumed —
+**1115 checks · 1115 passed · 0 failed**, against a server whose PID's cwd was `lsof`-proved to be
+this worktree before any number from it was believed. `scripts/role-matrix.ts` therefore needed no
+new probe.

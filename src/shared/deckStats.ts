@@ -7,6 +7,12 @@
  * titles as the stat boxes* — so both come from this one list. `Uploaded` is the
  * denominator, exactly as the prototype's `mpProgress()` treats `data-stat="all"`.
  *
+ * **V3-DASH** adds a THIRD incubator set at the foot of this file —
+ * `v3DeckStats` / `matchesV3Stat`, the reshared superuser prototype's six —
+ * with its own builder, because its denominator excludes archived decks and
+ * `build()` below divides by `decks.length`. It is superuser-only; the six
+ * described here still serve admin, PM, PA and the VC edition unchanged.
+ *
  * Each edition has its own six (`STAT_ORDER`): the incubator's cohort stages
  * (`AISJ_IC_SuserV15`) and the VC edition's deal funnel (`AISJ_VC_Superuser_V8`
  * — Uploaded · Incomplete · AI Evaluated · In Diligence · IC ready · Onboard
@@ -351,4 +357,185 @@ export function icMemberStats(decks: IcStatDeck[], ballots: Record<string, MyBal
       color: t.color,
     };
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// V3-DASH — the incubator SUPERUSER dashboard (`AISJ_SuperuserV3.HTM`)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The reshared superuser prototype replaces the six boxes above with a
+// different six, and only for the superuser: the admin, program-manager,
+// program-associate and jury prototypes were NOT reshared, so `STAT_ORDER`
+// and `build()` keep drawing their screens exactly as they do today. Nothing
+// in this block is reachable from any other role or edition.
+//
+// Source, verbatim (`_scripts.js` `adUpdateStats` / `adRenderTable`, and
+// `panel-alldecks.html`'s six `.stat-card`s):
+//
+//   var c={all:0,aieval:0,noteval:0,incomplete:0,shortlisted:0,archived:0};
+//   adData.forEach(function(d){
+//     if(d.archived){c.archived++;return;}          // ← archived counts ONCE
+//     c.all++;
+//     if(d.state==='aieval')c.aieval++;
+//     else if(d.state==='noteval')c.noteval++;
+//     else if(d.state==='incomplete')c.incomplete++;
+//     if(d.shortlisted)c.shortlisted++;
+//   });
+//   var pct=(k==='all')?100:(c.all?Math.round(c[k]/c.all*100):0);
+//
+// **The denominator is `c.all`, the NON-archived count — not `adData.length`.**
+// `build()` above divides by `decks.length`, which is right for the old sets
+// (they have no archived exclusion) and silently wrong for these. One archived
+// deck in the workspace moves every other tile's percentage; no test on the old
+// path notices, because the old path has no archived tile to disagree with.
+// That is why this set has its own builder rather than another `STAT_ORDER` row.
+
+/** The v3 superuser boxes (`panel-alldecks.html` `data-stat`, in draw order). */
+export type V3StatKey = "all" | "aieval" | "noteval" | "incomplete" | "archived" | "shortlisted";
+
+/**
+ * The prototype's `adData[].state` — one of three, per deck, mutually
+ * exclusive. Our pipeline has thirteen stages, so the three are read off it:
+ *
+ *   • **incomplete** — the same predicate the old Incomplete box uses, so a
+ *     deck does not change box on the way to the new design.
+ *   • **aieval** — through the AI: at `ai_evaluated` or past it, or carrying a
+ *     score. Read off the STAGE first so blind scoring (which withholds
+ *     `aiScore` from an evaluator who has not submitted) cannot empty the box —
+ *     the same reasoning as the VC `aiEvaluated` box above.
+ *   • **noteval** — everything else: `uploaded`, `pending_ai`, `manual_review`.
+ *
+ * Order matters: the three must PARTITION the non-archived decks, exactly as
+ * `adData[].state` does, or the three tiles stop summing to Uploaded.
+ */
+export type V3DeckState = "aieval" | "noteval" | "incomplete";
+
+/** Stages a deck can only be at once the AI has run (`incubatorPipeline`). */
+const POST_AI_STAGES: readonly string[] = [
+  "ai_evaluated",
+  "assigned",
+  "jury_evaluation",
+  "shortlisted",
+  "intro",
+  "signup",
+  "onboard_ready",
+  "rejected",
+  "archived",
+];
+
+/** An archived deck is counted ONLY in Archived, and appears in no other view. */
+export function isArchivedDeck(deck: StatDeck): boolean {
+  return deck.statusId === "archived";
+}
+
+export function v3DeckState(deck: StatDeck): V3DeckState {
+  if (deck.statusId === "incomplete" || deck.signal === "flagged") return "incomplete";
+  if (POST_AI_STAGES.includes(deck.statusId ?? "") || deck.aiScore !== undefined) return "aieval";
+  return "noteval";
+}
+
+/**
+ * The table filter, verbatim from `adRenderTable()`:
+ *
+ *   if(activeStat==='archived') show=d.archived;
+ *   else if(d.archived)        show=false;
+ *   else if(activeStat==='all')show=true;
+ *   else if(activeStat==='shortlisted') show=!!d.shortlisted;
+ *   else show=(d.state===activeStat);
+ *
+ * `assigned` is not a v3 box; it is accepted here only while the Assigned tile
+ * is retained pending Q7 (see `V3_TILES`).
+ */
+export function matchesV3Stat(deck: StatDeck, key: V3StatKey | "assigned"): boolean {
+  if (key === "archived") return isArchivedDeck(deck);
+  if (isArchivedDeck(deck)) return false;
+  if (key === "all") return true;
+  if (key === "shortlisted") return SHORTLISTED_STAGES.includes(deck.statusId ?? "");
+  if (key === "assigned") return Boolean(deck.assignedTo) || ASSIGNED_STAGES.includes(deck.statusId ?? "");
+  return v3DeckState(deck) === key;
+}
+
+/**
+ * **Q7 / plan §4 — the Assigned tile.** v3 deletes it, which reverses Aug-2026
+ * issue 4 (quoted at `STAT_ORDER.incubator`'s fifth entry above). The plan's
+ * instruction while Q7 is unanswered is to build the new set and LEAVE ASSIGNED
+ * IN PLACE, so it is retained here in its old relative position — immediately
+ * before Shortlisted, which is where issue 4 put it.
+ *
+ * Answering Q7 "yes, delete it" is deleting the one entry flagged below and
+ * flipping this constant; nothing else refers to it.
+ */
+export const ASSIGNED_TILE_RETAINED_PENDING_Q7 = true;
+
+interface V3Tile {
+  key: V3StatKey | "assigned";
+  label: string;
+  /** `.scf` bar colour, from the prototype's inline `background:`. */
+  color: string;
+  /** `.scs` — STATIC prose in v3; the computed "+3 since yesterday" strings are gone. */
+  sub: string;
+}
+
+/** The six, in `panel-alldecks.html`'s own order (plus Assigned pending Q7). */
+const V3_TILES: V3Tile[] = [
+  { key: "all", label: "Uploaded", color: "var(--olive)", sub: "All decks in the pipeline" },
+  { key: "aieval", label: "AI Evaluated", color: "var(--green)", sub: "Scored by AI" },
+  { key: "noteval", label: "Not AI Evaluated", color: "var(--amber)", sub: "Awaiting AI score" },
+  { key: "incomplete", label: "Incomplete", color: "var(--red)", sub: "Deck missing slides" },
+  { key: "archived", label: "Archived", color: "var(--text-3)", sub: "Set aside" },
+  // ── Q7: delete this one line to ship the prototype's six. ──
+  ...(ASSIGNED_TILE_RETAINED_PENDING_Q7
+    ? [{ key: "assigned" as const, label: "Assigned", color: "var(--blue)", sub: "Allocated to an evaluator" }]
+    : []),
+  { key: "shortlisted", label: "Shortlisted", color: "var(--purple)", sub: "Advanced to signup" },
+];
+
+/**
+ * The v3 superuser boxes. `progress` divides by the NON-ARCHIVED count, which
+ * is what `adUpdateStats` means by `c.all` — including for Archived itself,
+ * whose bar the prototype computes the same way (so it can exceed 100% in a
+ * workspace that is mostly archived; that is the prototype's own arithmetic).
+ */
+export function v3DeckStats(decks: StatDeck[]): DeckStat<V3StatKey | "assigned">[] {
+  // The denominator, and `matchesV3Stat(d, "all")`'s own answer — every tile's
+  // count therefore comes from the SAME predicate the table filter uses, so a
+  // tile can never disagree with the rows its view draws.
+  const active = decks.filter((d) => !isArchivedDeck(d));
+  return V3_TILES.map((t) => {
+    const value = decks.filter((d) => matchesV3Stat(d, t.key)).length;
+    return {
+      key: t.key,
+      label: t.label,
+      value,
+      sublabel: t.sub,
+      progress: t.key === "all" ? 100 : pct(value, active.length),
+      color: t.color,
+    };
+  });
+}
+
+// ── "· 2h ago" — the row clock the v3 table sorts on ─────────────────────────
+
+/**
+ * The latest of a set of timestamps, as an ISO string — `undefined` if none
+ * parse. Used by `GET /api/decks` to fold a deck's last pipeline event, its own
+ * `updated_at` and its `created_at` into one `lastActivityAt`.
+ *
+ * It compares PARSED instants, never strings: D1 writes `datetime('now')`
+ * ("2026-09-20 10:00:00") in some places and `new Date().toISOString()`
+ * ("2026-09-20T09:00:00.000Z") in others, and those two formats do not sort
+ * lexicographically against each other — the space sorts below "T", so a plain
+ * `MAX()` would pick the ISO value every time regardless of which is later.
+ */
+export function latestTimestamp(...values: (string | null | undefined)[]): string | undefined {
+  let bestAt = Number.NEGATIVE_INFINITY;
+  let best: string | undefined;
+  for (const v of values) {
+    if (!v) continue;
+    const t = parseTs(v);
+    if (Number.isNaN(t) || t <= bestAt) continue;
+    bestAt = t;
+    best = v;
+  }
+  return best;
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Building2, ChevronDown, Download, FileText, Search, Table, Users, X } from "lucide-react";
+import { Building2, ChevronDown, Clock, Download, FileText, Search, Table, Users, X } from "lucide-react";
 import { useAuth } from "../auth/useAuth";
 import { usePermissions } from "../auth/usePermissions";
 import {
@@ -30,7 +30,7 @@ import {
   scoreBandColor,
   type PillTone,
 } from "../components/DeckCard";
-import type { DeckView } from "../types";
+import type { DeckView, DeckAction } from "../types";
 import { exportDecks } from "../exportCsv";
 import {
   listDecks,
@@ -45,6 +45,8 @@ import {
   updateThresholds,
   getDeckEvents,
   listIcVotes,
+  transitionDeck,
+  updateDeckDetails,
   IC_VOTE_LABELS,
   type CohortView,
   type ProgramView,
@@ -58,16 +60,25 @@ import { cohortRating, weightedTotal } from "../../shared/scoring";
 import {
   deckStats,
   icMemberStats,
+  isArchivedDeck,
+  latestTimestamp,
   matchesIcStat,
   matchesStat,
+  matchesV3Stat,
   pipelineProgress,
+  v3DeckState,
+  v3DeckStats,
   vcFunnelLabel,
   vcReached,
   type DeckStat,
   type IcStatKey,
   type MyBallot,
   type StatKey,
+  type V3StatKey,
 } from "../../shared/deckStats";
+// V3-DASH — the Shortlisted table's Sign-up status column reads the REAL
+// sign-up record, the same source the Sign up Pipeline screen reads.
+import { SIGNUP_STATUS_LABELS, listSignups, type SignupSummary } from "./SignupWorkspace";
 import { canAccessNav, navForUser } from "../../shared/nav";
 import type { Edition } from "../../shared/roles";
 import { useActiveContext } from "../activeContext";
@@ -89,6 +100,48 @@ function relativeTime(iso: string): string {
   const days = Math.round(hrs / 24);
   if (days < 7) return `${days} day${days === 1 ? "" : "s"} ago`;
   return new Date(then).toLocaleDateString();
+}
+
+/**
+ * V3-DASH — the Status column's three words, verbatim from `adRenderTable`'s
+ * `stMap`: `{aieval:['up-st-ok','AI Evaluated'], noteval:['up-st-amber','Not AI
+ * Evaluated'], incomplete:['up-st-inc','Incomplete deck']}`. Note this column
+ * is the AI-evaluation state, NOT the intake completeness the old default
+ * shape's Status column showed.
+ */
+const V3_STATUS: Record<string, { label: string; tone: PillTone }> = {
+  aieval: { label: "AI Evaluated", tone: "green" },
+  noteval: { label: "Not AI Evaluated", tone: "amber" },
+  incomplete: { label: "Incomplete deck", tone: "red" },
+};
+
+/**
+ * V3-DASH — the Shortlisted shape's Sign-up status cell. Read-only, and in the
+ * repo's own vocabulary rather than the prototype's: `adSetSignup` writes
+ * `In progress / Completed / Delayed / Dropped` to an in-memory field that
+ * resets on reload, and neither "Delayed" nor "Dropped" has any backing state
+ * here. Making the cell writable would also reintroduce the sign-up bypass
+ * `StagePage.actionCell` deliberately removed — "a sign-up completes on the
+ * countersign, not on a click". Recorded as Q33.
+ */
+function signupCellLabel(deck: DeckView, signup: SignupSummary | undefined): string {
+  if (signup) return SIGNUP_STATUS_LABELS[signup.status] ?? signup.status;
+  if (deck.statusId === "onboard_ready") return "Onboarded";
+  if (deck.statusId === "signup") return "Sign-up initiated";
+  return "Not started";
+}
+
+/**
+ * V3-DASH — the instant the Dashboard sorts a row on. `lastActivityAt` is
+ * computed server-side (last pipeline event / last edit / upload); the two
+ * fallbacks keep a row that predates the field, or one a test hands over
+ * without it, in a defined position instead of at the top.
+ */
+function activityAt(deck: { lastActivityAt?: string; uploadedAt?: string }): number {
+  const iso = latestTimestamp(deck.lastActivityAt, deck.uploadedAt);
+  if (!iso) return Number.NEGATIVE_INFINITY;
+  const t = parseTs(iso);
+  return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t;
 }
 
 /** The prototype's table date: "2 Jun 2026". */
@@ -148,6 +201,13 @@ export const ALL_DECKS_COLUMNS = {
   icAgenda: ["#", "Startup", "Sector", "AI score", "Sponsor", "Ask"],
   icPipeline: ["Startup", "Cleared", "Stage", "Status", "Ask", "Owner"],
   icFunded: ["Startup", "Final check", "Round", "Close date", "Ownership"],
+  // V3-DASH — `AISJ_SuperuserV3` `adRenderTable()` collapses the superuser's
+  // four shapes into two. Copied verbatim from the two `thead` strings; the
+  // default set is shared by every box but Shortlisted, which has its own.
+  // Sector, Assigned to / date, Due date, Jury score and the parameter-score
+  // sparkline are all gone from this screen.
+  v3Default: ["Startup name", "Founder", "Phone", "Email", "City", "AI score", "Status", "Actions"],
+  v3Shortlisted: ["Startup name", "AI score", "Avg. score", "Signup status", "Actions"],
 } as const;
 
 type TableShape = keyof typeof ALL_DECKS_COLUMNS;
@@ -279,7 +339,7 @@ function eventAt(events: PipelineEvent[] | undefined, action: string): string | 
 // ── The jury's "My Pipeline" ─────────────────────────────────────────────────
 
 export type JuryStatKey = "assigned" | "evaluated" | "drafts" | "pending" | "submitted";
-type ViewKey = StatKey | JuryStatKey | IcStatKey;
+type ViewKey = StatKey | JuryStatKey | IcStatKey | V3StatKey;
 
 /** Stages in which a jury member's allocation is still being scored. */
 const JURY_STAGES = ["assigned", "jury_evaluation"];
@@ -595,6 +655,10 @@ export function DashboardPage() {
   // W9-A (F0434) — the IC member's All decks is "Awaiting my vote".
   const isIc = edition === "vc" && user?.role === "ic_member";
   const isVcStaff = edition === "vc" && !isIc;
+  // V3 — `AISJ_SuperuserV3` reshaped this screen into a Dashboard, for the
+  // SUPERUSER ONLY. The admin, program-manager, program-associate and jury
+  // prototypes were not reshared, so every other role keeps the screen it has.
+  const isV3Dash = edition === "incubator" && user?.role === "superuser";
   const defaultView: ViewKey = isJury ? "assigned" : isIc ? "myvote" : edition === "vc" ? "uploaded" : "all";
   const [ctx, setCtx] = useActiveContext(edition);
   const [decks, setDecks] = useState<DeckView[] | null>(null);
@@ -631,6 +695,7 @@ export function DashboardPage() {
   // Issue 4/5 — the stat boxes double as a table filter, as in the prototype.
   const [view, setView] = useState<ViewKey>(defaultView);
 
+
   // Issue 8 — the activity log.
   const [activity, setActivity] = useState<ActivityEvent[] | null>(null);
 
@@ -644,6 +709,20 @@ export function DashboardPage() {
   const [icVotes, setIcVotes] = useState<Record<string, IcVotes | null | false>>({});
   const [events, setEvents] = useState<Record<string, PipelineEvent[] | null>>({});
   const requested = useRef(new Set<string>());
+  // V3-DASH — the Shortlisted shape's Sign-up status column, and the inline
+  // contact edit the default shape's `Edit` action opens.
+  const [signups, setSignups] = useState<Record<string, SignupSummary>>({});
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<Record<string, string>>({});
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<string | null>(null);
+  // V3-DASH — an open inline edit belongs to one row in one view. Leaving it
+  // set across a stat-box change strands it: the Shortlisted shape has no
+  // editable columns, so the row would draw a bare Save over nothing.
+  useEffect(() => {
+    setEditing(null);
+    setRowError(null);
+  }, [view]);
   const [popover, setPopover] = useState<DeckView | null>(null);
   const [matrixFor, setMatrixFor] = useState<DeckView | null>(null);
 
@@ -802,14 +881,24 @@ export function DashboardPage() {
   const tiles = useMemo((): Tile[] => {
     if (isJury) return juryTiles(mine);
     if (isIc) return icMemberStats(atIc, ballots);
+    if (isV3Dash) return v3DeckStats(decks ?? []);
     return deckStats(edition, decks ?? []);
-  }, [isJury, isIc, mine, atIc, ballots, edition, decks]);
+  }, [isJury, isIc, isV3Dash, mine, atIc, ballots, edition, decks]);
 
   const rows = useMemo(() => {
     if (isJury) return view === "drafts" ? [] : mine.filter((d) => juryBucket(d) === view);
     if (isIc) return atIc.filter((d) => matchesIcStat(d, view as IcStatKey, ballots[d.id]));
+    if (isV3Dash) {
+      // `list.sort(function(a,b){ return (b.act||0)-(a.act||0); })` — recent
+      // activity first, which is what the "· 2h ago" clock on each row names.
+      // A deck with no activity at all sorts last rather than first.
+      return (decks ?? [])
+        .filter((d) => matchesV3Stat(d, view as V3StatKey))
+        .slice()
+        .sort((a, b) => activityAt(b) - activityAt(a));
+    }
     return (decks ?? []).filter((d) => matchesStat(edition, d, view as StatKey));
-  }, [isJury, isIc, mine, atIc, ballots, decks, edition, view]);
+  }, [isJury, isIc, isV3Dash, mine, atIc, ballots, decks, edition, view]);
 
   const shape: TableShape = isJury
     ? view === "submitted"
@@ -819,7 +908,11 @@ export function DashboardPage() {
       ? IC_SHAPES[view as IcStatKey]
       : isVcStaff
         ? VC_SHAPES[view] ?? "vcUploaded"
-        : view === "evaluated"
+        : isV3Dash
+          ? view === "shortlisted"
+            ? "v3Shortlisted"
+            : "v3Default"
+          : view === "evaluated"
           ? "evaluated"
           : view === "assigned"
             ? "assigned"
@@ -844,6 +937,16 @@ export function DashboardPage() {
         .catch(() => setIcVotes((v) => ({ ...v, [d.id]: false })));
     }
   }, [isIc, canReadIcVotes, atIc]);
+
+  // V3-DASH — the Shortlisted shape's Sign-up status column. One request, and
+  // only once that shape is on screen.
+  useEffect(() => {
+    if (shape !== "v3Shortlisted" || requested.current.has("signups")) return;
+    requested.current.add("signups");
+    listSignups()
+      .then((r) => setSignups(Object.fromEntries(r.signups.map((x) => [x.deckId, x]))))
+      .catch(() => setSignups({}));
+  }, [shape]);
 
   // Parameter breakdowns for the sparkline columns; the jury's and the IC
   // member's own totals; the IC ready view's recommendations; the events a
@@ -927,16 +1030,22 @@ export function DashboardPage() {
   const statLabel = tiles.find((t) => t.key === view)?.label ?? "All decks";
   const context = [activeProgram?.name, activeCohort?.name].filter(Boolean);
   // The IC member's `updateTitle()` names every box, its first one "At IC".
-  const baseTitle = isIc ? (view === "atIc" ? "At IC" : statLabel) : view === defaultView ? "All decks" : statLabel;
+  // V3 renames the superuser's screen outright — `updateTitle()` there reads
+  // `var title = (activeStat !== 'all') ? statPart : 'Dashboard';`.
+  const homeTitle = isV3Dash ? "Dashboard" : "All decks";
+  const baseTitle = isIc ? (view === "atIc" ? "At IC" : statLabel) : view === defaultView ? homeTitle : statLabel;
   const title = `${baseTitle}${context.length > 0 ? ` — ${context.join(", ")}` : ""}`;
   // F0239 — the FILTERED count and a freshness stamp ("N deals at IC" for the IC member).
-  const noun = isJury ? "deck" : isIc ? "deal" : "submission";
+  const noun = isJury ? "deck" : isIc ? "deal" : isV3Dash ? "deck" : "submission";
+  // V3's `adRenderTable` leads the sub-line with the filter context, or
+  // "Recent activity" when there is none — and "Shortlisted" on that shape.
+  const v3Lead = shape === "v3Shortlisted" ? "Shortlisted" : context.length > 0 ? context.join(" · ") : "Recent activity";
   const subtitle =
     decks === null
       ? "Loading…"
-      : `${rows.length} ${noun}${rows.length === 1 ? "" : "s"}${isIc ? " at IC" : ""}${
-          loadedAt ? ` · Updated ${relativeTime(loadedAt)}` : ""
-        }`;
+      : `${isV3Dash ? `${v3Lead} · ` : ""}${rows.length} ${noun}${rows.length === 1 ? "" : "s"}${
+          isIc ? " at IC" : ""
+        }${loadedAt ? ` · Updated ${relativeTime(loadedAt)}` : ""}`;
 
   function selectProgram(programId: string) {
     setCtx({ programId: programId || null, cohortId: null });
@@ -1062,6 +1171,159 @@ export function DashboardPage() {
 
   function whoCell(name: string | undefined, loading: boolean) {
     return <td className={dim}>{loading ? "…" : (name ?? "—")}</td>;
+  }
+
+  // ── V3-DASH row machinery ──────────────────────────────────────────────
+  //
+  // `adAction(i,val)` offers four options — Send to Assign · Send to Query ·
+  // Edit · Archive — against in-memory data with no pipeline behind it. Here
+  // the stage machine decides: `deck.actions` is the set of transitions THIS
+  // role may perform from THIS deck's stage, computed by the server and
+  // re-checked on the way back in, so the menu can never offer a move the
+  // server would refuse (our `archive`, for one, is reachable only from
+  // Rejected). `Edit` is the prototype's inline contact edit and is on the
+  // default shape only — the Shortlisted shape's select omits it. Q32.
+
+  /**
+   * Two transitions a generic row menu must NOT offer — the same two
+   * `StagePage` withholds, for the same reasons:
+   *
+   *  • **`assign_jury`** has a dedicated screen because it needs an EVALUATOR.
+   *    `POST /decks/:id/transition` would happily move the deck to Assigned
+   *    with `assigned_to` still NULL; `POST /decks/:id/assign` is the route
+   *    that sets one. Nothing is lost by withholding it: our Assign screen
+   *    already lists every deck at `ai_evaluated`, so the prototype's "Send to
+   *    Assign" — which pushes a row onto an in-memory list — has no work to do
+   *    here. (Q32.)
+   *  • **`complete_signup`** is the sign-up bypass: "a sign-up completes on the
+   *    countersign, not on a click". Same reason the Shortlisted shape's
+   *    Sign-up status cell is read-only (Q33).
+   */
+  const V3_EXCLUDED_ACTIONS = new Set(["assign_jury", "complete_signup"]);
+
+  async function runRowAction(deck: DeckView, action: DeckAction) {
+    setRowBusy(deck.id);
+    setRowError(null);
+    try {
+      await transitionDeck(deck.id, action.action);
+      setDecks(await reload());
+      setLoadedAt(new Date().toISOString());
+    } catch {
+      setRowError(`Couldn't ${action.label.toLowerCase()} ${deck.name}. Try again.`);
+    } finally {
+      setRowBusy(null);
+    }
+  }
+
+  async function saveRowEdit(deck: DeckView) {
+    setRowBusy(deck.id);
+    setRowError(null);
+    try {
+      await updateDeckDetails(deck.id, {
+        founder: editDraft.founder ?? deck.founder ?? "",
+        founderPhone: editDraft.founderPhone ?? deck.founderPhone ?? "",
+        founderEmail: editDraft.founderEmail ?? deck.founderEmail ?? "",
+        city: editDraft.city ?? deck.city ?? "",
+      });
+      setEditing(null);
+      setDecks(await reload());
+      setLoadedAt(new Date().toISOString());
+    } catch {
+      setRowError(`Couldn't save ${deck.name}. Try again.`);
+    } finally {
+      setRowBusy(null);
+    }
+  }
+
+  const V3_EDIT_FIELDS = [
+    { name: "founder", label: "Founder", read: (d: DeckView) => d.founder },
+    { name: "founderPhone", label: "Phone", read: (d: DeckView) => d.founderPhone },
+    { name: "founderEmail", label: "Email", read: (d: DeckView) => d.founderEmail },
+    { name: "city", label: "City", read: (d: DeckView) => d.city },
+  ] as const;
+
+  /** `<select class="ad-act"><option value="">Actions ▾</option>…` */
+  function v3ActionCell(deck: DeckView, withEdit: boolean) {
+    if (editing === deck.id) {
+      return (
+        <td className={td}>
+          <Button size="sm" disabled={rowBusy === deck.id} onClick={() => void saveRowEdit(deck)}>
+            {rowBusy === deck.id ? "Saving…" : "Save"}
+          </Button>
+        </td>
+      );
+    }
+    const actions = (deck.actions ?? []).filter((a) => !V3_EXCLUDED_ACTIONS.has(a.action));
+    return (
+      <td className={td}>
+        <select
+          className="sj-input h-[27px] w-auto py-0 text-[11px]"
+          aria-label={`Actions for ${deck.name}`}
+          value=""
+          disabled={rowBusy !== null}
+          onChange={(e) => {
+            // The select is controlled at "", so it snaps back on its own.
+            const value = e.target.value;
+            if (!value) return;
+            if (value === "__edit") {
+              setEditing(deck.id);
+              setEditDraft({
+                founder: deck.founder ?? "",
+                founderPhone: deck.founderPhone ?? "",
+                founderEmail: deck.founderEmail ?? "",
+                city: deck.city ?? "",
+              });
+              return;
+            }
+            const action = actions.find((a) => a.action === value);
+            if (action) void runRowAction(deck, action);
+          }}
+        >
+          <option value="">Actions ▾</option>
+          {actions.map((a) => (
+            <option key={a.action} value={a.action}>
+              {a.label}
+            </option>
+          ))}
+          {withEdit && <option value="__edit">Edit</option>}
+        </select>
+      </td>
+    );
+  }
+
+  /** The name cell plus the prototype's `recLbl()` — "· 2h ago". */
+  function v3NameCell(deck: DeckView) {
+    const meta = deckMeta(deck);
+    const clock = deck.lastActivityAt ? relativeTime(deck.lastActivityAt) : null;
+    return (
+      <td className={td}>
+        <StartupNameLink deck={deck} onOpen={setSelected} />
+        <div className="mt-px text-[10px] text-fg-muted">
+          {meta}
+          {clock && (
+            <span>
+              {meta ? " · " : ""}
+              <Clock className="inline h-2.5 w-2.5 -translate-y-px" aria-hidden="true" /> {clock}
+            </span>
+          )}
+        </div>
+        {/* Aug-2026 issue 2's tag chips stay: item 19 names exactly what the
+            collapse drops (Sector, Assigned to / date, Due date, Jury score,
+            the sparkline) and tags are not on that list. */}
+        {deck.tags && deck.tags.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {deck.tags.map((t) => (
+              <span
+                key={t}
+                className="rounded-full border border-line bg-surface-2 px-1.5 text-[10px] text-fg-muted"
+              >
+                {t}
+              </span>
+            ))}
+          </div>
+        )}
+      </td>
+    );
   }
 
   function renderRow(deck: DeckView, index: number) {
@@ -1267,6 +1529,67 @@ export function DashboardPage() {
             {deck.stage ? chipCell([deck.stage, "info"]) : <td className={dim}>—</td>}
             <td className={dim}>{evLoading ? "…" : shortDate(eventAt(evs, "complete_legal_dd"))}</td>
             {notRecorded}
+          </>
+        );
+      // ── Incubator · V3 superuser Dashboard ──
+      case "v3Default": {
+        const state = v3DeckState(deck);
+        const pill = V3_STATUS[state];
+        const isEditing = editing === deck.id;
+        const cell = (f: (typeof V3_EDIT_FIELDS)[number]) => {
+          const value = f.read(deck);
+          return isEditing ? (
+            <td key={f.name} className={td}>
+              <input
+                className="sj-input h-[27px] w-full py-0 text-[11px]"
+                aria-label={`${f.label} — ${deck.name}`}
+                value={editDraft[f.name] ?? ""}
+                onChange={(e) => setEditDraft((dr) => ({ ...dr, [f.name]: e.target.value }))}
+              />
+            </td>
+          ) : (
+            <td key={f.name} className={td}>
+              {value ? value : <NotCaptured />}
+            </td>
+          );
+        };
+        return (
+          <>
+            {v3NameCell(deck)}
+            {V3_EDIT_FIELDS.map(cell)}
+            <td className={td}>
+              <ScoreChip value={deck.aiScore} />
+            </td>
+            <td className={td}>
+              <StatusPill tone={pill.tone}>{pill.label}</StatusPill>
+              {deck.queried && (
+                <span className="ml-1.5 inline-block rounded-full bg-blue-lt px-[7px] py-px text-[9px] font-bold text-blue-dk">
+                  Queried
+                </span>
+              )}
+              {isArchivedDeck(deck) && (
+                <span className="ml-1.5 inline-block rounded-full bg-surface-2 px-[7px] py-px text-[9px] font-bold text-fg-muted">
+                  Archived
+                </span>
+              )}
+            </td>
+            {v3ActionCell(deck, true)}
+          </>
+        );
+      }
+      case "v3Shortlisted":
+        return (
+          <>
+            {v3NameCell(deck)}
+            <td className={td}>
+              <ScoreChip value={deck.aiScore} />
+            </td>
+            <td className={td}>
+              <ScoreNumber value={deck.decisionScore} best={best} mediocre={mediocre} />
+            </td>
+            <td className={dim}>{signupCellLabel(deck, signups[deck.id])}</td>
+            {/* The prototype's Shortlisted select omits `Edit`. */}
+            {v3ActionCell(deck, false)}
           </>
         );
       // ── Incubator ──
@@ -1654,7 +1977,9 @@ export function DashboardPage() {
       )}
 
       <div
-        className={`grid grid-cols-2 gap-3 sm:grid-cols-3 ${isJury ? "xl:grid-cols-5" : "xl:grid-cols-6"}`}
+        className={`grid grid-cols-2 gap-3 sm:grid-cols-3 ${
+          isJury ? "xl:grid-cols-5" : tiles.length === 7 ? "xl:grid-cols-7" : "xl:grid-cols-6"
+        }`}
       >
         {tiles.map((s) => (
           <KpiTile
@@ -1669,6 +1994,12 @@ export function DashboardPage() {
           />
         ))}
       </div>
+
+      {rowError && (
+        <p role="status" className="mt-3 text-[11px] text-signal-flagged">
+          {rowError}
+        </p>
+      )}
 
       <div className="mt-4 overflow-x-auto rounded-lg border border-line bg-surface">
         {workspaceEmpty ? (

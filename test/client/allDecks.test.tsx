@@ -34,7 +34,16 @@ vi.mock("../../src/client/api", async (importOriginal) => {
     listActivity: vi.fn(),
     retryDeckAi: vi.fn(),
     updateThresholds: vi.fn(),
+    transitionDeck: vi.fn(),
+    updateDeckDetails: vi.fn(),
   };
+});
+
+// V3-DASH — the Shortlisted shape's Sign-up status column reads the real
+// sign-up records; nothing else on this screen touches the workspace.
+vi.mock("../../src/client/routes/SignupWorkspace", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/client/routes/SignupWorkspace")>();
+  return { ...actual, listSignups: vi.fn().mockResolvedValue({ signups: [] }) };
 });
 
 const SU_DETAILS = ["Startup", "Founder name", "Email ID", "Phone number", "City", "Sector", "Status"];
@@ -151,7 +160,16 @@ function principal(role: Role, id: string): AuthUser {
   return { id, name: "Test User", initials: "TU", role, edition: "incubator", permissions };
 }
 
-function mount(role: Role = "superuser", id = "u_super") {
+/**
+ * V3-DASH — the default role here is the ADMIN, not the superuser.
+ *
+ * `AISJ_SuperuserV3.HTM` reshaped this screen into a Dashboard for the
+ * SUPERUSER ONLY; the admin, program-manager, program-associate and jury
+ * prototypes were not reshared, so everything below this line is the assertion
+ * that their screen did not move. The superuser's new one has its own block at
+ * the end of the file.
+ */
+function mount(role: Role = "admin", id = "u_admin") {
   return render(
     <MemoryRouter>
       <AuthContext.Provider
@@ -202,17 +220,19 @@ beforeEach(() => {
     deck: DECKS.find((d) => d.id === id)!,
     columns: [
       { id: "ai", kind: "ai", name: "AI", rank: 0 },
-      { id: "u_super", kind: "human", name: "Test User", rank: 1, total: 7.4, submittedAt: "2026-06-06T10:00:00Z" },
+      { id: "u_admin", kind: "human", name: "Test User", rank: 1, total: 7.4, submittedAt: "2026-06-06T10:00:00Z" },
       { id: "u_jury", kind: "human", name: "Rajesh", rank: 2, total: 8.3, submittedAt: "2026-06-09T10:00:00Z" },
     ],
     core: [
-      { key: "traction", name: "Traction & Validation", weight: 60, cells: { ai: { value: 8 }, u_super: { value: 7, comment: "Pilots, not revenue." } } },
+      { key: "traction", name: "Traction & Validation", weight: 60, cells: { ai: { value: 8 }, u_admin: { value: 7, comment: "Pilots, not revenue." } } },
       { key: "team", name: "Team & Execution", weight: 40, cells: { ai: { value: 6 } } },
     ],
     additional: [],
     hiddenEvaluators: 0,
   }));
   vi.mocked(api.updateThresholds).mockResolvedValue({ ok: true, thresholdBest: 8, thresholdMediocre: 6 });
+  vi.mocked(api.transitionDeck).mockResolvedValue({ ok: true } as Awaited<ReturnType<typeof api.transitionDeck>>);
+  vi.mocked(api.updateDeckDetails).mockResolvedValue({ ok: true, deck: null });
 });
 
 afterEach(() => {
@@ -355,7 +375,7 @@ describe("All decks — staff table", () => {
   });
 
   it("the rail carries the three sections, and only admins may edit the thresholds (F0237)", async () => {
-    mount("superuser");
+    mount("admin", "u_admin");
     await screen.findByRole("button", { name: "FinStack" });
     for (const title of ["Pipeline progress", "Cohort rating thresholds", "Activity log"]) {
       expect(screen.getByText(title)).toBeInTheDocument();
@@ -495,5 +515,322 @@ describe("EvaluationDrawer empty states", () => {
     );
     expect(screen.getByText(/Blind scoring is on/)).toBeInTheDocument();
     expect(screen.getByText("Hidden until you submit your own evaluation")).toBeInTheDocument();
+  });
+});
+
+/**
+ * V3-DASH — the reshared superuser prototype (`AISJ_SuperuserV3.HTM`).
+ *
+ * Every literal below is copied from the prototype — the six `.stat-card`s in
+ * `panel-alldecks.html`, and the two `thead` strings `_scripts.js`
+ * `adRenderTable()` builds — NOT imported from the screen, so renaming a
+ * column or a tile in the screen fails here.
+ */
+const V3_DEFAULT = ["Startup name", "Founder", "Phone", "Email", "City", "AI score", "Status", "Actions"];
+const V3_SHORTLISTED = ["Startup name", "AI score", "Avg. score", "Signup status", "Actions"];
+
+/** Hours ago, so the row clock always reads "… ago" whatever day this runs. */
+const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+
+/** Six live decks and one archived one — the archived deck is the point. */
+const V3_DECKS: DeckView[] = [
+  {
+    id: "d_fin",
+    name: "FinStack",
+    sector: "B2B Fintech",
+    stage: "Seed",
+    city: "Hyderabad",
+    founder: "Ananya Reddy",
+    founderEmail: "ananya@finstack.in",
+    founderPhone: "+91 98450 11111",
+    statusId: "ai_evaluated",
+    status: "AI Evaluated",
+    aiScore: 7.2,
+    lastActivityAt: hoursAgo(2),
+    actions: [
+      // Withheld: it needs an evaluator, and only `POST /decks/:id/assign` sets one.
+      { action: "assign_jury", label: "Assign jury", to: "assigned" },
+      { action: "reject_ai_gate", label: "Reject (below AI gate)", to: "rejected" },
+    ],
+  },
+  {
+    id: "d_green",
+    name: "GreenRoute",
+    sector: "Climatetech",
+    city: "Hyderabad",
+    founder: "Sunita R.",
+    founderEmail: "s@greenroute.in",
+    founderPhone: "+91 90000 00000",
+    statusId: "shortlisted",
+    status: "Shortlisted",
+    aiScore: 9.1,
+    decisionScore: 8.8,
+    queried: true,
+    lastActivityAt: hoursAgo(1),
+    actions: [{ action: "schedule_intro", label: "Schedule intro call", to: "intro" }],
+  },
+  {
+    id: "d_pay",
+    name: "PayRoute",
+    sector: "Payments",
+    founder: "Kabir Shah",
+    statusId: "incomplete",
+    status: "Incomplete",
+    lastActivityAt: hoursAgo(26),
+  },
+  { id: "d_wealth", name: "WealthOS", statusId: "pending_ai", status: "Pending AI", lastActivityAt: hoursAgo(50) },
+  { id: "d_tax", name: "TaxPilot", statusId: "uploaded", status: "Uploaded", lastActivityAt: hoursAgo(74) },
+  { id: "d_credit", name: "CreditBridge", statusId: "manual_review", status: "Manual Review", lastActivityAt: hoursAgo(98) },
+  // Archived, AND carrying an AI score — so a tile that forgets to exclude it
+  // shows up as a wrong number, not as a missing row.
+  {
+    id: "d_dormant",
+    name: "DormantAI",
+    statusId: "archived",
+    status: "Archived",
+    aiScore: 5.2,
+    lastActivityAt: hoursAgo(600),
+  },
+];
+
+function v3Tiles(): { label: string; value: string }[] {
+  return [...document.querySelectorAll("button[aria-pressed]")].map((b) => ({
+    label: b.querySelector(".u-label")?.textContent ?? "",
+    value: b.querySelector(".font-mono")?.textContent ?? "",
+  }));
+}
+
+describe("V3 — the superuser Dashboard", () => {
+  beforeEach(() => {
+    vi.mocked(api.listDecks).mockResolvedValue({ decks: V3_DECKS });
+  });
+
+  it("is titled Dashboard and draws the v3 six, in order, with the static sub-labels", async () => {
+    mount("superuser", "u_super");
+    await screen.findByRole("button", { name: "FinStack" });
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Dashboard");
+    expect(v3Tiles().map((t) => t.label)).toEqual([
+      "Uploaded",
+      "AI Evaluated",
+      "Not AI Evaluated",
+      "Incomplete",
+      "Archived",
+      // Q7 — retained until the client confirms its removal (plan §4).
+      "Assigned",
+      "Shortlisted",
+    ]);
+    expect(tile("Uploaded")).toHaveTextContent("All decks in the pipeline");
+    expect(tile("AI Evaluated")).toHaveTextContent("Scored by AI");
+    expect(tile("Not AI Evaluated")).toHaveTextContent("Awaiting AI score");
+    expect(tile("Incomplete")).toHaveTextContent("Deck missing slides");
+    expect(tile("Archived")).toHaveTextContent("Set aside");
+    expect(tile("Shortlisted")).toHaveTextContent("Advanced to signup");
+    // v15's computed sub-labels are gone with their helpers.
+    expect(screen.queryByText(/since yesterday/)).toBeNull();
+    expect(screen.queryByText(/% of uploaded/)).toBeNull();
+    expect(screen.queryByText(/shortlist rate/)).toBeNull();
+  });
+
+  it("THE DENOMINATOR: the archived deck is counted once and excluded everywhere else", async () => {
+    mount("superuser", "u_super");
+    await screen.findByRole("button", { name: "FinStack" });
+
+    // Seven decks in the payload, ONE archived.
+    expect(Object.fromEntries(v3Tiles().map((t) => [t.label, t.value]))).toEqual({
+      Uploaded: "6", // not 7
+      "AI Evaluated": "2", // FinStack + GreenRoute — NOT the archived DormantAI, which is scored
+      "Not AI Evaluated": "3",
+      Incomplete: "1",
+      Archived: "1",
+      Assigned: "0",
+      Shortlisted: "1",
+    });
+    // The default view draws the six live decks and not the archived one.
+    expect(screen.getByText(/^Recent activity · 6 decks/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "DormantAI" })).toBeNull();
+
+    // Archived is the one view it appears in — and the only row there.
+    fireEvent.click(tile("Archived"));
+    expect(await screen.findByRole("button", { name: "DormantAI" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "FinStack" })).toBeNull();
+    expect(screen.getByText(/^Recent activity · 1 deck ·/)).toBeInTheDocument();
+  });
+
+  it("collapses to two table shapes, with the v3 status vocabulary and the row tags", async () => {
+    mount("superuser", "u_super");
+    await screen.findByRole("button", { name: "FinStack" });
+
+    expect(headers()).toEqual(V3_DEFAULT);
+    // Sector, Assigned to / date, Due date and the sparkline are gone.
+    expect(headers()).not.toContain("Sector");
+    expect(headers()).not.toContain("Parameter scores");
+
+    const fin = screen.getByRole("button", { name: "FinStack" }).closest("tr")!;
+    expect(within(fin).getByText("AI Evaluated")).toBeInTheDocument();
+    const wealth = screen.getByRole("button", { name: "WealthOS" }).closest("tr")!;
+    expect(within(wealth).getByText("Not AI Evaluated")).toBeInTheDocument();
+    const pay = screen.getByRole("button", { name: "PayRoute" }).closest("tr")!;
+    expect(within(pay).getByText("Incomplete deck")).toBeInTheDocument();
+    // …and the missing contact columns still say so.
+    expect(within(pay).getAllByText("not captured")).toHaveLength(3);
+    // `.ad-tag.q` — a founder query has been raised on GreenRoute.
+    const green = screen.getByRole("button", { name: "GreenRoute" }).closest("tr")!;
+    expect(within(green).getByText("Queried")).toBeInTheDocument();
+    expect(within(fin).queryByText("Queried")).toBeNull();
+
+    // Every box but Shortlisted shares the default shape.
+    for (const box of ["AI Evaluated", "Not AI Evaluated", "Incomplete", "Archived", "Assigned"]) {
+      fireEvent.click(tile(box));
+      expect(headers(), `${box} uses the default shape`).toEqual(V3_DEFAULT);
+    }
+
+    fireEvent.click(tile("Shortlisted"));
+    expect(headers()).toEqual(V3_SHORTLISTED);
+    expect(screen.getByText(/^Shortlisted · 1 deck ·/)).toBeInTheDocument();
+    const row = screen.getByRole("button", { name: "GreenRoute" }).closest("tr")!;
+    expect(within(row).getByText("8.8")).toBeInTheDocument(); // Avg. score
+  });
+
+  it("sorts by recent activity descending and prints the row clock", async () => {
+    mount("superuser", "u_super");
+    await screen.findByRole("button", { name: "FinStack" });
+    const names = [...document.querySelectorAll("table[data-shape] tbody tr")].map(
+      (tr) => tr.querySelector("button")?.textContent,
+    );
+    // GreenRoute 1h · FinStack 2h · PayRoute 26h · WealthOS 50h · TaxPilot 74h
+    // · CreditBridge 98h. The payload's own order is none of these.
+    expect(names).toEqual(["GreenRoute", "FinStack", "PayRoute", "WealthOS", "TaxPilot", "CreditBridge"]);
+    const green = screen.getByRole("button", { name: "GreenRoute" }).closest("tr")!;
+    expect(within(green).getByText(/ago$/)).toBeInTheDocument();
+  });
+
+  it("each row carries an Actions ▾ select; the Shortlisted shape's omits Edit", async () => {
+    mount("superuser", "u_super");
+    await screen.findByRole("button", { name: "FinStack" });
+
+    const actions = screen.getByRole("combobox", { name: "Actions for FinStack" });
+    expect([...actions.querySelectorAll("option")].map((o) => o.textContent)).toEqual([
+      "Actions ▾",
+      // The transitions the SERVER says this role may make from this stage —
+      // never an option it would refuse…
+      "Reject (below AI gate)",
+      "Edit",
+    ]);
+    // …and never `assign_jury`, which the generic transition route would apply
+    // WITHOUT an evaluator, stranding the deck at Assigned with assigned_to
+    // NULL. `StagePage` withholds it for the same reason.
+    expect([...actions.querySelectorAll("option")].map((o) => o.textContent)).not.toContain("Assign jury");
+
+    fireEvent.click(tile("Shortlisted"));
+    const shortlisted = screen.getByRole("combobox", { name: "Actions for GreenRoute" });
+    expect([...shortlisted.querySelectorAll("option")].map((o) => o.textContent)).toEqual([
+      "Actions ▾",
+      "Schedule intro call",
+    ]);
+    expect([...shortlisted.querySelectorAll("option")].map((o) => o.textContent)).not.toContain("Edit");
+  });
+
+  it("never offers the sign-up bypass, whatever the server permits", async () => {
+    // A superuser IS allowed `signup → onboard_ready` by the pipeline, so the
+    // list payload offers it. The Dashboard must not: a sign-up completes on
+    // the countersign, not on a click (Q33).
+    vi.mocked(api.listDecks).mockResolvedValue({
+      decks: [
+        {
+          ...V3_DECKS[1],
+          statusId: "signup",
+          status: "Signup",
+          actions: [{ action: "complete_signup", label: "Complete signup", to: "onboard_ready" }],
+        },
+      ],
+    });
+    mount("superuser", "u_super");
+    await screen.findByRole("button", { name: "GreenRoute" });
+    const options = [...screen.getByRole("combobox", { name: "Actions for GreenRoute" }).querySelectorAll("option")];
+    expect(options.map((o) => o.textContent)).toEqual(["Actions ▾", "Edit"]);
+  });
+
+  it("Edit opens the inline contact row and saves it through the details route", async () => {
+    mount("superuser", "u_super");
+    await screen.findByRole("button", { name: "FinStack" });
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Actions for FinStack" }), {
+      target: { value: "__edit" },
+    });
+    const phone = await screen.findByLabelText("Phone — FinStack");
+    fireEvent.change(phone, { target: { value: "+91 90000 12345" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(api.updateDeckDetails).toHaveBeenCalledWith(
+        "d_fin",
+        expect.objectContaining({ founderPhone: "+91 90000 12345", founder: "Ananya Reddy" }),
+      ),
+    );
+    // Only this row goes into edit mode.
+    expect(screen.queryByLabelText("Phone — GreenRoute")).toBeNull();
+  });
+
+  it("the rail's Pipeline progress carries the new tile titles (issue 7)", async () => {
+    mount("superuser", "u_super");
+    await screen.findByRole("button", { name: "FinStack" });
+    const rail = screen.getByText("Pipeline progress").closest("section")!;
+    for (const label of ["AI Evaluated", "Not AI Evaluated", "Incomplete", "Archived", "Shortlisted"]) {
+      expect(within(rail).getByText(label), label).toBeInTheDocument();
+    }
+    // Uploaded is the denominator, not a rail row.
+    expect(within(rail).queryByText("Uploaded")).toBeNull();
+    expect(within(rail).getByText("6 decks uploaded · across 6 stages")).toBeInTheDocument();
+  });
+});
+
+describe("V3 — the roles whose prototype was NOT reshared keep their screen", () => {
+  beforeEach(() => {
+    vi.mocked(api.listDecks).mockResolvedValue({ decks: V3_DECKS });
+  });
+
+  // Only `AISJ_SuperuserV3.HTM` was reshared. If any of these three drifts onto
+  // the Dashboard, this fails — which is the guarantee the wave is run under.
+  for (const role of ["admin", "program_manager", "program_associate"] as const) {
+    it(`${role} still sees All decks, the v15 six and the founder-details table`, async () => {
+      mount(role, `u_${role}`);
+      await screen.findByRole("button", { name: "FinStack" });
+
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("All decks");
+      expect(screen.getByRole("heading", { level: 1 })).not.toHaveTextContent("Dashboard");
+      expect(v3Tiles().map((t) => t.label)).toEqual([
+        "Uploaded",
+        "Pending",
+        "Incomplete",
+        "AI Evaluated",
+        "Assigned",
+        "Shortlisted",
+      ]);
+      expect(headers()).toEqual(SU_DETAILS);
+      // The v15 denominator: all seven decks, the archived one included.
+      expect(v3Tiles()[0].value).toBe("7");
+      expect(screen.getByRole("button", { name: "DormantAI" })).toBeInTheDocument();
+      // Their sub-labels are still computed, not the v3 prose.
+      expect(tile("Uploaded")).toHaveTextContent("since yesterday");
+      expect(screen.queryByText("All decks in the pipeline")).toBeNull();
+      // And no row-action select appeared on their table.
+      expect(screen.queryByRole("combobox", { name: /^Actions for/ })).toBeNull();
+    });
+  }
+
+  it("the jury's My Pipeline is untouched", async () => {
+    vi.mocked(api.listDecks).mockResolvedValue({
+      decks: [{ ...V3_DECKS[0], assignedTo: "u_jury", statusId: "assigned" }],
+    });
+    mount("jury", "u_jury");
+    await screen.findByRole("button", { name: "FinStack" });
+    expect(v3Tiles().map((t) => t.label)).toEqual([
+      "Assigned",
+      "Evaluated",
+      "Drafts",
+      "Pending Evaluation",
+      "Submitted",
+    ]);
+    expect(headers()).toEqual(JURY_OPEN);
   });
 });
