@@ -591,8 +591,13 @@ code except the one that was fixed, and that the specs touching this session's s
 integration must run the full suite on a quiet box before merging this branch** — that is the one
 piece of my own gate I am handing on rather than closing.
 
-`e2e/parity.spec.ts` needed **no re-capture**: it never opens a console section (`section=` appears
-nowhere in it), and the four `coreparams` rows belong to `ConfigPage.tsx`, which is untouched (Q61).
+`e2e/parity.spec.ts` needed **no re-capture**, and that was PROVED rather than reasoned. The walk
+visits nav slugs with no query string, so `<edition>/<role>/admin` records whatever the console's
+DEFAULT section draws — and `DEFAULT_ADMIN_SECTION = "fw"` (Scoring framework), not `wt`. Since item
+12 adds a `<table>`, that distinction matters: signing in against my own server and reading
+`/app/admin` with no `?section=` (the walk's exact request) returned **`tables=[]` for incubator
+superuser, incubator admin AND vc superuser** — the Seat-configurability grid is not on that page.
+The four `coreparams` rows belong to `ConfigPage.tsx`, which is untouched (Q61).
 
 **A trap worth the next session's five minutes.** `test/worker/apply-migrations.ts` says "each
 test's isolated D1 snapshot" and the pool's `isolatedStorage` defaults to `true`, so it is natural
