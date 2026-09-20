@@ -31,6 +31,12 @@ import {
 import { requireAuth, requireRole, requireTask } from "../auth/middleware";
 import { rescoreEdition } from "../config/rescore";
 import { loadScoringSettings } from "../config/scoringSettings";
+import { loadScoreVisibility } from "../config/scoreVisibility";
+import {
+  VISIBILITY_EDITIONS,
+  VISIBILITY_ROLES,
+  type VisibilityMatrix,
+} from "../../shared/scoreVisibility";
 // W3-C — the audit trail. Every mutation below records what changed; the
 // writer swallows its own errors so a trail failure never fails a save.
 import { money, packPriceMinor, recordCreditMovement } from "../audit/log";
@@ -689,8 +695,18 @@ config.get("/scoring", async (c) => {
   if (role === "founder") return c.json({ error: "forbidden" }, 403);
   const settings = await loadScoringSettings(c.env.DB, edition);
   const s = await loadSettings(c, edition);
+  // V3 item 13 — both matrices, because the v3 superuser console's `s-fw`
+  // draws `Visibility for Incubator` AND `Visibility for VC` side by side
+  // regardless of which edition the viewer is in. They are RESOLVED, so the
+  // console renders the state the report route actually enforces. Reading them
+  // is safe for any staff role: a matrix says who may see whom, never a score.
+  const [incubator, vc] = await Promise.all([
+    loadScoreVisibility(c.env.DB, "incubator"),
+    loadScoreVisibility(c.env.DB, "vc"),
+  ]);
   return c.json({
     scoring: settings,
+    visibility: { incubator, vc },
     // The two cohort-rating thresholds live on org_settings and are rendered in
     // the same card (0026's header explains why they stay there).
     thresholdBest: s?.threshold_best ?? 7,
@@ -714,6 +730,47 @@ interface ScoringFrameworkBody {
   showScoreDrift: boolean;
   includeAiEvidence: boolean;
   introCallAiPrompts: boolean;
+  /** V3 item 13 — the two `Score visibility matrix` cards, saved with the rest. */
+  visibility?: Partial<Record<Edition, VisibilityMatrix>>;
+}
+
+/**
+ * The matrix cells this save changes, as `score_visibility` upserts.
+ *
+ * Only pairs the edition's own matrix DRAWS are written — a cell naming a role
+ * outside `VISIBILITY_ROLES` (say `admin`, which neither matrix has) is dropped
+ * rather than stored, so a crafted body can never grant visibility through a
+ * row the console cannot show and an admin cannot therefore revoke.
+ */
+function visibilityWrites(
+  c: Context<AppEnv>,
+  userId: string,
+  submitted: ScoringFrameworkBody["visibility"],
+): D1PreparedStatement[] {
+  const out: D1PreparedStatement[] = [];
+  if (!submitted || typeof submitted !== "object") return out;
+  for (const edition of VISIBILITY_EDITIONS) {
+    const matrix = submitted[edition];
+    if (!matrix || typeof matrix !== "object") continue;
+    const roles = VISIBILITY_ROLES[edition];
+    for (const viewer of roles) {
+      const row = matrix[viewer];
+      if (!row || typeof row !== "object") continue;
+      for (const target of roles) {
+        const cell = row[target];
+        if (typeof cell !== "boolean") continue;
+        out.push(
+          c.env.DB.prepare(
+            "INSERT INTO score_visibility (edition, viewer_role, target_role, visible, updated_at, updated_by) " +
+              "VALUES (?, ?, ?, ?, datetime('now'), ?) " +
+              "ON CONFLICT (edition, viewer_role, target_role) DO UPDATE SET " +
+              "visible = excluded.visible, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+          ).bind(edition, viewer, target, cell ? 1 : 0, userId),
+        );
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -803,12 +860,21 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
     ),
   ];
   if (recompute) stmts.push(bumpCriteriaVersion(c, edition));
+  // V3 item 13 — the matrices ride the section's single Save (F0168): `s-fw`
+  // has no save control of its own, so they commit in the SAME batch as the
+  // toggles above them.
+  stmts.push(...visibilityWrites(c, userId, body.visibility));
   await c.env.DB.batch(stmts);
 
   await auditScoringFramework(c, before, after);
 
+  const [incubator, vc] = await Promise.all([
+    loadScoreVisibility(c.env.DB, "incubator"),
+    loadScoreVisibility(c.env.DB, "vc"),
+  ]);
+
   const rescored = recompute ? await rescoreEdition(c.env, edition) : { decks: 0, evaluations: 0 };
-  return c.json({ ok: true, scoring: after, rescored });
+  return c.json({ ok: true, scoring: after, visibility: { incubator, vc }, rescored });
 });
 
 // ── Cohort thresholds ────────────────────────────────────────────────────────

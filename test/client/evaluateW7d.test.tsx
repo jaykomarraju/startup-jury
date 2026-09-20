@@ -11,6 +11,7 @@ import { ScoringFrameworkSection } from "../../src/client/routes/admin/ScoringFr
 import { AdminSaveContext, type AdminSaveState } from "../../src/client/routes/admin/saveContext";
 import { SIGNAL_STYLES } from "../../src/client/theme/signals";
 import { DEFAULT_SCORING_SETTINGS, type ScoringSettings } from "../../src/shared/scoring";
+import { DEFAULT_VISIBILITY } from "../../src/shared/scoreVisibility";
 import { RUBRIC_BANDS } from "../../src/shared/types";
 import { reportLayout, parseReportStage } from "../../src/shared/reportStage";
 import type { DeckView } from "../../src/client/types";
@@ -496,6 +497,7 @@ describe("Scoring framework authors the delta and threshold on the org's scale",
   function mount(scale: ScoringSettings["scoreScale"]) {
     vi.mocked(getScoringFramework).mockResolvedValue({
       scoring: { ...DEFAULT_SCORING_SETTINGS, scoreScale: scale },
+      visibility: structuredClone(DEFAULT_VISIBILITY),
       thresholdBest: 7,
       thresholdMediocre: 5,
       editable: true,
@@ -538,6 +540,9 @@ describe("Scoring framework authors the delta and threshold on the org's scale",
     await waitFor(() =>
       expect(saveScoringFramework).toHaveBeenCalledWith(
         expect.objectContaining({ overrideRationaleDelta: 3, shortlistThreshold: 6.5 }),
+        // V3 item 13 — the visibility matrices ride the same save. This test
+        // touches no cell, so nothing is sent and every one keeps its default.
+        {},
       ),
     );
   });
@@ -556,6 +561,9 @@ describe("Scoring framework authors the delta and threshold on the org's scale",
     await waitFor(() =>
       expect(saveScoringFramework).toHaveBeenCalledWith(
         expect.objectContaining({ overrideRationaleDelta: 2.5, shortlistThreshold: 7.5 }),
+        // V3 item 13 — the visibility matrices ride the same save. This test
+        // touches no cell, so nothing is sent and every one keeps its default.
+        {},
       ),
     );
   });

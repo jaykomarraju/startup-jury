@@ -277,9 +277,25 @@ describe("evaluation report (issues 20, 21, 23, 24)", () => {
     });
   });
 
-  it("hides evaluators above the caller and says how many were withheld", async () => {
-    // Issue 21's hierarchy rule, asserted with peer visibility ON — see the
-    // test below for why that is now something the test has to switch on.
+  it("hides evaluators the matrix does not allow and says how many were withheld", async () => {
+    // Issue 21's rule, asserted with peer visibility ON — see the test below
+    // for why that is something the test has to switch on.
+    //
+    // **V3 item 13 changed one row here, deliberately.** The fixed
+    // `EVALUATION_RANK` ladder is now the admin console's configurable
+    // `Score visibility matrix`, and its shipped default is the v3 prototype's
+    // own printed toggle state: "Program Associate and Jury Member see no one
+    // — jury members cannot see each other (blind evaluation) until turned on
+    // here." So a juror no longer reads the programme associate's column by
+    // rank; they read their own and nothing else until an admin turns the
+    // `jury → program_associate` cell on. The next test does exactly that,
+    // from the API, and watches this column come back.
+    //
+    // The programme associate and the programme manager are unchanged: the
+    // associate only ever had their own column, and the PM's widened cell
+    // (`program_manager → superuser`) is invisible on this seed, which holds
+    // no superuser evaluation. `admin` is in NEITHER matrix, so it still falls
+    // through to the ladder and stays hidden from all three. Recorded as §4 Q71.
     await setPeerVisibility(true);
     try {
       const pa = await report(await login(PA));
@@ -287,8 +303,8 @@ describe("evaluation report (issues 20, 21, 23, 24)", () => {
       expect(pa.hiddenEvaluators).toBe(3);
 
       const jury = await report(await login(JURY));
-      expect(jury.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "program_associate", "jury"]);
-      expect(jury.hiddenEvaluators).toBe(2);
+      expect(jury.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "jury"]);
+      expect(jury.hiddenEvaluators).toBe(3);
 
       const pm = await report(await login(PM));
       expect(pm.columns.map((c) => c.role ?? "ai")).toEqual([

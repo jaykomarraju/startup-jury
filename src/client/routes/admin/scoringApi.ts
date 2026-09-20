@@ -9,6 +9,8 @@
  */
 import { ApiError, type ConfigParam } from "../../api";
 import type { ScoringSettings } from "../../../shared/scoring";
+import type { VisibilityMatrix } from "../../../shared/scoreVisibility";
+import type { Edition } from "../../../shared/roles";
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -26,8 +28,12 @@ function send<T>(method: string, path: string, body: unknown): Promise<T> {
   }).then((r) => json<T>(r));
 }
 
+/** V3 item 13 — both `Score visibility matrix` cards, RESOLVED by the server. */
+export type VisibilityByEdition = Record<Edition, VisibilityMatrix>;
+
 export interface ScoringFrameworkView {
   scoring: ScoringSettings;
+  visibility: VisibilityByEdition;
   /** Cohort rating bands — they live on `org_settings`, not this table. */
   thresholdBest: number;
   thresholdMediocre: number;
@@ -40,13 +46,21 @@ export function getScoringFramework(): Promise<ScoringFrameworkView> {
   return fetch("/api/config/scoring").then((r) => json<ScoringFrameworkView>(r));
 }
 
-/** PUT /api/config/scoring-framework — the whole section in one save. */
-export function saveScoringFramework(settings: ScoringSettings) {
-  return send<{ ok: true; scoring: ScoringSettings; rescored: { decks: number; evaluations: number } }>(
-    "PUT",
-    "/api/config/scoring-framework",
-    settings,
-  );
+/**
+ * PUT /api/config/scoring-framework — the whole section in one save, matrices
+ * included: `s-fw` carries no save control of its own and the console's title
+ * bar has a single **Save changes** (F0168).
+ */
+export function saveScoringFramework(
+  settings: ScoringSettings,
+  visibility?: Partial<VisibilityByEdition>,
+) {
+  return send<{
+    ok: true;
+    scoring: ScoringSettings;
+    visibility: VisibilityByEdition;
+    rescored: { decks: number; evaluations: number };
+  }>("PUT", "/api/config/scoring-framework", { ...settings, visibility });
 }
 
 /** PUT /api/config/additional-params/:id/permit — the *Permit configuration* pill. */

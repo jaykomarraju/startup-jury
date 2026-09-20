@@ -16,9 +16,11 @@ import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { requireAuth } from "../auth/middleware";
 import { loadScoringSettings } from "../config/scoringSettings";
+import { loadScoreVisibility } from "../config/scoreVisibility";
 import { canAccessNav, navItemById } from "../../shared/nav";
 import { RUBRIC_BANDS } from "../../shared/types";
-import { canSeeEvaluatorScores, isAssignableEvaluator, type Role } from "../../shared/roles";
+import { isAssignableEvaluator, type Role } from "../../shared/roles";
+import { canSeeEvaluatorScoresIn } from "../../shared/scoreVisibility";
 import { withholdsAiScore } from "../../shared/scoring";
 import { ASSIGNEE_PAIRS_SQL } from "../decks/assignments";
 import {
@@ -89,14 +91,20 @@ function num(v: string | number | null): number | null {
  * incubator reports that read this helper (`/cohort`, `/drift`) and on
  * `/evaluators` — a program associate (rank 1) read jury (2) and PM (3) scores
  * folded into every mean. Same predicate as the deck report and `/scoring`: your
- * own evaluation always counts, anyone else's only when `canSeeEvaluatorScores`
- * allows it.
+ * own evaluation always counts, anyone else's only when the role rule allows it.
+ *
+ * V3 item 13: that rule is no longer the fixed ladder but the admin console's
+ * configurable `Score visibility matrix`, read per request and applied to the
+ * ROWS before any mean is taken — a filtered mean is the whole protection here,
+ * because the row SET does not move (Wave 9 integration caught a vacuous test
+ * that only ever compared row counts).
  */
 async function humanEvalsByDeck(
   c: Context<AppEnv>,
   edition: Edition,
 ): Promise<Map<string, number[]>> {
   const { role, id: viewerId } = c.var.user;
+  const visibility = await loadScoreVisibility(c.env.DB, edition);
   const rows = (
     await c.env.DB.prepare(
       "SELECT e.deck_id AS deck_id, e.evaluator_id AS eid, u.role AS role, e.weighted_total AS wt FROM evaluations e " +
@@ -105,7 +113,9 @@ async function humanEvalsByDeck(
     )
       .bind(edition)
       .all<{ deck_id: string; eid: string; role: string; wt: number }>()
-  ).results.filter((r) => r.eid === viewerId || canSeeEvaluatorScores(edition, role, r.role as Role));
+  ).results.filter(
+    (r) => r.eid === viewerId || canSeeEvaluatorScoresIn(visibility, edition, role, r.role as Role),
+  );
   const map = new Map<string, number[]>();
   for (const r of rows) (map.get(r.deck_id) ?? map.set(r.deck_id, []).get(r.deck_id)!).push(r.wt);
   return map;
@@ -206,9 +216,10 @@ analytics.get("/cohort", guard("cohortsummary"), async (c) => {
 
 analytics.get("/evaluators", guard("evaluatorscores"), async (c) => {
   // Issue 21 (§9, `W9-D`): this report lists every evaluator's average BY NAME,
-  // so a viewer must not see one ranked above them. Same predicate as
-  // `humanEvalsByDeck` and `/scoring`.
+  // so a viewer must not see one the matrix withholds. Same predicate as
+  // `humanEvalsByDeck` and `/scoring` — V3 item 13's configurable matrix.
   const { edition, role, id: viewerId } = c.var.user;
+  const visibility = await loadScoreVisibility(c.env.DB, edition);
   const rows = (
     await c.env.DB.prepare(
       "SELECT e.evaluator_id AS eid, u.name AS name, u.role AS role, e.deck_id AS deck_id, e.weighted_total AS wt " +
@@ -217,7 +228,9 @@ analytics.get("/evaluators", guard("evaluatorscores"), async (c) => {
     )
       .bind(edition)
       .all<{ eid: string; name: string; role: string; deck_id: string; wt: number }>()
-  ).results.filter((r) => r.eid === viewerId || canSeeEvaluatorScores(edition, role, r.role as Role));
+  ).results.filter(
+    (r) => r.eid === viewerId || canSeeEvaluatorScoresIn(visibility, edition, role, r.role as Role),
+  );
   const input: EvaluationRow[] = rows.map((r) => ({
     evaluatorId: r.eid,
     evaluatorName: r.name,
@@ -258,16 +271,18 @@ analytics.get("/drift", guard("scoredrift"), async (c) => {
 
 analytics.get("/scoring", guard("scoring"), async (c) => {
   const { edition, role, id: viewerId } = c.var.user;
+  const visibility = await loadScoreVisibility(c.env.DB, edition);
   const decks = (
     await c.env.DB.prepare("SELECT id, name, ai_score FROM decks WHERE edition = ?")
       .bind(edition)
       .all<{ id: string; name: string; ai_score: number | null }>()
   ).results;
   // W9-D — issue 21: "lower guys must not be able to view the evaluators' scores
-  // up in the hierarchy". The deck report enforces it (`canSeeEvaluatorScores`);
-  // this summary averaged EVERY evaluator, so an analyst read partner and IC
-  // scores folded into the mean. Only evaluations the viewer may see count —
-  // in the averages, the variance and the "Evaluators" tile alike.
+  // up in the hierarchy". The deck report enforces it; this summary averaged
+  // EVERY evaluator, so an analyst read partner and IC scores folded into the
+  // mean. Only evaluations the viewer may see count — in the averages, the
+  // variance and the "Evaluators" tile alike. V3 item 13 made which those are
+  // configurable: `Visibility for VC`, the 5×5 in the admin console.
   const evals = (
     await c.env.DB.prepare(
       "SELECT e.deck_id AS deck_id, e.evaluator_id AS eid, u.role AS role, e.weighted_total AS wt FROM evaluations e " +
@@ -276,7 +291,9 @@ analytics.get("/scoring", guard("scoring"), async (c) => {
     )
       .bind(edition)
       .all<{ deck_id: string; eid: string; role: string; wt: number }>()
-  ).results.filter((e) => e.eid === viewerId || canSeeEvaluatorScores(edition, role, e.role as Role));
+  ).results.filter(
+    (e) => e.eid === viewerId || canSeeEvaluatorScoresIn(visibility, edition, role, e.role as Role),
+  );
   const humans = new Map<string, number[]>();
   for (const e of evals) (humans.get(e.deck_id) ?? humans.set(e.deck_id, []).get(e.deck_id)!).push(e.wt);
 

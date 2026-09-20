@@ -59,8 +59,8 @@ a corrected file or a number. **MEASURE**: prototype unchanged, so the gap is in
 |---|---|---|---|
 | 1 | Eval report consistent at each stage | **DECIDE** | v3 **deletes** stage-awareness: `__introCols`, `__jTot` and the `__roleBlock` stage switch are gone; colspan hard-coded 5. That reverses **W7-D and Issue 24**, which are server-enforced (`decks.ts` `reportLayout(edition, stage, role)`). |
 | 2 | Jury pipeline status repeating | **BUILD** | Cleanest item. Markup diff is one line: `-<th>Status</th>`. The repeat was the row pill *plus* the per-juror `jp-jstat` pills. Action options drop 5→2 (Send to intro calls · Reassign/add jury), then the cell becomes a flow tag. |
-| 3 | Composite formula: hide all but weighted average | **DECIDE** | Console still offers all three, byte-identical to v15. Client marked it *Workaround* — an explicit override of "match the prototype exactly". Record it or the next parity audit reverts it. |
-| 4 | AI weight: hide all but 50/50 | **DECIDE** | Console offers 40/30/50/0 and **has no `selected` attribute, so 40% AI · 60% Jury is the effective default** — and `migrations/0026` agrees (`ai_weight_pct DEFAULT 40`). Keeping only 50/50 **silently re-weights every existing org's composite.** Needs a yes/no on re-scoring. |
+| 3 | Composite formula: hide all but weighted average | **DECIDE — open (Q3)** | `V3-SF`: confirmed byte-identical to v15; all three formulas still offered. NOT shipped — hiding it overrides "match the prototype exactly" and the client marked it *Workaround*. A client test now PINS the three options, so narrowing them is a deliberate edit and never a quiet one. |
+| 4 | AI weight: hide all but 50/50 | **DECIDE — open (Q2)** | `V3-SF`: re-measured and confirmed. Four splits, no `selected` attribute, so **40% AI · 60% Jury is the effective default**, and `migrations/0026` agrees (`ai_weight_pct DEFAULT 40`). NOT shipped: keeping only 50/50 silently re-weights every existing org's composite. Pinned by the same client test as item 3. |
 | 5 | Decks >24 MB not opening | **ASK** | Both prototypes say `Max 50 MB`, byte-identical — a **pre-existing** gap, not a v3 change. `MAX_PDF_BYTES = 24 MB` is arithmetic, not arbitrary: ×1.333 base64 ≈ the 32 MB model-input cap. Raising the constant alone makes uploads succeed and **evaluations fail** — strictly worse. Needs the target number and a streaming/Files-API plan. |
 | 6 | Assign: only "Evaluated & Complete" | **DECIDE** | `panel-assign` is **byte-identical** (md5 `b555211d…`), the assign renderers diff to zero lines, and the string occurs **0 times in either file**. v3 still draws the Incomplete drawer. We are asked to delete UI the reshared prototype still ships. |
 | 7 | Query: only "Evaluated & Incomplete" | **DECIDE** | Same class. `panel-query`'s entire diff is one deleted select-all checkbox; the renderer is byte-identical and `qRenderList` filters nothing. The string occurs 0 times. |
@@ -69,7 +69,7 @@ a corrected file or a number. **MEASURE**: prototype unchanged, so the gap is in
 | 10 | Evaluate page redev | **BUILD + DECIDE entry** | +533 B: new `AI Evaluate` toolbar button, select-all + "N selected" in column 1, sub-line *"evaluated decks move to the Assign screen"*. `evAiEvaluate()` → toast → `showPanel('assign')`. But the screen has no entry point (§2). |
 | 11 | Core Parameters: AI prompts per seat | **BUILD** (console) | In the decoded console: Area-weights header `<th>Type</th>` → `<th>AI prompt</th>`, every one of the 13 rows gains an `AI prompt` button, plus `Restore all core AI prompts`. "prompt" occurs **91× in admin-v3 vs 7× in admin-v15**. Note the outer `panel-coreparams` drops `Type` *without* adding the column — the two surfaces disagree. |
 | 12 | Configurability toggles under Area Weights | **BUILD** (console) | New: `Seat configurability` card, columns `Parameter set · Standard · Pro · Premium`, rows `Core parameters` / `Addl. parameters`. Defaults stated: *Standard — none · Pro — core only · Premium — core + additional.* It is an **edit permission**, not per-tier prompt content. |
-| 13 | Visibility of other's evaluations | **BUILD** (console) — highest risk | New `Visibility for Incubator` (4×4) and `Visibility for VC` (5×5) matrices, *"Viewer (row) → can see scores of (column)"*. Footnote: *"Super User & Program Manager see everyone; Program Associate and Jury Member see no one — jury members cannot see each other (blind evaluation) until turned on here."* **This is the `role-boundary-leaks` class — enforce server-side, negative control mandatory.** |
+| 13 | Visibility of other's evaluations | **DONE** (`V3-SF`) | Both matrices built, persisted (`score_visibility`, migration 0072) and **enforced on the server** — `GET /decks/:id/report` and all three analytics reports filter the response payload. Defaults are the prototype's own printed toggle state; four incubator cells therefore move against the old rank ladder (**Q71**). Cards are incubator-superuser only: `admin/s-fw.html` is byte-identical (md5 `c3b534ba…`) in **every** prototype that was not reshared. Negative control run and recorded in §8. |
 | 14 | Intro calls scheduling flow | **MEASURE** | `panel-introcalls` is +410 B of **CSS only** (jury-pipeline flow-tag styles), and all 16 `nc*` functions are **byte-identical**. The client is right that our flow diverges — but from **v15**. This is a build defect nobody has measured. |
 | 15 | Price config control panel | **BUILD** (console) | Rebuilt from an iframe into an inline section: `Paid trial`, `Individual plans — ₹ per period`, `Enterprise plans — ₹ annual`, and `Save & apply to My Account`. |
 | 16 | Setup → Team & Roles realigned | **BUILD** | Wizard step 4 becomes *Nominate your super user*; the add-member block is deleted (−45 lines) and replaced by a handoff card to **Team & roles**, which gains an inline add-member form. |
@@ -97,6 +97,60 @@ Four of these are *"delete something the client previously asked us to build"*.
 - **Q7 — Assigned stat box (item 19).** Deleting it reverses Aug-2026 issue 4. Confirm.
 - **Q8 — Upload size (item 5).** Target ceiling, and acceptance that >24 MB decks cannot be AI-evaluated
   without a streaming/Files-API change.
+
+### `V3-SF` · Q71–Q75 — score visibility (item 13)
+
+The matrix is built, persisted and server-enforced. These five are about what it
+should *default to* and how far it should reach — none of them blocks the build,
+all of them change a number someone will read.
+
+- **Q71 — the four cells the defaults move. Confirm.** We ship the prototype's
+  own printed toggle state, so the screen's footnote is true. Against the rank
+  ladder that shipped, four incubator cells differ:
+
+  | cell | ladder | v3 default | direction |
+  |---|---|---|---|
+  | `program_manager → superuser` | off | **on** | **WIDENS** |
+  | `program_associate → program_associate` | on | off | narrows |
+  | `jury → program_associate` | on | off | narrows |
+  | `jury → jury` | on | off | narrows (this is "blind evaluation") |
+
+  Measured blast radius: **on the deck report, at the shipped settings, nothing
+  moves at all** — `jurySeesPeerScores` ships OFF and already reduces every
+  assignable evaluator to "AI + own". The deltas appear (a) once an org turns
+  that toggle on, and (b) on `/cohort`, `/drift` and `/evaluators`, which never
+  applied it. The one *grant* is `program_manager → superuser`, and it sits
+  against the Aug-2026 issue-21 quote carried in `roles.ts:151` — *"lower guys
+  must not be able to view the evaluators' scores up in the hierarchy"*. If that
+  quote still governs, say so and that single cell flips off.
+
+- **Q72 — v3 DELETES the "Jury can see each other's scores" toggle from `s-fw`.
+  We kept it.** It is F0109's blind-round kill switch and it is a conjunctive
+  gate *ahead* of the matrix (off → an evaluator sees AI + own, matrix not
+  consulted). Deleting it would remove a control the client previously asked
+  for, so it is recorded rather than shipped. The prototype's caption says the
+  diagonal carries the same meaning at finer grain, so the toggle can go — but
+  that is a decision, not an inference.
+
+- **Q73 — `admin` is in NEITHER matrix.** The prototype draws 4 incubator roles
+  and 5 VC roles and no admin row or column, yet `admin` holds evaluations on
+  the seed. So an admin can configure a program manager to see the *superuser's*
+  scores but never the *admin's*, which falls through to the old ladder. Is
+  admin deliberately outside this control, or is the column an omission?
+
+- **Q74 — the VC 5×5 is drawn on the INCUBATOR superuser's console.** We
+  therefore let an incubator superuser read and write the VC matrix, as the
+  prototype shows. The VC prototypes were not reshared, so their own consoles
+  still render the old single toggle and cannot see or change it. Confirm that
+  is intended rather than a copy-paste in the prototype.
+
+- **Q75 — a pre-existing disagreement this made visible, NOT fixed here.** The
+  deck report applies `jurySeesPeerScores`; `/cohort`, `/drift` and
+  `/evaluators` never have. So with the toggle off a juror sees only their own
+  column on the report while the same juror's analytics means still fold in
+  every evaluator the role rule allows. Left alone because fixing it changes
+  behaviour well beyond item 13 — but it should be someone's row.
+
 
 ---
 
