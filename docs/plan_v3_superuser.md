@@ -560,6 +560,59 @@ answered query stays listed as **Responded** (F0214).
 
 ---
 
+## 4.1 The client's answers — 2026-09-20 (Chandrasekhar PS)
+
+**Q3 / Q4 — and this one was misread, by us.** He did NOT want the options hidden
+as a design change. He asked for it as a WORKAROUND for a defect:
+
+> *"nothing was changing when I changed from 40:60 or 50:50 or any other option,
+> I saw no difference."*
+
+**He is right, and it is measured** — `test/worker/ai-weight-effect.test.ts`:
+
+- Saving the framework at **0% AI** and at **50% AI** stores **byte-identical**
+  scores. The save DOES trigger `rescoreEdition`, and that re-score does move
+  stored roll-ups slightly — but it reads `compositeFormula` only.
+  **`rescoreEdition` references `ai_weight_pct` zero times.**
+- `GET /api/decks` returns **identical** `aiScore` and `humanAverage` at 0% and
+  at 50%. Nothing a user reads on the deck list moves.
+- `blendScore()` — the only function the weight drives — has exactly **two call
+  sites, both in `EvalScorecard.tsx`**, a live preview while an evaluator scores.
+  Plus `shortlistHint` / the shortlist transition, which move a hint, not a
+  headline number.
+
+**So: do NOT hide the options.** Fix the control so it does what it says. His
+ruling on the migration question: *"If you are making 50:50 as default, previous
+cohorts will remain same. only the new program or cohorts would take effect."* —
+**new programmes/cohorts only; never retro-score an existing cohort.**
+
+**Q4 (items 6, 7) — answered, and it is not a screen filter.** It is a guard on
+the BULK ACTION from the **Evaluated** stat box:
+
+> *"in the stat box of 'Evaluated' only the ones that are marked 'complete' in
+> the status column have to be sent to 'assign', even if someone selects all and
+> chooses to click 'send to assign'. Similarly, the ones that are marked
+> 'incomplete' have to go to 'Query', even if someone selects all clicks 'send
+> to query'."*
+
+So Select-all + Send to Assign must silently **drop the incomplete rows**, and
+Select-all + Send to Query must drop the complete ones. Nothing is removed from
+the screen — which is why the prototype still draws both. **Our reading of
+"only X shows on this screen" was wrong in both directions.**
+
+**Q8 (item 5) — 50 MB**, reviewed after beta. Note the standing constraint: above
+~24 MB a deck cannot be AI-evaluated without the streaming / Files-API change
+(base64 x1.333 vs the 32 MB model-input cap). Raising the limit alone makes
+uploads succeed and evaluation fail.
+
+**Approach approved.** *"This approach works, so that we don't duplicate errors."*
+Superuser first; the other roles follow once these screens are signed off.
+
+**Payment gateway — there is no existing one.** *"No we don't. I said if Digital
+Catalyst might be familiar with that for their marketing clients."* So the
+integration is a new gateway, chosen by us; banking details and the firm's
+registration information will be provided.
+
 ## 5. Build order (what blocks what)
 
 1. **`nav.ts`, one commit, first.** Items 8, 9, 10, 18 all edit one array. Superuser-only
