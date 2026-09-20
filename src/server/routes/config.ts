@@ -42,9 +42,11 @@ import {
 import { money, packPriceMinor, recordCreditMovement } from "../audit/log";
 import {
   auditConfig,
+  auditScoreVisibility,
   auditScoringFramework,
   auditThresholds,
   auditWeightChange,
+  type VisibilityChange,
 } from "../audit/events";
 
 const config = new Hono<AppEnv>();
@@ -831,6 +833,13 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
     introCallAiPrompts: flag(body.introCallAiPrompts, before.introCallAiPrompts),
   };
 
+  // V3 item 13 — read the matrices BEFORE the write so the audit log can name
+  // the cells that actually moved rather than the ones that were submitted.
+  const visibilityBefore = {
+    incubator: await loadScoreVisibility(c.env.DB, "incubator"),
+    vc: await loadScoreVisibility(c.env.DB, "vc"),
+  };
+
   const recompute = compositionChanged(before, after);
   const stmts: D1PreparedStatement[] = [
     c.env.DB.prepare(
@@ -872,6 +881,18 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
     loadScoreVisibility(c.env.DB, "incubator"),
     loadScoreVisibility(c.env.DB, "vc"),
   ]);
+  const visibilityAfter = { incubator, vc };
+  const moved: VisibilityChange[] = [];
+  for (const ed of VISIBILITY_EDITIONS) {
+    for (const viewer of VISIBILITY_ROLES[ed]) {
+      for (const target of VISIBILITY_ROLES[ed]) {
+        const from = visibilityBefore[ed][viewer]?.[target] === true;
+        const to = visibilityAfter[ed][viewer]?.[target] === true;
+        if (from !== to) moved.push({ edition: ed, viewer, target, from, to });
+      }
+    }
+  }
+  await auditScoreVisibility(c, moved);
 
   const rescored = recompute ? await rescoreEdition(c.env, edition) : { decks: 0, evaluations: 0 };
   return c.json({ ok: true, scoring: after, visibility: { incubator, vc }, rescored });

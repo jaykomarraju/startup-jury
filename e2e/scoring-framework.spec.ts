@@ -12,6 +12,7 @@ import { test, expect, type Page } from "@playwright/test";
 
 const ADMIN = "nisha.kapoor@demo.startupjury.ai"; // incubator admin
 const JURY = "rajesh.kumar@demo.startupjury.ai"; // incubator jury
+const SUPER = "priya.sharma@demo.startupjury.ai"; // incubator superuser
 
 /**
  * Sign in, dropping any existing session first: the blind-scoring walk has to
@@ -175,4 +176,51 @@ test("Area weights polices the 100 % total and delegates per parameter", async (
   // Seeded: parameter 1 of each owning role is permitted.
   await expect(page.getByRole("button", { name: "Permitted" })).toHaveCount(3);
   await expect(page.getByRole("button", { name: "Permit configuration" })).toHaveCount(6);
+});
+
+// ── V3 item 13 · the score visibility matrices ───────────────────────────────
+
+/**
+ * The two `Score visibility matrix` cards the v3 superuser prototype adds to
+ * `s-fw` — and the role boundary around them.
+ *
+ * Read-only: the suite runs `fullyParallel` against one local D1, and this
+ * matrix governs what every other spec's evaluator can see, so saving a cell
+ * here would leak into their runs (plan §8 Q17). The save path is covered by
+ * `test/worker/score-visibility-v3.test.ts`, against the payload.
+ */
+test("the superuser's Scoring framework carries both visibility matrices", async ({ page }) => {
+  await login(page, SUPER);
+  await page.goto("/app/admin?section=fw");
+
+  await expect(page.getByText("Visibility for Incubator")).toBeVisible();
+  await expect(page.getByText("Visibility for VC")).toBeVisible();
+  await expect(page.getByText("Viewer (row) → can see scores of (column)")).toHaveCount(2);
+
+  // The prototype's shipped state: the Super User row on, the Jury row off —
+  // "jury members cannot see each other (blind evaluation) until turned on here".
+  await expect(
+    page.getByRole("switch", { name: "Super User can see Jury Member scores" }),
+  ).toHaveAttribute("aria-checked", "true");
+  await expect(
+    page.getByRole("switch", { name: "Jury Member can see Jury Member scores" }),
+  ).toHaveAttribute("aria-checked", "false");
+
+  // The investor 5×5 uses the prototype's own role names, not this repo's.
+  await expect(
+    page.getByRole("switch", { name: "Managing Partner can see Analyst scores" }),
+  ).toBeVisible();
+});
+
+test("the incubator admin — whose prototype was not reshared — sees no matrix", async ({ page }) => {
+  // `admin/s-fw.html` is byte-identical (md5 c3b534ba…) across every prototype
+  // that was NOT reshared. The admin keeps the single toggle the superuser's
+  // v3 screen supersedes.
+  await login(page, ADMIN);
+  await page.goto("/app/admin?section=fw");
+
+  await expect(page.getByRole("heading", { level: 2, name: "Scoring framework" })).toBeVisible();
+  await expect(page.getByText("Visibility for Incubator")).toHaveCount(0);
+  await expect(page.getByText("Visibility for VC")).toHaveCount(0);
+  await expect(page.getByRole("switch", { name: "Jury can see each other's scores" })).toBeVisible();
 });

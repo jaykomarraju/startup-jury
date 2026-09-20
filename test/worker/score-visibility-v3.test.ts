@@ -112,6 +112,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await env.DB.prepare("DELETE FROM score_visibility").run();
+  await env.DB.prepare("DELETE FROM audit_log WHERE action = 'score_visibility_changed'").run();
   await setPeerVisibility(false);
 });
 
@@ -375,6 +376,38 @@ describe("only a console admin may change the matrix", () => {
       }>()
     ).results;
     expect(stored).toEqual([{ viewer_role: "jury", target_role: "program_associate" }]);
+  });
+
+  it("audits the CELLS that moved, by name, and stays quiet when none did", async () => {
+    // A permission grant is the thing a reader of the log has to be able to
+    // find. The toggle this control replaced was audited (`peer_scores_toggled`);
+    // so is this.
+    const su = await login(SUPER);
+    const count = async () =>
+      (await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM audit_log WHERE action = 'score_visibility_changed'",
+      ).first<{ n: number }>())!.n;
+    const before = await count();
+
+    expect((await setCell(su, "jury", "program_manager", true)).status).toBe(200);
+    expect(await count()).toBe(before + 1);
+    const row = (await env.DB.prepare(
+      "SELECT summary FROM audit_log WHERE action = 'score_visibility_changed' ORDER BY rowid DESC LIMIT 1",
+    ).first<{ summary: string }>())!;
+    expect(row.summary).toContain("can now see");
+    expect(row.summary).toContain("Incubator");
+
+    // Saving the same value again moves nothing, so it logs nothing.
+    expect((await setCell(su, "jury", "program_manager", true)).status).toBe(200);
+    expect(await count()).toBe(before + 1);
+
+    // …and turning it back off is its own line.
+    expect((await setCell(su, "jury", "program_manager", false)).status).toBe(200);
+    expect(await count()).toBe(before + 2);
+    const off = (await env.DB.prepare(
+      "SELECT summary FROM audit_log WHERE action = 'score_visibility_changed' ORDER BY rowid DESC LIMIT 1",
+    ).first<{ summary: string }>())!;
+    expect(off.summary).toContain("can no longer see");
   });
 
   it("round-trips through GET, resolved, so the console renders what is enforced", async () => {
