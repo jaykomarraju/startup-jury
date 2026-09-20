@@ -622,7 +622,84 @@ the score-visibility filter. Touch only your own; anything else is a §9 request
 
 ---
 
-## 8. Progress — measured gates, one row per session
+## 8. V3 wave integration — the record
+
+**All nine branches merged.** The partition held: 87 files changed
+(+11,702 / −484) and only **eight** touched by more than one session. Merge
+order was `V3-NAV` → `V3-REP` → `V3-DASH` → `V3-SF` (the three sharing
+`decks.ts`, in route order) → the rest.
+
+| Leg | Result | Before the wave |
+|---|---|---|
+| typecheck · lint · build | clean | clean |
+| `npm test` | **2280 passed / 1 skipped / 0 failed** | 2069 / 1 |
+| `roles` | **1180 / 1180**, exit 0 (server proved mine: PID + cwd) | 1115 / 1115 |
+| `parity:tokens` | 27/27 · 0 gaps | 0 gaps |
+| `parity:nav` | ok · **62** known gaps, unchanged | 62 |
+
+### The by-route split on `decks.ts` worked
+
+Three sessions edited it and the one conflict was a clean union: `V3-REP`'s
+blind-scoring block and `V3-SF`'s visibility-matrix load landed at the same
+insertion point because each owned a different concern. `V3-REP`'s
+`columns = blind ? [] : [...]` supersedes `V3-SF`'s unconditional line; the
+visibility load goes first because `addEvaluator` below reads it.
+
+### One P0, filed by the session that caused it
+
+`V3-NAV` split `nav.ts`: `canSeeNav`/`reachableNav` is REACHABILITY (still the
+route guard and the roles-harness invariant), `navForUser` is THE SIDEBAR
+(reachability minus `hiddenFor`, reordered). V3 item 10 takes `evaluate` out of
+the superuser's sidebar while leaving the route live — so every caller still
+using `navForUser` to mean "can reach" lost it silently. Three sites, placed at
+integration:
+
+- `DashboardPage` — the superuser lost the **"Score in Evaluate"** link outright.
+- `Sidebar` rendered `item.icon`, so `V3-NAV`'s per-role `iconOverrides` was
+  delivered as data, unit-tested, and **never drawn**.
+- `e2e/coverage.spec.ts` walked `navForUser`, so it stopped covering
+  `/app/evaluate` the moment the item left the sidebar.
+
+**The P0 shipped without a test**; `navIcon` and `reachableNav` were covered but
+the link was not. `test/client/allDecks.test.tsx` now pins it for the SUPERUSER
+(hidden, reachable) and the ADMIN (never hidden). Negative control: reverting to
+`navForUser` fails the superuser case and leaves the admin case green.
+
+### Two e2e runs, and why only one counts
+
+The first ran **52.3 min** (normally ~12) during heavy contention, with
+`TIME_WAIT` at **11,371** against macOS's ~16,384 ephemeral range — the
+port-exhaustion condition `V3-NAV` documented at 7,105. It reported 2 failed /
+226 passed. One failure was `evaluate-workbench`, which asserts an AI rationale
+visible to a juror — genuinely suspicious, because `V3-REP` had just added
+blind-scoring withholding to the report route. **Checked rather than assumed:**
+both failures plus an untouched control re-ran on a quiet box with retries off
+at **7 passed in 19.5 s**, `TIME_WAIT` back to 3. Environmental.
+
+**Rule this wave adds:** a run whose WALL-CLOCK is 4× normal is already telling
+you the result is about the machine. Check `netstat -an | grep -c TIME_WAIT`
+before `grep`-ing for `Network connection lost` — at exhaustion the drop
+signatures barely appear (2 in a 52-minute run) while everything still fails.
+
+### Document hygiene
+
+The nine-way union left two `## 8. Progress` headings and **39 rows in §3's
+19-item table** — every session appended its state rather than editing in place.
+§3 now carries one authoritative row per item, keeping each original's scoping
+evidence.
+
+### Where the 19 items stand
+
+**Thirteen done.** Six are not, and **five of those are waiting on the client,
+not on us** — see §4: items 3 and 4 (the prototype still offers every option,
+and keeping only 50/50 re-weights every existing org's composite), items 6 and 7
+(the strings appear zero times in either prototype, and it still draws the UI
+those rules would delete — `V3-FLOW` recorded both readings and correctly
+refused to infer), and item 5 (needs a target ceiling plus acceptance that
+>24 MB cannot be AI-evaluated without streaming work). Item 8's label shipped;
+its flow is Q51.
+
+## 9. Progress — measured gates, one row per session
 
 Every number here was MEASURED on the session's own branch, never copied from a
 prompt. Baselines off `main` at the start of the wave: unit **2069 passed /
