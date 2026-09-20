@@ -202,7 +202,14 @@ export interface AnthropicRequest {
   system: string;
   tool: AnthropicTool;
   userText: string;
-  pdfBase64: string;
+  /** The deck inlined as base64 in the `document` block — the path every deck
+   *  took before `V4-SIZE`, and still the path for decks that fit under the
+   *  Messages request ceiling (see `inlineRequestBytes`). */
+  pdfBase64?: string;
+  /** The deck as raw bytes, uploaded to the Files API and referenced by
+   *  `file_id` — the path for decks that do NOT fit. Set exactly one of these;
+   *  `pdfFile` wins if both are set. */
+  pdfFile?: { bytes: Uint8Array; filename: string };
 }
 
 /** Injectable seam: returns the raw `submit_evaluation` tool input. */
@@ -487,6 +494,76 @@ export function computeResult(
   };
 }
 
+// ── How big a deck may be, and which transport carries it ────────────────────
+//
+// `V4-SIZE`, measured 2026-09-20 against the published limits and against our
+// own serialized request — not inferred from either alone.
+//
+//   · The Messages endpoint refuses a request body over **32 MB** with a 413
+//     `request_too_large` (platform.claude.com/docs/en/api/overview → Request
+//     size limits). The base64 `document` source expands the PDF by 4/3.
+//   · The Files API accepts **500 MB per file**, free, no beta header, and a
+//     `{type:"file", file_id}` document source costs the request ~80 bytes.
+//
+// The old `MAX_PDF_BYTES = 24 MB` read the first bullet as `32 × 3/4` and
+// stopped there — **and that is off by the envelope, in the losing direction**.
+// A deck at exactly 24 MB serializes to 33,559,776 bytes against a 33,554,432
+// ceiling: 5,344 over, which is the system prompt, the user prompt and the tool
+// schema. So a deck the server accepted at exactly the limit was already being
+// refused by the model, and the envelope is not a constant — it grows with the
+// org's custom `ai_system_prompt`, the parameter count and the rubric bands.
+//
+// Hence: do not pick a second magic number. Compute what THIS request would
+// weigh and route on it. Everything that fits inlines exactly as before;
+// everything that does not goes via the Files API, which also means the worker
+// never builds the ~70 MB base64 string a 50 MB deck would need.
+
+/** Anthropic's ceiling on a `POST /v1/messages` body. */
+export const MAX_MESSAGES_REQUEST_BYTES = 32 * 1024 * 1024;
+
+/** Length of the base64 encoding of `byteLength` bytes (4 chars per 3 bytes,
+ *  padded up). Exact — it is the `document` block's real cost. */
+export function base64Length(byteLength: number): number {
+  return Math.ceil(byteLength / 3) * 4;
+}
+
+/**
+ * What the inline request would actually weigh: the JSON envelope this call
+ * builds (prompts + tool schema + the fixed request fields) plus the base64
+ * deck. Measured by serializing the real envelope, so a long org system prompt
+ * or a 22-parameter rubric is counted rather than assumed away.
+ */
+export function inlineRequestBytes(req: {
+  model: string;
+  system: string;
+  userText: string;
+  tool: AnthropicTool;
+  pdfBytes: number;
+}): number {
+  const envelope = JSON.stringify(
+    messagesBody({
+      model: req.model,
+      system: req.system,
+      userText: req.userText,
+      tool: req.tool,
+      // An empty data field measures the envelope; the deck is added below.
+      documentSource: { type: "base64", media_type: "application/pdf", data: "" },
+    }),
+  ).length;
+  return envelope + base64Length(req.pdfBytes);
+}
+
+/** True when the deck can ride inline; false means it needs the Files API. */
+export function fitsInlineRequest(req: {
+  model: string;
+  system: string;
+  userText: string;
+  tool: AnthropicTool;
+  pdfBytes: number;
+}): boolean {
+  return inlineRequestBytes(req) <= MAX_MESSAGES_REQUEST_BYTES;
+}
+
 // ── Anthropic call (raw fetch) ───────────────────────────────────────────────
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -498,39 +575,123 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(s);
 }
 
-/** Default model caller: POST /v1/messages with the PDF as a document block. */
+/** The `source` of the `document` block — inline bytes, or a Files API handle. */
+type DocumentSource =
+  | { type: "base64"; media_type: "application/pdf"; data: string }
+  | { type: "file"; file_id: string };
+
+/**
+ * The Messages request body. Extracted so `inlineRequestBytes` can weigh the
+ * exact envelope `callAnthropic` will send, rather than a second copy of it
+ * that could drift.
+ */
+function messagesBody(args: {
+  model: string;
+  system: string;
+  userText: string;
+  tool: AnthropicTool;
+  documentSource: DocumentSource;
+}): Record<string, unknown> {
+  return {
+    model: args.model,
+    max_tokens: 4096,
+    // Determinism (see the module header): no sampled thinking, and a forced
+    // tool so only the numbers can vary run to run. NB no `temperature` —
+    // claude-sonnet-5 rejects it with a 400.
+    thinking: { type: "disabled" },
+    system: args.system,
+    tools: [args.tool],
+    tool_choice: { type: "tool", name: args.tool.name },
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "document", source: args.documentSource },
+          { type: "text", text: args.userText },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * How long an uploaded deck lives in Anthropic's file store before it expires
+ * on its own. One hour is the API minimum and far longer than an evaluation
+ * (10–30 s); it means the worker never has to run a delete to avoid leaking
+ * into the org's 1 TB quota, including when the evaluation throws.
+ */
+const UPLOADED_DECK_TTL_SECONDS = 3600;
+
+/**
+ * A filename the Files API will accept for a deck: 1–255 characters, and none
+ * of `< > : " | ? * \ /` or control characters (a 400 otherwise). The deck's
+ * own name is used where it survives that, because it is what an operator would
+ * recognise in the file list; `deck.pdf` is the fallback, never an error.
+ */
+export function deckFilename(deck: { id: string; name?: string | null }): string {
+  const cleaned = (deck.name ?? "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[<>:"|?*\\/ -]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200);
+  return `${cleaned || deck.id || "deck"}.pdf`;
+}
+
+/**
+ * Upload a deck to the Files API and return its `file_id`.
+ *
+ * This is the whole reason a >24 MB deck can be evaluated at all: the file goes
+ * up on its own request (500 MB ceiling) and the Messages request then carries
+ * an ~80-byte handle instead of ~70 MB of base64.
+ */
+export async function uploadDeckFile(
+  apiKey: string,
+  file: { bytes: Uint8Array; filename: string },
+): Promise<string> {
+  const form = new FormData();
+  form.set(
+    "file",
+    new File([file.bytes], file.filename, { type: "application/pdf" }),
+  );
+  form.set("expires_in_seconds", String(UPLOADED_DECK_TTL_SECONDS));
+  const res = await fetch("https://api.anthropic.com/v1/files", {
+    method: "POST",
+    headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    body: form,
+  });
+  if (!res.ok) {
+    throw new Error(`Anthropic Files API error ${res.status}: ${await res.text()}`);
+  }
+  const body = (await res.json()) as { id?: string };
+  if (!body.id) throw new Error("Anthropic Files API response missing an id");
+  return body.id;
+}
+
+/** Default model caller: POST /v1/messages with the PDF as a document block —
+ *  inline base64 when it fits, otherwise a Files API `file_id` uploaded first. */
 export const callAnthropic: ModelCaller = async (req) => {
   if (!req.apiKey) throw new Error("ANTHROPIC_API_KEY is not configured");
+  const apiKey = req.apiKey;
+  const documentSource: DocumentSource = req.pdfFile
+    ? { type: "file", file_id: await uploadDeckFile(apiKey, req.pdfFile) }
+    : { type: "base64", media_type: "application/pdf", data: req.pdfBase64 ?? "" };
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-api-key": req.apiKey,
+      "x-api-key": apiKey,
       "anthropic-version": "2023-06-01",
     },
-    body: JSON.stringify({
-      model: req.model,
-      max_tokens: 4096,
-      // Determinism (see the module header): no sampled thinking, and a forced
-      // tool so only the numbers can vary run to run. NB no `temperature` —
-      // claude-sonnet-5 rejects it with a 400.
-      thinking: { type: "disabled" },
-      system: req.system,
-      tools: [req.tool],
-      tool_choice: { type: "tool", name: req.tool.name },
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "document",
-              source: { type: "base64", media_type: "application/pdf", data: req.pdfBase64 },
-            },
-            { type: "text", text: req.userText },
-          ],
-        },
-      ],
-    }),
+    body: JSON.stringify(
+      messagesBody({
+        model: req.model,
+        system: req.system,
+        userText: req.userText,
+        tool: req.tool,
+        documentSource,
+      }),
+    ),
   });
   if (!res.ok) {
     throw new Error(`Anthropic API error ${res.status}: ${await res.text()}`);
@@ -704,21 +865,34 @@ export async function evaluateDeck(
 
   const object = await env.DECKS.get(deck.r2_key);
   if (!object) throw new Error(`R2 object missing: ${deck.r2_key}`);
-  const pdfBase64 = bytesToBase64(new Uint8Array(await object.arrayBuffer()));
+  const pdfBytes = new Uint8Array(await object.arrayBuffer());
 
   const tool = buildTool(params);
+  const model = env.ANTHROPIC_MODEL ?? DEFAULT_MODEL;
+  const system = buildSystemPrompt(org?.ai_system_prompt ?? null);
+  const userText = buildUserPrompt(params, bands, {
+    startupName: deck.name,
+    sector: deck.sector,
+    stage: deck.stage,
+    programType: deck.edition === "vc" ? "venture fund" : "incubator",
+  });
+
+  // `V4-SIZE` — the transport is chosen from THIS request's real weight, not
+  // from a byte constant, because the envelope varies per org (see
+  // `inlineRequestBytes`). Deciding here rather than inside `callAnthropic` is
+  // deliberate: it is the only place the raw bytes exist, so a deck that needs
+  // the Files API never has its ~70 MB base64 string built at all.
+  const inline = fitsInlineRequest({ model, system, userText, tool, pdfBytes: pdfBytes.length });
+
   const raw = await callModel({
     apiKey: env.ANTHROPIC_API_KEY,
-    model: env.ANTHROPIC_MODEL ?? DEFAULT_MODEL,
-    system: buildSystemPrompt(org?.ai_system_prompt ?? null),
-    userText: buildUserPrompt(params, bands, {
-      startupName: deck.name,
-      sector: deck.sector,
-      stage: deck.stage,
-      programType: deck.edition === "vc" ? "venture fund" : "incubator",
-    }),
+    model,
+    system,
+    userText,
     tool,
-    pdfBase64,
+    ...(inline
+      ? { pdfBase64: bytesToBase64(pdfBytes) }
+      : { pdfFile: { bytes: pdfBytes, filename: deckFilename(deck) } }),
   });
 
   const parsed = parseEvaluation(raw, params);

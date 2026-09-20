@@ -237,3 +237,30 @@ test("a ZIP of decks is expanded in the browser into the review list, costed in 
   await expect(page.getByTestId("up-cost-preview")).toContainText("Cost 2 credits");
   expect(uploads).toEqual([]);
 });
+
+// V4-SIZE — the client's 2026-09-20 answer: "For now, let's set it to 50MB."
+//
+// The assertion is deliberately a SWEEP rather than one locator. The size the
+// user reads lived in four places and two of them were literal strings that had
+// already drifted from the limit the server enforces; a test that checks one
+// hint cannot see that. So: find every size this screen states, in both upload
+// modes, and require all of them to be 50 MB.
+test("the upload screen states 50 MB wherever it states a size, in both modes", async ({ page }) => {
+  await login(page, "sunita.rao@demo.startupjury.ai");
+  await page.goto("/app/upload");
+  await expect(page.getByRole("heading", { name: "Upload your first pitchdecks" })).toBeVisible();
+
+  const sizesOnScreen = async (): Promise<string[]> => {
+    const text = (await page.locator("main").innerText()) || "";
+    return [...text.matchAll(/(\d+(?:\.\d+)?)\s*MB/g)].map((m) => m[0].replace(/\s+/g, " "));
+  };
+
+  const single = await sizesOnScreen();
+  expect(single.length).toBeGreaterThan(0); // the single-upload dropzone hint
+  expect(new Set(single)).toEqual(new Set(["50 MB"]));
+
+  await page.getByRole("radio", { name: /Bulk upload/ }).click();
+  const bulk = await sizesOnScreen();
+  expect(bulk.length).toBeGreaterThan(0); // "...Max 50 MB each"
+  expect(new Set(bulk)).toEqual(new Set(["50 MB"]));
+});

@@ -28,6 +28,10 @@ import {
   type TokenFailure,
 } from "../resubmit";
 import { addDeckVersion, isPdf, MAX_PDF_BYTES } from "../decks/versions";
+// V4-SIZE — the founder-facing size is DERIVED from the limit that rejects,
+// never typed. It read "24 MB" as a literal and was stale the moment the
+// limit moved; the same drift the Upload screen was already protected from.
+import { MAX_DECK_SIZE_LABEL } from "../../shared/uploadReview";
 
 const resubmit = new Hono<AppEnv>();
 
@@ -175,7 +179,10 @@ resubmit.post("/:token", async (c) => {
     return c.json({ error: "pdf_required", message: "Please upload your deck as a PDF." }, 400);
   }
   if (file.size > MAX_PDF_BYTES) {
-    return c.json({ error: "pdf_too_large", message: "That PDF is larger than 24 MB." }, 413);
+    return c.json(
+      { error: "pdf_too_large", message: `That PDF is larger than ${MAX_DECK_SIZE_LABEL}.` },
+      413,
+    );
   }
 
   const added = await addDeckVersion(c.env, {

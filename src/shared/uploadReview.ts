@@ -95,7 +95,7 @@ export function creditsSubline(input: { trialDecks?: number | null; planLabel?: 
 /** A reason a staged file will be refused by the upload route. */
 export type StagedIssue = "not_pdf" | "too_large";
 
-/** "24 MB" — derived from the limit the server enforces, never typed. */
+/** "50 MB" — derived from the limit the server enforces, never typed. */
 export const MAX_DECK_SIZE_LABEL = `${Math.round(MAX_DECK_PDF_BYTES / (1024 * 1024))} MB`;
 
 export const STAGED_ISSUE_LABELS: Record<StagedIssue, string> = {
