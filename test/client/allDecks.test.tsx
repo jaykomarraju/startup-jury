@@ -6,6 +6,7 @@ import { DashboardPage, juryBucket } from "../../src/client/routes/DashboardPage
 import { EvaluationDrawer } from "../../src/client/components/EvaluationDrawer";
 import type { DeckView } from "../../src/client/types";
 import type { Role } from "../../src/shared/roles";
+import { canAccessNav, isInSidebar, navItemById } from "../../src/shared/nav";
 import * as api from "../../src/client/api";
 
 /**
@@ -832,5 +833,48 @@ describe("V3 — the roles whose prototype was NOT reshared keep their screen", 
       "Submitted",
     ]);
     expect(headers()).toEqual(JURY_OPEN);
+  });
+});
+
+describe("V3 integration — the report's Score-in-Evaluate link resolves by REACHABILITY", () => {
+  /**
+   * The P0 `V3-NAV` filed against its own change. It split `nav.ts` in two:
+   * `reachableNav` is "can reach" (still the route guard), `navForUser` is THE
+   * SIDEBAR. V3 item 10 takes `evaluate` out of the incubator superuser's
+   * sidebar while leaving `/app/evaluate` live — so resolving this link through
+   * `navForUser` dropped it for exactly one role, silently.
+   *
+   * The link only draws for a deck in a JURY_STAGES stage, hence `assigned`.
+   * Asserted for the superuser (hidden from the sidebar, still reachable) AND
+   * the admin (never hidden), so it fails if the link is ever resolved through
+   * the sidebar again and passes only while both roles keep it.
+   */
+  const assigned = [{ ...V3_DECKS[0], statusId: "assigned" }];
+
+  it("the superuser keeps it even though `evaluate` left their sidebar", async () => {
+    expect(isInSidebar("superuser", navItemById("incubator", "evaluate")!)).toBe(false);
+    expect(canAccessNav("incubator", "superuser", "evaluate")).toBe(true);
+
+    vi.mocked(api.listDecks).mockResolvedValue({ decks: assigned });
+    mount("superuser", "u_super");
+    fireEvent.click(await screen.findByRole("button", { name: "FinStack" }));
+    const dialog = await screen.findByRole("dialog", { name: "Evaluation report — FinStack" });
+    expect(within(dialog).getByRole("link", { name: "Score in Evaluate" })).toHaveAttribute(
+      "href",
+      "/app/evaluate",
+    );
+  });
+
+  it("the admin, whose sidebar still has it, keeps it too", async () => {
+    expect(isInSidebar("admin", navItemById("incubator", "evaluate")!)).toBe(true);
+
+    vi.mocked(api.listDecks).mockResolvedValue({ decks: assigned });
+    mount("admin", "u_admin");
+    fireEvent.click(await screen.findByRole("button", { name: "FinStack" }));
+    const dialog = await screen.findByRole("dialog", { name: "Evaluation report — FinStack" });
+    expect(within(dialog).getByRole("link", { name: "Score in Evaluate" })).toHaveAttribute(
+      "href",
+      "/app/evaluate",
+    );
   });
 });
