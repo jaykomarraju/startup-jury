@@ -1986,7 +1986,7 @@ block's 2069 / 1115 are both stale).
 
 | Session | Items | Migration | typecheck · lint · build | unit | roles | parity | e2e |
 |---|---|---|---|---|---|---|---|
-| `V4-ROUTE` | 6, 7 | **0075 UNUSED — still free**, ceiling stays 74 | clean · clean · clean | **2302 passed / 1 skipped** (2282 + 20) | **1180 / 1180**, unchanged | `parity:tokens` 27/27 · 0 gaps · `parity:nav` 62 known gaps | see below |
+| `V4-ROUTE` | 6, 7 | **0075 UNUSED — still free**, ceiling stays 74 | clean · clean · clean | **2302 passed / 1 skipped** (2282 + 20) | **1180 / 1180**, unchanged | `parity:tokens` 27/27 · 0 gaps · `parity:nav` 62 known gaps | **no clean FULL run was obtained on this box — four attempts, read the section below.** Every spec bearing on items 6 and 7 passes, including all four incubator `parity.spec.ts` walks and an untouched control; the reds are port exhaustion and the failing set moves between runs of one tree. |
 
 The 20 new tests: 9 unit (`test/unit/queries.test.ts` — the mark and the
 partition), 8 worker (`test/worker/route-partition.test.ts` — the partition on
@@ -2007,7 +2007,7 @@ and the drawer's table is behind a click). The Dashboard's new mark is a tag
 untouched. `PARITY_CAPTURE` was therefore not run and no row was rewritten —
 which is also the safest thing to do while siblings are re-capturing theirs.
 
-#### The one infrastructure fact worth adding to §1's list
+#### An infrastructure fact worth adding to §1's list
 
 **`EADDRNOTAVAIL` can kill the dev server before a single test runs.** §8's
 note has it as a symptom seen *inside* a run; here `npm run e2e:serve` itself
@@ -2017,6 +2017,106 @@ bound anything. It looks exactly like a broken worktree — the log ends in a
 wrangler log path and no code frame. The fix was to wait: the same command
 started first time at `TIME_WAIT ≈ 363`. So the documented `< 4,000` rule is
 not only about flaky specs; **above ~9,000 the server will not boot at all.**
+
+#### The e2e leg, and a correction to what the wave thinks is burning the ports
+
+**`V3-AW` found the port exhaustion and was right about it. It named the wrong
+connection.** The wave's note reads as though the browser→Vite traffic is the
+cost, so the remedy everyone reaches for is fewer Playwright workers. Measured
+here, mid-run, with `netstat -an | grep TIME_WAIT | awk '{print $5}'` bucketed
+by remote port:
+
+| Remote port | `TIME_WAIT` entries |
+|---|---|
+| **60345** — Miniflare/workerd's internal port | **12,874** |
+| 5191 — the Vite dev server the browser talks to | 245 |
+| everything else | 18 |
+
+**98% of the burn is `@cloudflare/vite-plugin` → `Miniflare.dispatchFetch`, one
+loopback connection per server-side dispatch.** The browser's share is under 2%.
+That is why `--workers=1` barely helps — it halves the test rate, not the
+dispatches per test — and it is why the failure always surfaces as
+`fetch failed` from **undici inside `_Miniflare.dispatchFetch`**. The box's
+budget: `net.inet.ip.portrange` 49152–65535 = 16,384 ports, `net.inet.tcp.msl`
+15,000 ms, so `TIME_WAIT` lasts 30 s and the sustainable rate is ~546 new
+connections/second. The plugin exceeds it. **The lever is connection reuse in
+that dispatch path (a keep-alive undici agent), not Playwright's worker count.**
+
+**What was measured on this branch, stated as it happened — no clean full run
+was obtained, and the reason is not this session's code.**
+
+| Attempt | Setup | Result |
+|---|---|---|
+| 1 | full suite, `--workers=2` (the config's own default), started at `TIME_WAIT` **1,003** | **122 passed · 5 distinct failures · 118 `fetch failed`** before the dev server wedged at **130/228**. `TIME_WAIT` peaked at **16,809 — above the whole 16,384-port range.** Killed. |
+| 2 | full suite, `--workers=1`, box fully drained (`TIME_WAIT` 20) | **62/228 with 0 failures and 0 `fetch failed`**, but `TIME_WAIT` climbing through 12,000 on the same trajectory. Killed before it wedged. |
+| 3 | first 10 files, fresh server, `--workers=2`, started at `TIME_WAIT` **492** | 54 passed · **3** failures · 17 `fetch failed` · `TIME_WAIT` 16,151 mid-batch. |
+| 4 | **the nine specs that touch this session's screens, plus a control**, `--workers=1` | recorded below |
+
+**The three tells the wave's own runbook asks for, all checked:**
+
+1. `grep -c "Network connection lost"` → **0**, and `Received: undefined` → 0.
+   §7's drop check clears this run as "look at the code" when there is no code
+   fault, exactly as `V3-FLOW` recorded. `fetch failed` is the grep that finds it.
+2. **No `src/` frame in any failing trace** — every frame is `undici/lib/web/fetch`
+   or `miniflare/dist/src/index.js`.
+3. **The failing set CHANGES between runs of the same tree**, which is the
+   giveaway §7 names. Same two files, different tests:
+   * attempt 1 — `branding.spec.ts:99`, `calls.spec.ts:41`, `coverage.spec.ts:73/133/178`;
+   * attempt 3 — `branding.spec.ts:124`, `branding.spec.ts:66`, `calls.spec.ts:63`.
+
+   Two of them are 30.0 s timeouts, i.e. the server never answered. **None of
+   the failing specs is one of this session's screens** — Assign, Query and the
+   Dashboard passed in both attempts.
+
+**Attempt 4 — the nine specs that touch these screens, plus an untouched
+control, `--workers=1`, split in two because the heavy walkers saturate on
+their own.** Every test that bears on items 6 and 7 passes:
+
+| Spec | Result |
+|---|---|
+| `all-decks.spec.ts` (2) — the Dashboard | ✓ ✓ in **three** separate runs |
+| `assign.spec.ts` (1) — Assign, end to end through a confirmed assignment | ✓ in three runs |
+| `query.spec.ts` (3) — the Query screen, whose row set this session moved to the server | ✓ |
+| `incubator.spec.ts` (3) — incl. *"staff query an incomplete deck; it records a sent query"* | ✓ in two runs |
+| `resubmit.spec.ts` (3) — the founder-response loop | ✓ |
+| `coverage.spec.ts` (18) — every nav slug renders | **17 ✓**, and the 18th is the control below |
+| `pipeline-stages.spec.ts` (4) | ✓ |
+| `parity.spec.ts` — incubator **superuser · admin · program_manager · program_associate** walks | ✓ — **no parity row moved, measured rather than assumed** |
+| `scoring-framework.spec.ts` (6) — untouched by this session, the control | ✓ |
+
+The second half ran on a drained box and reported **`15 passed (24.9s)` with
+zero `fetch failed`**, which is what this suite looks like when the ports are
+there.
+
+**The control that settles it.** `coverage.spec.ts:272` — *"the upload screen
+explains the founder details the AI will extract"*, a screen this session does
+not touch — **passed in 1.2 s in attempt 1 and timed out at 30.0 s in attempt
+4, on the same tree.** Opposite results, same commit, and the failure is a
+timeout rather than an assertion. Meanwhile the three `coverage.spec.ts` tests
+that FAILED in attempt 1 (`:73`, `:133`, `:178`) all **passed** in attempt 4.
+The red moves; the code does not.
+
+**One self-inflicted trap worth writing down.** After killing a saturated run,
+the `vite` process survives `pkill -f "node .*playwright"` and keeps port 5191.
+The next run then sits in `webServer` printing **`Error: Port 5191 is already in
+use`** and never starts a test — `reuseExistingServer` is deliberately off
+(the config warns about adopting a sibling's server), so it will not proceed.
+`lsof -nP -iTCP:<port> -t | xargs kill -9` between runs; a stalled run with an
+empty log and one live Playwright process is this, not a slow box.
+
+#### Verified in the browser, not only on the response
+
+Driven through the real app on the dev server (superuser login, the API used
+only to make the edit), which is the half the worker tests cannot reach:
+
+| | |
+|---|---|
+| before | `?list=assign` **GreenGrid Energy · TaxPilot · FinStack** · `?list=query` **NimbusHR · PayRoute** |
+| blank FinStack's founder email | assign **GreenGrid Energy · TaxPilot** · query **NimbusHR · FinStack · PayRoute** |
+| the Dashboard | **exactly one** `Incomplete details` tag, on FinStack, beside a Status pill still reading `AI Evaluated`; NimbusHR, whose pill already says `Incomplete deck`, carries none |
+| the Assign drawer | FinStack listed as *"Founder email not captured"* — **with its AI score 7.8**, which is why the hardcoded `No AI score` cell had to go |
+| the Query screen | FinStack a real row, `Founder email` chip under *Parameters needing response*, `PENDING`, ticked for the email flow |
+| put the email back | assign and query both back to 3 and 2 |
 
 #### Ownership: files touched outside the four named in §11
 
