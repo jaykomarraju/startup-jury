@@ -543,6 +543,17 @@ occurred **0** times, so per the gate's own rule the failures were read as code,
   Both VC walks passed outright, and the two that stayed flaky were `incubator/superuser` **and
   `incubator/admin`** — a role with a byte-identical sidebar, which is the untouched control. The
   flakiness tracks the machine, not the branch.
+- **A NEW failure mode this wave will hit, and it is not a code fault.** Two of three full-suite
+  attempts never started at all: the Playwright `webServer` died during `npm run db:migrate:local`
+  with `✘ [ERROR] Migration 00NN.sql failed` followed by
+  `connect EADDRNOTAVAIL 127.0.0.1:<port>`. It is **not** load — the second time it happened the load
+  average was **2.7**. It is ephemeral-port exhaustion: measured **7,105 sockets in `TIME_WAIT`**
+  against macOS's 49152–65535 range (16,384 ports, ~43 % consumed), because wrangler opens a
+  connection per migration statement and nine sessions have been cycling local D1 for hours.
+  Tells it apart from a real failure: the migration number VARIES between runs (0046, then 0060),
+  the error is a SOCKET error rather than SQL, and `git diff --name-only main..HEAD -- migrations/`
+  is empty. Diagnose with `netstat -an | grep -c TIME_WAIT`; the fix is to wait, or to stagger the
+  stacks. Do not go looking at the migration it names.
 - **The proof this session actually wanted is `e2e/nav.spec.ts`, and all 14 passed both times.**
   `incubator/superuser sees only its permitted nav` compares the RENDERED sidebar's link texts
   one-for-one against `navForUser(...).map(navLabel)`, so it is a real browser check that the sidebar
