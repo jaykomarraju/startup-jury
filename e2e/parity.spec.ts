@@ -195,7 +195,7 @@ const EXPECTED: Record<string, Screen> = {
   },
   "incubator/superuser/introcalls": {
     title: "Intro calls",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "ASSIGN SCHEDULER", "ACTION"]],
   },
   "incubator/superuser/incuration": {
     title: "Sign up Pipeline",
@@ -282,7 +282,7 @@ const EXPECTED: Record<string, Screen> = {
   },
   "incubator/admin/introcalls": {
     title: "Intro calls",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "ASSIGN SCHEDULER", "ACTION"]],
   },
   "incubator/admin/incuration": {
     title: "Sign up Pipeline",
@@ -351,7 +351,7 @@ const EXPECTED: Record<string, Screen> = {
   },
   "incubator/program_manager/introcalls": {
     title: "Intro calls",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "ASSIGN SCHEDULER", "ACTION"]],
   },
   "incubator/program_manager/incuration": {
     title: "Sign up Pipeline",
@@ -405,7 +405,7 @@ const EXPECTED: Record<string, Screen> = {
   "incubator/program_associate/assign": { title: "Assign", tables: [] },
   "incubator/program_associate/introcalls": {
     title: "Intro calls",
-    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "SCHEDULER", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "CALL SCHEDULED", "CALL DATE", "CALL COMPLETED", "ASSIGN SCHEDULER", "ACTION"]],
   },
   "incubator/program_associate/incuration": {
     title: "Sign up Pipeline",
