@@ -574,7 +574,10 @@ route. Fixed by renaming this session's own files (`aiPromptsApi.ts`, `aiPrompts
 `/api/ai-prompts`), never by touching a VC test, since §7 requires those to pass unchanged. §9
 carries the general form and the one-line hardening for that matcher.
 
-**Runs 2–4 could not produce a clean full-suite number, and the reason is measured.** Every
+**Runs 2–5 could not produce a clean full-suite number, and the reason is measured.** Five attempts
+were made across ~2 hours, including one begun at the quietest moment of the whole wave (load 5.84,
+`TIME_WAIT` 6,481, one sibling): it reached 31/224 before a sibling restarted and it had already
+logged 53 `fetch failed`s, so it was killed rather than left to burn ports the siblings also need. Every
 subsequent `parity.spec.ts` role-walk that failed passed when run alone (`vc/admin` 37.7 s,
 `incubator/program_associate` 28.7 s, `incubator/program_manager`, `vc/superuser` on retry), and
 the SET of failing roles changed on every run of the identical tree — the signature of contention,
