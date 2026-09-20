@@ -384,8 +384,19 @@ const FLAG_STAGES = ["incomplete", "manual_review"];
 // answer per deck, so "on both screens" is not a state it can express.
 //
 // ── Where complete / incomplete comes from (measured, §4.1) ────────────────
-// `decks.complete` (migrations/0001_init.sql:67, DEFAULT 1) is the mark, and
-// `src/server/ai/evaluate.ts` is the only thing that writes it:
+// `decks.complete` (migrations/0001_init.sql:67, DEFAULT 1) is the mark. TWO
+// things write it, not one — V4 integration corrected this comment, which said
+// "the only thing":
+//
+//   · `src/server/ai/evaluate.ts` sets it from the AI's own read of the deck;
+//   · `src/server/routes/pipeline.ts` (`POST /api/queries/:id/respond`) sets it
+//     to 1 when a founder answers a clarification. That is the ONLY exit from
+//     stage `incomplete` (`src/pipeline/incubator.ts`, `incomplete -> uploaded`
+//     via `founder_response`), so it is the designed recovery path — but it
+//     flips the mark with no AI re-read and without clearing `missing_fields`.
+//     Untested in either direction; see §4.1.
+//
+// The AI's write is:
 //
 //     complete: parsed.complete && missingIntakeFields(details).length === 0
 //

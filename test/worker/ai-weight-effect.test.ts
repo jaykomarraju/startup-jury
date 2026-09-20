@@ -379,3 +379,66 @@ describe("a re-weight never retro-scores a cohort", () => {
     expect(stored!.ai_weight_pct).toBe(50);
   });
 });
+
+describe("weightPreview — the blind-scoring boundary it shipped without", () => {
+  /**
+   * V4 integration. The preview carries deck name + raw `ai_score` + the peer
+   * `human_avg`, and `GET /api/config/scoring` is open to every authed
+   * non-founder. Before the admin gate, a juror with BOTH toggles off read the
+   * two exact quantities those toggles exist to hide — while the three deck
+   * routes correctly withheld them. Fourth instance of this class here.
+   *
+   * The founder case was covered; the JURY case is the one that leaked.
+   */
+  const JUROR = "rajesh.kumar@demo.startupjury.ai";
+
+  afterEach(async () => {
+    await env.DB.prepare(
+      "UPDATE org_scoring_settings SET show_ai_score_to_jury = 1, jury_sees_peer_scores = 1 WHERE edition = 'incubator'",
+    ).run();
+  });
+
+  it("a juror with both toggles off gets NO preview, while an admin still does", async () => {
+    await env.DB.prepare(
+      "UPDATE org_scoring_settings SET show_ai_score_to_jury = 0, jury_sees_peer_scores = 0 WHERE edition = 'incubator'",
+    ).run();
+
+    const jury = await login(JUROR);
+    const asJury = (await (
+      await SELF.fetch(`${BASE}/api/config/scoring`, { headers: { cookie: jury } })
+    ).json()) as { weightPreview: unknown; editable: boolean };
+
+    // The route still answers — the framework itself is not a secret — but the
+    // preview is not in it, and the payload says why: this role cannot edit it.
+    expect(asJury.editable).toBe(false);
+    expect(asJury.weightPreview).toBeNull();
+
+    // Not a vacuous assertion: the SAME request as an admin carries real decks
+    // with both quantities, so `null` above is the gate and not an empty seed.
+    const admin = await login(ADMIN);
+    const asAdmin = (await (
+      await SELF.fetch(`${BASE}/api/config/scoring`, { headers: { cookie: admin } })
+    ).json()) as {
+      weightPreview: { decks: Array<{ aiScore: number | null; humanAverage: number | null }> } | null;
+      editable: boolean;
+    };
+    expect(asAdmin.editable).toBe(true);
+    expect(asAdmin.weightPreview!.decks.length).toBeGreaterThan(0);
+    expect(asAdmin.weightPreview!.decks.every((d) => d.aiScore !== null)).toBe(true);
+    expect(asAdmin.weightPreview!.decks.every((d) => d.humanAverage !== null)).toBe(true);
+  });
+
+  it("and neither do the two non-admin staff roles the console marks read-only", async () => {
+    for (const email of [
+      "sunita.rao@demo.startupjury.ai", // program_associate
+      "raj.kumar@demo.startupjury.ai", // program_manager
+    ]) {
+      const cookie = await login(email);
+      const body = (await (
+        await SELF.fetch(`${BASE}/api/config/scoring`, { headers: { cookie } })
+      ).json()) as { weightPreview: unknown; editable: boolean };
+      expect(body.editable, email).toBe(false);
+      expect(body.weightPreview, email).toBeNull();
+    }
+  });
+});

@@ -697,7 +697,7 @@ founder resubmit 413 (`resubmit.ts`) and the founder page's hint
 the literal back — three places that would have gone stale silently. The Upload
 screen was already protected via `MAX_DECK_SIZE_LABEL`; the resubmit path now is
 too. **No migration: nothing here persists new state, so `0076` is unused and
-`ALLOTMENT_CEILING` stays at 74.**
+`ALLOTMENT_CEILING` stays at 74.** *(V4 integration: it is **76** on `main` — V4-ROUTE and V4-SIZE raised it for 0075/0076.)*
 
 **Two things the prototype states that we still do not, both out of scope here
 and neither a size limit.** Its dropzone reads *"PDF or PPTX · Max 50 MB · 60
@@ -912,7 +912,7 @@ mark, exactly as `evaluate.ts` defines it.
 
 **No migration.** 0075 was allotted and is **UNUSED, still free** — the mark and
 its two inputs were already columns, and re-deriving beat storing a third.
-`ALLOTMENT_CEILING` stays 74.
+`ALLOTMENT_CEILING` stays 74. *(V4 integration: **76** on `main`.)*
 
 
 ## 5. Build order (what blocks what)

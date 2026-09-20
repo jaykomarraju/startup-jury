@@ -798,10 +798,26 @@ config.get("/scoring", async (c) => {
   // regardless of which edition the viewer is in. They are RESOLVED, so the
   // console renders the state the report route actually enforces. Reading them
   // is safe for any staff role: a matrix says who may see whom, never a score.
+  // V4 integration — the weight preview is ADMIN-ONLY, and the reason is a leak
+  // it shipped with. It carries deck name + raw `ai_score` + the peer
+  // `human_avg` for the five widest-gap decks, and this route is open to every
+  // authed non-founder. Measured before the gate: a juror with BOTH toggles off
+  // (`show_ai_score_to_jury = 0`, `jury_sees_peer_scores = 0`) read GreenRoute's
+  // aiScore 7.2 and humanAverage 8.1 here, while `GET /api/decks`,
+  // `GET /api/decks/:id` and the report route all correctly withheld them.
+  // That is the two exact quantities those toggles exist to hide, and the
+  // fourth instance of this class in the programme (grep plan_parity for
+  // `issue 21`). The standard is decks.ts: withholding on one route only "does
+  // not make scoring independent".
+  //
+  // Gating it costs nothing: the strip previews a control only an admin can
+  // change (`editable: isConfigAdmin(role)` below), so nobody else has a use
+  // for it.
+  const canPreview = isConfigAdmin(role);
   const [incubator, vc, weightPreview] = await Promise.all([
     loadScoreVisibility(c.env.DB, "incubator"),
     loadScoreVisibility(c.env.DB, "vc"),
-    loadWeightPreview(c.env.DB, edition),
+    canPreview ? loadWeightPreview(c.env.DB, edition) : Promise.resolve(null),
   ]);
   return c.json({
     scoring: settings,

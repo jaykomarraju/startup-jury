@@ -349,3 +349,58 @@ describe("the 50 MB upload limit", () => {
     expect((body as { deckId?: string }).deckId).toBeTruthy();
   });
 });
+
+describe("inlineRequestBytes measures BYTES, not UTF-16 code units", () => {
+  /**
+   * V4 integration. The original used `JSON.stringify(...).length` — UTF-16 code
+   * units — against a BYTE ceiling. Latin prompts hide it (1 unit ~ 1 byte); a
+   * non-Latin `ai_system_prompt` does not: Devanagari runs ~3 bytes per unit.
+   * Measured before the fix, a 25 MB deck with such a prompt reported as
+   * fitting while its real wire size was 84,005 bytes OVER — it uploads, 413s,
+   * retries, dead-letters and refunds, and re-running never fixes it.
+   * This client prices in ₹; a Devanagari system prompt is not hypothetical.
+   *
+   * The ONLY assertion that distinguishes the fix from the bug is a request
+   * that sits INSIDE the gap: under the ceiling counted in code units, over it
+   * counted in bytes. Anything weaker passes either way — the first draft of
+   * this test did, and its negative control caught it.
+   */
+  const tool = buildTool([{ id: "p1", name: "Team", weight: 10 }] as never);
+  const base = { model: "claude-opus-5", userText: "Evaluate this deck.", tool };
+
+  it("a deck inside the units-vs-bytes gap is refused inline", () => {
+    const system = "मूल्यांकन के लिए यह प्रणाली संकेत है। ".repeat(4000);
+    const envelope = JSON.stringify({ model: base.model, system, userText: base.userText, tool });
+    const units = envelope.length;
+    const bytes = new TextEncoder().encode(envelope).length;
+
+    // Premise: the two measurements really do differ, and by a lot.
+    const gap = bytes - units;
+    expect(gap).toBeGreaterThan(100_000);
+
+    // Choose a deck that lands between them: units-count fits, byte-count does not.
+    // base64Length is the encoded size of the PDF on the wire.
+    let pdfBytes = 1024;
+    while (base64Length(pdfBytes) + bytes <= MAX_MESSAGES_REQUEST_BYTES) pdfBytes += 64 * 1024;
+    // Now over in bytes. Confirm it is still UNDER when counted in code units —
+    // i.e. the old implementation would have waved this exact request through.
+    expect(base64Length(pdfBytes) + units).toBeLessThan(MAX_MESSAGES_REQUEST_BYTES);
+
+    const req = { ...base, system, pdfBytes };
+    expect(inlineRequestBytes(req)).toBeGreaterThan(MAX_MESSAGES_REQUEST_BYTES);
+    expect(fitsInlineRequest(req)).toBe(false); // the bug returns true here
+  });
+
+  it("a Latin prompt is barely affected — which is exactly why this hid so long", () => {
+    const system = "Evaluate the deck for this area. ".repeat(4000);
+    const envelope = JSON.stringify({ model: base.model, system, userText: base.userText, tool });
+    const drift = new TextEncoder().encode(envelope).length - envelope.length;
+    // Not zero — the shipped tool definition itself carries a few non-ASCII
+    // characters — but a rounding error next to the 130 KB the Devanagari case
+    // drifts by. Any test written against a Latin prompt would have passed
+    // before and after the fix, which is how the bug survived review.
+    expect(drift).toBeGreaterThanOrEqual(0);
+    expect(drift).toBeLessThan(100);
+    expect(fitsInlineRequest({ ...base, system, pdfBytes: 1024 })).toBe(true);
+  });
+});

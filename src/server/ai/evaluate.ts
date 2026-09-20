@@ -549,8 +549,16 @@ export function inlineRequestBytes(req: {
       // An empty data field measures the envelope; the deck is added below.
       documentSource: { type: "base64", media_type: "application/pdf", data: "" },
     }),
-  ).length;
-  return envelope + base64Length(req.pdfBytes);
+  );
+  // BYTES, not characters. `String.length` is UTF-16 code units, and this is
+  // compared against a BYTE ceiling — so a non-Latin `ai_system_prompt`
+  // undercounts badly (measured: a Devanagari prompt of 50,393 chars is 134,399
+  // bytes, a ratio of 2.667). With that prompt a 25.1 MB deck passed this check
+  // and went 84,005 bytes OVER the real ceiling: it uploads, routes inline,
+  // 413s, retries, dead-letters and refunds — and re-running never fixes it.
+  // This client writes in ₹ and Devanagari is not hypothetical.
+  const envelopeBytes = new TextEncoder().encode(envelope).length;
+  return envelopeBytes + base64Length(req.pdfBytes);
 }
 
 /** True when the deck can ride inline; false means it needs the Files API. */
@@ -631,7 +639,7 @@ const UPLOADED_DECK_TTL_SECONDS = 3600;
 export function deckFilename(deck: { id: string; name?: string | null }): string {
   const cleaned = (deck.name ?? "")
     // eslint-disable-next-line no-control-regex
-    .replace(/[<>:"|?*\\/ -]/g, " ")
+    .replace(/[<>:"|?*\\/\u0000-\u001f]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 200);
