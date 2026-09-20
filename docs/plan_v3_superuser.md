@@ -129,167 +129,293 @@ Four of these are *"delete something the client previously asked us to build"*.
 
 ---
 
-## 7. The session prompt
+## 7. The parallel wave — nine sessions, disjoint ownership
+
+Run all nine at once. The partition is by FILE, so no session waits on another.
+
+| Session | Items | Owns (and nothing else) | Migration |
+|---|---|---|---|
+| `V3-NAV`  | 9, 18-label, 8-label, 10-sidebar | `src/shared/nav.ts` · `scripts/parity-lib.ts` · `scripts/parity-nav.ts` · `test/unit/nav.test.ts` | 0066 |
+| `V3-REP`  | 1 | `EvaluationReport.tsx` · `EvaluationDrawer.tsx` · `src/shared/reportStage.ts` · `GET /decks/:id/report` | 0067 |
+| `V3-DASH` | 18-screen, 19 | `DashboardPage.tsx` · `src/shared/deckStats.ts` · the `GET /api/decks` list payload | 0068 |
+| `V3-JP`   | 2 | `StagePage.tsx` → `INCUBATOR_STAGE_CONFIG.jurypipeline` only | 0069 |
+| `V3-UP`   | 8, 10 | `UploadPage.tsx` · `src/client/routes/upload/**` · `EvaluatePage.tsx` | 0070 |
+| `V3-AW`   | 11, 12 | `admin/AreaWeights.tsx` · AI-prompt storage + its route | 0071 |
+| `V3-SF`   | 3, 4, 13 | `admin/ScoringFramework.tsx` · `canSeeEvaluatorScores` + its enforcement | 0072 |
+| `V3-PT`   | 15, 16, 17 | `admin/PriceConfiguration.tsx` · `admin/TeamRoles.tsx` · `SetupWizard.tsx` · My account | 0073 |
+| `V3-FLOW` | 6, 7, 14 | `AssignPage.tsx` · `QueryPage.tsx` · `CallsPage.tsx` incubator configs | 0074 |
+
+**`main` ends at migration 0065 and `ALLOTMENT_CEILING` is 65.** Take only your number, and raise the
+ceiling in `test/worker/migrations-w1b.test.ts` in the SAME commit if you use it.
+
+**`src/server/routes/decks.ts` is wanted by three sessions — ownership is BY ROUTE, not by file:**
+`V3-REP` owns `GET /decks/:id/report`; `V3-DASH` owns the `GET /api/decks` list payload; `V3-SF` owns
+the score-visibility filter. Touch only your own; anything else is a §9 request with an exact diff.
+
+**Question numbering** (so no session renumbers another's): `V3-NAV` Q11 · `V3-REP` Q21 · `V3-DASH` Q31 ·
+`V3-JP` Q41 · `V3-UP` Q51 · `V3-AW` Q61 · `V3-SF` Q71 · `V3-PT` Q81 · `V3-FLOW` Q91. §4 holds Q1–Q8.
+
+### The block every prompt carries
 
 ```
-You are running session V3-SU — rebuilding the incubator SUPERUSER surfaces against the reshared
-prototype AISJ_SuperuserV3.HTM. You have no prior context. Everything you need is in the repo.
-
 SETUP
   cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
-  git worktree add ../sj-V3-SU -b parity/V3-SU main
-  cd ../sj-V3-SU && npm ci
+  git worktree add ../sj-<ID> -b parity/<ID> main
+  cd ../sj-<ID> && npm ci
   python3 docs/prototype/tools/split-prototypes.py
+  python3 docs/prototype/tools/decode-embedded.py \
+    docs/prototype/source/incubator/AISJ_SuperuserV3.HTM ${TMPDIR:-/tmp}/v3
+  python3 docs/prototype/tools/decode-embedded.py \
+    docs/prototype/source/incubator/AISJ_IC_SuserV15.HTM ${TMPDIR:-/tmp}/v15
 
-READ FIRST — in this order, and nothing else
-  1. docs/plan_v3_superuser.md — ALL of it. It is 128 lines and it is the brief. §1 especially.
-  2. **Decode the admin console before you form any opinion about what is missing:**
-       python3 docs/prototype/tools/decode-embedded.py \
-         docs/prototype/source/incubator/AISJ_SuperuserV3.HTM ${TMPDIR:-/tmp}/v3
-       python3 docs/prototype/tools/decode-embedded.py \
-         docs/prototype/source/incubator/AISJ_IC_SuserV15.HTM ${TMPDIR:-/tmp}/v15
-       diff -u ${TMPDIR:-/tmp}/v15/admin.html ${TMPDIR:-/tmp}/v3/admin.html > ${TMPDIR:-/tmp}/admin.diff
-     **`Configurability`, `Visibility for Incubator`, `Visibility for VC`, `Price configuration`,
-     `Composite formula`, `AI weight`, `Team & roles` and the 13 `AI prompt` buttons live ONLY inside
-     that blob.** A plain grep of the .HTM returns ZERO hits for them. Scoping this release with grep
-     alone already produced one wrong answer — do not repeat it.
-  3. The outer panels, already split for you by step SETUP, under
-     ${TMPDIR:-/tmp}/sj-prototype-split/. Diff each changed one against AISJ_IC_SuserV15's:
-     alldecks +1006 · evaluate +533 · introcalls +410 (CSS only) · coreparams -13 · jurypipeline -34 ·
-     query -78 · upload -2136 · assign IDENTICAL. Read only the renderers you need — grep
-     `_scripts.js` by function name; it is 600+ KB and must never be read whole.
-  4. docs/plan_parity.md — §1, §2, §4, and grep it for `W7-D` (it built the stage-aware report you may
-     be asked to delete), `W7-A` and `W9-A` (the Dashboard), `W7-F` (the stage-screen config),
-     `W8-B` (Core/My Parameters) and `issue 21` (the visibility class item 13 belongs to).
-  Do NOT read docs/PARITY-FINDINGS.md (1.4 MB). Do NOT read a prototype .HTM whole.
-
-STOP — eight decisions gate this work (§4). Before writing code for an item below, check whether its
-question is answered in §4 of docs/plan_v3_superuser.md. If it is NOT, do the OTHER items, and record
-the blocked one in §4 with what you would have done. Four of these ask you to DELETE something the
-client previously asked for — never delete a tested behaviour on an unanswered question.
-  Q1 report stage-awareness · Q2 AI-weight default re-scoring · Q3 formula/weight override ·
-  Q4 Assign+Query filter rules · Q5 Upload results screen · Q6 Evaluate entry point ·
-  Q7 Assigned stat box · Q8 upload ceiling
-
-BUILD — in this order. The order is the point; it is derived from what blocks what.
-
-  1. **nav.ts + the parity pin, ONE commit, first.**
-     `src/shared/nav.ts`: `alldecks` label -> "Dashboard" and icon -> "LayoutDashboard";
-     `upload` label -> "Upload & Evaluate"; the standalone `evaluate` item removed from the sidebar;
-     `introcalls` moved ABOVE `forsignup`/prog-manager-pipeline. **Superuser-only, via
-     `labelOverrides`, NOT by changing `label`** — the admin, PM, PA and jury prototypes were not
-     reshared, and a global rename adds four new `parity:nav` gaps against them.
-     In the SAME commit: register the new source in `scripts/parity-lib.ts:38`
-     (`AISJ_IC_SuserV15` -> the v3 dir for role superuser). Until that is repointed EVERY change you
-     make from v3 registers as a brand-new parity gap and the harness fights you all session.
-     Removing `evaluate` from the sidebar does NOT remove its route — see step 4.
-
-  2. **The evaluation report (item 1) — the shared leaf, before the screens that open it.**
-     `EvaluationReportModal` has NINE call sites across `DashboardPage`, `EvaluatePage`, `AssignPage`,
-     `StagePage`, `CallsPage`, `IcVotePage`, `VcEvaluatePage`. Change it first and the rest build on a
-     settled component; change it last and you re-edit seven files.
-     The client wants the report replicated EXACTLY, "including the positions of the items". Build it
-     from the decoded prototype's own markup: every section in order, every column in order.
-     **Gated on Q1.** v3 deletes `__introCols` / `__jTot` / the `__roleBlock` stage switch and
-     hard-codes colspan 5 — i.e. it reverses `src/shared/reportStage.ts`, `reportStageForScreen()`,
-     the `data-testid="report-stage"` badge AND the server's `reportLayout(edition, stage, role)` in
-     `src/server/routes/decks.ts`. If Q1 is unanswered, bring the VISUAL design to parity and leave
-     the stage mechanism alone. Do not delete a server-enforced behaviour on an inference.
-
-  3. **Jury pipeline (item 2) — the cleanest item on the list, do it early for a win.**
-     `src/client/routes/StagePage.tsx`, `INCUBATOR_STAGE_CONFIG.jurypipeline`. Delete the row-level
-     Status column (the repeat was that pill PLUS the per-juror pills in the Jury cell). Action options
-     drop from five to two — `Send to intro calls`, `Reassign / add jury` — and once used the cell
-     becomes a flow tag ("Sent to intro calls" / "Reassigned"). The footer legend and `jpFoot`'s
-     "N shortlisted · N rejected" counts still reference statuses the screen no longer sets: decide
-     and record what the footer says now.
-
-  4. **Dashboard (items 18, 19).** `src/shared/deckStats.ts` + `src/client/routes/DashboardPage.tsx`.
-     Six boxes, v3 order and labels: Uploaded · AI Evaluated · Not AI Evaluated · Incomplete ·
-     Archived · Shortlisted, with v3's colours (AI Evaluated green, Archived `--text-3`,
-     Shortlisted purple). Sub-labels become STATIC prose — the computed "+3 since yesterday" /
-     "N% of uploaded" strings are gone.
-     **The denominator changes**: an archived deck is counted ONLY in Archived and excluded from every
-     other tile and view. `build()` currently divides by `decks.length` — fix that or every tile is
-     quietly wrong. Tables collapse from four shapes to two (a default 8-column set and a Shortlisted
-     set); Sector, Assigned-to/date, Due date, Jury score and the parameter-score sparkline all go.
-     `Assigned` is deleted — **gated on Q7**, because it reverses Aug-2026 issue 4, which is quoted in
-     `deckStats.ts:166-167`.
-
-  5. **Upload & Evaluate (items 8, 10).** `UploadPage.tsx` + `upload/**`, `EvaluatePage.tsx`.
-     Evaluate gains the `AI Evaluate` toolbar button, a select-all + "N selected" in column 1, and the
-     sub-line "evaluated decks move to the Assign screen"; `evAiEvaluate` with nothing selected
-     evaluates all, toasts "N decks evaluated — sent to Assign", and navigates to Assign.
-     **Gated on Q5 and Q6.** In v3 the Upload footer is one button that goes to the Dashboard while the
-     screen still promises "You approve → Credits deducted", and the richer inline results card has CSS
-     and ~110 lines of JS but NO markup. A literal build either spends credits with no preview or
-     uploads nothing. **These files are shared with the VC edition, which the client did NOT rescope —
-     every VC upload test must still pass unchanged.**
-
-  6. **The admin console.** Everything here comes from the decoded blob, not the outer file.
-     `src/client/routes/admin/` — `AreaWeights.tsx` (item 11: `Type` -> `AI prompt` column, a prompt
-     button on each of the 13 areas, `Restore all core AI prompts`; item 12: the `Seat configurability`
-     card — Parameter set × Standard/Pro/Premium, rows Core/Addl., defaults "Standard none · Pro core
-     only · Premium core + additional"), `ScoringFramework.tsx` (items 3, 4 — gated on Q2/Q3; and the
-     two new Visibility matrices), `PriceConfiguration.tsx` (item 15 — the iframe becomes an inline
-     section: Paid trial, Individual plans ₹ per period, Enterprise plans ₹ annual, Save & apply),
-     `TeamRoles.tsx` + `SetupWizard.tsx` (item 16 — wizard step 4 becomes "Nominate your super user",
-     the add-member block moves into Team & roles).
-     **Item 13 is the highest-risk thing in this session.** The visibility matrices are a PERMISSION
-     SYSTEM, not a screen: a 4×4 incubator and 5×5 VC matrix of who may see whose scores, defaulting to
-     "Super User & Program Manager see everyone; Program Associate and Jury Member see no one; jury
-     cannot see each other until turned on". This repo has a named, recurring history of exactly this
-     class leaking — grep docs/plan_parity.md for `issue 21`. **Enforce it in the server
-     (`src/server/routes/decks.ts`, `canSeeEvaluatorScores`), never by not-rendering, and prove it with
-     a negative control: revert the filter and watch the test fail.** A test that passes with the fix
-     reverted is decoration — that exact mistake was caught here at Wave 9 integration.
-
-  7. **Do NOT start:** item 5 (upload ceiling — Q8, and raising the constant alone makes uploads
-     succeed and AI evaluation fail), item 14 (Intro calls — the prototype is byte-identical, so the
-     gap is against v15 and nobody has measured it; MEASURE it and write the measurement into §3),
-     item 17 (My account pricing — 517 unread diff lines; read `acct` in the decoded output first).
+READ FIRST
+  1. docs/plan_v3_superuser.md — ALL of it (295 lines). §1 is why your grep will lie to you.
+  2. **The admin console is base64.** Scoring framework, Composite formula, AI weight, Price
+     configuration, Team & roles, the Configurability card and BOTH visibility matrices exist ONLY
+     inside ADMIN_B64. A plain grep of the .HTM returns ZERO hits for every one of them. Decode first
+     (SETUP does it) and diff ${TMPDIR:-/tmp}/v15/admin.html against ${TMPDIR:-/tmp}/v3/admin.html.
+  3. Your panels from ${TMPDIR:-/tmp}/sj-prototype-split/. Grep `_scripts.js` by function name —
+     it is 600+ KB and must NEVER be read whole. Never read a prototype .HTM whole, and never read
+     docs/PARITY-FINDINGS.md (1.4 MB).
 
 CONSTRAINTS
-  - Incubator SUPERUSER only. Every other role's prototype is unchanged, so every other role's screens
-    must render exactly as they do today, and a client test must say so.
-  - The VC edition was not rescoped. `UploadPage`, `EvaluatePage`'s shared pieces and the report are
-    shared — VC tests pass unchanged or you have broken something.
-  - You own migration **0066** onward (`main` ends at 0065). Raise `ALLOTMENT_CEILING` in
-    test/worker/migrations-w1b.test.ts from 65 in the SAME commit as any migration you add.
-  - §2.2 hazard files: `src/client/index.css`, `src/shared/nav.ts`, `src/shared/roles.ts`,
-    `src/client/App.tsx`. nav.ts is step 1 and is expected; declare anything else in §9.
+  - Incubator SUPERUSER only. Only the superuser prototype was reshared — admin, program manager,
+    program associate and jury still ship the OLD design, so their screens must render exactly as they
+    do today and a client test must say so.
+  - The VC edition was NOT rescoped. Where a file is shared with VC, every VC test passes unchanged.
+  - §2.2 hazard files — `src/client/index.css`, `src/shared/nav.ts`, `src/shared/roles.ts`,
+    `src/client/App.tsx`. Only `V3-NAV` may edit nav.ts. For anyone else it is a §9 request.
   - A changed gate changes `npm run roles`: probes in `scripts/role-matrix.ts` in the SAME commit,
     against a server you PROVED you own with `lsof` (check the PID **and** its cwd). Baseline 1115/1115.
+  - `e2e/parity.spec.ts`: re-capture ONLY your own rows (`PARITY_CAPTURE=1`, `TMPDIR` at your own
+    scratchpad, union into `EXPECTED`). NEVER delete a row you did not capture — eight siblings are
+    re-capturing theirs at the same moment. 247 rows today.
 
-TEST
-  - Client: every screen you touch, under a superuser, asserting the EXACT labels/headers/order from
-    the prototype — literals copied from the decoded markup, not imported from the screen, so a rename
-    fails the test. Plus: the same screens under admin / PM / PA / jury are UNCHANGED.
-  - Worker: the visibility matrix — for each viewer role, a subject whose scores it may see (200 with
-    the score present) and one it may not (absent from the PAYLOAD, not just the DOM). Then the
-    negative control.
-  - Unit: `deckStats` — the archived exclusion and the tile denominator.
-  - E2E: a superuser walks Dashboard -> Upload & Evaluate -> Evaluate -> Assign and opens the report
-    from two different screens, seeing the same layout. Create what you mutate; the suite is
-    fullyParallel over one D1.
-  - `e2e/parity.spec.ts`: re-capture ONLY the rows you own (`PARITY_CAPTURE=1`, `TMPDIR` at your own
-    scratchpad, union into `EXPECTED`). Never delete a row you did not capture. 247 rows today.
+TEST + GATE
   Green gate: npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
-  **`nvm use` first — the build needs Node 22; on Node 20 it dies with a `registerHooks` error that
-  reads as a code fault and is not.** Baselines off `main`, never from a prompt: unit 2069 passed /
-  1 skipped, roles 1115/1115, parity:tokens 0 gaps, parity:nav 62 known gaps, e2e ~224.
-  `uptime` before the gate. Never conclude anything from a red run at load 40+ without re-running the
-  file alone AND an untouched spec as a control. Before diagnosing an e2e failure,
-  `grep -c "Network connection lost"` the run log — the dev server drops connections under load and
-  takes unrelated specs with it; its tell is `Received: undefined` from a `toHaveCount`.
+  **`nvm use` first** — the build needs Node 22; on Node 20 it dies with a `registerHooks` error that
+  reads as a code fault and is not. Baselines off `main`, never from a prompt: unit **2069 passed /
+  1 skipped**, roles **1115/1115**, `parity:tokens` 0 gaps, `parity:nav` 62 known gaps, e2e ~224.
+  `uptime` BEFORE the gate; never run yours while a sibling runs theirs
+  (`ps -eo args | grep -E "playwright test|vitest"`); run e2e on YOUR `E2E_PORT`.
+  Before diagnosing ANY e2e failure, `grep -c "Network connection lost"` the run log — the dev server
+  drops connections under load and takes unrelated specs with it; its tell is `Received: undefined`
+  from a `toHaveCount`. Zero drops means look at the code. Never conclude from a red run at load 40+
+  without re-running the file alone AND an untouched spec as a control.
   Traps this codebase has actually paid for: gate client assertions on a POPULATED element, never a
-  heading the loading branch also renders; never locate an element by the attribute your click is about
-  to change; one sign-in per e2e test; guard a draft against StrictMode's double mount; and when you
-  narrow a guard, check something is still left inside it.
+  heading the loading branch also renders; never locate an element by the attribute your click is
+  about to change; one sign-in per e2e test; guard a draft against StrictMode's double mount; and when
+  you narrow a guard, CHECK SOMETHING IS STILL LEFT INSIDE IT.
 
 FINISH
-  Update docs/plan_v3_superuser.md: §3 states for what you closed, §4 answers or records each decision,
-  and a new §8 Progress row with your measured gate. Anything you could not own goes in §9 of
-  docs/plan_parity.md as a cross-session request with an exact diff.
-  Commit to parity/V3-SU. Do not merge to main.
+  Update docs/plan_v3_superuser.md — §3 state for each item you closed, §4 for any decision you hit,
+  and a §8 Progress row with your MEASURED gate. Anything outside your ownership is a §9 row in
+  docs/plan_parity.md with an exact diff. Commit to parity/<ID>. Do not merge to main.
+```
+
+### Per-session BUILD blocks
+
+**`V3-NAV`** — the sidebar, and the parity pin that stops the harness fighting everyone.
+```
+BUILD
+  1. Register the new source and REPOINT the harness, first commit:
+     `scripts/parity-lib.ts:38` currently reads
+       { dir: "AISJ_IC_SuserV15", edition: "incubator", role: "superuser" }
+     Point the superuser row at the v3 file (already committed at
+     docs/prototype/source/incubator/AISJ_SuperuserV3.HTM). **Until this lands, every change the other
+     eight sessions make from v3 registers as a brand-new parity gap.** This is the single most
+     unblocking commit in the wave — do it first and say so in §8.
+  2. Superuser-only labels, via `labelOverrides`, NOT by changing `label`:
+       alldecks -> "Dashboard" (icon "LayoutDashboard"; NavIcon already maps it)
+       upload   -> "Upload & Evaluate"
+     Changing `label` instead adds four new label gaps against the admin/PM/PA/jury prototypes, which
+     were NOT reshared.
+  3. Hide the standalone `evaluate` item FROM SUPERUSER ONLY. This needs a new mechanism: `roles`
+     lists non-superuser roles and superuser bypasses it (nav.ts:44 "Superuser always sees all").
+     Add something minimal and tested — e.g. `hiddenFor?: Role[]` honoured by `canSeeNav` — and keep
+     the ROUTE alive: `/app/evaluate` must still render (V3-UP reaches it from Upload).
+  4. Order: `introcalls` moves ABOVE the prog-manager-pipeline item. `parity-nav` asserts
+     missing-route / role-gap / label / extra and does NOT assert order, so this is free to the
+     harness but visible to every role — record in §4 (Q11) whether it is superuser-only or global.
+TEST
+  Unit: `navForUser("incubator","superuser")` — exact ids in exact order, `evaluate` absent, and the
+  two labels via `navLabel`. Then the SAME assertion for admin, program_manager, program_associate and
+  jury proving their sidebars are byte-identical to today.
+  `npm run parity:nav` — report the number before and after; it should not grow.
+```
+
+**`V3-REP`** — the evaluation report. The shared leaf: nine call sites across seven screens.
+```
+BUILD
+  The client wants this replicated EXACTLY, "including the positions of the items". Build from the
+  prototype's own markup: every section in order, every column in order, every label verbatim.
+  Extract the renderer first — in v3/_scripts.js the report builder is `window.openReport` (~line 4042,
+  10,539 bytes); the v15 one is at ~3713 (11,175 bytes). Diff them.
+  **GATED ON Q1 (§4).** v3 DELETES stage-awareness: `__introCols`, `__jTot` and the `__roleBlock`
+  stage switch are gone and colspan is hard-coded 5. That reverses W7-D and Issue 24, and it is
+  SERVER-ENFORCED — `reportLayout(edition, parseReportStage(...), role)` in the report route.
+  If Q1 is unanswered: bring the VISUAL design to parity and LEAVE THE STAGE MECHANISM ALONE. Do not
+  delete a tested, server-enforced behaviour on an inference. Record what you would have done.
+  **Props-additive only.** Seven screens render `EvaluationReportModal`; a required new prop breaks
+  all of them and collides with four sibling sessions. Change internals, not the signature.
+CONSTRAINTS
+  You own `GET /decks/:id/report` in decks.ts and NOTHING else in that file — V3-DASH owns the list
+  payload, V3-SF owns the visibility filter.
+TEST
+  Client: the report's exact section order and column order, literals copied from the decoded markup
+  (not imported from the component, so a rename fails). Open it from two different screens and assert
+  the SAME structure. Worker: the report route for an allowed and a forbidden role.
+```
+
+**`V3-DASH`** — Dashboard, and the denominator that will silently lie if you miss it.
+```
+BUILD
+  1. Six stat boxes, v3 order and labels: Uploaded · AI Evaluated · Not AI Evaluated · Incomplete ·
+     Archived · Shortlisted. Colours from the prototype (AI Evaluated green, Archived `--text-3`,
+     Shortlisted purple). Sub-labels become STATIC prose — the computed "+3 since yesterday" /
+     "N% of uploaded" strings are gone, so their helpers die with them.
+  2. **The denominator changes.** An archived deck is counted ONLY in Archived and excluded from every
+     other tile and every other view. `build()` in deckStats.ts divides by `decks.length` today — fix
+     that or every tile is quietly wrong, which no test will notice unless you write it.
+  3. Tables collapse from four shapes to two: a default 8-column set (Startup · Founder · Phone ·
+     Email · City · AI score · Status · Actions) shared by five boxes, and a Shortlisted set
+     (Startup · AI score · Avg. score · Signup status · Actions). Sector, Assigned-to/date, Due date,
+     Jury score and the parameter-score sparkline all go. Rows gain an `Actions ▾` select — note the
+     Shortlisted shape's select omits `Edit`.
+  4. `Assigned` tile deleted — **GATED ON Q7**: this reverses Aug-2026 issue 4, which is quoted in
+     `deckStats.ts:166-167`. If unanswered, build the other five and leave Assigned in place.
+  5. Rows sort by recent activity descending with a "· 2h ago" clock. That field is not on the list
+     payload — you own `GET /api/decks`, so add it, or record in §4 (Q31) that it is derived.
+TEST
+  Unit: deckStats — the archived exclusion AND the denominator, asserted as numbers.
+  Client: the six tiles in order with exact labels; both table shapes' exact headers.
+```
+
+**`V3-JP`** — the cleanest item in the wave.
+```
+BUILD
+  The repeat is the row-level Status pill PLUS the per-juror `jp-jstat` pills in the Jury cell. The
+  v3 markup diff is ONE line: `-<th>Status</th>`. Delete the row-level Status column from
+  `INCUBATOR_STAGE_CONFIG.jurypipeline` in StagePage.tsx.
+  Action options drop from five to two — `Send to intro calls` and `Reassign / add jury` — and once
+  used the cell becomes a flow tag ("Sent to intro calls" / "Reassigned").
+  The footer legend (Assigned / Shortlisted / Rejected / Pending) and `jpFoot`'s "N shortlisted ·
+  N rejected" still name statuses the screen no longer sets. Decide what the footer says now and
+  record it (Q41) — do not leave a legend decoding a column that no longer exists.
+CONSTRAINTS
+  Own ONLY the `jurypipeline` entry. The other INCUBATOR_STAGE_CONFIG entries and every VC entry
+  belong to other people; StagePage's shared renderer is not yours to restructure.
+TEST
+  Client: the screen's exact headers (Status ABSENT), the two action options, the flow tag after use,
+  and the footer sentence. Plus: every other incubator stage screen renders unchanged.
+```
+
+**`V3-UP`** — Upload & Evaluate. Two open questions; do the evidenced half.
+```
+BUILD
+  1. Evaluate (item 10) is fully evidenced — build it: the `AI Evaluate` toolbar button, a select-all
+     plus "N selected" in column 1, and the sub-line "Select decks and click AI Evaluate · evaluated
+     decks move to the Assign screen. Click a deck to open its report." `evAiEvaluate` with nothing
+     selected evaluates ALL, toasts "N decks evaluated — sent to Assign", then navigates to Assign.
+  2. **GATED ON Q6** — the prototype ORPHANS this screen: the sidebar item is gone and
+     `showPanel('evaluate')` appears once, inside `upSendToEvaluate()`, which has no callers. Keep the
+     route working and reach it from Upload; record the entry point you chose.
+  3. **GATED ON Q5** — Upload's "redev" is mostly a DELETION: `#up-results` is gone and the footer is
+     one button that is literally `showPanel('alldecks')`, while the screen still promises
+     "You approve → Credits deducted". A richer inline results card has CSS and ~110 lines of JS but
+     NO markup (`renderUpResults([0,3,5,7])` runs at load into a swallowed catch). That reads as a
+     broken export. **Do not spend credits with no preview.** If Q5 is unanswered, keep the existing
+     review step and change only the title/label, and say so.
+  4. Do NOT touch the upload size limit (item 5) — Q8, and raising `MAX_PDF_BYTES` alone makes uploads
+     succeed and AI evaluation FAIL (×1.333 base64 ≈ the 32 MB model-input cap). Strictly worse.
+CONSTRAINTS
+  These files are SHARED WITH THE VC EDITION, which the client did not rescope. Every VC upload and
+  VC intake test must pass unchanged — assert it.
+```
+
+**`V3-AW`** — Area weights: the AI prompts, and who may edit them.
+```
+BUILD
+  Everything here is in the DECODED console (${TMPDIR:-/tmp}/v3/admin.html), section `s-wt`.
+  1. Item 11: the Area-weights table header `<th>Type</th>` becomes `<th>AI prompt</th>`, and each of
+     the 13 areas gains an `AI prompt` button opening its prompt editor, plus `Restore all core AI
+     prompts`. "prompt" occurs 91× in admin-v3 vs 7× in admin-v15 — that is the size of this.
+  2. Item 12: the `Seat configurability` card — columns `Parameter set · Standard · Pro · Premium`,
+     rows `Core parameters` and `Addl. parameters`, with the prototype's stated defaults:
+     "Standard — none · Pro — core only · Premium — core + additional."
+     It is an EDIT PERMISSION, not per-tier prompt content: all three tiers read the same 13 prompts.
+  3. The prototype has NO persistence — `CFG_CAP`, `CORE_PROMPTS` and `ADDL` are in-memory JS that
+     reset on reload. You must design the storage and the route. Take migration 0071.
+  4. Note the outer `panel-coreparams` drops `Type` WITHOUT adding the AI-prompt column, so the two
+     surfaces disagree. Record which one wins (Q61).
+TEST
+  Worker: the prompt route — an allowed role and a forbidden one; and a seat tier that may NOT
+  configure gets 403 on the WRITE, not merely a hidden button.
+```
+
+**`V3-SF`** — Scoring framework. The highest-risk session in the wave; treat it as such.
+```
+BUILD
+  All three items are in the DECODED console, section `s-fw`.
+  1. **Item 13 — the visibility matrices. This is a PERMISSION SYSTEM, not a screen.**
+     `Visibility for Incubator` is 4×4 (Super User · Program Mgr · Program Assoc · Jury Member) and
+     `Visibility for VC` is 5×5 (Mng Partner · IC · Partner · Inv. Assoc · Analyst), captioned
+     "Viewer (row) → can see scores of (column)". The prototype states the defaults: "Super User &
+     Program Manager see everyone; Program Associate and Jury Member see no one — jury members cannot
+     see each other (blind evaluation) until turned on here."
+     Today this is the FIXED rank ladder `canSeeEvaluatorScores` / `EVALUATION_RANK` in roles.ts.
+     Making it configurable means persisting a matrix and reading it everywhere that helper is called.
+     **This repo has a named, recurring history of exactly this class leaking** — grep
+     docs/plan_parity.md for `issue 21`. Enforce it in the SERVER and assert on the RESPONSE PAYLOAD,
+     never by not-rendering. **Run the negative control: revert your filter and watch the test fail.**
+     A test that still passes with the fix reverted is decoration — that exact mistake was caught here
+     at Wave 9 integration, where the first issue-21 test was vacuous because row COUNTS never moved
+     and only the means did.
+  2. **Items 3 and 4 — GATED ON Q2/Q3, and item 4 is not cosmetic.** The console still offers all
+     three formulas and all four AI splits, so hiding them OVERRIDES "match the prototype exactly" —
+     the client marked both *Workaround*. Worse: the AI-weight select has NO `selected` attribute, so
+     `40% AI · 60% Jury` is the effective default, and `migrations/0026` agrees
+     (`ai_weight_pct DEFAULT 40`). Keeping only 50/50 SILENTLY RE-WEIGHTS every existing org's
+     composite. Do not ship that on an inference — if Q2 is unanswered, hide nothing and record it.
+CONSTRAINTS
+  You own `canSeeEvaluatorScores` and its enforcement, and NOTHING else in decks.ts.
+```
+
+**`V3-PT`** — pricing and team: one producer, one consumer, one wizard.
+```
+BUILD
+  1. Item 15 — Price configuration is rebuilt from an IFRAME into an inline console section: three
+     cards, `Paid trial`, `Individual plans — ₹ per period` (Seat · Quarterly · Half-yearly · Annual)
+     and `Enterprise plans — ₹ annual` (Plan · Seats · Annual price), plus `Save & apply to My
+     Account`. The repo's PriceConfiguration.tsx was built against the OLD iframe — compare before
+     rewriting.
+  2. Item 17 — My account's pricing is the OTHER END of item 15. In the prototype the wire is
+     `prSave()` → `postMessage({type:'aisjPricing'})` → `acRefreshPricing()`; in the repo it must be a
+     real store, so BUILD 15 FIRST. The account overlay grew 56,019 → 71,008 bytes and those ~517
+     diff lines are UNREAD — read them before you estimate, and put the measurement in §3.
+  3. Item 16 — setup wizard step 4 becomes "Nominate your super user": the add-member block is deleted
+     (−45 lines) and replaced by a handoff card to Team & roles, which gains an inline add-member
+     form and `plan + Active/Invited` member pills.
+     Confirm existing wizard invites are MIGRATED, not stranded (Q81).
+```
+
+**`V3-FLOW`** — the two filter rules the prototype contradicts, and the one item nobody has measured.
+```
+BUILD
+  1. **Items 6 and 7 are BLOCKED ON Q4 and the prototype disagrees with the instruction.**
+     `panel-assign` is BYTE-IDENTICAL between v15 and v3 (md5 b555211d…), the assign renderers diff to
+     zero lines, v3 still draws the `Incomplete` toolbar button and the Incomplete drawer, and
+     `qRenderList` filters nothing. The strings "Evaluated & Complete" and "Evaluated & Incomplete"
+     occur ZERO times in either file. You are being asked to delete UI the reshared prototype still
+     ships. **Do not infer the rule.** Write the two candidate readings into §4 (Q91) in the repo's own
+     stage vocabulary (read src/pipeline/incubator.ts and src/shared/queries.ts) and stop there.
+  2. **Item 14 is the one item on the list whose cost is entirely unmeasured — MEASURE IT.**
+     `panel-introcalls` is +410 bytes of CSS ONLY (jury-pipeline flow-tag styles), and all 16 `nc*`
+     functions are BYTE-IDENTICAL between v15 and v3. So the client is right that our scheduling flow
+     diverges — but from v15, and nobody has ever diffed it. Diff `CallsPage.tsx`'s incubator intro-call
+     modal against the prototype's (`ncCallOpenModal`, `ncCallSchedule`, `ncCallRenderRoles`, `ncAssign`)
+     and write the gap list into §3 with an effort estimate. The prototype has NO date input, NO
+     duration, NO location, NO founder email and NO additional-guests field — several repo fields are
+     inventions. Say which of ours must go.
+     Then build what the measurement shows, smallest-first.
 ```
