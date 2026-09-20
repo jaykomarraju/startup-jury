@@ -160,7 +160,13 @@ for (const user of USERS) {
  * renders no table at all once its queue empties.
  */
 const EXPECTED: Record<string, Screen> = {
-  // ── incubator/superuser · 25 screens ──
+  // ── incubator/superuser · 24 walked screens ──
+  // V3-NAV removed the standalone `Evaluate` item from this role's SIDEBAR
+  // (V3 item 10), so the walk no longer reaches it and its row below is
+  // currently unvisited. The row is kept, not deleted: `/app/evaluate` is still
+  // a live route for the superuser (`canAccessNav` is unchanged) and §4 Q6 may
+  // yet give the screen a new entry point, at which point the walk sees it
+  // again and this row is the snapshot it must still match.
   "incubator/superuser/alldecks": {
     title: "All decks",
     tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "SECTOR", "STATUS"]],
@@ -170,7 +176,7 @@ const EXPECTED: Record<string, Screen> = {
     title: "Founder queries",
     tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
   },
-  "incubator/superuser/evaluate": { title: "Evaluate", tables: [] },
+  "incubator/superuser/evaluate": { title: "Evaluate", tables: [] }, // route-only since V3-NAV — see above
   "incubator/superuser/assign": { title: "Assign", tables: [] },
   "incubator/superuser/jurypipeline": {
     title: "Jury Pipeline",

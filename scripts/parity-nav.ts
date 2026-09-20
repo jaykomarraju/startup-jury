@@ -4,7 +4,7 @@
  *
  * For each of the eleven role prototypes, the check parses `_sidebar.html`,
  * resolves each item to an application route slug, and asks `navForUser()` /
- * `canSeeNav()` in `src/shared/nav.ts` whether that role can actually get
+ * `isInSidebar()` in `src/shared/nav.ts` whether that role can actually get
  * there. Four things can be wrong:
  *
  *   missing-route  the slug does not exist in the application at all
@@ -30,7 +30,7 @@
  * See scripts/parity-lib.ts for the expected-gap / exit-code contract.
  */
 import { PROTOTYPES, read, requireSplit, settle, strictMode } from "./parity-lib";
-import { canSeeNav, navForUser, navItemById, navLabel } from "../src/shared/nav";
+import { isInSidebar, navForUser, navItemById, navLabel } from "../src/shared/nav";
 import type { Edition, Role } from "../src/shared/roles";
 import { join } from "node:path";
 
@@ -247,7 +247,11 @@ for (const proto of PROTOTYPES) {
       found.set(`${where} · missing-route ${slug}`, `sidebar "${item.label}" (${item.opens}) — no such route in navForUser`);
       continue;
     }
-    if (!canSeeNav(role, nav)) {
+    // `isInSidebar`, not `canSeeNav`: both sides of this comparison are
+    // SIDEBARS. A screen the role can reach but that we deliberately keep out
+    // of its sidebar (`hiddenFor`) is a gap iff the prototype lists it — which
+    // is exactly what this reports.
+    if (!isInSidebar(role, nav)) {
       found.set(`${where} · role-gap ${slug}`, `sidebar "${item.label}" exists but ${role} cannot see it`);
       continue;
     }

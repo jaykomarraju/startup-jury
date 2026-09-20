@@ -2,7 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   navForUser,
   navLabel,
+  navIcon,
   canAccessNav,
+  isInSidebar,
+  reachableNav,
   landingNavId,
   navItemById,
   NAV_BY_EDITION,
@@ -26,7 +29,17 @@ describe("nav manifest", () => {
       const full = NAV_BY_EDITION[edition]
         .filter((i) => !i.portal && !i.exclusive)
         .map((i) => i.id);
-      expect(ids(navForUser(edition, "superuser"))).toEqual(full);
+      // REACHABILITY is still the full superset — V3-NAV's `hiddenFor` takes an
+      // item out of the sidebar, never away from the role.
+      expect(ids(reachableNav(edition, "superuser"))).toEqual(full);
+      // The SIDEBAR is that set minus `hiddenFor`, and it is a strict subset
+      // only where the V3 prototype actually removed an item.
+      const hidden = NAV_BY_EDITION[edition]
+        .filter((i) => i.hiddenFor?.includes("superuser"))
+        .map((i) => i.id);
+      expect(new Set(ids(navForUser(edition, "superuser")))).toEqual(
+        new Set(full.filter((id) => !hidden.includes(id))),
+      );
     }
     // Superuser does not inherit a jury member's personalized reports.
     const su = ids(navForUser("incubator", "superuser"));
@@ -40,7 +53,8 @@ describe("nav manifest", () => {
     expect(su).toContain("billing");
     // Session 7 added the internal issue log.
     expect(su).toContain("issues");
-    expect(su).toHaveLength(25);
+    // 25 on main; V3 item 10 removes the standalone Evaluate item (see below).
+    expect(su).toHaveLength(24);
   });
 
   it("founder sees only the founder portal; internal roles never see portal items", () => {
@@ -61,13 +75,21 @@ describe("nav manifest", () => {
     expect(navLabel("ic_member", navItemById("vc", "curation")!)).toBe("Invest ready");
   });
 
-  it("canAccessNav agrees with navForUser and rejects unknown/forbidden slugs", () => {
+  it("canAccessNav mirrors REACHABILITY, not the sidebar, and rejects unknown slugs", () => {
     for (const edition of ["incubator", "vc"] as Edition[]) {
       const roles = edition === "incubator" ? INCUBATOR_ROLES : VC_ROLES;
       for (const role of roles) {
-        const visible = new Set(ids(navForUser(edition, role)));
+        const reachable = new Set(ids(reachableNav(edition, role)));
+        const sidebar = new Set(ids(navForUser(edition, role)));
         for (const item of NAV_BY_EDITION[edition]) {
-          expect(canAccessNav(edition, role, item.id)).toBe(visible.has(item.id));
+          // The route guard follows reachability...
+          expect(canAccessNav(edition, role, item.id)).toBe(reachable.has(item.id));
+          // ...and the sidebar can only ever be narrower, never wider.
+          if (sidebar.has(item.id)) expect(reachable.has(item.id)).toBe(true);
+          // The two agree on everything that is not explicitly hidden.
+          if (!item.hiddenFor?.includes(role)) {
+            expect(sidebar.has(item.id)).toBe(reachable.has(item.id));
+          }
         }
       }
     }
@@ -163,6 +185,176 @@ describe("nav manifest", () => {
     expect(canSeeEvaluatorScores("incubator", "superuser", "program_manager")).toBe(true);
     // A founder has no rank and sees no evaluator.
     expect(canSeeEvaluatorScores("incubator", "founder", "program_associate")).toBe(false);
+  });
+
+  // ── V3 — the reshared incubator superuser prototype (V3-NAV) ───────────────
+  //
+  // Every literal below is copied from `AISJ_SuperuserV3/_sidebar.html`, not
+  // imported from nav.ts, so renaming an item in the manifest fails here.
+  //
+  // The four other incubator prototypes were NOT reshared, so their sidebars
+  // must still render exactly as they did on `main`. Those lists are pinned
+  // verbatim for the same reason: they are the regression test for this change.
+
+  it("draws the incubator superuser sidebar exactly as AISJ_SuperuserV3 does", () => {
+    // `si-*` order from the prototype's Workflows + Evaluation groups, with the
+    // prototype's own `forsignup` mapped to the app's `pmpipeline` slug and the
+    // two recorded parity extras (`billing`, `issues`) in their app positions.
+    expect(ids(navForUser("incubator", "superuser"))).toEqual([
+      "alldecks",
+      "upload",
+      "query",
+      // no "evaluate" — V3 deletes the standalone item (item 10)
+      "assign",
+      "jurypipeline",
+      "introcalls", // V3 swaps these two...
+      "pmpipeline", // ...`forsignup` in the prototype
+      "incuration",
+      "curation",
+      "archive",
+      "cohortsummary",
+      "evaluatorscores",
+      "scoredrift",
+      "funnel",
+      "coreparams",
+      "myparams",
+      "setup",
+      "account",
+      "admin",
+      "billing",
+      "contactadmin",
+      "contactteam",
+      "support",
+      "issues",
+    ]);
+  });
+
+  it("renames All decks and Upload for the superuser ONLY (items 8, 18)", () => {
+    const alldecks = navItemById("incubator", "alldecks")!;
+    const upload = navItemById("incubator", "upload")!;
+
+    expect(navLabel("superuser", alldecks)).toBe("Dashboard");
+    expect(navIcon("superuser", alldecks)).toBe("LayoutDashboard");
+    expect(navLabel("superuser", upload)).toBe("Upload & Evaluate");
+
+    // The four non-reshared roles keep the old label AND the old icon.
+    for (const role of ["admin", "program_manager", "program_associate"] as Role[]) {
+      expect(navLabel(role, alldecks)).toBe("All decks");
+      expect(navIcon(role, alldecks)).toBe("Layers");
+      expect(navLabel(role, upload)).toBe("Upload");
+    }
+    expect(navLabel("jury", alldecks)).toBe("My Pipeline"); // its own override, untouched
+    expect(navIcon("jury", alldecks)).toBe("Layers");
+
+    // The VC edition was not rescoped at all.
+    expect(navLabel("superuser", navItemById("vc", "alldecks")!)).toBe("All decks");
+    expect(navIcon("superuser", navItemById("vc", "alldecks")!)).toBe("Layers");
+    expect(navLabel("superuser", navItemById("vc", "upload")!)).toBe("Upload");
+  });
+
+  it("hides Evaluate from the superuser sidebar but KEEPS the route (item 10)", () => {
+    expect(ids(navForUser("incubator", "superuser"))).not.toContain("evaluate");
+    // The screen is still reachable — V3-UP reaches it from Upload (§4 Q6).
+    expect(canAccessNav("incubator", "superuser", "evaluate")).toBe(true);
+    expect(ids(reachableNav("incubator", "superuser"))).toContain("evaluate");
+
+    const evaluate = navItemById("incubator", "evaluate")!;
+    expect(isInSidebar("superuser", evaluate)).toBe(false);
+    // Nobody else is affected, in either edition.
+    for (const role of ["admin", "program_manager", "program_associate"] as Role[]) {
+      expect(isInSidebar(role, evaluate)).toBe(true);
+      expect(ids(navForUser("incubator", role))).toContain("evaluate");
+    }
+    expect(ids(navForUser("vc", "superuser"))).toContain("evaluate");
+  });
+
+  it("moves Intro calls above Prog manager pipeline for the superuser ONLY (§4 Q11)", () => {
+    const order = (role: Role) => {
+      const list = ids(navForUser("incubator", role));
+      return [list.indexOf("introcalls"), list.indexOf("pmpipeline")];
+    };
+    const [suIntro, suPm] = order("superuser");
+    expect(suIntro).toBeGreaterThanOrEqual(0);
+    expect(suIntro).toBeLessThan(suPm); // V3: … jurypipeline · introcalls · forsignup …
+
+    // admin and program_manager are the other two roles that see both items;
+    // they keep the V6/V5 prototypes' order.
+    for (const role of ["admin", "program_manager"] as Role[]) {
+      const [intro, pm] = order(role);
+      expect(pm).toBeGreaterThanOrEqual(0);
+      expect(pm).toBeLessThan(intro);
+    }
+  });
+
+  it("leaves every non-reshared sidebar byte-identical to main", () => {
+    // Pinned from `main` (commit 6785fb5) — `id:label` in draw order.
+    const PINNED: Record<string, string[]> = {
+      admin: [
+        "alldecks:All decks", "upload:Upload", "query:Query", "evaluate:Evaluate",
+        "assign:Assign", "jurypipeline:Jury Pipeline", "pmpipeline:Prog manager pipeline",
+        "introcalls:Intro calls", "incuration:Sign up Pipeline", "curation:Onboard ready",
+        "archive:Archive", "cohortsummary:Cohort summary", "evaluatorscores:Evaluator scores",
+        "scoredrift:Score drift", "funnel:Pipeline funnel", "coreparams:Core Parameters",
+        "myparams:My Parameters", "setup:Set up", "account:My account", "admin:Admin console",
+        "billing:Buy credits", "contactadmin:Contact Admin", "contactteam:Contact team",
+        "support:Tickets", "issues:Issue log",
+      ],
+      program_manager: [
+        "alldecks:All decks", "upload:Upload", "query:Query", "evaluate:Evaluate",
+        "assign:Assign", "jurypipeline:Jury Pipeline", "pmpipeline:Prog manager pipeline",
+        "introcalls:Intro calls", "incuration:Sign up Pipeline", "curation:Onboard ready",
+        "archive:Archive", "cohortsummary:Cohort summary", "evaluatorscores:Evaluator scores",
+        "scoredrift:Score drift", "funnel:Pipeline funnel", "myparams:My Parameters",
+        "setup:Set up", "account:My account", "contactadmin:Contact Admin",
+        "contactteam:Contact team", "issues:Issue log",
+      ],
+      program_associate: [
+        "alldecks:All decks", "upload:Upload", "query:Query", "evaluate:Evaluate",
+        "assign:Assign", "introcalls:Intro calls", "incuration:Sign up Pipeline",
+        "curation:Onboard ready", "archive:Archive", "cohortsummary:Cohort summary",
+        "evaluatorscores:Evaluator scores", "scoredrift:Score drift", "funnel:Pipeline funnel",
+        "myparams:My Parameters", "setup:Set up", "account:My account",
+        "contactadmin:Contact Admin", "contactteam:Contact team", "issues:Issue log",
+      ],
+      jury: [
+        "alldecks:My Pipeline", "jassigned:Assigned", "jurypipeline:Evaluated",
+        "introcalls:My Intro calls", "archive:My Archive",
+        "repdecks:My decks summary", "repscores:My Scores", "repdrift:My scores drift",
+        "myparams:My Parameters", "account:My account", "contactadmin:Contact Admin",
+        "contactteam:Contact team", "issues:Issue log",
+      ],
+    };
+    for (const [role, expected] of Object.entries(PINNED)) {
+      const got = navForUser("incubator", role as Role).map((i) => `${i.id}:${navLabel(role as Role, i)}`);
+      expect(got, `incubator/${role} sidebar changed`).toEqual(expected);
+    }
+  });
+
+  it("keeps every VC sidebar the size it was — the VC edition was not rescoped", () => {
+    // VC was untouched by V3; these counts are `main`'s.
+    const SIZES: Record<string, number> = {
+      superuser: 32, admin: 32, partner: 25, ic_member: 19, associate: 19, analyst: 13,
+    };
+    for (const [role, n] of Object.entries(SIZES)) {
+      expect(navForUser("vc", role as Role), `vc/${role}`).toHaveLength(n);
+    }
+    expect(NAV_BY_EDITION.vc.some((i) => i.hiddenFor || i.iconOverrides)).toBe(false);
+  });
+
+  it("the order override is position-preserving and cannot change the landing slug", () => {
+    // Every role's first sidebar item is unchanged, so `landingNavId` is safe.
+    expect(landingNavId("incubator", "superuser")).toBe("alldecks");
+    // And the override only ever permutes — never adds, drops or duplicates.
+    for (const edition of ["incubator", "vc"] as Edition[]) {
+      const roles = edition === "incubator" ? INCUBATOR_ROLES : VC_ROLES;
+      for (const role of [...roles, "superuser" as Role]) {
+        const sidebar = ids(navForUser(edition, role));
+        const expected = ids(NAV_BY_EDITION[edition].filter((i) => isInSidebar(role, i)));
+        expect(new Set(sidebar), `${edition}/${role}`).toEqual(new Set(expected));
+        expect(sidebar).toHaveLength(expected.length);
+        expect(new Set(sidebar).size).toBe(sidebar.length);
+      }
+    }
   });
 
   it("applies the same rule along the VC ladder", () => {

@@ -90,7 +90,11 @@ test("the sidebar collapses to a 52px icon rail between 640px and 900px", async 
 
   await page.setViewportSize({ width: 1280, height: 800 });
   await expect(page.locator("aside.sj-rail")).toHaveJSProperty("offsetWidth", 190);
-  await expect(page.getByRole("link", { name: /All decks/ })).toBeVisible();
+  // V3-NAV: this walk logs in as the incubator SUPERUSER, whose first nav item
+  // V3 renames "All decks" -> "Dashboard" (item 18). Literal updated, assertion
+  // untouched — it still says "at 1280px the rail is 190px wide and its labels
+  // are visible". Every other role still reads "All decks".
+  await expect(page.getByRole("link", { name: /Dashboard/ })).toBeVisible();
 
   await page.setViewportSize({ width: 820, height: 800 });
   await expect(page.locator("aside.sj-rail")).toHaveJSProperty("offsetWidth", 52);

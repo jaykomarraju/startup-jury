@@ -33,9 +33,17 @@ export function splitDir(): string {
   );
 }
 
-/** The eleven role prototypes, and the (edition, role) each one stands for. */
+/**
+ * The eleven role prototypes, and the (edition, role) each one stands for.
+ *
+ * The incubator SUPERUSER row points at `AISJ_SuperuserV3` (shared 2026-09-19),
+ * which supersedes `AISJ_IC_SuserV15` **for that role only** — the admin,
+ * program-manager, program-associate and jury prototypes were NOT reshared and
+ * still ship the old design. Repointing this row is what makes a V3 change read
+ * as parity instead of as a new gap; see docs/plan_v3_superuser.md §5.
+ */
 export const PROTOTYPES = [
-  { dir: "AISJ_IC_SuserV15", edition: "incubator", role: "superuser" },
+  { dir: "AISJ_SuperuserV3", edition: "incubator", role: "superuser" },
   { dir: "AISJ_ICAdmin_V6", edition: "incubator", role: "admin" },
   { dir: "AISJ_IC_PM_V5", edition: "incubator", role: "program_manager" },
   { dir: "AISJ_IC_PA_V3", edition: "incubator", role: "program_associate" },
