@@ -79,7 +79,7 @@ import {
 // V3-DASH — the Shortlisted table's Sign-up status column reads the REAL
 // sign-up record, the same source the Sign up Pipeline screen reads.
 import { SIGNUP_STATUS_LABELS, listSignups, type SignupSummary } from "./SignupWorkspace";
-import { canAccessNav, navForUser } from "../../shared/nav";
+import { canAccessNav, reachableNav } from "../../shared/nav";
 import type { Edition } from "../../shared/roles";
 import { useActiveContext } from "../activeContext";
 
@@ -1022,7 +1022,12 @@ export function DashboardPage() {
   const narrowed = debouncedSearch !== "" || tagFilter !== "" || !!ctx.programId || !!ctx.cohortId;
   const { best, mediocre } = thresholds;
   const colSpan = ALL_DECKS_COLUMNS[shape].length;
-  const evaluateSlug = navForUser(edition, user.role, can).find(
+  // V3 integration — `navForUser` is THE SIDEBAR since V3-NAV, and V3 item 10
+  // takes `evaluate` out of the incubator superuser's sidebar while leaving the
+  // ROUTE live. Resolving this link through the sidebar therefore dropped the
+  // superuser's "Score in Evaluate" (V3-NAV filed it against itself as a P0).
+  // Reachability is what a link needs.
+  const evaluateSlug = reachableNav(edition, user.role, can).find(
     (i) => i.id === "evaluate" || i.id === "jassigned",
   )?.id;
 

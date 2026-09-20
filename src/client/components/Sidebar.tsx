@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { ChevronDown } from "lucide-react";
 import type { Edition, Role } from "../../shared/roles";
-import { navForUser, navLabel, NAV_SECTIONS, type NavItem } from "../../shared/nav";
+import { navForUser, navIcon, navLabel, NAV_SECTIONS, type NavItem } from "../../shared/nav";
 import { usePermissions } from "../auth/usePermissions";
 import { NavIcon } from "./icons";
 
@@ -184,7 +184,7 @@ export function Sidebar({ edition, role, onNavigate, badges }: SidebarProps) {
                         {({ isActive }) => (
                           <>
                             <NavIcon
-                              name={item.icon}
+                              name={navIcon(role, item)}
                               className={`h-[13px] w-[13px] shrink-0 ${isActive ? "opacity-100" : "opacity-70"}`}
                             />
                             <span className="truncate">{navLabel(role, item)}</span>

@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { NAV_BY_EDITION, navForUser } from "../src/shared/nav";
+import { NAV_BY_EDITION, navForUser, reachableNav } from "../src/shared/nav";
 
 // Session 8 — the coverage sweep.
 //
@@ -50,7 +50,11 @@ test("every incubator nav slug renders a real screen, not a stub", async ({ page
   await login(page, INC_SUPER);
   // The superuser superset, minus the founder-portal items (a portal slug is
   // founder-only by design — `canSeeNav` gives it no superuser bypass).
-  const slugs = navForUser("incubator", "superuser").map((i) => i.id);
+  // V3 integration — walk what the superuser can REACH, not what the sidebar
+  // draws. V3 item 10 hides `evaluate` from the sidebar while keeping the route
+  // live, and `navForUser` is the sidebar since V3-NAV — so this walk silently
+  // stopped covering /app/evaluate.
+  const slugs = reachableNav("incubator", "superuser").map((i) => i.id);
   expect(slugs.length).toBeGreaterThan(20);
 
   for (const slug of slugs) {
