@@ -211,7 +211,8 @@ describe("Intro calls — the scheduler roles (panel-introcalls)", () => {
       "Call scheduled",
       "Call date",
       "Call completed",
-      "Scheduler",
+      // V3 item 14 — the prototype's ninth and last; `Action` is ours (§8 Q104).
+      "Assign scheduler",
       "Action",
     ]);
     expect(within(agro).getByText("AgriTech · Seed · Jaipur")).toBeInTheDocument();
@@ -463,9 +464,10 @@ const VC_PEOPLE = [
 const vcCall = (over: Partial<CallView>) =>
   call({ id: "vc1", deckId: "v1", deckName: "WealthOS", deckStatus: "associate_review", organizerId: "vc_associate", ...over });
 
+const DECKS_VC = [vcDeck({}), vcDeck({ id: "v2", name: "AgriChain", sector: "AgriTech", city: "Jaipur", statusId: "partner_review" })];
+
 describe("VC Intro calls (panel-introcalls, AISJ_VC_Superuser_V8)", () => {
   const CONFIG = VC_CALLS_CONFIG.introcalls;
-  const DECKS_VC = [vcDeck({}), vcDeck({ id: "v2", name: "AgriChain", sector: "AgriTech", city: "Jaipur", statusId: "partner_review" })];
 
   it("draws the prototype's ten headers, subtitle, toolbar, footer sentence and legend", async () => {
     mockApi({ decks: DECKS_VC, calls: [vcCall({})], people: VC_PEOPLE, matrix: vcMatrix });
@@ -768,8 +770,8 @@ describe("VC Alignment call (panel-alignmentcall)", () => {
   });
 });
 
-describe("the incubator Intro calls screen is unchanged by W9-E", () => {
-  it("declares none of W9-E's keys — the config is W7-F's, key for key", () => {
+describe("the incubator Intro calls screen takes W9-E's delegation and nothing else", () => {
+  it("declares W7-F's keys plus the one trailing pair V3 item 14 adds", () => {
     expect(Object.keys(INCUBATOR_CALLS_CONFIG.introcalls).sort()).toEqual(
       [
         "title",
@@ -784,25 +786,135 @@ describe("the incubator Intro calls screen is unchanged by W9-E", () => {
         "aiQuestions",
         "juryStack",
         "participantColumns",
+        "trailing",
       ].sort(),
     );
+    expect(INCUBATOR_CALLS_CONFIG.introcalls.trailing).toEqual(["assignScheduler", "action"]);
     expect(INCUBATOR_CALLS_CONFIG.introcalls.footer).toEqual({ noun: "shortlisted startup" });
   });
 
-  it("still puts Schedule inside Call scheduled, draws no leaf, and offers no outcome or delegation", async () => {
+  it("still puts Schedule inside Call scheduled, draws no leaf, and offers no outcome", async () => {
     mockApi({});
     mount(INCUBATOR_CALLS_CONFIG.introcalls, "program_manager", "inc_pm");
     const agro = await screen.findByRole("row", { name: /AgroFresh/ });
     expect(within(agro).getByRole("button", { name: "Schedule" })).toBeInTheDocument();
     expect(within(agro).queryByRole("button", { name: "Schedule call" })).not.toBeInTheDocument();
     expect(within(agro).getByRole("button", { name: "AgroFresh" }).querySelector("svg")).toBeNull();
-    expect(screen.queryByTestId("assign-scheduler")).not.toBeInTheDocument();
-    expect(screen.queryByRole("columnheader", { name: /Schedule call|Assign scheduler|Sponsorship|Outcome|Analyst Score/ })).not.toBeInTheDocument();
+    // Narrowed by V3 item 14 — "Assign scheduler" IS this screen's ninth column
+    // now, so the guard keeps the three headers that still must not appear.
+    expect(screen.queryByRole("columnheader", { name: /Schedule call|Sponsorship|Outcome|Analyst Score/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Assign scheduler" })).toBeInTheDocument();
     expect(within(screen.getByTestId("stage-legend")).getAllByText(/./).map((n) => n.textContent)).toEqual([
       "Scheduled",
       "Completed",
       "Not scheduled",
     ]);
+  });
+});
+
+/**
+ * V3 item 14 — the incubator scheduling flow, measured against `ncRoles` /
+ * `ncAssign` in `AISJ_SuperuserV3` (and `AISJ_IC_SuserV15`, in which every one
+ * of the 16 `nc*` functions is byte-identical, so this is a build defect and
+ * not a v3 change). The two editions name three DIFFERENT roles and W9-E built
+ * the cell against the VC triple alone.
+ *
+ * The role names are written out here rather than imported from the component,
+ * so renaming `ASSIGN_SCHEDULER_ROLES`' labels fails this suite.
+ */
+describe("Intro calls — Assign scheduler offers each edition's own ncRoles (V3 item 14)", () => {
+  const roleOptions = (row: HTMLElement, deck: string) =>
+    within(within(row).getByRole("combobox", { name: `Scheduler role for ${deck}` }))
+      .getAllByRole("option")
+      .map((o) => o.textContent);
+
+  it("offers Jury member · Program associate · Program manager on the incubator, and none of the VC roles", async () => {
+    mockApi({});
+    mount(INCUBATOR_CALLS_CONFIG.introcalls, "program_manager", "inc_pm");
+    const agro = await screen.findByRole("row", { name: /AgroFresh/ });
+    // `ncRoles` in all five incubator builds, in its own order and casing.
+    expect(roleOptions(agro, "AgroFresh")).toEqual([
+      "— role —",
+      "Jury member",
+      "Program associate",
+      "Program manager",
+    ]);
+    // The negative control: the VC triple this cell used to offer everywhere.
+    for (const vcRole of ["IC member", "Analyst", "Partner"]) {
+      expect(roleOptions(agro, "AgroFresh")).not.toContain(vcRole);
+    }
+  });
+
+  it("assigns role → user → Assign and PUTs the delegation, then names the delegate in the incubator's own casing", async () => {
+    const seen = mockApi({});
+    const { unmount } = mount(INCUBATOR_CALLS_CONFIG.introcalls, "program_manager", "inc_pm");
+    const agro = await screen.findByRole("row", { name: /AgroFresh/ });
+    const person = within(agro).getByRole("combobox", { name: "Scheduler for AgroFresh" });
+    expect(person).toBeDisabled();
+    fireEvent.change(within(agro).getByRole("combobox", { name: "Scheduler role for AgroFresh" }), {
+      target: { value: "program_associate" },
+    });
+    await vi.waitFor(() =>
+      expect(within(person).getAllByRole("option").map((o) => o.textContent)).toEqual(["— user —", "Sunita Rao"]),
+    );
+    expect(within(agro).getByRole("button", { name: "Assign" })).toBeDisabled();
+    fireEvent.change(person, { target: { value: "inc_pa" } });
+    fireEvent.click(within(agro).getByRole("button", { name: "Assign" }));
+    await vi.waitFor(() =>
+      expect(seen.find((r) => r.url === "/api/calls/scheduler" && r.method === "PUT")?.body).toEqual({
+        deckId: "d2",
+        kind: "intro",
+        userId: "inc_pa",
+      }),
+    );
+    unmount();
+
+    mockApi({
+      listing: {
+        schedulers: [{ deckId: "d2", kind: "intro", userId: "inc_jury", userName: "Rajesh Kumar", role: "jury" }],
+      },
+    });
+    mount(INCUBATOR_CALLS_CONFIG.introcalls, "program_manager", "inc_pm");
+    const again = await screen.findByRole("row", { name: /AgroFresh/ });
+    // `ncAssign`'s "<user> · <role>" — the incubator's "Jury member", never "Jury".
+    expect(within(again).getByText("Rajesh Kumar · Jury member")).toBeInTheDocument();
+    expect(within(again).getByRole("button", { name: "Change" })).toBeInTheDocument();
+  });
+
+  it("leaves the VC screen on its own three roles — the VC edition was not rescoped", async () => {
+    mockApi({ decks: DECKS_VC, calls: [vcCall({})], people: VC_PEOPLE, matrix: vcMatrix });
+    mount(VC_CALLS_CONFIG.introcalls, "associate", "vc_associate", "vc");
+    const agri = await screen.findByRole("row", { name: /AgriChain/ });
+    expect(roleOptions(agri, "AgriChain")).toEqual(["— role —", "IC member", "Analyst", "Partner"]);
+  });
+});
+
+/**
+ * V3 item 14 — the scheduling modal's own copy, against `ncCallOpenModal` /
+ * `ncCallRenderSelected`. The role is the GROUP HEADING in the prototype, so a
+ * participant row names only what the heading does not.
+ */
+describe("Intro calls — the schedule modal's participant picker (V3 item 14)", () => {
+  it("heads each group with the role and names the person by email, not by the role again", async () => {
+    mockApi({ calls: [] });
+    mount(INCUBATOR_CALLS_CONFIG.introcalls, "program_manager", "inc_pm");
+    await screen.findByRole("row", { name: /AgroFresh/ });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule intro call" }));
+    const roster = await screen.findByTestId("participant-roles");
+    // `ncCallRenderRoles`: one `.nccall-rolegrp` per role, headed by its name.
+    expect(within(roster).getByRole("group", { name: "Program manager" })).toBeInTheDocument();
+    const jury = within(roster).getByRole("group", { name: "Jury member" });
+    expect(within(jury).getByText("· rajesh@x.ai")).toBeInTheDocument();
+    expect(within(jury).queryByText(/· Jury member · /)).not.toBeInTheDocument();
+  });
+
+  it("empties the Selected box with the prototype's own sentence", async () => {
+    mockApi({ calls: [], people: [] });
+    mount(INCUBATOR_CALLS_CONFIG.introcalls, "program_manager", "inc_pm");
+    await screen.findByRole("row", { name: /AgroFresh/ });
+    fireEvent.click(screen.getByRole("button", { name: "Schedule intro call" }));
+    const selected = await screen.findByTestId("participant-selected");
+    expect(selected).toHaveTextContent("No participants selected yet.");
   });
 });
 

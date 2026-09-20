@@ -105,9 +105,12 @@ test("the incubator intro-call screen schedules and moves the deck", async ({ pa
   const row = page.getByRole("row", { name: /GreenRoute/ });
   await expect(row).toBeVisible();
   await expect(row.getByText("Scheduled")).toBeVisible();
-  // Aug-2026 issue 27 — the Scheduler column names the organiser and counts the
-  // invited participants (the juror among them).
-  await expect(row.getByText(/participants?$/)).toBeVisible();
+  // V3 item 14 — the prototype's Assign scheduler replaces W7-F's read-only
+  // Scheduler column here too, and it offers the INCUBATOR's `ncRoles`.
+  await expect(row.getByTestId("assign-scheduler")).toBeVisible();
+  await expect(
+    row.getByRole("combobox", { name: "Scheduler role for GreenRoute" }).getByRole("option"),
+  ).toHaveText(["— role —", "Jury member", "Program associate", "Program manager"]);
   // …and the call can be closed out from the Call completed column.
   await expect(row.getByRole("button", { name: "Mark completed" })).toBeVisible();
 });

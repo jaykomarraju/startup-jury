@@ -147,7 +147,8 @@ test("PM — Intro calls carries the prototype's toolbar and footer, and the cal
     "call scheduled",
     "call date",
     "call completed",
-    "scheduler",
+    // V3 item 14 — the prototype's own ninth column, which `ncAssign` fills.
+    "assign scheduler",
     "action",
   ]);
 

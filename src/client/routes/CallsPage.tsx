@@ -71,7 +71,7 @@ import {
   type DeckReportMatrix,
 } from "../api";
 import type { DeckView, DeckAction } from "../types";
-import { CALL_KIND_LABELS, ROLE_LABELS, type CallKind } from "../../shared/roles";
+import { CALL_KIND_LABELS, ROLE_LABELS, type CallKind, type Edition } from "../../shared/roles";
 import { callDecision, type CallOutcome, type OutcomeTone } from "../../shared/callOutcomes";
 import { navItemById, navLabel } from "../../shared/nav";
 import { icsFilename } from "../../shared/ics";
@@ -336,14 +336,32 @@ export function outcomeLegend(edition: "incubator" | "vc", kind: CallKind): Lege
   });
 }
 
-/** `ncRoles` — who Intro calls' Assign scheduler offers, in the prototype's order and casing. */
-const ASSIGN_SCHEDULER_ROLES = [
-  { role: "ic_member", label: "IC member" },
-  { role: "analyst", label: "Analyst" },
-  { role: "partner", label: "Partner" },
-];
-const assignRoleLabel = (role: string) =>
-  ASSIGN_SCHEDULER_ROLES.find((r) => r.role === role)?.label ?? role.charAt(0).toUpperCase() + role.slice(1).replace(/_/g, " ");
+/**
+ * `ncRoles` — who Intro calls' Assign scheduler offers, in the prototype's own
+ * order and casing. **The two editions name three DIFFERENT roles, and both
+ * prototypes ship the column.** `AISJ_VC_Superuser_V8` offers IC member ·
+ * Analyst · Partner; every incubator scheduler build — `AISJ_SuperuserV3`,
+ * `AISJ_IC_SuserV15`, `AISJ_ICAdmin_V6`, `AISJ_IC_PM_V5`, `AISJ_IC_PA_V3`, in
+ * which `ncRoles` is byte-identical — offers Jury member · Program associate ·
+ * Program manager. W9-E built the cell against the VC triple alone, so the
+ * incubator screen would have offered VC roles the incubator does not have
+ * (V3 item 14; the server has never cared — `PUT /api/calls/scheduler` takes
+ * any active non-founder, non-mentor member of the caller's edition).
+ */
+const ASSIGN_SCHEDULER_ROLES: Record<Edition, readonly { role: string; label: string }[]> = {
+  incubator: [
+    { role: "jury", label: "Jury member" },
+    { role: "program_associate", label: "Program associate" },
+    { role: "program_manager", label: "Program manager" },
+  ],
+  vc: [
+    { role: "ic_member", label: "IC member" },
+    { role: "analyst", label: "Analyst" },
+    { role: "partner", label: "Partner" },
+  ],
+};
+const assignRoleLabel = (roles: readonly { role: string; label: string }[], role: string) =>
+  roles.find((r) => r.role === role)?.label ?? role.charAt(0).toUpperCase() + role.slice(1).replace(/_/g, " ");
 
 /** A copy of `record` without `key`. */
 function omit<T>(record: Record<string, T>, key: string): Record<string, T> {
@@ -653,6 +671,8 @@ export function CallsPage({ config }: { config: CallsConfig }) {
   }, [calls]);
 
   const decision = user ? callDecision(user.edition, config.kind) : undefined;
+  /** `ncRoles` for THIS edition — see `ASSIGN_SCHEDULER_ROLES` (V3 item 14). */
+  const schedulerRoles = user ? ASSIGN_SCHEDULER_ROLES[user.edition] : [];
 
   const stageRows = useMemo<CallRow[]>(() => {
     const list = decks ?? [];
@@ -1253,7 +1273,7 @@ export function CallsPage({ config }: { config: CallsConfig }) {
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
           <span className="inline-flex items-center gap-1 font-semibold text-green">
             <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-            {delegate.userName} · {assignRoleLabel(delegate.role)}
+            {delegate.userName} · {assignRoleLabel(schedulerRoles, delegate.role)}
           </span>
           {canSchedule && !row.decided && (
             <button
@@ -1280,7 +1300,7 @@ export function CallsPage({ config }: { config: CallsConfig }) {
           onChange={(e) => setAssignDraft((d) => ({ ...d, [deck.id]: { role: e.target.value, userId: "" } }))}
         >
           <option value="">— role —</option>
-          {ASSIGN_SCHEDULER_ROLES.map((r) => (
+          {schedulerRoles.map((r) => (
             <option key={r.role} value={r.role}>
               {r.label}
             </option>
@@ -1940,7 +1960,7 @@ export function CallsPage({ config }: { config: CallsConfig }) {
                             </span>
                             <span className="min-w-0 flex-1">
                               {p.name}
-                              <span className="ml-1 text-xs text-fg-muted">· {g.label} · {p.email}</span>
+                              <span className="ml-1 text-xs text-fg-muted">· {p.email}</span>
                             </span>
                             <input
                               type="checkbox"
@@ -1960,7 +1980,7 @@ export function CallsPage({ config }: { config: CallsConfig }) {
                 <div className="u-label mb-1 text-fg-muted">Selected</div>
                 <div className="flex min-h-7 flex-wrap gap-1.5" data-testid="participant-selected">
                   {pickedPeople.length === 0 ? (
-                    <span className="text-xs text-fg-muted">Nobody from the team yet.</span>
+                    <span className="text-xs text-fg-muted">No participants selected yet.</span>
                   ) : (
                     pickedPeople.map((p) => (
                       <button
@@ -2112,6 +2132,20 @@ export const INCUBATOR_CALLS_CONFIG: Record<string, CallsConfig> = {
     aiQuestions: true,
     juryStack: true,
     participantColumns: "jury",
+    /**
+     * V3 item 14 — the prototype's own ninth column. Every incubator
+     * scheduler role heads it **Assign scheduler** and ends the table there —
+     * superuser (`AISJ_SuperuserV3`, and `AISJ_IC_SuserV15` before it), admin
+     * (`AISJ_ICAdmin_V6`), program manager (`AISJ_IC_PM_V5`) and program
+     * associate (`AISJ_IC_PA_V3`); ours was still W7-F's read-only
+     * **Scheduler**, which §8 Q102 parked because the delegation model was
+     * unspecified. **Q163 specified it and W9-E built it** — `call_schedulers`
+     * (0065) and `PUT /api/calls/scheduler` are edition-agnostic — so the
+     * incubator screen was the one consumer left behind, not a missing feature.
+     * `action` stays per §8 Q104 (the associate's only route to Send signup);
+     * it is the one column no incubator prototype draws.
+     */
+    trailing: ["assignScheduler", "action"],
   },
 };
 
