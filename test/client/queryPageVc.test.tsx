@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import type { DeckView } from "../../src/client/types";
+import { deckListRoute } from "../../src/shared/queries";
 import type { QueryView } from "../../src/client/api";
 
 /**
@@ -71,7 +72,18 @@ function installFetch() {
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "/api/decks") return ok({ decks });
+      // V4-ROUTE — the screen asks for `?list=query`. Routed with the server's
+      // own function, so the VC row set here is measured, not asserted twice.
+      if (url === "/api/decks" || url.startsWith("/api/decks?")) {
+        const list = new URL(url, "https://x").searchParams.get("list");
+        return ok({
+          decks: list
+            ? decks.filter(
+                (d) => deckListRoute(d, "vc", { queried: queries.some((q) => q.deck_id === d.id) }) === list,
+              )
+            : decks,
+        });
+      }
       if (url === "/api/queries") return ok({ queries });
       let m = url.match(/^\/api\/questions\/draft\/([^/]+)$/);
       if (m) {

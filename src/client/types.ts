@@ -19,6 +19,13 @@ export interface DeckView {
   founderPhone?: string;
   /** Required columns still missing — a non-empty list means Incomplete. */
   missingFields?: IntakeField[];
+  /**
+   * V4-ROUTE — `decks.complete`: the AI's own "I could read and score this
+   * deck". Read with `missingFields` through `isDeckComplete`, never alone;
+   * it is the flag the AI froze, and the missing columns are what has changed
+   * since. Absent reads as complete, matching the column's `DEFAULT 1`.
+   */
+  complete?: boolean;
   /** Soft duplicate / returning-company alert raised at intake. */
   intakeFlag?: IntakeFlag;
   intakeNote?: string;

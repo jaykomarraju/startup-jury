@@ -45,7 +45,6 @@ import {
 } from "lucide-react";
 import { EmptyState, PageToolbar, ToolbarButton } from "../components";
 import type { DeckView } from "../types";
-import { useAuth } from "../auth/useAuth";
 import { listDecks, listQueries, listAllQueries, type QueryView } from "../api";
 import { fetchDeckScores, fetchLetterDraft, recordQuery, type DeckScores, type QueryLetterDraft } from "../queryApi";
 import { downloadCsv, toCsv } from "../exportCsv";
@@ -57,7 +56,6 @@ import {
   areasNeedingResponse,
   clarificationFlow,
   composeFounderLetters,
-  isQueryListed,
   latestQuery,
   parseQueryTimestamp,
   queryDueAt,
@@ -66,7 +64,6 @@ import {
   type FlaggedArea,
   type QueryListStatus,
 } from "../../shared/queries";
-import type { Edition } from "../../shared/roles";
 
 const DEFAULT_SUBJECT = "Clarification requested on your pitchdeck submission";
 
@@ -110,8 +107,6 @@ function deckMeta(deck: DeckView): string {
 }
 
 export function QueryPage() {
-  const { user } = useAuth();
-  const edition = (user?.edition as Edition) ?? "incubator";
   const [decks, setDecks] = useState<DeckView[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [allQueries, setAllQueries] = useState<QueryView[]>([]);
@@ -152,7 +147,10 @@ export function QueryPage() {
   const load = useCallback(async () => {
     try {
       const [deckRes, queryRes] = await Promise.all([
-        listDecks(),
+        // V4-ROUTE — the server's enforced list, not the whole table filtered
+        // here. `deckListRoute` has already partitioned Assign from Query, so
+        // an evaluated deck marked incomplete arrives HERE and nowhere else.
+        listDecks({ list: "query" }),
         // Staff-only listing; a role without it just loses the status history.
         listAllQueries().catch(() => ({ queries: [] as QueryView[] })),
       ]);
@@ -179,10 +177,10 @@ export function QueryPage() {
     return map;
   }, [allQueries]);
 
-  const rows = useMemo(
-    () => (decks ?? []).filter((d) => isQueryListed(d, byDeck.get(d.id) ?? [], edition)),
-    [decks, byDeck, edition],
-  );
+  // The response IS the list — `deckListRoute` ran on the server, over the same
+  // deck view, so re-filtering here could only ever narrow the server's answer
+  // behind its back. A worker test asserts the row set on the RESPONSE.
+  const rows = useMemo(() => decks ?? [], [decks]);
 
   const statusOf = useCallback((id: string) => queryStatusOf(byDeck.get(id) ?? []), [byDeck]);
 

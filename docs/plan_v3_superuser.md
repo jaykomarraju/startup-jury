@@ -65,8 +65,8 @@ a corrected file or a number. **MEASURE**: prototype unchanged, so the gap is in
 | 3 | Composite formula: hide all but weighted average | **CLOSED — hiding WITHDRAWN** (`V4-WEIGHT`) | `V3-SF`: confirmed byte-identical to v15; all three formulas still offered. NOT shipped — hiding it overrides "match the prototype exactly" and the client marked it *Workaround*. A client test now PINS the three options, so narrowing them is a deliberate edit and never a quiet one. **Withdrawn 2026-09-20** — the client's reason for asking was item 4's invisibility, not the formulas; all three stay and the tripwire stays with them (§4.1.1). |
 | 4 | AI weight: hide all but 50/50 | **DONE as VISIBILITY** (`V4-WEIGHT`) | `V3-SF`: re-measured and confirmed. Four splits, no `selected` attribute, so **40% AI · 60% Jury is the effective default**, and `migrations/0026` agrees (`ai_weight_pct DEFAULT 40`). NOT shipped: keeping only 50/50 silently re-weights every existing org's composite. Pinned by the same client test as item 3. **Settled 2026-09-20 (§4.1.1):** the hide was a workaround for *"I saw no difference"*. All four splits stay; the console now draws a live before/after strip for real decks, `decisionScore` blends at the deck's own cohort/programme split (0074), and a split-only save no longer re-scores 12 decks to the values they already had. |
 | 5 | Decks >24 MB not opening | **NOT STARTED → Q8** | Both prototypes say `Max 50 MB`, byte-identical — a **pre-existing** gap, not a v3 change. `MAX_PDF_BYTES = 24 MB` is arithmetic, not arbitrary: ×1.333 base64 ≈ the 32 MB model-input cap. Raising the constant alone makes uploads succeed and **evaluations fail** — strictly worse. Needs the target number and a streaming/Files-API plan. |
-| 6 | Assign: only "Evaluated & Complete" | **BLOCKED → Q91** — readings recorded, nothing built | `panel-assign` is **byte-identical** (md5 `b555211d…`), the assign renderers diff to zero lines, and the string occurs **0 times in either file**. v3 still draws the Incomplete drawer. We are asked to delete UI the reshared prototype still ships. |
-| 7 | Query: only "Evaluated & Incomplete" | **BLOCKED → Q92** — readings recorded, nothing built | Same class. `panel-query`'s entire diff is one deleted select-all checkbox; the renderer is byte-identical and `qRenderList` filters nothing. The string occurs 0 times. |
+| 6 | Assign: only "Evaluated & Complete" | **DONE** — `V4-ROUTE` | Answered 2026-09-20: it is a guard on a BULK ACTION we do not have, so in our architecture it is a routing invariant. `decks.complete` is the mark, written only by `evaluate.ts` and selected by **nothing** until now. Assign's roster is `{ai_evaluated, assigned}` **∧ marked complete**, enforced on the server (`?list=assign`). Measured: `approve_review` walked a deck at `complete = 0` onto the roster in four 200s, and blanking a founder email left one assignable with a required detail missing. Both fixed; the Incomplete drawer stays (the prototype still draws it). |
+| 7 | Query: only "Evaluated & Incomplete" | **DONE** — `V4-ROUTE` | The other half of the same invariant, and **not** Q92's option (a): `QUERYABLE_STAGES` is untouched, so F0214's Responded row does not vanish. The list gains one arm — an evaluated deck that is **not** marked complete — from the same function, whose return type is `"assign" | "query" | null`, so the two lists cannot both hold one deck. `?list=query`, asserted on the response. |
 | 8 | Upload → "Upload & Evaluate", redev | **PARTIAL** — label shipped (`V3-NAV`); the flow is **Q51** | The redev is mostly a **deletion**: `#up-results` is gone and the footer collapses to one button — which is literally `showPanel('alldecks')` — while the screen still promises *"You approve → Credits deducted"*. Worse, a richer inline results card has **CSS and ~110 lines of JS but no markup**; `renderUpResults([0,3,5,7])` runs at load into a swallowed `catch`. **Likely a broken export — ask for a corrected file.** |
 | 9 | Query after Evaluate in sidebar | **DONE** — `V3-NAV` | Already satisfied by §2. Zero-cost. |
 | 10 | Evaluate page redev | **DONE** — `V3-UP` (sidebar `V3-NAV`); entry point **Q6/Q54** | +533 B: new `AI Evaluate` toolbar button, select-all + "N selected" in column 1, sub-line *"evaluated decks move to the Assign screen"*. `evAiEvaluate()` → toast → `showPanel('assign')`. But the screen has no entry point (§2). |
@@ -718,6 +718,113 @@ client side.
 **`DashboardPage.tsx` was NOT touched** — it is `V4-ROUTE`'s this wave. Whether
 `Avg. score` belongs in the Dashboard's default columns (reason (b)) is a §9
 request with an exact diff, not an edit made here.
+### `V4-ROUTE` — items 6 and 7 measured: where "complete" comes from, and what was reading it
+
+**Nothing was.** `decks.complete` exists (`migrations/0001_init.sql:67`,
+`INTEGER NOT NULL DEFAULT 1`), one thing writes it, and until this session
+**`DECK_COLUMNS` did not select it** — so no screen, no list and no predicate in
+the app had ever seen the mark the client's sentence is about.
+
+**Step 1 — the mapping.** `src/server/ai/evaluate.ts` is the only writer, and it
+writes one formula (`:752`):
+
+```ts
+const effective = { ...parsed, complete: parsed.complete && missingFields.length === 0 };
+```
+
+— the model's own `complete` flag AND `missingIntakeFields(details).length === 0`
+(founder · email · phone · city; **not** sector, `EXTRACTED_INTAKE_FIELDS`).
+`computeResult` then turns `!complete` into stage **`incomplete`** + signal
+**`flagged`** (`:478`). So at the instant of evaluation three things agree: the
+mark, the stage and the signal. Missing *slides* and weak areas are **not** part
+of it — a deck missing its Traction slide was still scored and still reached
+`ai_evaluated`, which is why it is assignable and still has areas to ask about.
+
+**Afterwards they drift, and all three ways are reproduced in
+`test/worker/route-partition.test.ts`:**
+
+| | What happens | What it did before this session |
+|---|---|---|
+| **(a)** | `PATCH /api/decks/:id` re-derives `missing_fields` and **neither `complete` nor the stage** (`decks.ts:746` — its own comment says the Incomplete state "follows the correction", and only one of the three columns does). Filling NimbusHR's missing phone left `missing_fields = NULL`, `complete = 0`, stage `incomplete`. | The deck reported `missingFields: []` — nothing left to ask the founder — and stayed on Query with no route to anywhere. |
+| **(b)** | The same edit in reverse: blanking FinStack's founder email set `missing_fields = 'founderEmail'` and left `complete = 1`, stage `ai_evaluated`. | **A deck with a missing required detail stayed on Assign and was assignable to a juror, and no clarification could ever be raised for it.** This is the client's rule broken in the Assign direction. |
+| **(c)** | `founder_response` → `submit_for_ai` → `send_to_review` → `approve_review`. **All four are the superuser's own transitions and all four return 200.** PayRoute arrived at `ai_evaluated` with `complete = 0` and `missing_fields = 'founderPhone'` still set. | **It became the fourth row of the Assign roster** and dropped off Query entirely. `approve_review` moves `manual_review → ai_evaluated` without consulting the mark — and without running the AI, so the deck also has no score. |
+
+**So the mark is re-derived at read time** from the two live columns, using
+evaluate.ts's own formula (`isDeckComplete`, `src/shared/queries.ts`). Nothing is
+frozen, so (a), (b) and (c) cannot go stale.
+
+**The obvious next step is wrong, and the data says so.** Deriving completeness
+from `missingIntakeFields()` on the deck's own detail columns — one live
+derivation, no stored CSV to go stale — marks **twelve VC seed deals incomplete**:
+they carry `complete = 1` and empty `missing_fields` with no founder, email or
+phone at all, because a sourced deal has no founder submission behind it.
+`missing_fields` is the *recorded intake decision*; the detail columns are not a
+proxy for it. Measured across all 34 seed decks: on the incubator the two agree
+for every deck, on VC they disagree for thirteen, twelve of them in that direction.
+
+**Step 2 — where it is enforced.** `GET /api/decks?list=assign` and `?list=query`
+(`src/server/routes/decks.ts`), both from **one** function, `deckListRoute`, whose
+return type is `"assign" | "query" | null` — so "on both lists" is not a state it
+can express. `AssignPage` and `QueryPage` read those responses instead of
+filtering the whole table themselves. Asserted on the RESPONSE, never the DOM.
+
+**Step 3 — can a deck appear on both screens? Measured: yes, and no.**
+
+* The **Assign roster** (`ai_evaluated`/`assigned`) and the **Query list** did not
+  overlap on the clean seed — 3 decks and 2 decks, 0 in common. What (b) and (c)
+  produce is not an overlap but a **mis-route**: the deck is on the wrong one of
+  the two. Both are fixed; counts below.
+* The Assign screen's **Incomplete drawer** and the Query list overlapped
+  **2 of 2 — completely — and that is by design, not the defect.** The drawer's
+  one action is `Send to Query`, its handler navigates to `/app/query` with those
+  deck ids, and `AssignPage`'s own comment says "these decks already sit in its
+  list". It is Query's rows surfaced on Assign as a hand-off. v3's `panel-assign`
+  is byte-identical and still draws it, and §4.1's ruling on the same question is
+  *"nothing is removed from the screen"*. **Deleting it would be the item-6/7 trap
+  the plan flagged: removing UI the reshared prototype still ships.** So the
+  invariant is stated on the roster, not on the screen: `roster ∩ Query = ∅`, and
+  `drawer ⊆ Query`. The drawer now widens to hold (b)'s and (c)'s decks too,
+  which is what keeps `drawer ⊆ Query` true rather than merely untested.
+
+**Before / after, on the seed (`GET /api/decks?list=…`, superuser):**
+
+| | `?list=assign` | `?list=query` |
+|---|---|---|
+| clean seed, before and after | 3 — FinStack · GreenGrid Energy · TaxPilot | 2 — NimbusHR · PayRoute |
+| after (b), blank FinStack's email | **2** (was 3) | **3** (was 2) — FinStack, still at stage `ai_evaluated` |
+| after (c), PayRoute via `approve_review` | **3** (was **4**) | **2** (was 1) |
+
+The deck moves; it is never duplicated and never lost. Its **stage does not
+change in either case** — which is the point: routing follows the mark, not the
+stage the deck happens to be sitting at.
+
+**Step 4 — the affordance he describes, NOT built.** There is still no
+multi-select and no bulk `Send to Assign` on the Dashboard, and
+`V3_EXCLUDED_ACTIONS` still withholds `assign_jury` per-row for Q32's stated
+reason (the transition would move a deck to Assigned with `assigned_to` NULL,
+because only `POST /decks/:id/assign` sets an evaluator). **A question for him,
+with its cost:**
+
+> Your rule guards a **Select-all → Send to Assign** control. Our Dashboard has
+> no row checkboxes and no bulk send, so we have enforced the rule where it
+> cannot be got round — the two lists themselves. **Do you also want the bulk
+> control?** If yes it is not a filter but a new write path: row checkboxes and a
+> bulk bar on the Dashboard (**S**), and a bulk assignment endpoint that takes
+> deck ids *and an evaluator*, because "send to Assign" without one leaves a deck
+> Assigned to nobody (**M**). Today the Assign screen already lists every
+> evaluated, complete deck by stage, so the button would be a shortcut to a screen
+> that is one click away — which is why it was withheld rather than forgotten.
+
+**One thing this does not fix, and it is pre-existing (Q92).** A deck with weak
+areas or a missing *slide* at `ai_evaluated` is complete, so it routes to Assign
+and no clarification is ever raised for it. That is the same question Q92 asked
+about the word "Evaluated" and it is untouched here: the mark is the intake
+mark, exactly as `evaluate.ts` defines it.
+
+**No migration.** 0075 was allotted and is **UNUSED, still free** — the mark and
+its two inputs were already columns, and re-deriving beat storing a third.
+`ALLOTMENT_CEILING` stays 74.
+
 
 ## 5. Build order (what blocks what)
 
@@ -2042,6 +2149,162 @@ One of them caught a real defect in my own implementation before the gate did:
 `null`, so a deck with an AI score and no jury score would have rendered
 `8.2 → 8.2` — the strip printing the very "I saw no difference" it exists to
 correct. It now requires both halves.
+### `V4-ROUTE` — items 6 and 7. **Complete.**
+
+**Baselines re-measured off `main` (260bfb0), not copied from the prompt** — its
+numbers are the wave-9 ones and `main` has moved since. Measured by checking
+`260bfb0 -- src test` into this worktree and running the same two gates on the
+same box: unit **2282 passed / 1 skipped**, roles **1180 / 1180** (the prompt
+block's 2069 / 1115 are both stale).
+
+| Session | Items | Migration | typecheck · lint · build | unit | roles | parity | e2e |
+|---|---|---|---|---|---|---|---|
+| `V4-ROUTE` | 6, 7 | **0075 UNUSED — still free**, ceiling stays 74 | clean · clean · clean | **2302 passed / 1 skipped** (2282 + 20) | **1180 / 1180**, unchanged | `parity:tokens` 27/27 · 0 gaps · `parity:nav` 62 known gaps | **no clean FULL run was obtained on this box — four attempts, read the section below.** Every spec bearing on items 6 and 7 passes, including all four incubator `parity.spec.ts` walks and an untouched control; the reds are port exhaustion and the failing set moves between runs of one tree. |
+
+The 20 new tests: 9 unit (`test/unit/queries.test.ts` — the mark and the
+partition), 8 worker (`test/worker/route-partition.test.ts` — the partition on
+the RESPONSE), 3 client (two on the Assign drawer, one on the Dashboard mark).
+
+**`roles` was run against a server this session PROVED it owned** — PID from
+`lsof -nP -iTCP:5191 -sTCP:LISTEN`, and that PID's `cwd` confirmed as
+`.../sj-V4-ROUTE` with `lsof -a -p <pid> -d cwd`. Both the baseline run and the
+branch run used the same port and the same check, so neither is the "roles with
+no server" fake pass.
+
+**No parity row moved, and that is a measurement, not an omission.** The three
+rows this session's screens own capture titles and table HEADERS:
+`incubator/superuser/alldecks` (8 headers), `incubator/superuser/query`
+(7 headers), `incubator/superuser/assign` (`tables: []` — column 1 is a `<ul>`
+and the drawer's table is behind a click). The Dashboard's new mark is a tag
+*inside* the Status cell, so no header moves; the Query list's columns are
+untouched. `PARITY_CAPTURE` was therefore not run and no row was rewritten —
+which is also the safest thing to do while siblings are re-capturing theirs.
+
+#### An infrastructure fact worth adding to §1's list
+
+**`EADDRNOTAVAIL` can kill the dev server before a single test runs.** §8's
+note has it as a symptom seen *inside* a run; here `npm run e2e:serve` itself
+died with `connect EADDRNOTAVAIL 127.0.0.1:65376 - Local (0.0.0.0:0)` at
+`TIME_WAIT ≈ 9,400`, from **wrangler's own internal connect**, before Vite
+bound anything. It looks exactly like a broken worktree — the log ends in a
+wrangler log path and no code frame. The fix was to wait: the same command
+started first time at `TIME_WAIT ≈ 363`. So the documented `< 4,000` rule is
+not only about flaky specs; **above ~9,000 the server will not boot at all.**
+
+#### The e2e leg, and a correction to what the wave thinks is burning the ports
+
+**`V3-AW` found the port exhaustion and was right about it. It named the wrong
+connection.** The wave's note reads as though the browser→Vite traffic is the
+cost, so the remedy everyone reaches for is fewer Playwright workers. Measured
+here, mid-run, with `netstat -an | grep TIME_WAIT | awk '{print $5}'` bucketed
+by remote port:
+
+| Remote port | `TIME_WAIT` entries |
+|---|---|
+| **60345** — Miniflare/workerd's internal port | **12,874** |
+| 5191 — the Vite dev server the browser talks to | 245 |
+| everything else | 18 |
+
+**98% of the burn is `@cloudflare/vite-plugin` → `Miniflare.dispatchFetch`, one
+loopback connection per server-side dispatch.** The browser's share is under 2%.
+That is why `--workers=1` barely helps — it halves the test rate, not the
+dispatches per test — and it is why the failure always surfaces as
+`fetch failed` from **undici inside `_Miniflare.dispatchFetch`**. The box's
+budget: `net.inet.ip.portrange` 49152–65535 = 16,384 ports, `net.inet.tcp.msl`
+15,000 ms, so `TIME_WAIT` lasts 30 s and the sustainable rate is ~546 new
+connections/second. The plugin exceeds it. **The lever is connection reuse in
+that dispatch path (a keep-alive undici agent), not Playwright's worker count.**
+
+**What was measured on this branch, stated as it happened — no clean full run
+was obtained, and the reason is not this session's code.**
+
+| Attempt | Setup | Result |
+|---|---|---|
+| 1 | full suite, `--workers=2` (the config's own default), started at `TIME_WAIT` **1,003** | **122 passed · 5 distinct failures · 118 `fetch failed`** before the dev server wedged at **130/228**. `TIME_WAIT` peaked at **16,809 — above the whole 16,384-port range.** Killed. |
+| 2 | full suite, `--workers=1`, box fully drained (`TIME_WAIT` 20) | **62/228 with 0 failures and 0 `fetch failed`**, but `TIME_WAIT` climbing through 12,000 on the same trajectory. Killed before it wedged. |
+| 3 | first 10 files, fresh server, `--workers=2`, started at `TIME_WAIT` **492** | 54 passed · **3** failures · 17 `fetch failed` · `TIME_WAIT` 16,151 mid-batch. |
+| 4 | **the nine specs that touch this session's screens, plus a control**, `--workers=1` | recorded below |
+
+**The three tells the wave's own runbook asks for, all checked:**
+
+1. `grep -c "Network connection lost"` → **0**, and `Received: undefined` → 0.
+   §7's drop check clears this run as "look at the code" when there is no code
+   fault, exactly as `V3-FLOW` recorded. `fetch failed` is the grep that finds it.
+2. **No `src/` frame in any failing trace** — every frame is `undici/lib/web/fetch`
+   or `miniflare/dist/src/index.js`.
+3. **The failing set CHANGES between runs of the same tree**, which is the
+   giveaway §7 names. Same two files, different tests:
+   * attempt 1 — `branding.spec.ts:99`, `calls.spec.ts:41`, `coverage.spec.ts:73/133/178`;
+   * attempt 3 — `branding.spec.ts:124`, `branding.spec.ts:66`, `calls.spec.ts:63`.
+
+   Two of them are 30.0 s timeouts, i.e. the server never answered. **None of
+   the failing specs is one of this session's screens** — Assign, Query and the
+   Dashboard passed in both attempts.
+
+**Attempt 4 — the nine specs that touch these screens, plus an untouched
+control, `--workers=1`, split in two because the heavy walkers saturate on
+their own.** Every test that bears on items 6 and 7 passes:
+
+| Spec | Result |
+|---|---|
+| `all-decks.spec.ts` (2) — the Dashboard | ✓ ✓ in **three** separate runs |
+| `assign.spec.ts` (1) — Assign, end to end through a confirmed assignment | ✓ in three runs |
+| `query.spec.ts` (3) — the Query screen, whose row set this session moved to the server | ✓ |
+| `incubator.spec.ts` (3) — incl. *"staff query an incomplete deck; it records a sent query"* | ✓ in two runs |
+| `resubmit.spec.ts` (3) — the founder-response loop | ✓ |
+| `coverage.spec.ts` (18) — every nav slug renders | **17 ✓**, and the 18th is the control below |
+| `pipeline-stages.spec.ts` (4) | ✓ |
+| `parity.spec.ts` — incubator **superuser · admin · program_manager · program_associate** walks | ✓ — **no parity row moved, measured rather than assumed** |
+| `scoring-framework.spec.ts` (6) — untouched by this session, the control | ✓ |
+
+The second half ran on a drained box and reported **`15 passed (24.9s)` with
+zero `fetch failed`**, which is what this suite looks like when the ports are
+there.
+
+**The control that settles it.** `coverage.spec.ts:272` — *"the upload screen
+explains the founder details the AI will extract"*, a screen this session does
+not touch — **passed in 1.2 s in attempt 1 and timed out at 30.0 s in attempt
+4, on the same tree.** Opposite results, same commit, and the failure is a
+timeout rather than an assertion. Meanwhile the three `coverage.spec.ts` tests
+that FAILED in attempt 1 (`:73`, `:133`, `:178`) all **passed** in attempt 4.
+The red moves; the code does not.
+
+**One self-inflicted trap worth writing down.** After killing a saturated run,
+the `vite` process survives `pkill -f "node .*playwright"` and keeps port 5191.
+The next run then sits in `webServer` printing **`Error: Port 5191 is already in
+use`** and never starts a test — `reuseExistingServer` is deliberately off
+(the config warns about adopting a sibling's server), so it will not proceed.
+`lsof -nP -iTCP:<port> -t | xargs kill -9` between runs; a stalled run with an
+empty log and one live Playwright process is this, not a slow box.
+
+#### Verified in the browser, not only on the response
+
+Driven through the real app on the dev server (superuser login, the API used
+only to make the edit), which is the half the worker tests cannot reach:
+
+| | |
+|---|---|
+| before | `?list=assign` **GreenGrid Energy · TaxPilot · FinStack** · `?list=query` **NimbusHR · PayRoute** |
+| blank FinStack's founder email | assign **GreenGrid Energy · TaxPilot** · query **NimbusHR · FinStack · PayRoute** |
+| the Dashboard | **exactly one** `Incomplete details` tag, on FinStack, beside a Status pill still reading `AI Evaluated`; NimbusHR, whose pill already says `Incomplete deck`, carries none |
+| the Assign drawer | FinStack listed as *"Founder email not captured"* — **with its AI score 7.8**, which is why the hardcoded `No AI score` cell had to go |
+| the Query screen | FinStack a real row, `Founder email` chip under *Parameters needing response*, `PENDING`, ticked for the email flow |
+| put the email back | assign and query both back to 3 and 2 |
+
+#### Ownership: files touched outside the four named in §11
+
+Four, all additive one-liners, and all of them the client half of "the
+Assign/Query list routes":
+
+* `src/server/routes/decks.ts` — `d.complete` in `DECK_COLUMNS`, one `DeckRow`
+  field, one `toDeckView` field, and `?list=` on `GET /`. Lines 62, 132, 283, 337 and 355–415. `V4-SIZE` edits the **upload** route at `:1342`/`:1475`, so the
+  two are far apart; §8's "by-route split on `decks.ts` worked" is the precedent.
+* `src/client/types.ts` — `complete?: boolean` on `DeckView`.
+* `src/client/api.ts` — `list?: "assign" | "query"` on `listDecks`.
+* `test/client/queryPageVc.test.tsx` — its `fetch` mock now honours `?list=`.
+  **VC behaviour is unchanged and asserted so** (`ASSIGNABLE_STAGES.vc` is
+  empty), but the mock had to learn the parameter or the screen got the whole
+  table back.
 
 ## 11. The follow-up wave — three sessions, from the client's 2026-09-20 answers
 

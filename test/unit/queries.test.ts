@@ -5,7 +5,9 @@ import {
   buildQueryMessage,
   clarificationFlow,
   composeFounderLetters,
+  isDeckComplete,
   isQueryListed,
+  deckListRoute,
   latestQuery,
   parseQueryTimestamp,
   queryDueAt,
@@ -467,5 +469,118 @@ describe("the founder clarification flow (#qview-founder, F0275)", () => {
   it("is 0% with flags and no scores, and 100% with neither", () => {
     expect(clarificationFlow({ deck: { missingFields: ["city"] }, scores: [], questions: [] }).percent).toBe(0);
     expect(clarificationFlow({ deck: {}, scores: [], questions: [] }).percent).toBe(100);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// V4-ROUTE — the complete/incomplete mapping and the Assign/Query partition
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The client's rule (2026-09-20): a deck marked complete belongs on Assign, one
+// marked incomplete on Query. The mapping under test is `evaluate.ts`'s own
+// formula — `parsed.complete && missingIntakeFields(details).length === 0` —
+// re-derived at read time from `decks.complete` + `decks.missing_fields`, which
+// is what keeps it from going stale when a details edit changes one of them.
+
+describe("the complete / incomplete mark", () => {
+  it("is both halves of evaluate.ts's formula, not either one alone", () => {
+    expect(isDeckComplete({ complete: true, missingFields: [] })).toBe(true);
+    // The AI's own flag says no — nothing about the intake columns can fix that
+    // without another AI run, which is the only thing that rewrites the flag.
+    expect(isDeckComplete({ complete: false, missingFields: [] })).toBe(false);
+    // …and a required column that went missing SINCE the run marks it too. This
+    // is measured case (b): the flag stays 1, so reading it alone said complete.
+    expect(isDeckComplete({ complete: true, missingFields: ["founderEmail"] })).toBe(false);
+    expect(isDeckComplete({ complete: false, missingFields: ["city"] })).toBe(false);
+  });
+
+  it("reads an absent flag as complete — the column's own DEFAULT 1", () => {
+    // A caller that forgets to select `complete` must lose the new arm of the
+    // invariant, never empty the Assign screen. A worker test pins that the
+    // list route does in fact send the field, so this cannot pass unnoticed.
+    expect(isDeckComplete({})).toBe(true);
+    expect(isDeckComplete({ missingFields: [] })).toBe(true);
+  });
+
+  it("ignores missing SLIDES and weak areas — they are query material, not incompleteness", () => {
+    // A deck missing a Traction slide was still scored and still reached
+    // `ai_evaluated`; `evaluate.ts` never counts sections or scores toward the
+    // mark, and neither does this.
+    expect(isDeckComplete({ complete: true, missingSections: ["Traction"] } as never)).toBe(true);
+    expect(isDeckComplete({ complete: true, weakAreas: ["Team"] } as never)).toBe(true);
+  });
+});
+
+describe("the Assign / Query partition", () => {
+  const queried = { queried: true };
+  const fresh = { queried: false };
+
+  it("routes an evaluated deck by its mark, in both directions", () => {
+    for (const statusId of ["ai_evaluated", "assigned"]) {
+      expect(deckListRoute({ statusId, complete: true }, "incubator", fresh)).toBe("assign");
+      expect(deckListRoute({ statusId, complete: false }, "incubator", fresh)).toBe("query");
+      expect(
+        deckListRoute({ statusId, complete: true, missingFields: ["founderPhone"] }, "incubator", fresh),
+      ).toBe("query");
+    }
+  });
+
+  it("never puts one deck on both lists — the return type is the invariant", () => {
+    const decks = [
+      { statusId: "ai_evaluated", complete: true },
+      { statusId: "ai_evaluated", complete: false },
+      { statusId: "assigned", complete: true, missingFields: ["city"] as never },
+      { statusId: "incomplete", complete: false, missingFields: ["founderPhone"] as never },
+      { statusId: "manual_review", complete: true },
+      { statusId: "uploaded", complete: false },
+      { statusId: "pending_ai", complete: true },
+      { statusId: "shortlisted", complete: true },
+      { statusId: "rejected", complete: true },
+    ];
+    for (const deck of decks) {
+      for (const opts of [fresh, queried]) {
+        const onAssign = deckListRoute(deck, "incubator", opts) === "assign";
+        const onQuery = isQueryListed(deck, opts.queried ? [{ deck_id: "d", founder_response: null, created_at: "2026-09-01T10:00:00Z" }] : [], "incubator");
+        expect(onAssign && onQuery).toBe(false);
+      }
+    }
+  });
+
+  it("(c) the deck walked back onto Assign through manual review routes to Query", () => {
+    // Measured, plan §4.1: `approve_review` moves `manual_review → ai_evaluated`
+    // without consulting the mark, so a deck at `complete = 0` with
+    // `missing_fields` still set landed on Assign's roster in four requests.
+    const walked = { statusId: "ai_evaluated", complete: false, missingFields: ["founderPhone"] as never };
+    expect(deckListRoute(walked, "incubator", fresh)).not.toBe("assign");
+    expect(isQueryListed(walked, [], "incubator")).toBe(true);
+  });
+
+  it("(a) filling the missing detail does NOT make an unscored deck assignable", () => {
+    // `complete = 0` here is the AI's own flag on a deck it never scored, so the
+    // deck needs re-evaluation, not an evaluator. It stays on Query — which is
+    // also what keeps F0214's Responded row from vanishing.
+    const fixed = { statusId: "incomplete", complete: false, missingFields: [] as never };
+    expect(deckListRoute(fixed, "incubator", fresh)).not.toBe("assign");
+    expect(isQueryListed(fixed, [], "incubator")).toBe(true);
+  });
+
+  it("leaves the VC edition alone — it has neither stage, so neither arm can fire", () => {
+    // The VC pipeline has no `ai_evaluated` and no `assigned`
+    // (src/pipeline/vc.ts), which is why `ASSIGNABLE_STAGES.vc` is empty. The
+    // edition was not rescoped; this is the negative control for that.
+    expect(deckListRoute({ statusId: "ai_evaluated", complete: false }, "vc", fresh)).toBe(null);
+    expect(deckListRoute({ statusId: "assigned", complete: false }, "vc", fresh)).toBe(null);
+    expect(deckListRoute({ statusId: "analyst_scoring", complete: false }, "vc", fresh)).toBe(null);
+    expect(deckListRoute({ statusId: "associate_review", complete: false, weakAreas: ["Team"] }, "vc", fresh)).toBe("query");
+    expect(deckListRoute({ statusId: "incomplete", complete: false }, "vc", fresh)).toBe("query");
+  });
+
+  it("keeps every pre-V4 listing decision — the flag stages, the tail, and F0274", () => {
+    expect(deckListRoute({ statusId: "incomplete" }, "incubator", fresh)).toBe("query");
+    expect(deckListRoute({ statusId: "manual_review" }, "incubator", fresh)).toBe("query");
+    expect(deckListRoute({ statusId: "uploaded" }, "incubator", fresh)).toBe(null);
+    expect(deckListRoute({ statusId: "uploaded" }, "incubator", queried)).toBe("query");
+    expect(deckListRoute({ statusId: "pending_ai" }, "incubator", queried)).toBe("query");
+    expect(deckListRoute({ statusId: "shortlisted" }, "incubator", queried)).toBe(null);
   });
 });
