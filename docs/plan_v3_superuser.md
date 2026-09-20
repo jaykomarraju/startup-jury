@@ -74,6 +74,9 @@ a corrected file or a number. **MEASURE**: prototype unchanged, so the gap is in
 | 8 | Upload → "Upload & Evaluate", redev | **ASK** · label **DONE** (V3-NAV) | The redev is mostly a **deletion**: `#up-results` is gone and the footer collapses to one button — which is literally `showPanel('alldecks')` — while the screen still promises *"You approve → Credits deducted"*. Worse, a richer inline results card has **CSS and ~110 lines of JS but no markup**; `renderUpResults([0,3,5,7])` runs at load into a swallowed `catch`. **Likely a broken export — ask for a corrected file.** |
 | 9 | Query after Evaluate in sidebar | **DONE** (V3-NAV) | Already satisfied by §2. Zero-cost. |
 | 10 | Evaluate page redev | **BUILD + DECIDE entry** · sidebar **DONE** (V3-NAV) | +533 B: new `AI Evaluate` toolbar button, select-all + "N selected" in column 1, sub-line *"evaluated decks move to the Assign screen"*. `evAiEvaluate()` → toast → `showPanel('assign')`. But the screen has no entry point (§2). |
+| 8 | Upload → "Upload & Evaluate", redev | **PARTIAL** — `V3-UP`; label shipped, flow is **Q51** | **The broken export is now measured, and it is worse than "mostly a deletion".** v3 deletes `#up-results` *and* the only button that reached the review step: `upShowReview` occurs **1×** in v3 against 2× in v15 — its own definition, no caller. Same for `upShowResults` (1 vs 2) and `upBackToReview` (1 vs 3). As exported the panel has **no review step and no post-upload surface at all**, and its one forward button is `showPanel('alldecks')`, which uploads nothing. Meanwhile v3 *adds* the whole replacement: twelve new or rewritten functions (`renderUpResults`, `renderResultsHead/Body`, `updResultsSummary`, `updSelInfo`, `upVisibleRows`, `upToggleStatusMenu`, `upSetStatusFilter`, `upRtToggle/All`, `upSetStatus`, `upEffReady`, plus **`upSendToEvaluate` · `upEditRows` · `upArchiveRows`**, each 1× — definitions with no caller) and ~40 CSS rules that occur **0× in v15** (`.up-inline-results`, `.up-rt-*`, `.up-stmenu*`, `.up-st-sel`, `.up-edit-in`, `.up-chk2`). `up-inline-results` appears **twice in the whole 1,001,779-byte file — both in CSS/JS, zero in markup**. The card's design is fully recoverable from those two; only its markup is missing. Shipped: the label. Q51 holds the flow. |
+| 9 | Query after Evaluate in sidebar | **BUILD** | Already satisfied by §2. Zero-cost. |
+| 10 | Evaluate page redev | **done** — `V3-UP` | All +533 B built, **incubator superuser only**: the `AI Evaluate` toolbar button, the select-all checkbox + `N selected` counter in column 1's head, a per-row checkbox, and the new sub-line. `evAiEvaluate()` → `POST /decks/:id/rescore` per target (nothing ticked evaluates them all, as the prototype does) → toast → `/app/assign`. Entry point is the prototype's own — `upSendToEvaluate` on the post-upload results card (**Q54**). The queue is untouched: v3 does not change `renderEvDecks`, and ours is a different population (**Q52**). |
 | 11 | Core Parameters: AI prompts per seat | **BUILD** (console) | In the decoded console: Area-weights header `<th>Type</th>` → `<th>AI prompt</th>`, every one of the 13 rows gains an `AI prompt` button, plus `Restore all core AI prompts`. "prompt" occurs **91× in admin-v3 vs 7× in admin-v15**. Note the outer `panel-coreparams` drops `Type` *without* adding the column — the two surfaces disagree. |
 | 12 | Configurability toggles under Area Weights | **BUILD** (console) | New: `Seat configurability` card, columns `Parameter set · Standard · Pro · Premium`, rows `Core parameters` / `Addl. parameters`. Defaults stated: *Standard — none · Pro — core only · Premium — core + additional.* It is an **edit permission**, not per-tier prompt content. |
 | 13 | Visibility of other's evaluations | **DONE** (`V3-SF`) | Both matrices built, persisted (`score_visibility`, migration 0072) and **enforced on the server** — `GET /decks/:id/report` and all three analytics reports filter the response payload. Defaults are the prototype's own printed toggle state; four incubator cells therefore move against the old rank ladder (**Q71**). Cards are incubator-superuser only: `admin/s-fw.html` is byte-identical (md5 `c3b534ba…`) in **every** prototype that was not reshared. Negative control run and recorded in §8. |
@@ -271,6 +274,58 @@ only column either of them decorated. Decided, with the reasoning, so the next a
 **Companion decision — where rejection lives now.** Dropping `Reject` from this screen is not a lost
 capability: `EvaluatePage.decide("reject")` offers it to admin / PM / superuser via `evaluate`, and to
 jury via `jassigned`. Superuser-only, so the PM's surface here is untouched. Flagged in §9.
+### `V3-UP` (items 8, 10) — Q51–Q54
+
+- **Q51 — the missing results card (item 8; the concrete form of Q5).** *Not* "is the card real" — it
+  plainly is. v3 ships its complete CSS and its complete behaviour and omits only its markup, and the
+  same export also orphaned the review step (`upShowReview` has no caller in v3). **Please reshare a
+  corrected `panel-upload`.** Everything below is already recoverable from `_style.css` +
+  `_scripts.js`, so a one-line "yes, build it from those" also unblocks us:
+  - container `#up-inline-results` — `min(940px, 100vw − 48px)`, centred under the wizard,
+    `upScrollToResults()` scrolls it into view after an upload;
+  - summary `#up-results-sum` — *"**N startups uploaded.** The AI recorded each founder's name, phone,
+    email and city from the deck. **R Ready for Eval.** · **N Not Ready for Eval.** (missing details).
+    Nothing has been sent for evaluation yet."*;
+  - action bar `.up-rt-actions` — `Edit` (toggles to `Save changes`), `Archive`, primary
+    `Send to Evaluate`, and `#up-rt-selinfo` (*"Select startups to act on"* / *"N selected · filtered: …"*);
+  - head `#up-rt-head` — ☐ · Startup name · Founder name · Phone · Email · City · Status, the Status
+    header carrying a sort/filter menu (All · Ready for Eval. · Not Ready for Eval.);
+  - rows — a checkbox, the four detail cells (inline `<input class="up-edit-in">` while editing), and a
+    per-row `Ready / Not Ready for Eval.` select that **overrides** the computed completeness.
+
+  **Until it is answered `V3-UP` changed the label and nothing else.** Our review step is where the
+  credit cost preview lives and where the operator approves the spend; v3's card runs *after* upload.
+  Deleting the review on an export this damaged would spend credits with no preview, which is exactly
+  what the screen's own flow chips promise not to do.
+
+- **Q52 — which decks the Evaluate screen holds.** The prototype's `evDecks` is the *freshly uploaded*
+  population — `addToEvaluate()` is called from Upload — and the screen's job is to run the AI and push
+  them onward. Ours (`EvaluatePage`, W7-D) is the scoring workbench: `assigned` + `jury_evaluation`,
+  and for a juror only their own decks. v3 does not touch `renderEvDecks`, so `V3-UP` did not touch the
+  queue. If the client means the prototype's population, say so — it is a real change, it costs the
+  superuser their entry to the scoring workbench from this screen, and it must stay superuser-only
+  because jury, admin, PM and PA were not rescoped.
+
+- **Q53 — where the AI actually runs, and so where credits are spent.** Items 8 and 10 only reconcile
+  once this is settled, and the two prototypes disagree with each other:
+  - **the repo today** — upload spends and evaluates in one step (`uploadSingle` → `evaluateDeck`), which
+    is what the wizard's own chips say: *Credits required → Cost preview → You approve → Credits
+    deducted → AI evaluates*;
+  - **v3** — upload records details only (*"Nothing has been sent for evaluation yet"*), and the AI runs
+    later, from the Evaluate screen's `AI Evaluate`.
+
+  These are different products, not different wordings. `V3-UP` mapped `AI Evaluate` onto
+  `POST /decks/:id/rescore`, the repo's one AI-evaluation trigger, which refuses a re-run that would
+  change nothing (`already_scored`) — honest under today's answer, and the right seam under either.
+
+- **Q54 — the Evaluate entry point (the concrete form of Q6).** **Chosen and shipped:** a
+  `Send to Evaluate →` action on the post-upload results screen, which is exactly where the prototype
+  puts `upSendToEvaluate()` — the single occurrence of `showPanel('evaluate')` in the whole v3 file.
+  **The risk this leaves, stated plainly:** with `V3-NAV` hiding the sidebar item from the superuser,
+  that is the superuser's *only* route to Evaluate, and it exists only in a session where they have
+  just uploaded. The prototype has the same dead end; we do not have to. Two remedies, either is one
+  line — keep the sidebar item for the superuser, or add Evaluate to the Dashboard's new `Actions ▾`
+  (`V3-DASH`). Both are other sessions' files; see the §9 row.
 
 ---
 
@@ -1076,3 +1131,35 @@ recorded infrastructure pattern; this one has its own mechanism:
 
 It is in `V3-SF`'s file, exercises `GET /api/decks/:id` for a jury member, and has no path to a change
 that touches one incubator-superuser stage config. Filed in `plan_parity.md` §9 with the fix.
+| Session | Items | Measured gate | What landed |
+|---|---|---|---|
+| `V3-UP` | 10 **done** · 8 **partial (Q51)** | typecheck ✓ · lint ✓ · **unit 2088 passed / 1 skipped** ✓ (`main` measured at 2069/1 in this same worktree — +19 exactly: 10 in `evaluateV3.test.tsx`, 9 added to `upload.test.tsx`, which goes 14 → 23) · build ✓ · **e2e — see the note below, the short answer is nothing here broke** · `roles` **not run, and provably untouched**: no route, middleware, permission, migration or nav changed — `AI Evaluate` reuses `POST /decks/:id/rescore`, whose `requireTask` already bypasses the role list for `superuser` (`auth/middleware.ts:63`) · `e2e/parity.spec.ts` **no rows re-captured**: the walk records only `<h1>` and `<thead>` sets, and neither screen's title nor tables moved · **migration `0070` unused, stays free** | **Item 10 complete**, incubator superuser only: the `AI Evaluate` toolbar button, the select-all checkbox + `N selected` counter, a per-row checkbox, and the new sub-line verbatim. `evAiEvaluate` → `rescoreDeck` per target (nothing ticked evaluates them all, as the prototype does) → toast → `/app/assign`; count and batch are the same set even under a filter, which the prototype never had to solve because its Filter is inert. **Item 8: the label only** — the export is broken, measured symbol by symbol in §3. Entry point (Q54) is the prototype's own `upSendToEvaluate`, on the post-upload results card. New: `test/client/evaluateV3.test.tsx` (10), `e2e/evaluate-v3.spec.ts` (2), 9 cases in `test/client/upload.test.tsx`. **Both gates carry a RUN negative control**: forcing `isV3Evaluate` true fails all four non-rescoped incubator roles; forcing `v3Superuser` true fails PM, PA, admin, VC partner and VC superuser. Raised **Q51–Q54** and three §9 rows in `plan_parity.md`. |
+
+### `V3-UP`'s e2e, measured honestly
+
+Two FULL runs on a genuinely idle machine (1-min load under 3, `workerd` down to 2, no sibling
+suite running), both with **zero** `Network connection lost` — so the plan's usual excuse does not
+apply and the code is what to look at.
+
+| | passed | failed | flaky | note |
+|---|---|---|---|---|
+| run 1 | 218 | 2 | 6 | `coverage.spec.ts:69` · `evaluate-stage-report.spec.ts:36` |
+| run 2 | 215 | 1 | 9 | `branding.spec.ts:124`; 1 did not run |
+
+**The failing set rotates between runs and has never once included a spec this session touched.**
+Each of the three passes clean when run on its own, on this branch: `coverage.spec.ts` 18/18,
+`evaluate-stage-report.spec.ts` **2/2 in 11.3 s**, `branding.spec.ts` **4/4 in 13.3 s**. They are
+state-mutating specs racing each other under `fullyParallel` against one D1 — branding rewrites the
+org's global mark, `evaluate-stage-report` advances GreenRoute through intro, and `coverage` walks
+every slug across both.
+
+**The control was run.** Detached at untouched `main` (`6785fb5`) in this same worktree, same machine,
+same pairing: `evaluate-stage-report.spec.ts:36` is flaky there too. Pre-existing.
+
+**What is positively green in BOTH full runs**, never flaky in either: `e2e/evaluate-v3.spec.ts`
+(both tests), `e2e/upload.spec.ts` (all three) and `e2e/vc-intake.spec.ts` — the VC edition's intake,
+which shares `UploadPage` and was not rescoped.
+
+A session that wants a single clean number should expect roughly **226 total, ~218 green, the
+remainder rotating interference**. Reducing it is a suite-wide serialisation question, not this
+session's — it is already §9's long-running `coverage.spec.ts` thread.

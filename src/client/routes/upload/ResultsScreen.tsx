@@ -22,11 +22,19 @@ export function ResultsScreen({
   uploaded,
   workspaceSector,
   onBack,
+  showSendToEvaluate = false,
 }: {
   uploaded: StagedDeck[];
   /** The sector the batch was recorded under, for the note. */
   workspaceSector: string | null;
   onBack: () => void;
+  /**
+   * V3 item 10's entry point (Q51). `upSendToEvaluate()` lives on the
+   * prototype's post-upload results card, next to Edit and Archive, and is the
+   * only call to `showPanel('evaluate')` in the whole v3 file. Optional and off
+   * by default, so the VC edition and every other incubator role are unchanged.
+   */
+  showSendToEvaluate?: boolean;
 }) {
   const statuses = uploaded.map((d) => (d.deck ? intakeStatusOf(d.deck) : "awaiting"));
   return (
@@ -137,6 +145,14 @@ export function ResultsScreen({
           >
             Back
           </button>
+          {showSendToEvaluate && uploaded.length > 0 && (
+            <Link
+              to="/app/evaluate"
+              className="flex items-center gap-[7px] rounded-[7px] border border-stone-dk bg-surface px-4 py-2 text-[12px] font-semibold text-fg-2 hover:bg-offwhite"
+            >
+              Send to Evaluate →
+            </Link>
+          )}
           <Link
             to="/app/alldecks"
             className="flex items-center gap-[7px] rounded-[7px] bg-olive px-[22px] py-[9px] text-[12.5px] font-semibold text-white hover:bg-olive-dk"
