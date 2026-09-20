@@ -469,7 +469,7 @@ BUILD
 
 | Session | State | Items | Measured gate | Notes |
 |---|---|---|---|---|
-| `V3-DASH` | **done** (branch `parity/V3-DASH`, not merged) | **18** (screen half) and **19** closed, except the Assigned deletion which is held on **Q7** | typecheck ✓ · lint ✓ · **`npm test` 2098 passed / 1 skipped** ✓ (baseline 2069/1 → +29: 12 unit · 6 worker · 11 client) · build ✓ · **e2e 218 passed / 3 failed / 3 flaky — every one a dev-server fault, none an assertion of mine; see below** | See the row notes. |
+| `V3-DASH` | **done** (branch `parity/V3-DASH`, not merged) | **18** (screen half) and **19** closed, except the Assigned deletion which is held on **Q7** | typecheck ✓ · lint ✓ · **`npm test` 2098 passed / 1 skipped** ✓ (baseline 2069/1 → +29: 12 unit · 6 worker · 11 client) · build ✓ · **e2e 212 passed / 0 failed / 12 flaky** ✓ (9.1 min, load 3, port 5241) · **roles 1115/1115, 0 failed** ✓ (port 5242, PID's cwd `lsof`-proved to be this worktree) | Two e2e runs — see "The e2e result". |
 
 ### What landed
 
@@ -533,7 +533,21 @@ Both are pinned by tests asserting the option is ABSENT.
 
 ### The e2e result, read honestly
 
-**3 failed · 3 flaky · 218 passed (9.5 min), and not one of the six names a column set or a title.**
+**Run 2, at load 3 on a quiet box: 212 passed · 0 FAILED · 12 flaky (9.1 min). The gate is green.**
+`incubator/superuser` passed **first try** — not even flaky — as did both `e2e/all-decks.spec.ts`
+tests. Run 2 carried **271** `fetch failed` (more than twice run 1's 112) and still failed nothing,
+which is the clearest statement of what that noise is: endemic to this dev server, absorbed by the
+one configured retry, and unrelated to any assertion.
+
+**A mechanism, not a guess.** Minutes after run 1, starting an ordinary dev server on this box for
+the roles probe died at `connect EADDRNOTAVAIL 127.0.0.1:54647` while applying migration 0037 — the
+machine could not allocate a local ephemeral port. Vite proxies to miniflare's workerd over exactly
+such a socket, so `undici` → `miniflare.dispatchFetch` → `fetch failed` is that same exhaustion seen
+from the other side. Nine sibling worktrees running gates concurrently is what exhausts it. The
+server booted first try once the box was quiet.
+
+**Run 1, for the record — 3 failed · 3 flaky · 218 passed at load 15–40, and not one of the six named
+a column set or a title.**
 All six are `e2e/parity.spec.ts` role walks or a login, and the run log carries **112
 `[vite] Internal server error: fetch failed`** out of `miniflare.dispatchFetch`. The preserved
 `error-context.md` snapshots show the page served was **vite's own error page** — `heading "Internal
@@ -542,9 +556,10 @@ enough to name a screen name `account`, `issues` and `contactadmin`; the other t
 element(s) not found` and `locator.fill` timeouts on a dead page.
 
 This is the §9 infra pattern `plan_parity.md` records, **with a different signature**: that row says
-the tell is `Network connection lost` and `Received: undefined`, and this run had **zero** of those.
+the tell is `Network connection lost` and `Received: undefined`, and BOTH runs had **zero** of those.
 On this vite/undici build it surfaces as `fetch failed` and `Received: "Internal Server Error"`.
-Grep for BOTH.
+**Grep for BOTH** — a session that greps only the recorded string will conclude "zero drops, look at
+the code" and go hunting a defect that is not there.
 
 **The positive evidence that this branch is not the cause:** `alldecks` is item **0** of the
 superuser walk and the assertion is inside the loop — the failing retry reached `account`, item
@@ -552,6 +567,13 @@ superuser walk and the assertion is inside the loop — the failing retry reache
 observed and matched before the server died. `incubator/program_associate` and `vc/superuser` are
 roles this branch does not touch at all.
 
-Run-1 artefacts (log + all nine `error-context.md`) are preserved in this session's scratchpad —
-Playwright clears `test-results/` at the start of the next run, and `plan_parity.md` §9 records that
-snapshot being lost twice before.
+Run-1 artefacts (log + all nine `error-context.md`) were preserved to this session's scratchpad
+BEFORE run 2 — Playwright clears `test-results/` at the start of the next run, and `plan_parity.md`
+§9 records that snapshot being lost twice before.
+
+### `npm run roles` — 1115/1115, unchanged
+
+No gate changed here: no route guard, no nav item, no permission. Confirmed rather than assumed —
+**1115 checks · 1115 passed · 0 failed**, against a server whose PID's cwd was `lsof`-proved to be
+this worktree before any number from it was believed. `scripts/role-matrix.ts` therefore needed no
+new probe.
