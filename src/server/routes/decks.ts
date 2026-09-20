@@ -21,6 +21,9 @@ import { loadScoreVisibility } from "../config/scoreVisibility";
 import { missingIntakeFields, parseMissingFields, type IntakeMatch } from "../../shared/intake";
 // V3-DASH — one timestamp comparison, shared with the Dashboard that reads it.
 import { latestTimestamp } from "../../shared/deckStats";
+// V4-ROUTE — the Assign/Query partition (items 6, 7). The list route enforces
+// it so it holds however the deck got to its stage, not just when a screen asks.
+import { deckListRoute, type DeckListRoute } from "../../shared/queries";
 import { denyMentor, requireAuth, requireTask } from "../auth/middleware";
 import { detectIntakeFlags, intakeFlagStatement, resolveIntakeContext } from "../intake";
 import { emitNotification } from "../email/outbox";
@@ -54,6 +57,9 @@ decks.use("*", requireAuth, denyMentor);
 const DECK_COLUMNS =
   "d.id, d.name, d.sector, d.stage, d.city, d.founder, d.founder_email, d.founder_phone, " +
   "d.missing_fields, d.intake_flag, d.intake_flag_note, d.related_deck_id, d.content_version, " +
+  // V4-ROUTE — the complete/incomplete mark itself. It was written by the AI
+  // path and selected by nothing, so no screen could route on it.
+  "d.complete, " +
   "d.ai_score, d.signal, d.status, d.assigned_to, d.ai_error, d.ai_attempts, d.ai_failed_at, " +
   "d.tags, d.created_at, d.updated_at";
 
@@ -123,6 +129,7 @@ interface DeckRow {
   founder_email: string | null;
   founder_phone: string | null;
   missing_fields: string | null;
+  complete?: number | null;
   intake_flag: string | null;
   intake_flag_note: string | null;
   related_deck_id: string | null;
@@ -271,6 +278,9 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: Shortli
     founderEmail: row.founder_email ?? undefined,
     founderPhone: row.founder_phone ?? undefined,
     missingFields,
+    // V4-ROUTE — `decks.complete`, the AI's own "I could read and score this".
+    // Blended with `missingFields` into one mark by `isDeckComplete`.
+    complete: row.complete !== 0,
     intakeFlag: (row.intake_flag as "duplicate" | "returning" | null) ?? undefined,
     intakeNote: row.intake_flag_note ?? undefined,
     relatedDeckId: row.related_deck_id ?? undefined,
@@ -323,13 +333,26 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: Shortli
   };
 }
 
+/** `?list=` — the enforced screen list, or the whole table when absent. */
+function parseListParam(raw: string | undefined): Exclude<DeckListRoute, null> | null {
+  return raw === "assign" || raw === "query" ? raw : null;
+}
+
 /** GET /api/decks — decks in the caller's edition (Review-decks table),
  *  optionally filtered by `programId` / `cohortId` (toolbar filter dropdowns).
- *  Founders are isolated to their own submissions (portal scope). */
+ *  Founders are isolated to their own submissions (portal scope).
+ *
+ *  V4-ROUTE — `?list=assign` / `?list=query` return the Assign roster and the
+ *  founder-queries list, partitioned by `deckListRoute` HERE rather than by
+ *  each screen's own predicate. One function decides, so a deck marked
+ *  incomplete cannot be served to Assign whatever route walked it to its
+ *  stage. Without the parameter the response is what it always was — the
+ *  Dashboard shows every deck, and removes none. */
 decks.get("/", async (c) => {
   const { id, edition, role } = c.var.user;
   const programId = c.req.query("programId");
   const cohortId = c.req.query("cohortId");
+  const list = parseListParam(c.req.query("list"));
   // Aug-2026 issue 2 — deck search & tags. `q` matches the startup, founder,
   // sector or city; `tag` narrows to one tag.
   const q = (c.req.query("q") ?? "").trim();
@@ -381,8 +404,14 @@ decks.get("/", async (c) => {
   // that deck, so fetch the set they have submitted for rather than blanking the
   // whole list. One extra query, and only when the toggle is actually off.
   const scoring = await loadScoringSettings(c.env.DB, edition);
+  // The partition runs on the mapped view, so the server and the screens read
+  // the same shape through the same function — never two implementations of it.
+  const routed = <V extends Parameters<typeof deckListRoute>[0] & { queried?: boolean }>(views: V[]) =>
+    list === null
+      ? views
+      : views.filter((v) => deckListRoute(v, edition, { queried: v.queried === true }) === list);
   if (!withholdsAiScore(scoring, { isEvaluator: isAssignableEvaluator(edition, role), hasSubmitted: false })) {
-    return c.json({ decks: rows.map((r) => toDeckView(edition, r, role, scoring)) });
+    return c.json({ decks: routed(rows.map((r) => toDeckView(edition, r, role, scoring))) });
   }
   const submitted = new Set(
     (
@@ -392,7 +421,7 @@ decks.get("/", async (c) => {
     ).results.map((r) => r.deck_id),
   );
   return c.json({
-    decks: rows.map((r) => {
+    decks: routed(rows.map((r) => {
       const view = toDeckView(edition, r, role, scoring);
       if (submitted.has(r.id)) return view;
       return {
@@ -403,7 +432,7 @@ decks.get("/", async (c) => {
         shortlistBlocked: false,
         aiScoreWithheld: true as const,
       };
-    }),
+    })),
   });
 });
 

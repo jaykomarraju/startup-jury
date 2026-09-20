@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { AssignPage } from "../../src/client/routes/AssignPage";
 import type { DeckView } from "../../src/client/types";
 import type { AssignBoardDeck, EvaluatorGroup, RubricParameter } from "../../src/client/api";
+import { deckListRoute } from "../../src/shared/queries";
 
 /**
  * W7-E — Assign, against `AISJ_IC_SuserV15/panel-assign.html` and its renderers.
@@ -115,7 +116,15 @@ function setup({
   decks = [FINSTACK, GREENGRID, TAXPILOT, AGRICHAIN],
   groups = GROUPS,
 }: { decks?: DeckView[]; groups?: EvaluatorGroup[] } = {}) {
-  vi.mocked(listDecks).mockResolvedValue({ decks });
+  // V4-ROUTE — the screen now reads TWO server-enforced lists,
+  // `?list=assign` (the roster) and `?list=query` (the hand-over drawer).
+  // Routed here with `deckListRoute`, the same function the server runs, so a
+  // fixture cannot put a deck marked incomplete in column 1 by accident.
+  vi.mocked(listDecks).mockImplementation(async (filter) => ({
+    decks: filter?.list
+      ? decks.filter((d) => deckListRoute(d, "incubator", { queried: d.queried === true }) === filter.list)
+      : decks,
+  }));
   vi.mocked(getAssignBoard).mockResolvedValue({
     decks: Object.fromEntries(decks.filter((d) => d.statusId !== "incomplete").map((d) => [d.id, boardEntry()])),
   });
@@ -375,7 +384,7 @@ describe("Assign — the Incomplete decks view (F0272)", () => {
     expect(within(table).getByText("AgriChain")).toBeInTheDocument();
     expect(within(table).getByText("No AI score")).toBeInTheDocument();
     expect(screen.getByTestId("assign-bottom-summary")).toHaveTextContent(
-      "1 incomplete deck — missing information needed for AI evaluation.",
+      "1 incomplete deck — missing information the founder has to supply.",
     );
     fireEvent.click(screen.getByRole("button", { name: /Send to Query/ }));
     expect(navigate).toHaveBeenCalledWith("/app/query", { state: { deckIds: ["d_agri"] } });
@@ -386,8 +395,50 @@ describe("Assign — the Incomplete decks view (F0272)", () => {
     await ready();
     fireEvent.click(screen.getByRole("button", { name: /Incomplete\s*0/ }));
     expect(
-      screen.getByText("No incomplete decks — all decks have enough information for AI evaluation."),
+      screen.getByText("No incomplete decks — every evaluated deck is marked complete."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Send to Query/ })).toBeNull();
+  });
+
+  // V4-ROUTE — items 6 and 7. The drawer used to be the `incomplete` STAGE; it
+  // is now whatever the partition sent to Query out of this screen's own
+  // population, which includes an evaluated deck that lost a required intake
+  // detail (plan §4.1, measured case (b)). That deck HAS an AI score, so the
+  // hardcoded "No AI score" cell was wrong for it.
+  it("holds an evaluated deck marked incomplete — out of column 1, into the drawer, with its score", async () => {
+    const BLANKED = deck({
+      id: "d_blank",
+      name: "Blanked",
+      aiScore: 8.4,
+      status: "AI Evaluated",
+      statusId: "ai_evaluated",
+      missingFields: ["founderEmail"],
+    });
+    setup({ decks: [FINSTACK, BLANKED] });
+    await ready();
+    // Column 1 lists it the way it lists any un-assignable deck — greyed, with
+    // a disabled tick — and only FinStack can actually be selected.
+    const selectable = screen.getAllByTestId("assign-deck-row");
+    expect(selectable.map((r) => r.textContent?.includes("Blanked"))).toEqual([false]);
+    expect(screen.getByRole("checkbox", { name: "Select Blanked" })).toBeDisabled();
+    expect(screen.getByTestId("assign-incomplete-row")).toHaveTextContent("Blanked");
+
+    fireEvent.click(screen.getByRole("button", { name: /Incomplete\s*1/ }));
+    const table = screen.getByRole("table", { name: "Incomplete decks" });
+    expect(within(table).getByText("Blanked")).toBeInTheDocument();
+    expect(within(table).getByText("8.4")).toBeInTheDocument();
+    expect(within(table).queryByText("No AI score")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Send to Query/ }));
+    expect(navigate).toHaveBeenCalledWith("/app/query", { state: { deckIds: ["d_blank"] } });
+  });
+
+  it("keeps manual_review and the answered-query tail OFF this screen — they are Query's alone", async () => {
+    const REVIEW = deck({ id: "d_rev", name: "InReview", status: "Manual Review", statusId: "manual_review" });
+    const ANSWERED = deck({ id: "d_ans", name: "Answered", status: "Uploaded", statusId: "uploaded", queried: true });
+    setup({ decks: [FINSTACK, REVIEW, ANSWERED] });
+    await ready();
+    fireEvent.click(screen.getByRole("button", { name: /Incomplete\s*0/ }));
+    expect(screen.queryByText("InReview")).toBeNull();
+    expect(screen.queryByText("Answered")).toBeNull();
   });
 });

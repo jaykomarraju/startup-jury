@@ -679,6 +679,10 @@ describe("V3 — the superuser Dashboard", () => {
     const green = screen.getByRole("button", { name: "GreenRoute" }).closest("tr")!;
     expect(within(green).getByText("Queried")).toBeInTheDocument();
     expect(within(fin).queryByText("Queried")).toBeNull();
+    // V4-ROUTE — the Status word is the AI-evaluation state and cannot show the
+    // complete/incomplete MARK, so a deck can read "AI Evaluated" while being
+    // routed to Query. Nothing here is marked, so nothing carries the tag.
+    expect(screen.queryAllByTestId("v3-incomplete-mark")).toEqual([]);
 
     // Every box but Shortlisted shares the default shape.
     for (const box of ["AI Evaluated", "Not AI Evaluated", "Incomplete", "Archived", "Assigned"]) {
@@ -691,6 +695,36 @@ describe("V3 — the superuser Dashboard", () => {
     expect(screen.getByText(/^Shortlisted · 1 deck ·/)).toBeInTheDocument();
     const row = screen.getByRole("button", { name: "GreenRoute" }).closest("tr")!;
     expect(within(row).getByText("8.8")).toBeInTheDocument(); // Avg. score
+  });
+
+  // V4-ROUTE — items 6 and 7. The routing mark lives on `decks.complete` +
+  // `missing_fields`; the Status column's three words are the AI-evaluation
+  // state. Those two disagree exactly when a deck was evaluated and then lost a
+  // required intake detail — measured case (b) in plan §4.1 — and that is the
+  // one case the operator changing nothing at all would otherwise never see.
+  it("tags an evaluated deck that is marked incomplete, where the Status word cannot", async () => {
+    vi.mocked(api.listDecks).mockResolvedValue({
+      decks: V3_DECKS.map((d) => {
+        if (d.id === "d_fin") return { ...d, complete: true, missingFields: ["founderEmail" as const] };
+        // PayRoute is marked incomplete too — its pill already says so, which is
+        // what the tag's guard is for, so give it the mark to exercise that.
+        if (d.statusId === "incomplete") return { ...d, complete: false, missingFields: ["founderPhone" as const] };
+        return d;
+      }),
+    });
+    mount("superuser", "u_super");
+    await screen.findByRole("button", { name: "FinStack" });
+
+    const fin = screen.getByRole("button", { name: "FinStack" }).closest("tr")!;
+    // The word is unchanged — the deck really is AI-evaluated…
+    expect(within(fin).getByText("AI Evaluated")).toBeInTheDocument();
+    // …and the mark says where it actually goes.
+    expect(within(fin).getByTestId("v3-incomplete-mark")).toHaveTextContent("Incomplete details");
+    // Not doubled up on the deck whose pill already says Incomplete deck.
+    const pay = screen.getByRole("button", { name: "PayRoute" }).closest("tr")!;
+    expect(within(pay).queryByTestId("v3-incomplete-mark")).toBeNull();
+    // One row tagged, no others.
+    expect(screen.getAllByTestId("v3-incomplete-mark")).toHaveLength(1);
   });
 
   it("sorts by recent activity descending and prints the row clock", async () => {

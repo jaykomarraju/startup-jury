@@ -55,12 +55,20 @@ export function listDecks(filter?: {
   q?: string;
   /** Narrow to one deck tag (issue 2). */
   tag?: string;
+  /**
+   * V4-ROUTE — ask the server for one screen's enforced list instead of the
+   * whole table: `assign` is the Assign roster, `query` the founder-queries
+   * list. The partition is applied on the response (`deckListRoute`), so a
+   * screen cannot widen its own list back open.
+   */
+  list?: "assign" | "query";
 }): Promise<{ decks: DeckView[] }> {
   const qs = new URLSearchParams();
   if (filter?.programId) qs.set("programId", filter.programId);
   if (filter?.cohortId) qs.set("cohortId", filter.cohortId);
   if (filter?.q) qs.set("q", filter.q);
   if (filter?.tag) qs.set("tag", filter.tag);
+  if (filter?.list) qs.set("list", filter.list);
   const q = qs.toString();
   return fetch(`/api/decks${q ? `?${q}` : ""}`).then((r) => json(r));
 }

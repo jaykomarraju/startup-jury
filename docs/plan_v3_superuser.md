@@ -630,6 +630,114 @@ Catalyst might be familiar with that for their marketing clients."* So the
 integration is a new gateway, chosen by us; banking details and the firm's
 registration information will be provided.
 
+### `V4-ROUTE` — items 6 and 7 measured: where "complete" comes from, and what was reading it
+
+**Nothing was.** `decks.complete` exists (`migrations/0001_init.sql:67`,
+`INTEGER NOT NULL DEFAULT 1`), one thing writes it, and until this session
+**`DECK_COLUMNS` did not select it** — so no screen, no list and no predicate in
+the app had ever seen the mark the client's sentence is about.
+
+**Step 1 — the mapping.** `src/server/ai/evaluate.ts` is the only writer, and it
+writes one formula (`:752`):
+
+```ts
+const effective = { ...parsed, complete: parsed.complete && missingFields.length === 0 };
+```
+
+— the model's own `complete` flag AND `missingIntakeFields(details).length === 0`
+(founder · email · phone · city; **not** sector, `EXTRACTED_INTAKE_FIELDS`).
+`computeResult` then turns `!complete` into stage **`incomplete`** + signal
+**`flagged`** (`:478`). So at the instant of evaluation three things agree: the
+mark, the stage and the signal. Missing *slides* and weak areas are **not** part
+of it — a deck missing its Traction slide was still scored and still reached
+`ai_evaluated`, which is why it is assignable and still has areas to ask about.
+
+**Afterwards they drift, and all three ways are reproduced in
+`test/worker/route-partition.test.ts`:**
+
+| | What happens | What it did before this session |
+|---|---|---|
+| **(a)** | `PATCH /api/decks/:id` re-derives `missing_fields` and **neither `complete` nor the stage** (`decks.ts:746` — its own comment says the Incomplete state "follows the correction", and only one of the three columns does). Filling NimbusHR's missing phone left `missing_fields = NULL`, `complete = 0`, stage `incomplete`. | The deck reported `missingFields: []` — nothing left to ask the founder — and stayed on Query with no route to anywhere. |
+| **(b)** | The same edit in reverse: blanking FinStack's founder email set `missing_fields = 'founderEmail'` and left `complete = 1`, stage `ai_evaluated`. | **A deck with a missing required detail stayed on Assign and was assignable to a juror, and no clarification could ever be raised for it.** This is the client's rule broken in the Assign direction. |
+| **(c)** | `founder_response` → `submit_for_ai` → `send_to_review` → `approve_review`. **All four are the superuser's own transitions and all four return 200.** PayRoute arrived at `ai_evaluated` with `complete = 0` and `missing_fields = 'founderPhone'` still set. | **It became the fourth row of the Assign roster** and dropped off Query entirely. `approve_review` moves `manual_review → ai_evaluated` without consulting the mark — and without running the AI, so the deck also has no score. |
+
+**So the mark is re-derived at read time** from the two live columns, using
+evaluate.ts's own formula (`isDeckComplete`, `src/shared/queries.ts`). Nothing is
+frozen, so (a), (b) and (c) cannot go stale.
+
+**The obvious next step is wrong, and the data says so.** Deriving completeness
+from `missingIntakeFields()` on the deck's own detail columns — one live
+derivation, no stored CSV to go stale — marks **twelve VC seed deals incomplete**:
+they carry `complete = 1` and empty `missing_fields` with no founder, email or
+phone at all, because a sourced deal has no founder submission behind it.
+`missing_fields` is the *recorded intake decision*; the detail columns are not a
+proxy for it. Measured across all 34 seed decks: on the incubator the two agree
+for every deck, on VC they disagree for thirteen, twelve of them in that direction.
+
+**Step 2 — where it is enforced.** `GET /api/decks?list=assign` and `?list=query`
+(`src/server/routes/decks.ts`), both from **one** function, `deckListRoute`, whose
+return type is `"assign" | "query" | null` — so "on both lists" is not a state it
+can express. `AssignPage` and `QueryPage` read those responses instead of
+filtering the whole table themselves. Asserted on the RESPONSE, never the DOM.
+
+**Step 3 — can a deck appear on both screens? Measured: yes, and no.**
+
+* The **Assign roster** (`ai_evaluated`/`assigned`) and the **Query list** did not
+  overlap on the clean seed — 3 decks and 2 decks, 0 in common. What (b) and (c)
+  produce is not an overlap but a **mis-route**: the deck is on the wrong one of
+  the two. Both are fixed; counts below.
+* The Assign screen's **Incomplete drawer** and the Query list overlapped
+  **2 of 2 — completely — and that is by design, not the defect.** The drawer's
+  one action is `Send to Query`, its handler navigates to `/app/query` with those
+  deck ids, and `AssignPage`'s own comment says "these decks already sit in its
+  list". It is Query's rows surfaced on Assign as a hand-off. v3's `panel-assign`
+  is byte-identical and still draws it, and §4.1's ruling on the same question is
+  *"nothing is removed from the screen"*. **Deleting it would be the item-6/7 trap
+  the plan flagged: removing UI the reshared prototype still ships.** So the
+  invariant is stated on the roster, not on the screen: `roster ∩ Query = ∅`, and
+  `drawer ⊆ Query`. The drawer now widens to hold (b)'s and (c)'s decks too,
+  which is what keeps `drawer ⊆ Query` true rather than merely untested.
+
+**Before / after, on the seed (`GET /api/decks?list=…`, superuser):**
+
+| | `?list=assign` | `?list=query` |
+|---|---|---|
+| clean seed, before and after | 3 — FinStack · GreenGrid Energy · TaxPilot | 2 — NimbusHR · PayRoute |
+| after (b), blank FinStack's email | **2** (was 3) | **3** (was 2) — FinStack, still at stage `ai_evaluated` |
+| after (c), PayRoute via `approve_review` | **3** (was **4**) | **2** (was 1) |
+
+The deck moves; it is never duplicated and never lost. Its **stage does not
+change in either case** — which is the point: routing follows the mark, not the
+stage the deck happens to be sitting at.
+
+**Step 4 — the affordance he describes, NOT built.** There is still no
+multi-select and no bulk `Send to Assign` on the Dashboard, and
+`V3_EXCLUDED_ACTIONS` still withholds `assign_jury` per-row for Q32's stated
+reason (the transition would move a deck to Assigned with `assigned_to` NULL,
+because only `POST /decks/:id/assign` sets an evaluator). **A question for him,
+with its cost:**
+
+> Your rule guards a **Select-all → Send to Assign** control. Our Dashboard has
+> no row checkboxes and no bulk send, so we have enforced the rule where it
+> cannot be got round — the two lists themselves. **Do you also want the bulk
+> control?** If yes it is not a filter but a new write path: row checkboxes and a
+> bulk bar on the Dashboard (**S**), and a bulk assignment endpoint that takes
+> deck ids *and an evaluator*, because "send to Assign" without one leaves a deck
+> Assigned to nobody (**M**). Today the Assign screen already lists every
+> evaluated, complete deck by stage, so the button would be a shortcut to a screen
+> that is one click away — which is why it was withheld rather than forgotten.
+
+**One thing this does not fix, and it is pre-existing (Q92).** A deck with weak
+areas or a missing *slide* at `ai_evaluated` is complete, so it routes to Assign
+and no clarification is ever raised for it. That is the same question Q92 asked
+about the word "Evaluated" and it is untouched here: the mark is the intake
+mark, exactly as `evaluate.ts` defines it.
+
+**No migration.** 0075 was allotted and is **UNUSED, still free** — the mark and
+its two inputs were already columns, and re-deriving beat storing a third.
+`ALLOTMENT_CEILING` stays 74.
+
+
 ## 5. Build order (what blocks what)
 
 1. **`nav.ts`, one commit, first.** Items 8, 9, 10, 18 all edit one array. Superuser-only

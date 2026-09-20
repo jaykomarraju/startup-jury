@@ -80,6 +80,11 @@ import {
 // sign-up record, the same source the Sign up Pipeline screen reads.
 import { SIGNUP_STATUS_LABELS, listSignups, type SignupSummary } from "./SignupWorkspace";
 import { canAccessNav, reachableNav } from "../../shared/nav";
+// V4-ROUTE — the mark that decides Assign vs Query (items 6, 7). The Status
+// column's three words are the AI-evaluation state and cannot show it: a deck
+// can read "AI Evaluated" while being marked incomplete, which is precisely the
+// drift measured in plan §4.1. The tag is that mark, where the operator is.
+import { isDeckComplete } from "../../shared/queries";
 import type { Edition } from "../../shared/roles";
 import { useActiveContext } from "../activeContext";
 
@@ -1567,6 +1572,17 @@ export function DashboardPage() {
             </td>
             <td className={td}>
               <StatusPill tone={pill.tone}>{pill.label}</StatusPill>
+              {/* Only where the Status word would otherwise disagree with the
+                  routing: at the `incomplete` stage the pill already says so. */}
+              {state !== "incomplete" && !isDeckComplete(deck) && (
+                <span
+                  className="ml-1.5 inline-block rounded-full bg-red-lt px-[7px] py-px text-[9px] font-bold text-red"
+                  title="Marked incomplete — this deck is on Query, not Assign"
+                  data-testid="v3-incomplete-mark"
+                >
+                  Incomplete details
+                </span>
+              )}
               {deck.queried && (
                 <span className="ml-1.5 inline-block rounded-full bg-blue-lt px-[7px] py-px text-[9px] font-bold text-blue-dk">
                   Queried

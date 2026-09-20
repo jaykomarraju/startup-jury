@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import type { DeckView } from "../../src/client/types";
+import { deckListRoute } from "../../src/shared/queries";
 import type { QueryView } from "../../src/client/api";
 
 /**
@@ -126,8 +127,23 @@ function installFetch() {
         }
         return ok({ error: "not_found" }, 404);
       }
-      if (url === "/api/decks") {
-        return api.decksStatus ? ok({ error: "boom" }, api.decksStatus) : ok({ decks: api.decks });
+      // V4-ROUTE — the screen asks for `?list=query`, the server's enforced
+      // list. The mock routes with `deckListRoute` rather than returning
+      // everything, so these assertions still run against the real partition.
+      if (url === "/api/decks" || url.startsWith("/api/decks?")) {
+        if (api.decksStatus) return ok({ error: "boom" }, api.decksStatus);
+        const list = new URL(url, "https://x").searchParams.get("list");
+        const decks = list
+          ? api.decks.filter(
+              (d) =>
+                // `queried` is `query_count > 0` on the server; here it is the
+                // same thing read off the query rows this fixture serves.
+                deckListRoute(d, "incubator", {
+                  queried: api.queries.some((q) => q.deck_id === d.id),
+                }) === list,
+            )
+          : api.decks;
+        return ok({ decks });
       }
       if (url === "/api/queries") return ok({ queries: api.queries });
       let m = url.match(/^\/api\/questions\/draft\/([^/]+)$/);

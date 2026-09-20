@@ -366,6 +366,142 @@ export const AWAITING_REVIEW_STAGES: Record<Edition, readonly string[]> = {
 /** Stages that are an AI flag in themselves, whatever the areas say. */
 const FLAG_STAGES = ["incomplete", "manual_review"];
 
+// ═══════════════════════════════════════════════════════════════════════════
+// V4-ROUTE — the routing invariant (the client's items 6 and 7)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// His rule, verbatim (2026-09-20): *"in the stat box of 'Evaluated' only the
+// ones that are marked 'complete' in the status column have to be sent to
+// 'assign' … Similarly, the ones that are marked 'incomplete' have to go to
+// 'Query'."*
+//
+// He is describing a guard on a bulk action that this build does not have —
+// there is no multi-select and no Send to Assign on the Dashboard, and
+// `V3_EXCLUDED_ACTIONS` withholds `assign_jury` for a stated reason (plan §4
+// Q32). In our architecture the same sentence is a **routing invariant**: a
+// complete deck belongs on Assign, an incomplete one on Query, and the two
+// lists partition. `deckListRoute` is that invariant — one function, one
+// answer per deck, so "on both screens" is not a state it can express.
+//
+// ── Where complete / incomplete comes from (measured, §4.1) ────────────────
+// `decks.complete` (migrations/0001_init.sql:67, DEFAULT 1) is the mark, and
+// `src/server/ai/evaluate.ts` is the only thing that writes it:
+//
+//     complete: parsed.complete && missingIntakeFields(details).length === 0
+//
+// `computeResult` then turns `!complete` into stage `incomplete` + signal
+// `flagged`. So at the moment of evaluation the stage and the mark agree — and
+// afterwards they drift, three ways, all three measured:
+//
+//   (a) `PATCH /api/decks/:id` re-derives `missing_fields` and neither
+//       `complete` nor the stage, so filling in the missing phone leaves the
+//       deck marked incomplete with nothing left to ask;
+//   (b) the same edit in reverse — blanking a founder's email on an
+//       `ai_evaluated` deck — leaves `complete = 1`, so a deck with a missing
+//       required detail stayed assignable and reached no clarification;
+//   (c) `manual_review → ai_evaluated` (`approve_review`) and
+//       `rejected|archived → ai_evaluated` (`restore`) put a deck on Assign's
+//       roster without consulting the mark at all: a deck at `complete = 0`
+//       with `missing_fields` still set walked onto Assign in four requests.
+//
+// So the mark is re-derived HERE, at read time, from the two live columns,
+// using evaluate.ts's own formula. Nothing is frozen and nothing can go stale.
+//
+// **Not `missingIntakeFields` on the live detail columns.** That was the
+// obvious next step and it is wrong on real data: eleven VC seed deals carry
+// `complete = 1` and empty `missing_fields` with no founder, email or phone at
+// all, because a sourced deal has no founder submission behind it. Deriving
+// from the columns marks all eleven incomplete. `missing_fields` is the
+// recorded intake decision; the columns are not a proxy for it.
+
+/** A deck, as far as the completeness mark is concerned. */
+export interface DeckCompleteness {
+  /** `decks.complete` — the AI's own "I could read and score this deck". */
+  complete?: boolean;
+  /** `decks.missing_fields` — required intake columns nobody supplied. */
+  missingFields?: IntakeField[];
+}
+
+/**
+ * Is this deck marked **complete**?
+ *
+ * `evaluate.ts`'s formula, re-evaluated from the stored columns rather than
+ * read back out of the frozen flag. An absent `complete` reads as complete,
+ * matching the column's own `DEFAULT 1`: a caller that forgot to select it
+ * loses the new arm of the invariant rather than emptying the Assign screen.
+ * A worker test pins the field's presence on the response so that cannot pass
+ * unnoticed.
+ */
+export function isDeckComplete(deck: DeckCompleteness): boolean {
+  return deck.complete !== false && (deck.missingFields ?? []).length === 0;
+}
+
+/**
+ * The stages the Assign screen's column 1 draws from — `AssignPage`'s
+ * "Evaluated decks", which is `ai_evaluated` (awaiting an evaluator) plus
+ * `assigned` (so a second juror can be added, which is why the prototype keeps
+ * assigned rows badged rather than dropping them).
+ *
+ * **VC is empty, and that is not a placeholder.** The VC pipeline has neither
+ * stage (`src/pipeline/vc.ts`), so column 1 has always been empty there and
+ * the invariant cannot move a VC deal in either direction. The edition was not
+ * rescoped; this keeps it measurably untouched.
+ */
+export const ASSIGNABLE_STAGES: Record<Edition, readonly string[]> = {
+  incubator: ["ai_evaluated", "assigned"],
+  vc: [],
+};
+
+/** Which of the two screens a deck belongs on — at most one, by construction. */
+export type DeckListRoute = "assign" | "query" | null;
+
+/**
+ * The one authority for items 6 and 7.
+ *
+ * A deck in the evaluated population goes to **Assign** when it is marked
+ * complete and to **Query** when it is not — which is the client's sentence,
+ * enforced on the list rather than on a button. Everything else keeps the
+ * behaviour it had: the flagged and manual-review stages route to Query, as
+ * does a deck with query history still in intake or review (so an ANSWERED
+ * query stays listed as Responded with the founder's answer one click away —
+ * F0214, which a strict reading of his words would have reversed).
+ *
+ * `queried` is `decks.query_count > 0`, i.e. `DeckView.queried`: the decision
+ * needs only whether the deck has been queried, never when or by whom, which
+ * is what lets the server evaluate it on the row it already selects.
+ */
+export function deckListRoute(
+  deck: AreaSource & DeckCompleteness & { statusId?: string },
+  edition: Edition,
+  opts: { queried: boolean },
+): DeckListRoute {
+  const stage = deck.statusId ?? "";
+  // The evaluated population — the client's "stat box of Evaluated".
+  if (ASSIGNABLE_STAGES[edition].includes(stage)) {
+    return isDeckComplete(deck) ? "assign" : "query";
+  }
+  const queryable = QUERYABLE_STAGES[edition].includes(stage);
+  if (opts.queried) {
+    return queryable || AWAITING_REVIEW_STAGES[edition].includes(stage) ? "query" : null;
+  }
+  if (!queryable) return null;
+  return FLAG_STAGES.includes(stage) || areasNeedingResponse(deck).length > 0 ? "query" : null;
+}
+
+/**
+ * Does this deck belong on the Assign screen's roster of evaluated decks?
+ *
+ * Column 1 was `statusId ∈ {ai_evaluated, assigned}` alone, which is how (b)
+ * and (c) above put a deck marked incomplete in front of an evaluator.
+ */
+export function isAssignListed(
+  deck: AreaSource & DeckCompleteness & { statusId?: string },
+  edition: Edition,
+  opts: { queried: boolean } = { queried: false },
+): boolean {
+  return deckListRoute(deck, edition, opts) === "assign";
+}
+
 /**
  * Does this deck belong on the founder queries list?
  *
@@ -375,17 +511,15 @@ const FLAG_STAGES = ["incomplete", "manual_review"];
  *  • A deck nobody has queried is listed only when there is something to ask:
  *    its stage is itself a flag, or it has areas needing a response. A VC deal
  *    in analyst scoring with nothing flagged is not "AI-flagged" (F0274).
+ *  • V4-ROUTE — **and an evaluated deck that is marked incomplete**, which is
+ *    the other half of the invariant: it is off Assign, so it has to be here.
  */
 export function isQueryListed(
-  deck: AreaSource & { statusId?: string },
+  deck: AreaSource & DeckCompleteness & { statusId?: string },
   queries: QueryRecord[],
   edition: Edition,
 ): boolean {
-  const stage = deck.statusId ?? "";
-  const queryable = QUERYABLE_STAGES[edition].includes(stage);
-  if (queries.length > 0) return queryable || AWAITING_REVIEW_STAGES[edition].includes(stage);
-  if (!queryable) return false;
-  return FLAG_STAGES.includes(stage) || areasNeedingResponse(deck).length > 0;
+  return deckListRoute(deck, edition, { queried: queries.length > 0 }) === "query";
 }
 
 /** The list's column set, in order, as the prototype's `.qtbl` heads it. */

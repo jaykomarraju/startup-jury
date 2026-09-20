@@ -34,6 +34,9 @@ import {
   type RubricParameter,
 } from "../api";
 import { exportDecks } from "../exportCsv";
+// V4-ROUTE — the drawer keeps only the rows that came out of Assign's own
+// population; `manual_review` and the query-history tail are Query's alone.
+import { ASSIGNABLE_STAGES } from "../../shared/queries";
 import { useAuth } from "../auth/useAuth";
 import { ADDITIONAL_PARAM_OWNERS, ROLE_LABELS, type Edition } from "../../shared/roles";
 import {
@@ -60,7 +63,12 @@ import {
  *                   members 240px · the summary on off-white) under the toolbar,
  *                   over the olive-ruled bottom bar;
  *   • results     — "Assignment confirmed": one row per deck × member;
- *   • incomplete  — the decks the AI could not score, with Send to Query.
+ *   • incomplete  — the decks that routed to Query instead, with Send to Query.
+ *
+ * V4-ROUTE — both lists come from the SERVER, `GET /api/decks?list=assign` and
+ * `?list=query`, so the client no longer decides who is assignable. Column 1 is
+ * the decks marked complete; the drawer is the ones from the same population
+ * that are not. See `deckListRoute` in src/shared/queries.ts.
  *
  * W7-E rebuilt it from the round-robin allocation it shipped with (one deck, one
  * evaluator) to the prototype's cross product: every selected deck goes to every
@@ -162,6 +170,10 @@ export function AssignPage() {
   const navigate = useNavigate();
 
   const [decks, setDecks] = useState<DeckView[] | null>(null);
+  /** `?list=query` — the decks this screen hands over rather than assigns.
+   *  `null` while it is still in flight, so the empty state cannot flash
+   *  between the two responses arriving. */
+  const [routedToQuery, setRoutedToQuery] = useState<DeckView[] | null>(null);
   const [board, setBoard] = useState<Record<string, AssignBoardDeck>>({});
   const [params, setParams] = useState<RubricParameter[]>([]);
   const [groups, setGroups] = useState<EvaluatorGroup[] | null>(null);
@@ -189,9 +201,15 @@ export function AssignPage() {
 
   const load = useCallback(() => {
     let live = true;
-    listDecks()
+    // The roster and the hand-over list are two server-enforced lists, not one
+    // response sliced two ways: whatever put a deck at its stage, the partition
+    // has already been applied by the time either arrives.
+    listDecks({ list: "assign" })
       .then((r) => live && setDecks(r.decks))
       .catch(() => live && setDecks([]));
+    listDecks({ list: "query" })
+      .then((r) => live && setRoutedToQuery(r.decks))
+      .catch(() => live && setRoutedToQuery([]));
     getAssignBoard()
       .then((r) => live && setBoard(r.decks))
       .catch(() => live && setBoard({}));
@@ -216,11 +234,21 @@ export function AssignPage() {
   }, []);
 
   // ── Column 1 ─────────────────────────────────────────────────────────────
-  const assignable = useMemo(
-    () => (decks ?? []).filter((d) => d.statusId === "ai_evaluated" || d.statusId === "assigned"),
-    [decks],
+  // `?list=assign` IS the roster — the server has already dropped the decks
+  // marked incomplete, so there is no second predicate to keep in step here.
+  const assignable = useMemo(() => decks ?? [], [decks]);
+  // The drawer: the decks the partition sent to Query out of the population
+  // this screen draws from — the flagged stage as before, and now also an
+  // evaluated deck whose required intake detail went missing (measured (b)/(c),
+  // plan §4.1). `manual_review` and the answered-query tail are not this
+  // screen's business and stay off it.
+  const incomplete = useMemo(
+    () =>
+      (routedToQuery ?? []).filter(
+        (d) => d.statusId === "incomplete" || ASSIGNABLE_STAGES[edition].includes(d.statusId ?? ""),
+      ),
+    [routedToQuery, edition],
   );
-  const incomplete = useMemo(() => (decks ?? []).filter((d) => d.statusId === "incomplete"), [decks]);
 
   const sectors = useMemo(
     () => [...new Set(assignable.map((d) => d.sector).filter((s): s is string => Boolean(s)))].sort(),
@@ -433,7 +461,7 @@ export function AssignPage() {
       <section className="sj-frame">
         <PageToolbar
           title="Incomplete decks"
-          subtitle="Decks with insufficient information for AI evaluation — no AI score"
+          subtitle="Marked incomplete — routed to Query, not assignable"
           actions={
             <ToolbarButton onClick={() => setView("assign")}>
               <ArrowLeft className="h-3 w-3" /> Back to assign
@@ -459,7 +487,7 @@ export function AssignPage() {
                 {incomplete.length === 0 ? (
                   <tr>
                     <td colSpan={4} className="p-5 text-center text-fg-muted">
-                      No incomplete decks — all decks have enough information for AI evaluation.
+                      No incomplete decks — every evaluated deck is marked complete.
                     </td>
                   </tr>
                 ) : (
@@ -476,7 +504,11 @@ export function AssignPage() {
                       <td className="px-3 py-[11px]">
                         <IncompletePill />
                       </td>
-                      <td className="px-3 py-[11px] text-[11px] text-fg-muted">No AI score</td>
+                      {/* V4-ROUTE — a deck can now be here WITH a score: it was
+                          evaluated and then lost a required intake detail. */}
+                      <td className="px-3 py-[11px] text-[11px] text-fg-muted">
+                        {d.aiScore === undefined ? "No AI score" : d.aiScore.toFixed(1)}
+                      </td>
                     </tr>
                   ))
                 )}
@@ -484,7 +516,7 @@ export function AssignPage() {
             </table>
           </div>
         </div>
-        <BottomBar summary={`${plural(incomplete.length, "incomplete deck")} — missing information needed for AI evaluation.`}>
+        <BottomBar summary={`${plural(incomplete.length, "incomplete deck")} — missing information the founder has to supply.`}>
           {incomplete.length > 0 && (
             <button
               type="button"
@@ -574,7 +606,7 @@ export function AssignPage() {
             </span>
           </div>
           <ul className="min-h-0 flex-1 overflow-y-auto" aria-label="Evaluated decks">
-            {decks === null ? null : visible.length === 0 && visibleIncomplete.length === 0 ? (
+            {decks === null || routedToQuery === null ? null : visible.length === 0 && visibleIncomplete.length === 0 ? (
               <li className="px-[13px] py-6 text-center text-[11px] leading-relaxed text-fg-muted" data-testid="assign-decks-empty">
                 {assignable.length === 0
                   ? "No evaluated decks yet — decks that pass the AI gate appear here."
@@ -665,7 +697,7 @@ export function AssignPage() {
                   <li
                     key={d.id}
                     data-testid="assign-incomplete-row"
-                    title="Incomplete — cannot be assigned until the founder provides the missing information"
+                    title="Marked incomplete — routed to Query; not assignable until the founder supplies the missing information"
                     className="flex cursor-default items-center gap-2 border-b border-l-[3px] border-b-stone border-l-transparent px-[13px] py-[9px] opacity-[.72]"
                   >
                     <TickBox checked={false} label={`Select ${d.name}`} disabled />
