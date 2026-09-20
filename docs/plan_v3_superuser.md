@@ -470,7 +470,7 @@ BUILD
 
 | Session | Branch | State | Measured gate |
 |---|---|---|---|
-| `V3-NAV` | `parity/V3-NAV` | **complete** — items 9 and 18-label closed; 8-label and 10-sidebar closed | typecheck ✓ · lint ✓ · unit **2076 passed / 1 skipped** (2069+7 new) · build ✓ · roles **1115/1115** · `parity:nav` **62 known gaps, 0 unexpected, 0 fixed** · `parity:tokens` 27/27, 0 gaps · e2e — see below |
+| `V3-NAV` | `parity/V3-NAV` | **complete** — items 9 and 18-label closed; 8-label and 10-sidebar closed | typecheck ✓ · lint ✓ · unit **2076 passed / 1 skipped** (2069+7 new) · build ✓ · roles **1115/1115** · `parity:nav` **62 known gaps, 0 unexpected, 0 fixed** · `parity:tokens` 27/27, 0 gaps · e2e **197 passed / 4 failed / 23 flaky**, then green — see below |
 
 ### `V3-NAV` — what landed
 
@@ -520,6 +520,34 @@ ownership are relying on the old meaning — both are §9 rows below.
 - `npm run roles` was run against a dev server proved to be this worktree's own (PID 31287, `lsof` cwd
   `/Users/jayanthkomarraju/Documents/GitHub/sj-V3-NAV`, port 5273), and the output shows
   `C. RUNTIME PROBE · target: http://localhost:5273` — not the serverless run that fakes a pass.
+- **One coverage gap, and it is the §9 row's whole point.** After this change nothing in e2e walks
+  `/app/evaluate` as the incubator superuser: both walks that did (`coverage.spec.ts:53`,
+  `parity.spec.ts`) are driven by `navForUser`, which is now the sidebar. The route is asserted at the
+  unit level (`canAccessNav("incubator","superuser","evaluate") === true`, with a negative control),
+  but it has no browser-level guard until `coverage.spec.ts:53` moves to `reachableNav`. The incubator
+  Evaluate e2e test logs in as a **jury** member, who reaches the screen by a different slug
+  (`jassigned`), so it does not cover this.
+
+**The e2e leg, measured honestly.** The full suite ran at load ~10 with three sibling Playwright
+stacks live (there was no quiet window — 20 minutes of waiting never saw the count reach zero):
+**197 passed · 4 failed · 23 flaky (224 total, = the baseline) in 15.5 min.** `Network connection lost`
+occurred **0** times, so per the gate's own rule the failures were read as code, not as drops.
+
+- **One was real and was mine.** `e2e/chrome.spec.ts:93` asserted a link named `/All decks/` while
+  logged in as the incubator superuser — the label item 18 renames. It failed on the original *and*
+  the retry, which is what separated it from the noise. Fixed by updating the literal only (§9).
+- **Three were environmental, and the control proves it.** `incubator/superuser` failed on
+  `contactadmin` with *"Internal Server Error"* — a screen this session does not touch — and
+  `vc/superuser` / `vc/partner` failed with no `<h1>` at all, in an edition it does not touch.
+  Re-running `chrome.spec` + `parity.spec` + `nav.spec` together: **28 passed, 2 flaky, 0 failed.**
+  Both VC walks passed outright, and the two that stayed flaky were `incubator/superuser` **and
+  `incubator/admin`** — a role with a byte-identical sidebar, which is the untouched control. The
+  flakiness tracks the machine, not the branch.
+- **The proof this session actually wanted is `e2e/nav.spec.ts`, and all 14 passed both times.**
+  `incubator/superuser sees only its permitted nav` compares the RENDERED sidebar's link texts
+  one-for-one against `navForUser(...).map(navLabel)`, so it is a real browser check that the sidebar
+  draws Dashboard · Upload & Evaluate · no Evaluate · Intro calls above Prog manager pipeline — while
+  the other eleven role walks stayed green.
 
 **Migration 0066 was NOT taken.** This session changes a manifest and two scripts — no schema, no data.
 `main` still ends at `0065` and `ALLOTMENT_CEILING` is untouched at 65, so 0066 is free for whoever
