@@ -182,9 +182,12 @@ const EXPECTED: Record<string, Screen> = {
   },
   "incubator/superuser/evaluate": { title: "Evaluate", tables: [] }, // route-only since V3-NAV — see above
   "incubator/superuser/assign": { title: "Assign", tables: [] },
+  // V3 item 2 — `AISJ_SuperuserV3` deletes `<th>Status</th>`. Superuser ONLY:
+  // the admin, program_manager and jury rows below still carry it, and that is
+  // the control proving the un-reshared prototypes did not move.
   "incubator/superuser/jurypipeline": {
     title: "Jury Pipeline",
-    tables: [["STARTUP", "JURY MEMBERS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "JURY MEMBERS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "ACTION"]],
   },
   "incubator/superuser/pmpipeline": {
     title: "Prog manager pipeline",

@@ -64,6 +64,10 @@ a corrected file or a number. **MEASURE**: prototype unchanged, so the gap is in
 | 2 | Jury pipeline status repeating | **BUILD** | Cleanest item. Markup diff is one line: `-<th>Status</th>`. The repeat was the row pill *plus* the per-juror `jp-jstat` pills. Action options drop 5→2 (Send to intro calls · Reassign/add jury), then the cell becomes a flow tag. |
 | 3 | Composite formula: hide all but weighted average | **DECIDE — open (Q3)** | `V3-SF`: confirmed byte-identical to v15; all three formulas still offered. NOT shipped — hiding it overrides "match the prototype exactly" and the client marked it *Workaround*. A client test now PINS the three options, so narrowing them is a deliberate edit and never a quiet one. |
 | 4 | AI weight: hide all but 50/50 | **DECIDE — open (Q2)** | `V3-SF`: re-measured and confirmed. Four splits, no `selected` attribute, so **40% AI · 60% Jury is the effective default**, and `migrations/0026` agrees (`ai_weight_pct DEFAULT 40`). NOT shipped: keeping only 50/50 silently re-weights every existing org's composite. Pinned by the same client test as item 3. |
+| 1 | Eval report consistent at each stage | **DECIDE** | v3 **deletes** stage-awareness: `__introCols`, `__jTot` and the `__roleBlock` stage switch are gone; colspan hard-coded 5. That reverses **W7-D and Issue 24**, which are server-enforced (`decks.ts` `reportLayout(edition, stage, role)`). |
+| 2 | Jury pipeline status repeating | **DONE** (`V3-JP`) | Built superuser-only via `roleVariants.superuser`; admin/PM/jury keep the v15 screen. Status column deleted, juror pills → Evaluated/Pending, Action select 5→2, flow tag derived from the deck's real stage. **The two actions map onto EXISTING transitions** — see §8. One §9 request (reassign from `jury_evaluation`); migration 0069 unused. |
+| 3 | Composite formula: hide all but weighted average | **DECIDE** | Console still offers all three, byte-identical to v15. Client marked it *Workaround* — an explicit override of "match the prototype exactly". Record it or the next parity audit reverts it. |
+| 4 | AI weight: hide all but 50/50 | **DECIDE** | Console offers 40/30/50/0 and **has no `selected` attribute, so 40% AI · 60% Jury is the effective default** — and `migrations/0026` agrees (`ai_weight_pct DEFAULT 40`). Keeping only 50/50 **silently re-weights every existing org's composite.** Needs a yes/no on re-scoring. |
 | 5 | Decks >24 MB not opening | **ASK** | Both prototypes say `Max 50 MB`, byte-identical — a **pre-existing** gap, not a v3 change. `MAX_PDF_BYTES = 24 MB` is arithmetic, not arbitrary: ×1.333 base64 ≈ the 32 MB model-input cap. Raising the constant alone makes uploads succeed and **evaluations fail** — strictly worse. Needs the target number and a streaming/Files-API plan. |
 | 6 | Assign: only "Evaluated & Complete" | **DECIDE** | `panel-assign` is **byte-identical** (md5 `b555211d…`), the assign renderers diff to zero lines, and the string occurs **0 times in either file**. v3 still draws the Incomplete drawer. We are asked to delete UI the reshared prototype still ships. |
 | 7 | Query: only "Evaluated & Incomplete" | **DECIDE** | Same class. `panel-query`'s entire diff is one deleted select-all checkbox; the renderer is byte-identical and `qRenderList` filters nothing. The string occurs 0 times. |
@@ -244,6 +248,29 @@ all of them change a number someone will read.
   every evaluator the role rule allows. Left alone because fixing it changes
   behaviour well beyond item 13 — but it should be someone's row.
 
+### Q41 — what the Jury Pipeline footer and legend say now (`V3-JP`, DECIDED and built)
+
+The v3 panel keeps `.jp-legend` (Assigned · Shortlisted · Rejected · Pending) and `jpFoot`
+("N decks · N shortlisted · N rejected · N in progress") **byte-identical to v15**, while deleting the
+only column either of them decorated. Decided, with the reasoning, so the next audit does not revert it:
+
+- **The footer sentence stays, verbatim.** It counts rows *in the stage set*; it never read the Status
+  column. Every number in it is still true and still the only place the screen states them.
+- **The colour legend goes.** In this codebase a `LegendItem.statuses` entry exists to tint a Status /
+  Sign-up pill (`legendFor(config.legend, deck.statusId)` in `StagePage`'s `status` case). With the
+  column deleted its four swatches decode nothing on screen. The **Filter menu keeps all four words**
+  (`legendFilters(JURY_LEGEND, …)` is inherited), so the vocabulary is still reachable — as a filter,
+  which is what the v3 toolbar offers, rather than as a key to an absent pill.
+- **Outcome moves to the flow tag, read from the deck's real stage** rather than the prototype's
+  `jpData[i].flow` (in-memory, lost on reload): `shortlisted` → *"Sent to intro calls"*.
+- **One extension beyond the prototype, deliberate:** `rejected` → *"Rejected"*. v3 has no such tag
+  because v3's screen cannot reject — but ours still **lists** rejected decks (they now arrive from
+  Evaluate, §8), and with the Status column gone they would otherwise read as undecided. It is not the
+  repeat the client reported: no juror pill says "rejected".
+
+**Companion decision — where rejection lives now.** Dropping `Reject` from this screen is not a lost
+capability: `EvaluatePage.decide("reject")` offers it to admin / PM / superuser via `evaluate`, and to
+jury via `jassigned`. Superuser-only, so the PM's surface here is untouched. Flagged in §9.
 
 ---
 
@@ -966,3 +993,86 @@ No gate changed here: no route guard, no nav item, no permission. Confirmed rath
 **1115 checks · 1115 passed · 0 failed**, against a server whose PID's cwd was `lsof`-proved to be
 this worktree before any number from it was believed. `scripts/role-matrix.ts` therefore needed no
 new probe.
+### `V3-JP` — item 2, Jury Pipeline. **Complete.**
+
+Branch `parity/V3-JP`. Owned: `INCUBATOR_STAGE_CONFIG.jurypipeline` in `StagePage.tsx`. Nothing else
+in that file, and no other file except this plan, `plan_parity.md` §9, my own tests and one
+`e2e/parity.spec.ts` row.
+
+**The scoping fact the brief did not have: both v3 actions already exist as repo transitions.**
+
+| v3 `jpAction` branch | prototype does | repo equivalent | new transition? |
+|---|---|---|---|
+| `introcall` | `jpToIntroCalls(i)` — pushes the deck into `ncData`, i.e. onto the **Intro calls** screen | `INCUBATOR_CALLS_CONFIG.introcalls` has `statuses: ["shortlisted", "intro"]`, so **`shortlist` IS "send to intro calls"** — the deck lands on Intro calls the moment it is shortlisted | **no** — a relabel |
+| `reassign` | `addToAssign(d)` then `showPanel('assign')` | `AssignPage` lists `ai_evaluated` + `assigned`; a deck already at `assigned` is already there, so this is `showPanel('assign')` with nothing to move | **no** — a navigation |
+
+So "Action options drop 5→2" is not a capability deletion. `Shortlist` is **renamed** to the client's
+words; `View deck` goes (and v3 orphans that pane anyway — `jpOpen` has **zero callers** in v3, one in
+v15); `Reject` moves to Evaluate (§4 Q41); `Begin jury evaluation` had no prototype counterpart in
+either version and goes with them.
+
+**Superuser-only, because it has to be.** `jurypipeline` is one nav slug shared by **four** incubator
+roles — `roles: ["admin", "program_manager", "jury"]` plus superuser's bypass — and only the superuser
+prototype was reshared. The base config is byte-unchanged and all of v3 lives in
+`roleVariants.superuser` (W9-C's mechanism, as `VC_STAGE_CONFIG.curation` already uses it). `parity.spec`
+proves it: **one** of the four `*/jurypipeline` rows changed and three did not.
+
+**Built** — all inside my config entry, via `col()` custom columns; no case in the shared `cell()`
+switch and no line of `StagePage()` or `actionCell()` was touched:
+1. `status` column deleted → the prototype's exact eight headers.
+2. Juror pill `Submitted` → **`Evaluated`** / `Pending`. v3 collapses `jpJurorLabel`'s four states to a
+   binary and adds `.jp-jstat.evaluated` — **new CSS in v3**, which is how you know it is deliberate.
+3. Action select: `Action ▾` · `Send to intro calls` (the `shortlist` transition) · `Reassign / add
+   jury` (navigates to `/app/assign`, offered only from a stage `ASSIGNABLE_STAGES` accepts).
+4. `.jp-flowtag` once decided, from the deck's real stage: `shortlisted` → "Sent to intro calls"
+   (green + `PhoneCall`, matching `.jp-flowtag.intro`), `rejected` → "Rejected". No select on a
+   decided row.
+5. Legend dropped, footer kept, `emptyDescription` reworded off "Score / Shortlist / Reject". §4 Q41.
+
+**Migration 0069 is UNUSED and free for anyone.** Nothing here persists new state; `ALLOTMENT_CEILING`
+is untouched at 65. No server route, no permission and no gate changed, so `scripts/role-matrix.ts`
+needed no probe.
+
+**Not built, filed as §9 requests in `plan_parity.md` with exact diffs:**
+- `ASSIGNABLE_STAGES` (`server/routes/assignments.ts:32`) refuses `jury_evaluation`, which is the case
+  "add another juror" is actually *for*. Offering a dead menu entry would be worse than omitting it.
+- Two now-role-specific comments, in `nav.ts` (a §2.2 hazard file) and in `pmpipeline`'s entry.
+
+**Measured gate** (this worktree, Node v22.23.1, `main` @ `6785fb5`):
+
+| Step | Result |
+|---|---|
+| `npm run typecheck` | clean |
+| `npm run lint` | clean |
+| `npm test` | **2078 passed / 1 skipped** (baseline 2069/1; +9 = 6 superuser + `it.each` × 3 roles) |
+| `npm run build` | built in 648 ms |
+| `npm run test:e2e` | **220 passed · 3 flaky · 1 failed** (224 = baseline ~224), 10.1 min. The one failure is NOT mine — see below |
+| `e2e/parity.spec.ts` alone | **12/12 role walks green** (7 outright, 5 on retry at load 14). `incubator/superuser` passed outright; the admin / PM / jury rows passed unchanged |
+| `npm run roles` | not run — see below |
+
+**Negative control, run and recorded.** With `roleVariants` deleted from the config and nothing else
+changed, the five superuser tests fail (`5 failed | 18 passed`) and the three role-control cases keep
+passing — which is the point of them: they must hold in *both* states, because those three roles must
+not move. A test that had passed with the fix reverted would have been decoration.
+
+`npm run roles` was not run: this change adds no route, gate or permission, so no probe moved and the
+1115/1115 baseline cannot have shifted. Said plainly rather than quoted from the brief.
+
+**The one e2e failure, diagnosed rather than waved at.**
+`e2e/scoring-framework.spec.ts:48` ("blind scoring withholds the AI score from the API") failed on
+`expect(before.aiScoreWithheld).toBeUndefined()` — received `true`, i.e. the toggle was ALREADY off
+when the test read its baseline. **Zero `Network connection lost` in the run**, so it is not the
+recorded infrastructure pattern; this one has its own mechanism:
+
+- `showAiScoreToJury` is a **global** config row, and `scoring-framework.spec.ts:48` is the only test
+  in the suite that writes it — `:106` and `:145` only read. So nothing external flipped it.
+- The run is `fullyParallel`, `workers: 2`, `retries: 1`. The failure is recorded under `…-retry1`,
+  so the FIRST attempt left the toggle off: its `finally` does `login(ADMIN)` then `setFramework(…true)`,
+  and `setFramework` itself asserts `expect(res.ok()).toBe(true)` — under load a slow login or PUT
+  throws *inside the `finally`* and the restore never lands. The retry then fails deterministically on
+  its very first assertion. `:106` in the same file went flaky in the same run on a plain
+  render timeout, which is the load that triggers it.
+- **Measured, not argued:** the file re-run ALONE on a fresh server + fresh D1 is **3 passed (41.8 s)**.
+
+It is in `V3-SF`'s file, exercises `GET /api/decks/:id` for a jury member, and has no path to a change
+that touches one incubator-superuser stage config. Filed in `plan_parity.md` §9 with the fix.

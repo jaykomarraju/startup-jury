@@ -1,5 +1,6 @@
 import { useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Armchair, Download, FileBarChart, Lock, Signature, TriangleAlert } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Armchair, Download, FileBarChart, Lock, PhoneCall, Signature, TriangleAlert } from "lucide-react";
 import { AuthContext } from "../auth/AuthProvider";
 import type { Role } from "../../shared/roles";
 import {
@@ -1593,6 +1594,111 @@ const SIGNUP_LEGEND: LegendItem[] = [
 const docsOf = (row: StageRow) => row.signup?.documentsStatus ?? row.deck.documentsStatus ?? "pending";
 const payOf = (row: StageRow) => row.deck.paymentStatus ?? "pending";
 
+// ── V3 item 2 · Jury Pipeline, SUPERUSER ONLY ───────────────────────────────
+//
+// `AISJ_SuperuserV3` `panel-jurypipeline`. The entire markup diff against
+// `AISJ_IC_SuserV15` is one line — `-<th>Status</th>` — because the repeat the
+// client reported is the row-level Status pill restating what the per-juror
+// `jp-jstat` pills in the Jury members cell already say. `jpRender` changes
+// with it: the juror pills collapse to a binary (`.jp-jstat.evaluated` is new
+// CSS in v3) and the Action select drops from five options to two, after which
+// the cell becomes a `.jp-flowtag` (also new CSS in v3).
+//
+// Only the superuser prototype was reshared, so the base config below stays on
+// the v15 design for admin, program manager and jury, and all of this lives in
+// `roleVariants.superuser`.
+
+/** v3 `jpRender`: `submitted` → Evaluated, every other juror state → Pending. */
+function JuryMembersCell({ row }: { row: StageRow }) {
+  const deck = row.deck;
+  if (!deck.assignedToName) return <span className="text-sm text-fg-muted">Unassigned</span>;
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-sm text-fg">{deck.assignedToName}</span>
+      <Badge tone={deck.assigneeSubmitted ? "positive" : "amber"}>
+        {deck.assigneeSubmitted ? "Evaluated" : "Pending"}
+      </Badge>
+    </div>
+  );
+}
+
+/**
+ * `jpRender`'s `.jp-flowtag`, read from the deck's real stage rather than the
+ * prototype's `jpData[i].flow` (in-memory, lost on reload).
+ *
+ * `shortlisted` IS "sent to intro calls" here: `INCUBATOR_CALLS_CONFIG.introcalls`
+ * lists `shortlisted` + `intro`, so shortlisting puts the deck on the Intro
+ * calls screen exactly as `jpToIntroCalls` does.
+ *
+ * `rejected` has no prototype tag because v3's screen can no longer reject —
+ * but ours still lists rejected decks (they arrive from Evaluate), and with the
+ * Status column gone they would otherwise read as undecided. §4 Q41.
+ */
+const JP_FLOW_TAG: Record<string, { label: string; tone: "positive" | "danger"; icon?: boolean }> = {
+  // `.jp-flowtag.intro` — green tint, `ti-phone-call`.
+  shortlisted: { label: "Sent to intro calls", tone: "positive", icon: true },
+  rejected: { label: "Rejected", tone: "danger" },
+};
+
+/** `ASSIGNABLE_STAGES` in `server/routes/assignments.ts` — where Assign can still act. */
+const JP_REASSIGNABLE = ["ai_evaluated", "assigned"];
+
+/** "Reassign / add jury" navigates (`showPanel('assign')`); it runs no transition. */
+const JP_REASSIGN = "__reassign";
+
+/**
+ * v3 `jpRender`'s Action cell. `jpAction` keeps two branches: `introcall`
+ * (`jpToIntroCalls` → the `shortlist` transition, relabelled — not a new one)
+ * and `reassign` (`addToAssign` then `showPanel('assign')`, which here is a
+ * navigation to the Assign screen, offered only from the stages Assign and the
+ * server's `ASSIGNABLE_STAGES` can still act on). `View deck`, `Shortlist` and
+ * `Reject` are the three v15 options v3 deletes — rejection moves to Evaluate,
+ * and v3 orphans the Pitch-deck pane entirely (`jpOpen` has zero callers).
+ */
+function JuryPipelineActionCell({ row, ctx }: { row: StageRow; ctx: StageContext }) {
+  const navigate = useNavigate();
+  const deck = row.deck;
+  const flow = JP_FLOW_TAG[deck.statusId ?? ""];
+  if (flow) {
+    return (
+      <div className="flex justify-end">
+        <Badge tone={flow.tone}>
+          {flow.icon && <PhoneCall className="h-3 w-3" aria-hidden="true" />}
+          {flow.label}
+        </Badge>
+      </div>
+    );
+  }
+  const shortlist = (deck.actions ?? []).find((a) => a.action === "shortlist");
+  const reassign = JP_REASSIGNABLE.includes(deck.statusId ?? "");
+  if (!shortlist && !reassign) {
+    return (
+      <div className="flex justify-end">
+        <span className="text-xs text-fg-muted">—</span>
+      </div>
+    );
+  }
+  return (
+    <div className="flex justify-end">
+      <select
+        className="sj-input h-8 w-auto py-0 text-xs"
+        aria-label={`Action for ${deck.name}`}
+        value=""
+        disabled={ctx.busy}
+        onChange={(e) => {
+          const value = e.target.value;
+          if (value === JP_REASSIGN) navigate("/app/assign");
+          else if (shortlist && value === shortlist.action) void ctx.runAction(deck, shortlist);
+        }}
+      >
+        <option value="">{"Action ▾"}</option>
+        {shortlist && <option value={shortlist.action}>Send to intro calls</option>}
+        {reassign && <option value={JP_REASSIGN}>Reassign / add jury</option>}
+      </select>
+    </div>
+  );
+}
+
 /** Config for each incubator stage nav slug rendered by StagePage. */
 export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
   // Issue 25 — Startup · Jury members & status · AI · Jury · Avg · Addl.
@@ -1616,6 +1722,27 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
       `${count(rows, (r) => r.deck.statusId === "assigned" || r.deck.statusId === "jury_evaluation")} in progress`,
     emptyTitle: "No decks in jury evaluation",
     emptyDescription: "Assigned decks appear here for Score / Shortlist / Reject.",
+    // V3 item 2, superuser only — the v15 shape above is what admin, program
+    // manager and jury keep, because their prototypes were not reshared.
+    roleVariants: {
+      superuser: {
+        columns: [
+          "startup",
+          col("evaluators", "Jury members & status", (row) => <JuryMembersCell row={row} />),
+          "ai",
+          "jury",
+          "avg",
+          "addl",
+          "assignedDate",
+          col("action", "Action", (row, ctx) => <JuryPipelineActionCell row={row} ctx={ctx} />),
+        ],
+        // The legend's only job is to decode the Status pill (`LegendItem.statuses`
+        // tints it). With the column gone it decodes nothing on screen, so it
+        // goes with it — the Filter menu keeps all four stage words. §4 Q41.
+        legend: undefined,
+        emptyDescription: "Assigned decks appear here until they are sent to intro calls.",
+      },
+    },
   },
   // Issue 26 — "as per image9", which is the prototype's `panel-forsignup`
   // retitled: shortlisted startups moving into onboarding, by sign-up status.
