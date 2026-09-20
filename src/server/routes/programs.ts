@@ -11,6 +11,7 @@ import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
+import { NEW_PROGRAMME_AI_WEIGHT_PCT } from "../../shared/scoring";
 
 const programs = new Hono<AppEnv>();
 programs.use("*", requireAuth, denyMentor);
@@ -220,11 +221,27 @@ programs.post("/", requireRole("admin"), async (c) => {
   )
     .bind(edition)
     .first<{ n: number }>();
+  // V4-WEIGHT (0074) — a programme created from here is stamped with the
+  // client's 50:50 split; every programme that predates the column keeps
+  // NULL and goes on following the organisation's. "previous cohorts will
+  // remain same. only the new program or cohorts would take effect."
   await c.env.DB.prepare(
-    "INSERT INTO programs (id, edition, sector, name, description, fund_size, fund_allocated, capital_deployed, shortlist_min, active, sort_order) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+    "INSERT INTO programs (id, edition, sector, name, description, fund_size, fund_allocated, capital_deployed, shortlist_min, ai_weight_pct, active, sort_order) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
   )
-    .bind(id, edition, sector, name, description, fs.value, fa.value, cd.value, sm.value, next?.n ?? 1)
+    .bind(
+      id,
+      edition,
+      sector,
+      name,
+      description,
+      fs.value,
+      fa.value,
+      cd.value,
+      sm.value,
+      NEW_PROGRAMME_AI_WEIGHT_PCT,
+      next?.n ?? 1,
+    )
     .run();
 
   return c.json({
@@ -356,10 +373,14 @@ programs.post("/:id/cohorts", requireRole("program_manager", "admin"), async (c)
   )
     .bind(programId)
     .first<{ n: number }>();
+  // V4-WEIGHT (0074) — a NEW cohort takes the new split even under an old
+  // programme, which is the other half of his sentence ("the new program
+  // OR cohorts"). The programme's existing cohorts are untouched.
   await c.env.DB.prepare(
-    "INSERT INTO cohorts (id, program_id, name, starts_on, ends_on, active, sort_order) VALUES (?, ?, ?, ?, ?, 1, ?)",
+    "INSERT INTO cohorts (id, program_id, name, starts_on, ends_on, ai_weight_pct, active, sort_order) " +
+      "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
   )
-    .bind(id, programId, name, startsOn, endsOn, next?.n ?? 1)
+    .bind(id, programId, name, startsOn, endsOn, NEW_PROGRAMME_AI_WEIGHT_PCT, next?.n ?? 1)
     .run();
   return c.json({
     ok: true,

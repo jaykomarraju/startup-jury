@@ -10,6 +10,7 @@ import { evaluationRank, isAssignableEvaluator, roleLabel } from "../../shared/r
 import { canSeeEvaluatorScoresIn } from "../../shared/scoreVisibility";
 import { getStage, allowedTransitions } from "../../pipeline";
 import {
+  aiWeightFor,
   decisionScore,
   shortlistFloor,
   withholdsAiScore,
@@ -69,6 +70,10 @@ const DECK_JOINS =
 const DECK_DERIVED =
   "u.name AS assigned_to_name, pr.shortlist_min AS shortlist_min, " +
   "pr.name AS program_name, co.name AS cohort_name, " +
+  // V4-WEIGHT (0074) — the split this deck's blend uses. NULL at both
+  // levels means it follows the organisation's `ai_weight_pct`, which is
+  // every deck that predates the column.
+  "pr.ai_weight_pct AS program_ai_weight_pct, co.ai_weight_pct AS cohort_ai_weight_pct, " +
   "(SELECT AVG(e.weighted_total) FROM evaluations e WHERE e.deck_id = d.id AND e.evaluator_id IS NOT NULL) AS human_avg, " +
   // Aug-2026 issues 16/17 — the Query screen's "Parameters needing response" /
   // "Areas requiring response". Core areas the AI scored in the rubric's Weak
@@ -142,6 +147,8 @@ interface DeckRow {
   assigned_to_name?: string | null;
   program_name?: string | null;
   cohort_name?: string | null;
+  program_ai_weight_pct?: number | null;
+  cohort_ai_weight_pct?: number | null;
   shortlist_min?: number | null;
   human_avg?: number | null;
   weak_areas?: string | null;
@@ -244,22 +251,31 @@ type ShortlistSettings = Pick<ScoringSettings, "aiWeightPct" | "shortlistThresho
  * Pinned by `test/worker/alldecks-shortlist-hint.test.ts`.
  */
 function shortlistHint(row: DeckRow, scoring: ShortlistSettings) {
+  // V4-WEIGHT (0074): the split is the deck's OWN — its cohort's, else its
+  // programme's, else the organisation's. Resolved here rather than at the
+  // call sites for the same reason the third argument above is required: one
+  // place decides which weight a deck is judged at.
+  const weight = aiWeightFor(
+    row.cohort_ai_weight_pct,
+    row.program_ai_weight_pct,
+    scoring.aiWeightPct,
+  );
   const decision = decisionScore(
     row.ai_score,
     typeof row.human_avg === "number" ? [row.human_avg] : [],
-    scoring.aiWeightPct,
+    weight.pct,
   );
   const { minimum, source } = shortlistFloor(row.shortlist_min, scoring.shortlistThreshold);
   // Unscored: only a floor a PROGRAMME set blocks (pipeline.ts, and plan §8).
   const blocked = decision === null ? source === "program" : decision < minimum;
-  return { decision, blocked };
+  return { decision, blocked, weight };
 }
 
 function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: ShortlistSettings) {
   const missingFields = parseMissingFields(row.missing_fields);
   // The number a shortlist decision is judged on — the composite form of the
   // workbench's AI · My · Average column (see shared/scoring.ts decisionScore).
-  const { decision, blocked } = shortlistHint(row, scoring);
+  const { decision, blocked, weight } = shortlistHint(row, scoring);
   const shortlistMin = row.shortlist_min ?? null;
   return {
     id: row.id,
@@ -277,6 +293,15 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: Shortli
     contentVersion: row.content_version ?? 1,
     aiScore: row.ai_score ?? undefined,
     decisionScore: decision ?? undefined,
+    // Which split produced `decisionScore`, so a screen showing the number can
+    // say where it came from instead of implying the org control moved it.
+    //
+    // NOT for founders. `GET /api/config/scoring` refuses them outright — "the
+    // framework tells them nothing they should know about how their deck is
+    // judged internally" — and this is a value off that same framework, so
+    // sending it on their own deck would route around that refusal. They keep
+    // every field they have today; these two are simply absent.
+    ...(role === "founder" ? {} : { aiWeightPct: weight.pct, aiWeightSource: weight.source }),
     shortlistMin: shortlistMin ?? undefined,
     // Pre-flagged for the UI so a juror sees the guardrail before clicking; the
     // server re-checks on the transition either way — with the same judgement.
@@ -863,6 +888,13 @@ decks.get("/:id/report", async (c) => {
   // replacement. Roles that oversee rather than score — admin, superuser — are
   // outside the toggle entirely.
   const scoring = await loadScoringSettings(c.env.DB, edition);
+  // V4-WEIGHT (0074) — the split THIS deck is judged at, not the org's bare
+  // value: its cohort's, else its programme's, else the organisation's.
+  const workbenchWeight = aiWeightFor(
+    deckRow.cohort_ai_weight_pct,
+    deckRow.program_ai_weight_pct,
+    scoring.aiWeightPct,
+  );
   const peerRestricted = !scoring.jurySeesPeerScores && isAssignableEvaluator(edition, role);
 
   // ── The role rule (V3 item 13) ────────────────────────────────────────────
@@ -1037,7 +1069,12 @@ decks.get("/:id/report", async (c) => {
       showScoreDrift: scoring.showScoreDrift,
       includeAiEvidence: scoring.includeAiEvidence,
       scoreScale: scoring.scoreScale,
-      aiWeightPct: scoring.aiWeightPct,
+      // V4-WEIGHT (0074) — the workbench's live "Average" must blend at the
+      // split this deck is actually judged at, which is its cohort's or its
+      // programme's when either has one. Sending the org value here while
+      // `decisionScore` above used a different one is the W7-A defect again.
+      aiWeightPct: workbenchWeight.pct,
+      aiWeightSource: workbenchWeight.source,
     },
   });
 });

@@ -4,7 +4,7 @@ import { AuthContext, type AuthUser } from "../../src/client/auth/AuthProvider";
 import { ScoringFrameworkSection } from "../../src/client/routes/admin/ScoringFramework";
 import { AreaWeightsSection } from "../../src/client/routes/admin/AreaWeights";
 import { AdminSaveContext, type AdminSaveState } from "../../src/client/routes/admin/saveContext";
-import { DEFAULT_SCORING_SETTINGS } from "../../src/shared/scoring";
+import { DEFAULT_SCORING_SETTINGS, decisionScore } from "../../src/shared/scoring";
 import {
   DEFAULT_VISIBILITY,
   VISIBILITY_ROLES,
@@ -71,6 +71,17 @@ function mountSection(node: React.ReactNode, role: Role = "admin", edition: Edit
   return { view, saved };
 }
 
+/**
+ * V4-WEIGHT — two decks whose halves reproduce the §4.1 measurement exactly:
+ * at the shipped 40 % they blend to 7.95 and 8.75, and the whole sweep to 50 %
+ * moves them to 7.88 and 8.73. Those are the numbers the client saw nothing
+ * change, so they are the numbers the preview has to make visible.
+ */
+const WEIGHT_PREVIEW_DECKS = [
+  { id: "d1", name: "FinStack", aiScore: 7.53, humanAverage: 8.23 },
+  { id: "d2", name: "GreenGrid", aiScore: 8.63, humanAverage: 8.83 },
+];
+
 const CORE = [
   { id: "p1", key: "problem", name: "Problem & Market Clarity", weight: 8, informational: false },
   { id: "p2", key: "solution", name: "Solution & Value Proposition", weight: 82, informational: false },
@@ -105,6 +116,7 @@ beforeEach(() => {
     thresholdBest: 7,
     thresholdMediocre: 5,
     editable: true,
+    weightPreview: { decks: [...WEIGHT_PREVIEW_DECKS], pinnedDecks: 3 },
   });
   vi.mocked(saveScoringFramework).mockResolvedValue({
     ok: true,
@@ -217,6 +229,56 @@ describe("Scoring framework section", () => {
     const weight = screen.getByLabelText("AI weight in composite") as HTMLSelectElement;
     expect(weight.options).toHaveLength(4);
     expect(weight.value).toBe("40");
+  });
+
+  it("shows what the AI split does to real decks, before and after, as it changes", async () => {
+    // The client asked for every split but 50:50 to be HIDDEN, then said why:
+    // "nothing was changing when I changed from 40:60 or 50:50 or any other
+    // option, I saw no difference." The control was wired the whole time; the
+    // number it moves simply was not on this screen, and on real data the
+    // entire sweep is worth ~0.02–0.07 — under the one decimal the deck tables
+    // round to. So the console shows the movement itself, at two decimals.
+    mountSection(<ScoringFrameworkSection />);
+    const strip = await screen.findByTestId("ai-weight-preview");
+
+    // Before anything is touched: the blends the workspace is running on now.
+    expect(strip).toHaveTextContent("What this split produces — 40% AI · 60% Jury");
+    expect(within(strip).getByText("FinStack").closest("li")).toHaveTextContent("7.95");
+    expect(within(strip).getByText("GreenGrid").closest("li")).toHaveTextContent("8.75");
+
+    fireEvent.change(screen.getByLabelText("AI weight in composite"), { target: { value: "50" } });
+
+    expect(strip).toHaveTextContent("What this split changes — 40% AI · 60% Jury → 50% AI · 50% Jury");
+    expect(within(strip).getByText("FinStack").closest("li")).toHaveTextContent("7.95 → 7.88");
+    expect(within(strip).getByText("GreenGrid").closest("li")).toHaveTextContent("8.75 → 8.73");
+
+    // …and those are not four literals that happen to agree: they are what
+    // `decisionScore` — the helper `GET /api/decks`, the shortlist hint and the
+    // pipeline transition all use — produces at each split. One blend only.
+    for (const d of WEIGHT_PREVIEW_DECKS) {
+      const row = within(strip).getByText(d.name).closest("li")!;
+      expect(row).toHaveTextContent(String(decisionScore(d.aiScore, [d.humanAverage], 40)));
+      expect(row).toHaveTextContent(String(decisionScore(d.aiScore, [d.humanAverage], 50)));
+    }
+
+    // Decks the control cannot move are named, not silently omitted.
+    expect(strip).toHaveTextContent(
+      "3 decks follow a programme or cohort split of their own and are not affected by this control.",
+    );
+  });
+
+  it("says nothing is blendable rather than drawing an empty strip", async () => {
+    vi.mocked(getScoringFramework).mockResolvedValue({
+      scoring: { ...DEFAULT_SCORING_SETTINGS },
+      visibility: structuredClone(DEFAULT_VISIBILITY),
+      thresholdBest: 7,
+      thresholdMediocre: 5,
+      editable: true,
+      weightPreview: { decks: [], pinnedDecks: 0 },
+    });
+    mountSection(<ScoringFrameworkSection />);
+    const strip = await screen.findByTestId("ai-weight-preview");
+    expect(strip).toHaveTextContent(/No deck in this workspace has both an AI score and a jury score/);
   });
 
   it("previews the three cohort bands and clamps Poor to Best as you type", async () => {

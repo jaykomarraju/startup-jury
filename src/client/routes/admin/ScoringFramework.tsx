@@ -10,8 +10,11 @@ import {
   deltaToDisplayScale,
   formatPoints,
   fromDisplayScale,
+  reweightPreview,
   toDisplayScale,
+  NEW_PROGRAMME_AI_WEIGHT_PCT,
   type ScoringSettings,
+  type ReweightRow,
 } from "../../../shared/scoring";
 import {
   AI_WEIGHT_CHOICES,
@@ -33,6 +36,7 @@ import {
   invalidateScoringSettings,
   saveScoringFramework,
   type VisibilityByEdition,
+  type WeightPreview,
 } from "./scoringApi";
 
 /**
@@ -137,6 +141,124 @@ function aiWeightLabel(pct: number): string {
 /** `updThr()` in the prototype: NaN → default, poor clamped to best, one decimal. */
 function fmt1(n: number): string {
   return (Math.round(n * 10) / 10).toFixed(1);
+}
+
+/**
+ * V4-WEIGHT (items 3 and 4) — **what the AI weight actually changes**, on real
+ * decks, as the select is changed.
+ *
+ * The client asked for every split except 50:50 to be hidden, and then said
+ * why: *"nothing was changing when I changed from 40:60 or 50:50 or any other
+ * option, I saw no difference."* That is a bug report, not a design request,
+ * and the bug is not that the control is inert. `test/worker/ai-weight-effect.test.ts`
+ * measures it moving `decisionScore` on the seed — 7.95 → 7.88, 8.75 → 8.73
+ * across the ENTIRE 0 %→50 % sweep. Two things hid it:
+ *
+ *   1. **Magnitude.** AI and jury scores sit close together on real data, so
+ *      the sweep is worth ~0.02–0.07 — under the rounding the deck cells show.
+ *      Hence two decimals here, deliberately finer than the cells: this strip
+ *      exists to show exactly what they round away.
+ *   2. **Placement.** The number it moves renders as *"Avg. score"* on the
+ *      Shortlisted, Stage, Calls, IC vote and Evaluate screens — never on the
+ *      screen where the split is set.
+ *
+ * So the consequence is shown where the cause is. The numbers come from
+ * `reweightPreview`, which computes through `decisionScore` — the same helper
+ * the deck list, the shortlist hint and the pipeline transition use. There is
+ * one blend in this codebase and this is not a second one.
+ */
+/**
+ * The movement, on the org's own scale. W7-D's rule: a difference between two
+ * scores is a DISTANCE, so it converts by span with no offset — two canonical
+ * points is 0.8 on a 1–5 workspace, not 1.8. Two decimals for the same reason
+ * the values carry two: one is the rounding that hid this in the first place.
+ */
+function signedDelta(row: ReweightRow, scale: ScoreScale): string {
+  const shown = deltaToDisplayScale(row.delta, scale);
+  const sign = shown > 0 ? "+" : shown < 0 ? "−" : "±";
+  return `${sign}${Math.abs(shown).toFixed(2)}`;
+}
+
+function AiWeightPreview({
+  preview,
+  savedPct,
+  selectedPct,
+  scale,
+}: {
+  preview: WeightPreview | null;
+  /** The split currently STORED — what every screen shows right now. */
+  savedPct: number | null;
+  /** The split the select is sitting on, saved or not. */
+  selectedPct: number;
+  scale: ScoreScale;
+}) {
+  const from = savedPct ?? selectedPct;
+  const rows = useMemo(
+    () => (preview ? reweightPreview(preview.decks, from, selectedPct) : []),
+    [preview, from, selectedPct],
+  );
+  if (!preview) return null;
+
+  const changed = selectedPct !== from;
+  // Canonical 0–10 shown on the org's own scale, at two decimals — see the
+  // docstring: one decimal is the rounding that hid the effect in the first
+  // place, so the one surface whose job is to reveal it does not round there.
+  const onScale = (v: number) => toDisplayScale(v, scale).toFixed(2);
+
+  return (
+    <div
+      className="mt-2.5 rounded-lg border border-line bg-surface-2 px-3 py-2.5"
+      data-testid="ai-weight-preview"
+    >
+      <div className="text-[11.5px] font-medium text-fg">
+        {changed
+          ? `What this split changes — ${aiWeightLabel(from)} → ${aiWeightLabel(selectedPct)}`
+          : `What this split produces — ${aiWeightLabel(from)}`}
+      </div>
+      {rows.length === 0 ? (
+        <p className="mt-1.5 text-[11.5px] text-fg-muted">
+          No deck in this workspace has both an AI score and a jury score yet, so there is nothing
+          for the split to blend. The setting is saved and applies as soon as one does.
+        </p>
+      ) : (
+        <>
+          <ul className="mt-1.5 flex flex-col gap-1">
+            {rows.map((r) => (
+              <li
+                key={r.id}
+                className="flex items-baseline justify-between gap-3 text-[11.5px] text-fg"
+                data-testid="ai-weight-preview-row"
+              >
+                <span className="min-w-0 truncate">{r.name}</span>
+                <span className="shrink-0 font-mono">
+                  {onScale(r.from)}
+                  {changed && (
+                    <>
+                      {" → "}
+                      <strong className="font-semibold">{onScale(r.to)}</strong>
+                      <span className="ml-1.5 text-fg-muted">{signedDelta(r, scale)}</span>
+                    </>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-[11px] text-fg-muted">
+            The blended <strong className="text-fg">Avg. score</strong> these decks are judged on —
+            the widest AI-vs-jury gaps first, so this is the most the split can move anything here.
+            Deck tables round to one decimal, which is why the change is easy to miss on them.
+            Nothing stored changes: re-weighting never re-scores a cohort.
+          </p>
+        </>
+      )}
+      {preview.pinnedDecks > 0 && (
+        <p className="mt-1.5 text-[11px] text-fg-muted">
+          {preview.pinnedDecks} deck{preview.pinnedDecks === 1 ? "" : "s"} follow a programme or
+          cohort split of their own and are not affected by this control.
+        </p>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -265,6 +387,12 @@ export function ScoringFrameworkSection() {
   const showMatrices = user?.role === "superuser" && user.edition === "incubator";
   const [settings, setSettings] = useState<ScoringSettings | null>(null);
   const [visibility, setVisibility] = useState<VisibilityByEdition | null>(null);
+  // V4-WEIGHT — the real decks the AI-weight strip previews against, and the
+  // split currently STORED. `settings.aiWeightPct` moves with the select; this
+  // is the number every other screen is showing until Save changes is pressed,
+  // so it is the "before" the operator is comparing against.
+  const [weightPreview, setWeightPreview] = useState<WeightPreview | null>(null);
+  const [savedWeightPct, setSavedWeightPct] = useState<number | null>(null);
   // Only the cells the superuser actually flipped are SENT. Posting the whole
   // resolved grid would materialise every default as a stored row, pinning the
   // prototype's defaults for an org that never touched them — the point of the
@@ -285,6 +413,8 @@ export function ScoringFrameworkSection() {
       .then((r) => {
         setSettings(r.scoring);
         setVisibility(r.visibility);
+        setWeightPreview(r.weightPreview ?? null);
+        setSavedWeightPct(r.scoring.aiWeightPct);
         setBest(r.thresholdBest);
         setPoor(r.thresholdMediocre);
         setEditable(r.editable);
@@ -338,6 +468,9 @@ export function ScoringFrameworkSection() {
       // take ITS answer, so the screen can never drift from the filter.
       setVisibility(framework.visibility);
       setVisibilityEdits({});
+      // The saved split is now the selected one, so the strip's "before" moves
+      // with it and stops claiming a change that has already been committed.
+      setSavedWeightPct(framework.scoring.aiWeightPct);
       setRescored(framework.rescored.decks);
       invalidateScoringSettings();
       setDirty(false);
@@ -494,6 +627,10 @@ export function ScoringFrameworkSection() {
               value={settings.aiWeightPct}
               onChange={(e) => patch({ aiWeightPct: Number(e.target.value) })}
             >
+              {/* V3 items 3 and 4 asked for every option but 50:50 to be
+                  hidden. Withdrawn on 2026-09-20 once the real complaint — "I
+                  saw no difference" — was measured as a VISIBILITY defect: all
+                  four splits stay, and the strip below shows what each does. */}
               {AI_WEIGHT_CHOICES.map((p) => (
                 <option key={p} value={p}>
                   {aiWeightLabel(p)}
@@ -518,10 +655,18 @@ export function ScoringFrameworkSection() {
             />
           </Field>
         </div>
+        <AiWeightPreview
+          preview={weightPreview}
+          savedPct={savedWeightPct}
+          selectedPct={settings.aiWeightPct}
+          scale={settings.scoreScale}
+        />
         <p className="mt-2 text-[11px] text-fg-muted">
           A programme with its own shortlist minimum overrides this; every other deck is held to
-          the organisation&apos;s threshold. Changing the scale, formula or split re-scores every
-          stored evaluation in this workspace.
+          the organisation&apos;s threshold. Changing the scale or formula re-scores every stored
+          evaluation in this workspace; the AI split is applied when a score is read, so it never
+          rewrites one. Programmes and cohorts created from now on carry their own{" "}
+          {aiWeightLabel(NEW_PROGRAMME_AI_WEIGHT_PCT)} split and are not moved by this control.
         </p>
 
         <div className="my-3.5 border-t border-line" />

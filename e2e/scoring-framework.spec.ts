@@ -143,6 +143,50 @@ test("the Scoring framework section carries the prototype's controls, minus the 
   await expect(preview).toContainText(`Poor < ${poor.toFixed(1)}`);
 });
 
+test("the AI weight control shows what it changes, on real decks, without saving", async ({
+  page,
+}) => {
+  // V4-WEIGHT (items 3/4). The client asked for every split but 50:50 to be
+  // hidden because "nothing was changing when I changed from 40:60 or 50:50 or
+  // any other option, I saw no difference." The control was wired the whole
+  // time — `test/worker/ai-weight-effect.test.ts` measures it moving
+  // `decisionScore` — but its effect was never on this screen. This is the
+  // end-to-end proof that it is now: the server's real decks, blended through
+  // `decisionScore`, redrawn as the select moves. Read-only: nothing is saved.
+  await login(page, ADMIN);
+  await page.goto("/app/admin?section=fw");
+
+  const select = page.getByLabel("AI weight in composite");
+  // All four splits stay. Hiding them is explicitly withdrawn, and this is the
+  // tripwire in the real browser rather than in a mocked render.
+  await expect(select.locator("option")).toHaveCount(4);
+
+  // Gate on the POPULATED strip — its heading only exists once the framework
+  // read has landed, so this cannot pass against a loading shell.
+  const strip = page.getByTestId("ai-weight-preview");
+  await expect(strip).toContainText("What this split produces —");
+  const rows = strip.getByTestId("ai-weight-preview-row");
+  await expect(rows.first()).toBeVisible();
+  const before = await rows.first().innerText();
+
+  // Move to a split this workspace is NOT on. Read the current value rather
+  // than assuming 40: `e2e/config.spec.ts` writes the same section and the
+  // suite shares one local D1 (plan §8 Q17).
+  const current = await select.inputValue();
+  const other = ["50", "30", "0", "40"].find((v) => v !== current)!;
+  await select.selectOption(other);
+
+  await expect(strip).toContainText("What this split changes —");
+  await expect(strip).toContainText("→");
+  // The numbers actually moved: the strip is not a static caption that merely
+  // renamed itself. A row now carries both the old blend and the new one.
+  await expect(rows.first()).not.toHaveText(before);
+
+  // Put the select back so nothing is left dirty for a sibling spec.
+  await select.selectOption(current);
+  await expect(strip).toContainText("What this split produces —");
+});
+
 test("Area weights polices the 100 % total and delegates per parameter", async ({ page }) => {
   await login(page, ADMIN);
   await page.goto("/app/admin?section=wt");

@@ -1,8 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
+  NEW_PROGRAMME_AI_WEIGHT_PCT,
   REQUIRED_WEIGHT_TOTAL,
   SCORE_SCALE_BOUNDS,
   WEAK_SIGNAL_MAX,
+  aiWeightFor,
+  reweightPreview,
   cohortRating,
   composite,
   decisionScore,
@@ -301,5 +304,68 @@ describe("weak signal", () => {
     expect(isWeakSignal(5)).toBe(false);
     expect(isWeakSignal(7)).toBe(false);
     expect(WEAK_SIGNAL_MAX).toBe(5);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V4-WEIGHT — which split applies, and the console's before/after strip
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("the AI split a deck is blended at", () => {
+  it("falls back cohort → programme → organisation, and names the source", () => {
+    expect(aiWeightFor(30, 50, 40)).toEqual({ pct: 30, source: "cohort" });
+    expect(aiWeightFor(null, 50, 40)).toEqual({ pct: 50, source: "program" });
+    expect(aiWeightFor(null, null, 40)).toEqual({ pct: 40, source: "org" });
+    expect(aiWeightFor(undefined, undefined, 40)).toEqual({ pct: 40, source: "org" });
+  });
+
+  it("treats 0 % (jury only) as a real choice, not as absent", () => {
+    // `0` is one of the prototype's four splits. A `??`-shaped resolver would
+    // read it as "unset" and hand the deck back to the organisation's value —
+    // silently re-introducing AI weight into a programme that turned it off.
+    expect(aiWeightFor(0, 50, 40)).toEqual({ pct: 0, source: "cohort" });
+    expect(aiWeightFor(null, 0, 40)).toEqual({ pct: 0, source: "program" });
+  });
+
+  it("stamps new programmes and cohorts with the client's 50:50", () => {
+    expect(NEW_PROGRAMME_AI_WEIGHT_PCT).toBe(50);
+  });
+});
+
+describe("the console's before/after preview", () => {
+  // §4.1's measurement, to the decimal: the whole 40 % → 50 % move is worth
+  // 0.07 on one deck and 0.02 on the other — under the rounding the deck
+  // tables show, which is why the client saw nothing change.
+  const decks = [
+    { id: "d1", name: "FinStack", aiScore: 7.53, humanAverage: 8.23 },
+    { id: "d2", name: "GreenGrid", aiScore: 8.63, humanAverage: 8.83 },
+  ];
+
+  it("is `decisionScore` at each split and nothing else", () => {
+    expect(reweightPreview(decks, 40, 50)).toEqual([
+      { id: "d1", name: "FinStack", from: 7.95, to: 7.88, delta: -0.07 },
+      { id: "d2", name: "GreenGrid", from: 8.75, to: 8.73, delta: -0.02 },
+    ]);
+    for (const d of decks) {
+      const [row] = reweightPreview([d], 0, 50);
+      expect(row.from).toBe(decisionScore(d.aiScore, [d.humanAverage], 0));
+      expect(row.to).toBe(decisionScore(d.aiScore, [d.humanAverage], 50));
+    }
+  });
+
+  it("drops a deck the split cannot move, rather than printing a fake pair", () => {
+    // One half of the blend missing: `decisionScore` returns the half it has,
+    // identically at every split, so the row would read "8.2 → 8.2" and imply
+    // the control is inert — the very impression this strip exists to correct.
+    expect(reweightPreview([{ id: "x", name: "No jury", aiScore: 8.2, humanAverage: null }], 40, 50))
+      .toEqual([]);
+    expect(reweightPreview([{ id: "y", name: "No AI", aiScore: null, humanAverage: 7 }], 40, 50))
+      .toEqual([]);
+    expect(reweightPreview([{ id: "z", name: "Unscored", aiScore: null, humanAverage: null }], 40, 50))
+      .toEqual([]);
+  });
+
+  it("reports no movement when the selected split is the saved one", () => {
+    expect(reweightPreview(decks, 40, 40).every((r) => r.delta === 0)).toBe(true);
   });
 });

@@ -62,8 +62,8 @@ a corrected file or a number. **MEASURE**: prototype unchanged, so the gap is in
 |---|---|---|---|
 | 1 | Eval report consistent at each stage | **DONE** (visual, `V3-REP`) · modes **OPEN → Q23** | **Corrected by reading the decoded renderer** — v3 does not delete stage-awareness, it narrows it. `__introCols`/`__jTot` go, so **Jury Avg.** and **Avg.** vanish and the core table is five columns at EVERY stage (colspan 5) — that is item 1 itself. But `suevSections(stage)` SURVIVES and v3 *edits* it (§8, Q21). W7-D and Issue 24 are intact. Visual parity + v3's new `hideAi` report built; the editable/read-only mode shifts are Q23. |
 | 2 | Jury pipeline status repeating | **DONE** — `V3-JP` | Cleanest item. Markup diff is one line: `-<th>Status</th>`. The repeat was the row pill *plus* the per-juror `jp-jstat` pills. Action options drop 5→2 (Send to intro calls · Reassign/add jury), then the cell becomes a flow tag. |
-| 3 | Composite formula: hide all but weighted average | **OPEN → Q3** (not built) | `V3-SF`: confirmed byte-identical to v15; all three formulas still offered. NOT shipped — hiding it overrides "match the prototype exactly" and the client marked it *Workaround*. A client test now PINS the three options, so narrowing them is a deliberate edit and never a quiet one. |
-| 4 | AI weight: hide all but 50/50 | **OPEN → Q2** (not built) | `V3-SF`: re-measured and confirmed. Four splits, no `selected` attribute, so **40% AI · 60% Jury is the effective default**, and `migrations/0026` agrees (`ai_weight_pct DEFAULT 40`). NOT shipped: keeping only 50/50 silently re-weights every existing org's composite. Pinned by the same client test as item 3. |
+| 3 | Composite formula: hide all but weighted average | **CLOSED — hiding WITHDRAWN** (`V4-WEIGHT`) | `V3-SF`: confirmed byte-identical to v15; all three formulas still offered. NOT shipped — hiding it overrides "match the prototype exactly" and the client marked it *Workaround*. A client test now PINS the three options, so narrowing them is a deliberate edit and never a quiet one. **Withdrawn 2026-09-20** — the client's reason for asking was item 4's invisibility, not the formulas; all three stay and the tripwire stays with them (§4.1.1). |
+| 4 | AI weight: hide all but 50/50 | **DONE as VISIBILITY** (`V4-WEIGHT`) | `V3-SF`: re-measured and confirmed. Four splits, no `selected` attribute, so **40% AI · 60% Jury is the effective default**, and `migrations/0026` agrees (`ai_weight_pct DEFAULT 40`). NOT shipped: keeping only 50/50 silently re-weights every existing org's composite. Pinned by the same client test as item 3. **Settled 2026-09-20 (§4.1.1):** the hide was a workaround for *"I saw no difference"*. All four splits stay; the console now draws a live before/after strip for real decks, `decisionScore` blends at the deck's own cohort/programme split (0074), and a split-only save no longer re-scores 12 decks to the values they already had. |
 | 5 | Decks >24 MB not opening | **NOT STARTED → Q8** | Both prototypes say `Max 50 MB`, byte-identical — a **pre-existing** gap, not a v3 change. `MAX_PDF_BYTES = 24 MB` is arithmetic, not arbitrary: ×1.333 base64 ≈ the 32 MB model-input cap. Raising the constant alone makes uploads succeed and **evaluations fail** — strictly worse. Needs the target number and a streaming/Files-API plan. |
 | 6 | Assign: only "Evaluated & Complete" | **BLOCKED → Q91** — readings recorded, nothing built | `panel-assign` is **byte-identical** (md5 `b555211d…`), the assign renderers diff to zero lines, and the string occurs **0 times in either file**. v3 still draws the Incomplete drawer. We are asked to delete UI the reshared prototype still ships. |
 | 7 | Query: only "Evaluated & Incomplete" | **BLOCKED → Q92** — readings recorded, nothing built | Same class. `panel-query`'s entire diff is one deleted select-all checkbox; the renderer is byte-identical and `qRenderList` filters nothing. The string occurs 0 times. |
@@ -629,6 +629,95 @@ Superuser first; the other roles follow once these screens are signed off.
 Catalyst might be familiar with that for their marketing clients."* So the
 integration is a new gateway, chosen by us; banking details and the firm's
 registration information will be provided.
+
+---
+
+### 4.1.1 `V4-WEIGHT` — items 3 and 4 built. What the measurement forced.
+
+**The options stay. All four splits and all three formulas are still offered**,
+and `test/client/scoringFramework.test.tsx`'s tripwire still pins them. Hiding
+was withdrawn once "I saw no difference" was read as the bug report it is.
+
+#### The 50:50 default has nowhere to live on `org_scoring_settings`, measured
+
+The obvious implementation of *"make 50:50 the default for new ones"* is to
+change the column default in 0026. **It is unreachable code.**
+`org_scoring_settings` is `edition TEXT PRIMARY KEY`, 0026 seeds exactly
+`('incubator'), ('vc')`, and a grep of `src/` finds **zero** `INSERT INTO
+org_scoring_settings` — the only writer is one `UPDATE` in
+`routes/config.ts`. There is never a new row to give a new default to. Worse,
+the alternative — moving the one stored value from 40 to 50 — re-blends the
+displayed `Avg. score` of **every deck ever uploaded**, because the split is
+applied at read time. That is precisely what he ruled out.
+
+So a new-things-only default has to be stored on the new thing.
+**Migration 0074** adds `programs.ai_weight_pct` and `cohorts.ai_weight_pct`,
+NULL on every row that already exists, and resolution is
+`cohort → programme → organisation` (`aiWeightFor`, the same fallback shape
+`shortlistFloor` has used for `programs.shortlist_min` since 0016). No DEFAULT
+is declared on either column **on purpose**: SQLite's `ALTER TABLE ADD COLUMN …
+DEFAULT` backfills the rows that already exist, which would have re-weighted
+every previous cohort at migration time — the exact outcome the column exists
+to prevent. `POST /api/programs` and `POST /api/programs/:id/cohorts` stamp 50.
+
+**Consequence, stated plainly because it is a real trade-off.** A programme
+created from now on is *pinned*: the console's AI-weight select no longer moves
+its decks. That is the direct price of "previous cohorts will remain same" — the
+two cannot both hold from one org-wide value — and the console's copy now says
+so. **Open question for him (no code written on inference):** should a programme
+also be able to set its own split from the Programmes screen, and should there
+be an explicit *apply this split to all programmes* action? Today the stamp is
+the only writer, so a pinned programme can be changed only in the database.
+
+#### The second defect — and it is the other half of what he saw
+
+`compositionChanged()` in `routes/config.ts` counted `aiWeightPct` as a control
+that invalidates stored scores, so a split-only save ran `rescoreEdition` over
+the whole edition. **`rescoreEdition` has zero references to `ai_weight_pct`**
+— it reads `compositeFormula` and the parameter weights. So it recomputed every
+stored total to the value it already had and wrote it back through
+`UPDATE decks SET ai_score = ?, signal = ?, updated_at = ?`.
+
+**Measured on the seed, changing only 40 → 50 and nothing else:**
+
+| | |
+|---|---|
+| decks in the edition | 15 |
+| `ai_score` values that moved | **0** |
+| `updated_at` values that moved | **12** |
+| what the console told the operator | *"Saved — 12 decks re-scored."* |
+
+`updated_at` is what `lastActivityAt` is derived from, and the V3 Dashboard
+sorts by it. **So the one visible effect of changing the AI split was to
+reorder the Dashboard, while every score stayed exactly where it was** — the
+inverse of what he expected, and a re-weight retro-touching a cohort, which the
+`V4-WEIGHT` constraint forbids. `aiWeightPct` is out of `compositionChanged`;
+the scale and the formula stay in, because both genuinely change what is stored.
+`rescoreEdition` itself is untouched, as instructed.
+
+#### Where the effect is now visible
+
+The **Score composition** card draws a live before/after strip under the select
+(`data-testid="ai-weight-preview"`): real decks, the blend at the saved split
+and at the selected one, **at two decimals** — deliberately finer than the deck
+tables' one decimal, since that rounding is reason (a) the effect was invisible.
+Numbers come from `reweightPreview`, which computes through `decisionScore`, so
+there is still exactly one blend in the codebase. Decks the control cannot move
+(a pinned programme or cohort) are counted and named rather than quietly
+dropped, and a deck with only one half of the blend is excluded — it would have
+drawn as `8.2 → 8.2` and printed the very impression the strip exists to
+correct.
+
+`decisionScore` and the workbench's live Average now blend at the deck's OWN
+split on the server (`routes/decks.ts`, `routes/pipeline.ts`) and in
+`EvalScorecard`, which reads `deck.aiWeightPct` rather than the org-wide
+framework. Sending the org value to the workbench while the server judged the
+deck at another would be the W7-A hint-vs-transition divergence again, on the
+client side.
+
+**`DashboardPage.tsx` was NOT touched** — it is `V4-ROUTE`'s this wave. Whether
+`Avg. score` belongs in the Dashboard's default columns (reason (b)) is a §9
+request with an exact diff, not an edit made here.
 
 ## 5. Build order (what blocks what)
 
@@ -1867,6 +1956,92 @@ control both lost a worker at **load ~5** — so this is genuine miniflare insta
 `participantColumns: "jury"`, a column set item 14 does not touch, and its parity row was not edited.
 
 ---
+
+### The V4 follow-up wave — `V4-WEIGHT`
+
+Baselines **measured on `main` at 260bfb0**, not copied from the prompt — the
+§9 header's numbers are the V3 wave's start and `main` has absorbed that wave
+since: unit **2282 passed / 1 skipped** (the header says 2069), roles
+**1180 / 1180** (the header says 1115), `parity:tokens` 0 gaps, `parity:nav` 62
+known gaps. Both stale numbers were re-measured on a `main` checkout at
+`260bfb0` rather than assumed — the roles baseline on its own dev server, whose
+cwd was checked the same way.
+
+| Session | Items | State | Measured gate | Notes |
+|---|---|---|---|---|
+| `V4-WEIGHT` | 3, 4 | **both closed — 4 built as visibility, 3 withdrawn** | typecheck ✓ · lint ✓ · build ✓ · **unit 2297 passed / 1 skipped** ✓ (baseline **2282/1** measured on `main`; +15 = 6 unit · 7 worker · 2 client, counted per file) · **`parity:tokens` 27/27, 0 gaps** ✓ · **`parity:nav` 62 known gaps** ✓ · **roles 1180 / 1180, 0 failed** ✓ · **e2e exit 0 — 229 tests, 220 passed · 9 flaky · 0 failed in 7.1 min** ✓ | Migration **0074** taken; `ALLOTMENT_CEILING` **74 → 76** (the wave's ceiling). |
+
+**The e2e leg, stated as it happened.** The first attempt was thrown away and
+is not the number above: it was started while `V4-SIZE`'s run was still
+finishing, `TIME_WAIT` went from 2 to **14,624** (89 % of the range) inside two
+minutes, and — worse — **I edited a source file while it was running**, so vite
+hot-reloaded underneath it. Both are disqualifying on their own. It was killed,
+the ports were watched down to ~1,100, and the suite was re-run on a tree
+nothing touched until it finished.
+
+The clean run is exit 0 with **no test failing twice**. Nine are flaky across
+five spec files — `chrome` ×2, `coverage` ×2, `evaluate-stage-report`,
+`resubmit` ×2, `scoring-framework` ×2 — **none of them this session's**; the two
+in `scoring-framework.spec.ts` are the pre-existing *blind scoring* and *Area
+weights* tests, while the new AI-weight walk passed first try in 977 ms.
+
+**And the run logged 216 `fetch failed` with ZERO `Network connection lost` and
+ZERO `Internal Server Error`.** That is `V3-AW`'s finding confirmed once more:
+**the tell the runbook documents first would have reported this run as clean of
+infrastructure noise, and it was not.** Grep for `fetch failed` as well — on
+this machine it is the signal that actually fires.
+
+**`npm run roles` was run even though no gate changed**, because this session
+removed two fields from what a founder receives and an authorization-shaped
+change deserves the harness whether or not the matrix moved. **1180/1180 on this branch and 1180/1180 on `main`, both
+measured** — it does not move, which is the expected answer: the harness counts
+route capabilities, and no route, permission or nav item changed. Measuring
+both sides is the point; quoting the prompt's 1115 would have looked like a
+regression that never happened. The server was
+proved to be this worktree's before running it (`lsof -a -p <pid> -d cwd` →
+`sj-V4-WEIGHT`).
+
+
+**Ownership actually touched, and why each file outside the §11 list was
+entered.** The §11 row names the contested files, not a whitelist; the BUILD
+block itself required migration 0074 and the `ALLOTMENT_CEILING` line. Beyond
+those:
+
+| File | Edit | Why it could not be a §9 request |
+|---|---|---|
+| `migrations/0074_program_ai_weight.sql` | new | Allotted by §11. |
+| `test/worker/migrations-w1b.test.ts` | `ALLOTMENT_CEILING` 74 → **76** | The file's own docstring: raise to the WAVE's ceiling, not the session's. `V4-ROUTE` (0075) and `V4-SIZE` (0076) hit the same line — **take 76**, it is the same value all three want. |
+| `src/server/routes/programs.ts` | the two INSERTs stamp `NEW_PROGRAMME_AI_WEIGHT_PCT` | Unowned this wave. Without it the column is decoration and item 2 is unbuilt. |
+| `src/server/routes/config.ts` | `GET /api/config/scoring` gains `weightPreview`; `compositionChanged` drops `aiWeightPct` | Unowned this wave. The preview has to come from somewhere, and the rescore defect is item 3's second half. |
+| `src/server/routes/decks.ts` | +2 columns on `DECK_DERIVED`, +2 on `DeckRow`, `shortlistHint` resolves the split, `toDeckView` exposes it, the report route sends it | **`V4-ROUTE` will be in this file.** All five edits are additive and sit in the shared constants and `toDeckView` (lines ~70, ~150, ~250, ~285, ~890), not in the `decks.get("/")` body where a list predicate goes. Expect a clean union; if it conflicts, take both. |
+| `src/server/routes/pipeline.ts` | the shortlist guard's SELECT joins `cohorts` and resolves the split | Unowned. If it did not, the hint and the transition would blend differently — the W7-A defect, reintroduced by this very change. |
+| `src/client/types.ts` | `DeckView` gains `aiWeightPct` / `aiWeightSource` | Two optional fields; the wire already carries them. |
+
+**`e2e/parity.spec.ts` was checked and deliberately NOT changed.** The memory of
+this repo says a table added to the admin console's default section moves the
+`incubator/superuser/admin` row, because `/app/admin` lands on Scoring
+framework — which is exactly where the new strip is. The capture reads
+`table thead th`; **the strip is a `<ul>`, so it contributes no header set and
+the row does not move.** Verified by reading the capture, not assumed.
+
+**Negative controls — four, each reverted after measuring.**
+
+| Control | Result |
+|---|---|
+| `reweightPreview`'s `to` computed as `from` instead of through `decisionScore` | **3 fail** across all three layers — unit, client and worker |
+| `aiWeightFor` ignores the cohort and programme columns | **3 fail** (2 unit, 1 worker — the pinned-programme sweep) |
+| `POST /api/programs` binds `null` instead of the constant | **2 fail** (worker) |
+| `compositionChanged` restored to counting `aiWeightPct` | **1 fail** — `rescored.decks` is **12**, not 0 |
+
+**The trap this task sprang once did not spring twice.** §4.1 records that the
+first test here compared only `aiScore` and `humanAverage`, passed, and implied
+the control was dead. Every assertion added by this session is on a number the
+feature actually writes, and each is proved to fail when its wiring is removed.
+One of them caught a real defect in my own implementation before the gate did:
+`reweightPreview` originally dropped a row only when `decisionScore` returned
+`null`, so a deck with an AI score and no jury score would have rendered
+`8.2 → 8.2` — the strip printing the very "I saw no difference" it exists to
+correct. It now requires both halves.
 
 ## 11. The follow-up wave — three sessions, from the client's 2026-09-20 answers
 
