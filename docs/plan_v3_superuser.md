@@ -47,6 +47,9 @@ Three consequences the client's list does not state:
 - **`Intro calls` and `Prog manager pipeline` swapped order.** Not on the client's list at all.
 - **The Evaluate screen is orphaned.** `showPanel('evaluate')` appears once, inside `upSendToEvaluate()`,
   which has no callers. We are asked to redevelop a screen the prototype gives no way to reach (§4, Q6).
+  *(Measured by `V3-NAV`: `upSendToEvaluate` is NEW in v3 — it does not exist in v15, where the sidebar
+  item was the only entry point. Its body drives `#up-rt-selinfo`, an id with 4 JS references and no
+  markup, so the caller is in the export that went missing. See §4 F-NAV-2.)*
 
 ---
 
@@ -64,9 +67,9 @@ a corrected file or a number. **MEASURE**: prototype unchanged, so the gap is in
 | 5 | Decks >24 MB not opening | **ASK** | Both prototypes say `Max 50 MB`, byte-identical — a **pre-existing** gap, not a v3 change. `MAX_PDF_BYTES = 24 MB` is arithmetic, not arbitrary: ×1.333 base64 ≈ the 32 MB model-input cap. Raising the constant alone makes uploads succeed and **evaluations fail** — strictly worse. Needs the target number and a streaming/Files-API plan. |
 | 6 | Assign: only "Evaluated & Complete" | **DECIDE** | `panel-assign` is **byte-identical** (md5 `b555211d…`), the assign renderers diff to zero lines, and the string occurs **0 times in either file**. v3 still draws the Incomplete drawer. We are asked to delete UI the reshared prototype still ships. |
 | 7 | Query: only "Evaluated & Incomplete" | **DECIDE** | Same class. `panel-query`'s entire diff is one deleted select-all checkbox; the renderer is byte-identical and `qRenderList` filters nothing. The string occurs 0 times. |
-| 8 | Upload → "Upload & Evaluate", redev | **ASK** | The redev is mostly a **deletion**: `#up-results` is gone and the footer collapses to one button — which is literally `showPanel('alldecks')` — while the screen still promises *"You approve → Credits deducted"*. Worse, a richer inline results card has **CSS and ~110 lines of JS but no markup**; `renderUpResults([0,3,5,7])` runs at load into a swallowed `catch`. **Likely a broken export — ask for a corrected file.** |
-| 9 | Query after Evaluate in sidebar | **BUILD** | Already satisfied by §2. Zero-cost. |
-| 10 | Evaluate page redev | **BUILD + DECIDE entry** | +533 B: new `AI Evaluate` toolbar button, select-all + "N selected" in column 1, sub-line *"evaluated decks move to the Assign screen"*. `evAiEvaluate()` → toast → `showPanel('assign')`. But the screen has no entry point (§2). |
+| 8 | Upload → "Upload & Evaluate", redev | **ASK** · label **DONE** (V3-NAV) | The redev is mostly a **deletion**: `#up-results` is gone and the footer collapses to one button — which is literally `showPanel('alldecks')` — while the screen still promises *"You approve → Credits deducted"*. Worse, a richer inline results card has **CSS and ~110 lines of JS but no markup**; `renderUpResults([0,3,5,7])` runs at load into a swallowed `catch`. **Likely a broken export — ask for a corrected file.** |
+| 9 | Query after Evaluate in sidebar | **DONE** (V3-NAV) | Already satisfied by §2. Zero-cost. |
+| 10 | Evaluate page redev | **BUILD + DECIDE entry** · sidebar **DONE** (V3-NAV) | +533 B: new `AI Evaluate` toolbar button, select-all + "N selected" in column 1, sub-line *"evaluated decks move to the Assign screen"*. `evAiEvaluate()` → toast → `showPanel('assign')`. But the screen has no entry point (§2). |
 | 11 | Core Parameters: AI prompts per seat | **BUILD** (console) | In the decoded console: Area-weights header `<th>Type</th>` → `<th>AI prompt</th>`, every one of the 13 rows gains an `AI prompt` button, plus `Restore all core AI prompts`. "prompt" occurs **91× in admin-v3 vs 7× in admin-v15**. Note the outer `panel-coreparams` drops `Type` *without* adding the column — the two surfaces disagree. |
 | 12 | Configurability toggles under Area Weights | **BUILD** (console) | New: `Seat configurability` card, columns `Parameter set · Standard · Pro · Premium`, rows `Core parameters` / `Addl. parameters`. Defaults stated: *Standard — none · Pro — core only · Premium — core + additional.* It is an **edit permission**, not per-tier prompt content. |
 | 13 | Visibility of other's evaluations | **BUILD** (console) — highest risk | New `Visibility for Incubator` (4×4) and `Visibility for VC` (5×5) matrices, *"Viewer (row) → can see scores of (column)"*. Footnote: *"Super User & Program Manager see everyone; Program Associate and Jury Member see no one — jury members cannot see each other (blind evaluation) until turned on here."* **This is the `role-boundary-leaks` class — enforce server-side, negative control mandatory.** |
@@ -74,7 +77,7 @@ a corrected file or a number. **MEASURE**: prototype unchanged, so the gap is in
 | 15 | Price config control panel | **BUILD** (console) | Rebuilt from an iframe into an inline section: `Paid trial`, `Individual plans — ₹ per period`, `Enterprise plans — ₹ annual`, and `Save & apply to My Account`. |
 | 16 | Setup → Team & Roles realigned | **BUILD** | Wizard step 4 becomes *Nominate your super user*; the add-member block is deleted (−45 lines) and replaced by a handoff card to **Team & roles**, which gains an inline add-member form. |
 | 17 | My account → Pricing revisited | **MEASURE** | The account overlay grew 56,019 → 71,008 bytes (**517 diff lines, unread**). It is item 15's other end: `prSave()` → `postMessage({type:'aisjPricing'})` → `acRefreshPricing()`. Do not let anyone estimate this without reading it. |
-| 18 | All decks → "Dashboard" | **BUILD** | Verbatim. Superuser-only per the client, so use `labelOverrides`, not `label`. |
+| 18 | All decks → "Dashboard" | **DONE** (V3-NAV, sidebar) · screen is V3-DASH | Verbatim. Superuser-only per the client, so use `labelOverrides`, not `label`. |
 | 19 | Dashboard stat boxes + screens | **BUILD + DECIDE** | Six boxes, new order/labels/colours: Uploaded · AI Evaluated · Not AI Evaluated · Incomplete · **Archived** · Shortlisted. **`Assigned` is deleted — reversing Aug-2026 issue 4**, which is quoted in `deckStats.ts:166-167`. Tables collapse 4 shapes → 2. Archived is excluded from every other count, so the tile **denominator changes**. |
 
 ---
@@ -97,6 +100,40 @@ Four of these are *"delete something the client previously asked us to build"*.
 - **Q7 — Assigned stat box (item 19).** Deleting it reverses Aug-2026 issue 4. Confirm.
 - **Q8 — Upload size (item 5).** Target ceiling, and acceptance that >24 MB decks cannot be AI-evaluated
   without a streaming/Files-API change.
+
+### Raised by `V3-NAV`
+
+- **Q11 — Is the Intro calls / Prog manager pipeline swap superuser-only or global?**
+  Built **superuser-only**, because the CONSTRAINTS block requires the four non-reshared incubator roles
+  to render exactly as they do today, and all four prototypes (`ICAdmin_V6`, `IC_PM_V5`, `IC_PA_V3`,
+  `IC_Jury_V4`) still order it `jurypipeline · forsignup · introcalls`. Only `AISJ_SuperuserV3` swaps
+  them. `parity-nav` does not assert order, so **neither answer moves the gate** — this is a product
+  call, and if the client wants it everywhere it is a one-line change (delete the
+  `NAV_ORDER_OVERRIDES` entry and reorder `INCUBATOR_NAV` itself).
+
+**Three findings from the v3 sidebar that are NOT on the client's 19-item list.** All three were found
+by diffing `_sidebar.html`, which is 2 changed lines; none of them is nav work, so none is built here.
+
+- **F-NAV-1 — `Core Parameters` and `My Parameters` are no longer panels.** v3 rewires both from
+  `showPanel('coreparams')` / `showPanel('myparams')` to `openParamAdmin('core')` / `openParamAdmin('addl')`,
+  which opens the admin console deep-linked to section `wt` with `readOnly:!CURRENT_USER_IS_ADMIN`.
+  Measured the §1(b) way: `showPanel('coreparams')` occurs **1× in v15 and 0× in v3**, same for
+  `myparams`. So both outer panels are unreachable in v3, exactly like `panel-evaluate`.
+  **This answers `V3-AW`'s Q61**: the two surfaces disagree because the outer `panel-coreparams` is dead
+  — the decoded console's Area-weights section is the only reachable one, so the console wins. `V3-AW`
+  owns the call; flagging it here so it is not re-derived.
+- **F-NAV-2 — Q5 and Q6 are the same question.** The only `showPanel('evaluate')` in v3 is inside
+  `upSendToEvaluate()` (`_scripts.js:743`), which has **zero callers**, and its body drives
+  `#up-rt-selinfo` — an id with **4 JS references and no markup anywhere in the file**. That is the
+  same dangling-id signature as the missing `#up-results` card in item 8. So the button that would call
+  `upSendToEvaluate()` lives in the markup that did not survive the export: **Q6's answer is whatever
+  Q5's turns out to be**, and the "broken export" reading in item 8 is now the stronger one.
+  (Note for the record: `upSendToEvaluate` does not exist in v15 at all, and in v15 the only
+  `showPanel('evaluate')` is the sidebar item. v3 did not orphan the screen by accident — it **moved**
+  the entry point to Upload and then shipped without the markup.)
+- **F-NAV-3 — the Dashboard badge became dynamic.** `<span class="bx bx-b">24</span>` →
+  `<span class="bx bx-b" id="sb-dash-count">7</span>`. The id has no writer anywhere in v3, so it is a
+  binding the prototype declares and never fills. Sidebar badges are W1-A's; `V3-DASH` owns the count.
 
 ---
 
@@ -426,3 +463,71 @@ BUILD
      inventions. Say which of ours must go.
      Then build what the measurement shows, smallest-first.
 ```
+
+---
+
+## 8. Progress
+
+| Session | Branch | State | Measured gate |
+|---|---|---|---|
+| `V3-NAV` | `parity/V3-NAV` | **complete** — items 9 and 18-label closed; 8-label and 10-sidebar closed | typecheck ✓ · lint ✓ · unit **2076 passed / 1 skipped** (2069+7 new) · build ✓ · roles **1115/1115** · `parity:nav` **62 known gaps, 0 unexpected, 0 fixed** · `parity:tokens` 27/27, 0 gaps · e2e — see below |
+
+### `V3-NAV` — what landed
+
+**Commit 1 (`32e79f2`), the one the other eight were waiting on.** `scripts/parity-lib.ts` repointed
+from `AISJ_IC_SuserV15` to `AISJ_SuperuserV3`, superuser row only. `parity:tokens` stayed 27/27 with
+zero gaps against the new file; `parity:nav` kept its 62 known gaps and surfaced exactly three
+unexpected ones — `label alldecks`, `label upload`, `extra evaluate` — which is the V3-NAV worklist and
+nothing else. Landed before any other work in this session.
+
+**Commit 2, the sidebar.** Four changes, all scoped to `incubator/superuser`:
+
+| | v15 / today | v3 / now |
+|---|---|---|
+| `alldecks` | All decks · `Layers` | **Dashboard** · `LayoutDashboard` |
+| `upload` | Upload | **Upload & Evaluate** |
+| `evaluate` | in the sidebar | **not in the sidebar** — route still live |
+| order | … jurypipeline · pmpipeline · introcalls … | … jurypipeline · **introcalls · pmpipeline** … |
+
+Item 9 ("shift Query after Evaluate") needed no work and no move: deleting the standalone Evaluate item
+leaves Query directly after Upload & Evaluate, which is what the prototype shows.
+
+**The design decision worth knowing about.** The BUILD block suggested `hiddenFor?: Role[]` be honoured
+by `canSeeNav`. It must not be, and the reason is measurable: `canSeeNav` is also the route guard
+(`routes/guards.tsx`), the analytics gate (`routes/analytics.ts`) and the roles harness's invariant
+*"superuser sees every non-portal, non-exclusive item"* (`role-matrix.ts:264-271`). Honouring
+`hiddenFor` there would 404 `/app/evaluate` — which the plan explicitly requires to stay alive for
+`V3-UP` — and drop `npm run roles` to 1114/1115. So the split is:
+
+- `canSeeNav` / `canAccessNav` / `reachableNav` → **reachability**, unchanged for every role.
+- `isInSidebar` / `navForUser` → **the sidebar**, which is reachability minus `hiddenFor`, reordered.
+
+`navForUser` is therefore no longer a synonym for "can reach", and two callers outside this session's
+ownership are relying on the old meaning — both are §9 rows below.
+
+**Verification.**
+- Every role's sidebar was diffed against `main`'s `nav.ts` compiled side by side, as `id:label:icon`
+  in draw order. **Exactly one of the thirteen changed:** `incubator/superuser` (25 → 24 items).
+  `incubator/{admin, program_manager, program_associate, jury, founder}` and all six VC roles are
+  identical — which is the CONSTRAINTS block's requirement, measured rather than asserted.
+- The resulting superuser order matches `AISJ_SuperuserV3/_sidebar.html` item for item, with the
+  prototype's `forsignup` mapped to `pmpipeline` and the two recorded parity extras (`billing`,
+  `issues`) in their app positions.
+- **Negative control run on all three mechanisms.** Reverting `hiddenFor` fails 3 tests; reverting the
+  order override fails 2; reverting the label/icon overrides fails 1 — verified by evaluating
+  `navLabel`/`navIcon` directly to confirm all three overrides were really gone, not just one. No
+  assertion here passes with its fix removed.
+- `npm run roles` was run against a dev server proved to be this worktree's own (PID 31287, `lsof` cwd
+  `/Users/jayanthkomarraju/Documents/GitHub/sj-V3-NAV`, port 5273), and the output shows
+  `C. RUNTIME PROBE · target: http://localhost:5273` — not the serverless run that fakes a pass.
+
+**Migration 0066 was NOT taken.** This session changes a manifest and two scripts — no schema, no data.
+`main` still ends at `0065` and `ALLOTMENT_CEILING` is untouched at 65, so 0066 is free for whoever
+needs it next.
+
+**Not done, deliberately.** The `Dashboard` icon is delivered as data (`iconOverrides`) and covered by
+tests, but `Sidebar.tsx` still renders `item.icon`, so the rendered icon does not change until the §9
+patch is applied. `Sidebar.tsx` is not this session's to edit. Three §9 rows are filed in
+`docs/plan_parity.md`, and **the first is a P0 regression this session caused**: `DashboardPage.tsx:922`
+resolves a route through `navForUser`, which no longer means "can reach", so the incubator superuser
+loses the report modal's "Score in Evaluate" link until that one-word patch lands.

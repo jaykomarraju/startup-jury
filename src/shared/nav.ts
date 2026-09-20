@@ -52,6 +52,23 @@ export interface NavItem {
   task?: string;
   /** Per-role label overrides (e.g. jury sees "My Pipeline" for All decks). */
   labelOverrides?: Partial<Record<Role, string>>;
+  /** Per-role icon overrides, same shape and same reason as `labelOverrides`. */
+  iconOverrides?: Partial<Record<Role, string>>;
+  /**
+   * Roles that may still REACH this screen but do not see it in the sidebar.
+   *
+   * ── Why this is not part of `canSeeNav` (V3-NAV) ────────────────────────
+   * V3 deletes the standalone `Evaluate` sidebar item for the incubator
+   * superuser, but the SCREEN must keep working: in the prototype it is reached
+   * from Upload (`upSendToEvaluate()`), and V3-UP owns that entry point. So this
+   * is a rendering rule, not a permission — `canSeeNav` (the route guard in
+   * `routes/guards.tsx`, the analytics gate in `routes/analytics.ts`, and the
+   * roles harness invariant "superuser sees every non-portal, non-exclusive
+   * item") deliberately ignores it. Only `navForUser`, which IS the sidebar,
+   * honours it. Putting it in `canSeeNav` would 404 the route and drop
+   * `npm run roles` to 1114/1115.
+   */
+  hiddenFor?: Role[];
   /** Portal items are shown ONLY to the listed roles (no superuser bypass). */
   portal?: "founder";
   /** Role-exclusive item: only listed roles see it, no superuser bypass
@@ -63,17 +80,30 @@ export interface NavItem {
 const INCUBATOR_NAV: NavItem[] = [
   // Workflows
   {
+    // V3 item 18 — the reshared superuser prototype renames this "Dashboard"
+    // (`si-alldecks`, icon `ti-layout-dashboard`). SUPERUSER ONLY: the admin,
+    // program-manager, program-associate and jury prototypes were not reshared
+    // and still say "All decks" with `ti-stack`, so this is an override, not a
+    // new `label`/`icon`. Changing those would open four fresh parity gaps.
     id: "alldecks",
     label: "All decks",
     icon: "Layers",
     section: "Workflows",
     roles: ["admin", "program_manager", "program_associate", "jury"],
-    labelOverrides: { jury: "My Pipeline" },
+    labelOverrides: { jury: "My Pipeline", superuser: "Dashboard" },
+    iconOverrides: { superuser: "LayoutDashboard" },
   },
   // Evaluation
-  { id: "upload", label: "Upload", icon: "Upload", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"], task: "upload" },
+  // V3 item 8 — "Upload & Evaluate", superuser only (see `alldecks` above).
+  { id: "upload", label: "Upload", icon: "Upload", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"], task: "upload", labelOverrides: { superuser: "Upload & Evaluate" } },
+  // V3 item 9 — "Query after Evaluate" is satisfied by the deletion below, not
+  // by a move: with the standalone Evaluate item gone, Query already sits
+  // directly after Upload & Evaluate.
   { id: "query", label: "Query", icon: "MessageSquare", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"], task: "query" },
-  { id: "evaluate", label: "Evaluate", icon: "ClipboardCheck", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"], task: "evaluate" },
+  // V3 item 10 — the superuser sidebar drops the standalone Evaluate item. The
+  // ROUTE stays reachable for them (see `hiddenFor`): the prototype reaches the
+  // screen from Upload via `upSendToEvaluate()`, which is V3-UP's Q6.
+  { id: "evaluate", label: "Evaluate", icon: "ClipboardCheck", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"], task: "evaluate", hiddenFor: ["superuser"] },
   { id: "assign", label: "Assign", icon: "UserPlus", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"], task: "assign" },
   { id: "jassigned", label: "Assigned", icon: "UserCheck", section: "Evaluation", roles: ["jury"], task: "evaluate", exclusive: true },
   {
@@ -232,6 +262,44 @@ const NAV_BY_EDITION: Record<Edition, NavItem[]> = {
   vc: VC_NAV,
 };
 
+/**
+ * Per-(edition, role) sidebar ORDER overrides (V3-NAV).
+ *
+ * The manifest is one ordered array per edition, so a role-specific order needs
+ * a role-specific rule. The listed ids are re-laid into the slots they ALREADY
+ * occupy, in the order given; every other item keeps its position exactly. A
+ * listed id the role cannot see is skipped, so this can never open a hole, and
+ * an override that touches no leading item can never change `landingNavId`.
+ *
+ * `incubator/superuser`: V3 swaps Intro calls above Prog manager pipeline
+ * (`_sidebar.html`: … jurypipeline · introcalls · forsignup · incuration …).
+ * The four non-reshared incubator prototypes all still order it the other way,
+ * so this is superuser-only — see §4 Q11, which asks whether it should be
+ * global. `parity-nav` does not assert order, so neither answer moves the gate.
+ */
+const NAV_ORDER_OVERRIDES: Partial<Record<Edition, Partial<Record<Role, readonly string[]>>>> = {
+  incubator: {
+    superuser: ["introcalls", "pmpipeline"],
+  },
+};
+
+/** Apply `NAV_ORDER_OVERRIDES` to an already-filtered list. Position-preserving. */
+function applySidebarOrder(edition: Edition, role: Role, items: NavItem[]): NavItem[] {
+  const order = NAV_ORDER_OVERRIDES[edition]?.[role];
+  if (!order) return items;
+  const slots: number[] = [];
+  for (const [n, item] of items.entries()) if (order.includes(item.id)) slots.push(n);
+  // Deduplicated and filtered to what this role actually sees, so `moved` and
+  // `slots` are the same set by construction and the zip below cannot misalign.
+  const moved = [...new Set(order)]
+    .map((id) => items.find((i) => i.id === id))
+    .filter((i): i is NavItem => i !== undefined);
+  if (moved.length !== slots.length) return items;
+  const out = items.slice();
+  slots.forEach((slot, k) => (out[slot] = moved[k]));
+  return out;
+}
+
 /** Fixed section order used to group the sidebar. */
 export const NAV_SECTIONS: NavSection[] = [
   "Workflows",
@@ -266,9 +334,42 @@ export function navLabel(role: Role, item: NavItem): string {
   return item.labelOverrides?.[role] ?? item.label;
 }
 
-/** All nav items visible to a (edition, role), in manifest order. */
-export function navForUser(edition: Edition, role: Role, can?: PermissionLookup): NavItem[] {
+/** The icon a given role sees for an item (applies per-role overrides). */
+export function navIcon(role: Role, item: NavItem): string {
+  return item.iconOverrides?.[role] ?? item.icon;
+}
+
+/**
+ * Whether an item is LISTED IN THE SIDEBAR for a role — reachability (above)
+ * minus the per-role `hiddenFor` rule. This is the narrower of the two: an item
+ * can be reachable and unlisted, never the reverse.
+ */
+export function isInSidebar(role: Role, item: NavItem, can?: PermissionLookup): boolean {
+  return canSeeNav(role, item, can) && !item.hiddenFor?.includes(role);
+}
+
+/**
+ * Every screen a (edition, role) can REACH by route, in manifest order —
+ * including any the sidebar hides. Use this to resolve a slug to link to; use
+ * `navForUser` to draw the sidebar.
+ */
+export function reachableNav(edition: Edition, role: Role, can?: PermissionLookup): NavItem[] {
   return NAV_BY_EDITION[edition].filter((item) => canSeeNav(role, item, can));
+}
+
+/**
+ * THE SIDEBAR: the items a (edition, role) sees, in the order they are drawn.
+ *
+ * Since V3-NAV this is `reachableNav` minus `hiddenFor`, then reordered per
+ * `NAV_ORDER_OVERRIDES`. It is no longer a synonym for "can reach" — a caller
+ * that wants a route to link to wants `reachableNav`.
+ */
+export function navForUser(edition: Edition, role: Role, can?: PermissionLookup): NavItem[] {
+  return applySidebarOrder(
+    edition,
+    role,
+    NAV_BY_EDITION[edition].filter((item) => isInSidebar(role, item, can)),
+  );
 }
 
 /** Resolve a nav item by id within an edition (for route guards). */
@@ -276,7 +377,12 @@ export function navItemById(edition: Edition, id: string): NavItem | undefined {
   return NAV_BY_EDITION[edition].find((item) => item.id === id);
 }
 
-/** Whether a (edition, role) may access the route slug `id` (route guard). */
+/**
+ * Whether a (edition, role) may access the route slug `id` (route guard).
+ *
+ * Reachability, NOT sidebar visibility: `/app/evaluate` stays open to the
+ * incubator superuser whose sidebar no longer lists it (V3 item 10).
+ */
 export function canAccessNav(edition: Edition, role: Role, id: string, can?: PermissionLookup): boolean {
   const item = navItemById(edition, id);
   return item ? canSeeNav(role, item, can) : false;
