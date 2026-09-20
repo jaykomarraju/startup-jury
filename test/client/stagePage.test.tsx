@@ -7,8 +7,11 @@ import {
   VC_STAGE_CONFIG,
   type StageConfig,
 } from "../../src/client/routes/StagePage";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { AuthContext, type AuthContextValue } from "../../src/client/auth/AuthProvider";
 import type { SignupSummary } from "../../src/client/routes/SignupWorkspace";
 import type { DeckView } from "../../src/client/types";
+import type { Role } from "../../src/shared/roles";
 
 /**
  * W7-F — the stage screen's config extension, and the two `W5-A` consumers.
@@ -398,4 +401,216 @@ describe("the W5-A consumers", () => {
     expect(screen.queryByTestId("pane-seat-allocated")).not.toBeInTheDocument();
     expect(screen.queryByTestId("pane-seatless")).not.toBeInTheDocument();
   });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * V3 item 2 — Jury Pipeline, SUPERUSER ONLY.
+ *
+ * `AISJ_SuperuserV3` `panel-jurypipeline` deletes `<th>Status</th>`, collapses
+ * `jpRender`'s juror pills to Evaluated / Pending, and drops the Action select
+ * from five options to two. Only the superuser prototype was reshared, so the
+ * last test here is the negative control: admin, program manager and jury must
+ * still draw the v15 screen, Status column and legend included.
+ *
+ * Every assertion is gated on a POPULATED row, never on the toolbar title.
+ */
+describe("V3 · Jury Pipeline is redrawn for the superuser and for nobody else", () => {
+  /** A deck under jury evaluation: superuser may shortlist or reject it. */
+  const underJury = (over: Partial<DeckView> = {}) =>
+    deck({
+      id: "d-jury",
+      name: "InsureFlow",
+      statusId: "jury_evaluation",
+      status: "Jury Evaluation",
+      assignedToName: "Rajesh Kumar",
+      assigneeSubmitted: true,
+      actions: [
+        { action: "shortlist", label: "Shortlist", to: "shortlisted" },
+        { action: "reject", label: "Reject", to: "rejected" },
+      ],
+      ...over,
+    });
+
+  /** A deck still at Assigned: the stage Assign can still act on. */
+  const assigned = (over: Partial<DeckView> = {}) =>
+    deck({
+      id: "d-assigned",
+      name: "TaxPilot",
+      statusId: "assigned",
+      status: "Assigned",
+      assignedToName: "Rajesh Kumar",
+      assigneeSubmitted: false,
+      actions: [{ action: "start_jury_eval", label: "Begin jury evaluation", to: "jury_evaluation" }],
+      ...over,
+    });
+
+  function renderAs(role: Role) {
+    const auth: AuthContextValue = {
+      user: { id: "u1", name: "Priya Sharma", initials: "PS", role, edition: "incubator" },
+      loading: false,
+      login: () => Promise.reject(new Error("not used in these tests")),
+      logout: () => Promise.resolve(),
+      updateUser: () => {},
+    };
+    return render(
+      <AuthContext.Provider value={auth}>
+        <MemoryRouter initialEntries={["/app/jurypipeline"]}>
+          <Routes>
+            <Route path="/app/jurypipeline" element={<StagePage config={INCUBATOR_STAGE_CONFIG.jurypipeline} />} />
+            <Route path="/app/assign" element={<div>Assign screen</div>} />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>,
+    );
+  }
+
+  const optionsOf = (row: HTMLElement) =>
+    within(row)
+      .getAllByRole("option")
+      .map((o) => o.textContent);
+
+  it("drops the Status column — the prototype's eight headers, Status absent", async () => {
+    mockApi([underJury(), assigned()]);
+    renderAs("superuser");
+    await screen.findByRole("row", { name: /InsureFlow/ });
+
+    expect(headers(screen.getByRole("table"))).toEqual([
+      "Startup",
+      "Jury members & status",
+      "AI score",
+      "Jury score",
+      "Avg. score",
+      "Addl. Parameter scores",
+      "Assigned date",
+      "Action",
+    ]);
+    expect(screen.queryByRole("columnheader", { name: "Status" })).not.toBeInTheDocument();
+  });
+
+  it("the juror pill reads Evaluated / Pending, not Submitted", async () => {
+    mockApi([underJury(), assigned()]);
+    renderAs("superuser");
+    await screen.findByRole("row", { name: /InsureFlow/ });
+
+    expect(within(screen.getByRole("row", { name: /InsureFlow/ })).getByText("Evaluated")).toBeInTheDocument();
+    expect(within(screen.getByRole("row", { name: /TaxPilot/ })).getByText("Pending")).toBeInTheDocument();
+    expect(screen.queryByText("Submitted")).not.toBeInTheDocument();
+  });
+
+  it("the Action select offers exactly two options, and none of the three v15 deleted", async () => {
+    mockApi([underJury(), assigned()]);
+    renderAs("superuser");
+    await screen.findByRole("row", { name: /InsureFlow/ });
+
+    // `jpToIntroCalls` → the `shortlist` transition, which is what puts a deck
+    // on the Intro calls screen (`INCUBATOR_CALLS_CONFIG.introcalls`).
+    expect(optionsOf(screen.getByRole("row", { name: /InsureFlow/ }))).toEqual([
+      "Action ▾",
+      "Send to intro calls",
+    ]);
+    // `addToAssign` + `showPanel('assign')`, offered from an ASSIGNABLE_STAGES stage.
+    expect(optionsOf(screen.getByRole("row", { name: /TaxPilot/ }))).toEqual([
+      "Action ▾",
+      "Reassign / add jury",
+    ]);
+
+    // The three v15 options v3 deletes, plus the transition label the prototype
+    // never had — none of them anywhere on the screen.
+    for (const gone of ["View deck", "Shortlist", "Reject", "Begin jury evaluation"]) {
+      expect(screen.queryByRole("option", { name: gone })).not.toBeInTheDocument();
+    }
+  });
+
+  it("Send to intro calls posts `shortlist`, and the cell becomes the flow tag", async () => {
+    const live = [underJury()];
+    const posted: { url: string; body: unknown }[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if ((init?.method ?? "GET") === "POST") {
+        posted.push({ url, body: JSON.parse(String(init?.body ?? "{}")) });
+        // The server moves the deck on; the reload that follows sees it there.
+        live[0] = underJury({ statusId: "shortlisted", status: "Shortlisted", actions: [] });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      const body =
+        url === "/api/decks" || url.startsWith("/api/decks?") ? { decks: live } : {};
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    renderAs("superuser");
+    const row = await screen.findByRole("row", { name: /InsureFlow/ });
+    fireEvent.change(within(row).getByRole("combobox"), { target: { value: "shortlist" } });
+
+    await screen.findByText("Sent to intro calls");
+    expect(posted).toEqual([{ url: "/api/decks/d-jury/transition", body: { action: "shortlist" } }]);
+    // A decided row offers nothing further — the select is gone with it.
+    expect(within(screen.getByRole("row", { name: /InsureFlow/ })).queryByRole("combobox")).toBeNull();
+  });
+
+  it("Reassign / add jury navigates to Assign and moves nothing", async () => {
+    const calls = mockApi([assigned()]);
+    renderAs("superuser");
+    const row = await screen.findByRole("row", { name: /TaxPilot/ });
+    fireEvent.change(within(row).getByRole("combobox"), { target: { value: "__reassign" } });
+
+    // `addToAssign` + `showPanel('assign')`: the deck is already assignable, so
+    // the screen change IS the whole action — no transition is posted.
+    await screen.findByText("Assign screen");
+    expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+  });
+
+  it("a rejected deck still reads as decided, and the footer keeps its sentence while the legend goes", async () => {
+    mockApi([
+      underJury(),
+      deck({ id: "d-sl", name: "GreenRoute", statusId: "shortlisted", status: "Shortlisted", actions: [] }),
+      deck({ id: "d-rj", name: "CreditBridge", statusId: "rejected", status: "Rejected", actions: [] }),
+    ]);
+    renderAs("superuser");
+    await screen.findByRole("row", { name: /CreditBridge/ });
+
+    expect(within(screen.getByRole("row", { name: /GreenRoute/ })).getByText("Sent to intro calls")).toBeInTheDocument();
+    expect(within(screen.getByRole("row", { name: /CreditBridge/ })).getByText("Rejected")).toBeInTheDocument();
+    // `jpFoot` is byte-identical in v3 — it counts rows in the stage, which the
+    // deleted column never provided.
+    expect(screen.getByTestId("stage-footer-stat")).toHaveTextContent(
+      "3 decks · 1 shortlisted · 1 rejected · 1 in progress",
+    );
+    // …but the colour key for a pill that no longer exists does not survive.
+    expect(screen.queryByTestId("stage-legend")).not.toBeInTheDocument();
+  });
+
+  // ── The negative control ──────────────────────────────────────────────────
+  it.each(["admin", "program_manager", "jury"] as const)(
+    "%s still draws the v15 screen — nine headers, Status, and the legend",
+    async (role) => {
+      mockApi([underJury(), assigned()]);
+      renderAs(role);
+      await screen.findByRole("row", { name: /InsureFlow/ });
+
+      expect(headers(screen.getByRole("table"))).toEqual([
+        "Startup",
+        "Jury members & status",
+        "AI score",
+        "Jury score",
+        "Avg. score",
+        "Addl. Parameter scores",
+        "Assigned date",
+        "Status",
+        "Action",
+      ]);
+      expect(within(screen.getByTestId("stage-legend")).getAllByText(/./).map((n) => n.textContent)).toEqual([
+        "Assigned",
+        "Shortlisted",
+        "Rejected",
+        "Pending",
+      ]);
+      // The v15 transitions, as buttons — not the two-option select.
+      expect(screen.getByRole("button", { name: "Shortlist" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+      expect(within(screen.getByRole("row", { name: /InsureFlow/ })).getByText("Submitted")).toBeInTheDocument();
+      expect(screen.queryByRole("option", { name: "Send to intro calls" })).not.toBeInTheDocument();
+    },
+  );
 });
