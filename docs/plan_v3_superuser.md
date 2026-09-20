@@ -214,6 +214,56 @@ the score-visibility filter. Touch only your own; anything else is a §9 request
 **Question numbering** (so no session renumbers another's): `V3-NAV` Q11 · `V3-REP` Q21 · `V3-DASH` Q31 ·
 `V3-JP` Q41 · `V3-UP` Q51 · `V3-AW` Q61 · `V3-SF` Q71 · `V3-PT` Q81 · `V3-FLOW` Q91. §4 holds Q1–Q8.
 
+---
+
+## 8. Progress — measured gates, one row per session
+
+Every number here was MEASURED on the session's own branch, never copied from a
+prompt. Baselines off `main` at the start of the wave: unit **2069 passed /
+1 skipped**, roles **1115/1115**, `parity:tokens` 0 gaps, `parity:nav` 62 known
+gaps, e2e ~224.
+
+| Session | Items | Migration | typecheck · lint | unit | roles | e2e | notes |
+|---|---|---|---|---|---|---|---|
+| `V3-SF` | 13 done · 3, 4 recorded | 0072 | clean · clean | **2093 passed / 1 skipped** (+24) | **1115 / 1115** | _pending — see below_ | negative control run on all four filters, the console gate and the audit trail |
+
+### `V3-SF` — what the negative control actually proved
+
+The point of this session is a permission, so "the tests pass" is worth nothing
+on its own. Each filter was reverted and the suite re-run:
+
+| reverted | tests that failed |
+|---|---|
+| `decks.ts` report filter → the old ladder | *the matrix decides the report, cells included* · *turning a cell ON hands over columns that were withheld* · *turning a cell OFF withholds a column the default allowed* |
+| the three `analytics.ts` filters → the old ladder | */evaluators names only evaluators the viewer's row allows* · */drift's mean MOVES with the matrix* |
+| the `showMatrices` superuser gate → always on | *the roles whose prototype was NOT reshared see the section exactly as today* |
+| the `auditScoreVisibility` call → dropped | *audits the CELLS that moved, by name* |
+
+`/drift` is asserted on a MEAN, not a row count: every seeded incubator deck
+carries a programme-associate evaluation, so the row set never moves and a
+count assertion would pass with the filter gone. That is the vacuous-test shape
+Wave 9 integration caught on the first issue-21 test, and it is the reason this
+file asserts cell OWNERS on the report rather than column headers alone.
+
+### `V3-SF` — measurements worth keeping
+
+- **`s-fw` is byte-identical (md5 `c3b534ba…`) in six prototypes**: the incubator
+  admin, PM and PA, the incubator superuser **v15**, and BOTH VC consoles. Only
+  `AISJ_SuperuserV3` (`de4dfe4e…`) differs. That is the whole justification for
+  gating the matrices on incubator-superuser, and it is checkable in one command.
+- **v15 already shipped `Jury can see each other's scores` OFF** (`class="tog"`,
+  no `on`) while `canSeeEvaluatorScores` returned `true` for jury→jury. So the
+  repo has diverged from the prototype on the blind-evaluation point since
+  before v3; v3's footnote only made it explicit.
+- **At the shipped settings the deck report does not move at all.** The four
+  default cells that change (§4 Q71) are masked on that surface by
+  `jurySeesPeerScores`, which ships OFF. They are visible on `/cohort`,
+  `/drift` and `/evaluators`, which never applied that toggle — which is Q75.
+- Items 3 and 4 were re-measured and confirmed exactly as §3 describes: the two
+  selects are byte-identical v15→v3, and the AI-weight select carries no
+  `selected` attribute.
+
+
 ### The block every prompt carries
 
 ```

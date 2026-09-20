@@ -221,7 +221,17 @@ const EXPECTED: Record<string, Screen> = {
   "incubator/superuser/account": { title: "Create your account", tables: [] },
   "incubator/superuser/admin": {
     title: "Admin console",
-    tables: [["MEMBER", "ROLE", "ORGANIZATIONAL TITLE", "TYPE", "STATUS", "ACTION"]],
+    tables: [
+      ["MEMBER", "ROLE", "ORGANIZATIONAL TITLE", "TYPE", "STATUS", "ACTION"],
+      // `V3-SF` · V3 item 13 — the console's default section is `fw`
+      // (`DEFAULT_ADMIN_SECTION`), which now carries the two `Score visibility
+      // matrix` cards. Captured from the walk itself, unioned with the Team &
+      // roles set already here. INCUBATOR SUPERUSER ONLY: the same walk reads
+      // `tables: []` for `incubator/admin`, whose `s-fw` was not reshared, so
+      // that row is deliberately untouched.
+      ["ROLE", "SUPER USER", "PROGRAM MGR", "PROGRAM ASSOC", "JURY MEMBER"],
+      ["ROLE", "MNG PARTNER", "IC", "PARTNER", "INV. ASSOC", "ANALYST"],
+    ],
   },
   "incubator/superuser/billing": { title: "Choose your plan", tables: [] },
   "incubator/superuser/contactadmin": { title: "Contact Admin", tables: [] },
