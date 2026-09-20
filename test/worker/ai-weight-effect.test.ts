@@ -45,10 +45,8 @@ afterEach(async () => {
 });
 
 describe("ai_weight_pct — what it actually moves", () => {
-  it("the re-score it triggers is not a function of the weight — 0% and 50% store the same", async () => {
+  it("does NOT move any STORED score — and that is correct, not the defect", async () => {
     const cookie = await login(ADMIN);
-
-    // Save at 0% AI ("jury only"), snapshot every stored score...
     let res = await SELF.fetch(`${BASE}/api/config/scoring-framework`, {
       method: "PUT",
       headers: { "content-type": "application/json", cookie },
@@ -57,7 +55,6 @@ describe("ai_weight_pct — what it actually moves", () => {
     expect(res.status).toBe(200);
     const atZero = await storedScores();
 
-    // ...then at 50/50, the split the client asked to standardise on.
     res = await SELF.fetch(`${BASE}/api/config/scoring-framework`, {
       method: "PUT",
       headers: { "content-type": "application/json", cookie },
@@ -66,29 +63,40 @@ describe("ai_weight_pct — what it actually moves", () => {
     expect(res.status).toBe(200);
     const atFifty = await storedScores();
 
-    // A re-score DOES run (composition changed) and it does move stored values
-    // slightly — it recomputes roll-ups from per-parameter scores. But it reads
-    // `compositeFormula` only; `rescoreEdition` references `ai_weight_pct` ZERO
-    // times. So the two extremes of this control store identical numbers.
+    // The weight blends AI with human at READ time; it is not baked into either
+    // stored number. `rescoreEdition` reads `compositeFormula` only (0 refs to
+    // `ai_weight_pct`), which is right — re-weighting must not rewrite history.
     expect(atFifty).toEqual(atZero);
   });
 
-  it("and the number a user reads on the deck list does not move either", async () => {
+  it("DOES move the blended decisionScore — but by ~0.1, which is why nobody sees it", async () => {
     const cookie = await login(ADMIN);
-
-    await setWeight(0); // "0% (jury only)" — one end of the offered range
-    const juryOnly = (await (await SELF.fetch(`${BASE}/api/decks`, { headers: { cookie } })).json()) as {
-      decks: Array<{ id: string; aiScore: number | null; humanAverage?: number | null }>;
+    const decisions = async () => {
+      const r = await SELF.fetch(`${BASE}/api/decks`, { headers: { cookie } });
+      const b = (await r.json()) as { decks: Array<{ id: string; decisionScore?: number }> };
+      return new Map(
+        b.decks.filter((d) => d.decisionScore !== undefined).map((d) => [d.id, d.decisionScore!]),
+      );
     };
 
+    await setWeight(0);
+    const zero = await decisions();
     await setWeight(50);
-    const fifty = (await (await SELF.fetch(`${BASE}/api/decks`, { headers: { cookie } })).json()) as {
-      decks: Array<{ id: string; aiScore: number | null; humanAverage?: number | null }>;
-    };
+    const fifty = await decisions();
 
-    // Same decks, same AI score, same human average at 0% and at 50% AI.
-    const shape = (d: { id: string; aiScore: number | null; humanAverage?: number | null }) =>
-      `${d.id}:${d.aiScore}:${d.humanAverage ?? null}`;
-    expect(fifty.decks.map(shape)).toEqual(juryOnly.decks.map(shape));
+    // It is WIRED: at least one deck's blended score changes.
+    const moved = [...zero].filter(([id, v]) => fifty.get(id) !== v);
+    expect(moved.length).toBeGreaterThan(0);
+
+    // And this is the client's report, quantified: on real data the AI and jury
+    // scores sit close together, so the whole 0%->50% sweep moves the number by
+    // a rounding-sized amount. Measured on the seed: 7.95 -> 7.88, 8.75 -> 8.73.
+    const biggest = Math.max(...moved.map(([id, v]) => Math.abs(fifty.get(id)! - v)));
+    expect(biggest).toBeLessThan(0.5);
+
+    // The defect is therefore VISIBILITY, not wiring: `decisionScore` is drawn
+    // as "Avg. score" on the Shortlisted / Stage / Calls screens and NOT in the
+    // Dashboard's default column set, so the screen an admin is most likely to
+    // be looking at while changing this setting never shows the number it moves.
   });
 });

@@ -562,29 +562,46 @@ answered query stays listed as **Responded** (F0214).
 
 ## 4.1 The client's answers — 2026-09-20 (Chandrasekhar PS)
 
-**Q3 / Q4 — and this one was misread, by us.** He did NOT want the options hidden
-as a design change. He asked for it as a WORKAROUND for a defect:
+**Q3 / Q4 — misread twice: first by us, then by our own first measurement.**
+He did NOT want the options hidden as a design change. He asked for it as a
+WORKAROUND for something he observed:
 
 > *"nothing was changing when I changed from 40:60 or 50:50 or any other option,
 > I saw no difference."*
 
-**He is right, and it is measured** — `test/worker/ai-weight-effect.test.ts`:
+**Measured — `test/worker/ai-weight-effect.test.ts`. The control IS wired; the
+problem is that its effect is invisible.**
 
-- Saving the framework at **0% AI** and at **50% AI** stores **byte-identical**
-  scores. The save DOES trigger `rescoreEdition`, and that re-score does move
-  stored roll-ups slightly — but it reads `compositeFormula` only.
-  **`rescoreEdition` references `ai_weight_pct` zero times.**
-- `GET /api/decks` returns **identical** `aiScore` and `humanAverage` at 0% and
-  at 50%. Nothing a user reads on the deck list moves.
-- `blendScore()` — the only function the weight drives — has exactly **two call
-  sites, both in `EvalScorecard.tsx`**, a live preview while an evaluator scores.
-  Plus `shortlistHint` / the shortlist transition, which move a hint, not a
-  headline number.
+| Claim | Verdict |
+|---|---|
+| It changes STORED scores | **No — and correctly so.** The weight blends at READ time; `rescoreEdition` reads `compositeFormula` only (0 references to `ai_weight_pct`). Re-weighting must not rewrite history. |
+| It changes the blended `decisionScore` | **Yes.** Seed, sweeping 0% → 50% AI: FinStack **7.95 → 7.88**, GreenGrid **8.75 → 8.73**. |
+| A user can SEE that change | **Barely, and usually not at all.** |
 
-**So: do NOT hide the options.** Fix the control so it does what it says. His
-ruling on the migration question: *"If you are making 50:50 as default, previous
-cohorts will remain same. only the new program or cohorts would take effect."* —
-**new programmes/cohorts only; never retro-score an existing cohort.**
+**Two reasons he saw nothing, and neither is "the setting is inert":**
+
+1. **Magnitude.** On real data the AI score and the jury average sit close
+   together, so the ENTIRE 0%→50% sweep moves the number by ~0.02–0.07 — smaller
+   than the rounding most cells display.
+2. **Placement.** `decisionScore` is drawn as *"Avg. score"* on the Shortlisted
+   table, StagePage, CallsPage, IcVotePage and EvaluatePage — **not in the V3
+   Dashboard's default 8-column set**, which is the screen an admin is most
+   likely to be on. `blendScore()` itself has only two call sites, both a live
+   preview inside `EvalScorecard` while an evaluator is mid-score.
+
+**So the fix is VISIBILITY, not hiding and not rewiring:** make the effect of the
+control observable where it is set (a live before/after in the console) and make
+sure the blended number is actually on screen where decisions are made. His
+ruling on migration stands either way: *"If you are making 50:50 as default,
+previous cohorts will remain same. only the new program or cohorts would take
+effect."*
+
+**A note on how this was nearly got wrong.** The first version of the test
+compared only `aiScore` and `humanAverage`, found them identical at 0% and 50%,
+and PASSED — implying the control did nothing. It was not until `decisionScore`
+was included that the truth appeared. **A green test that omits the field the
+feature actually writes is worse than no test**; it is the same shape as the
+Wave 9 vacuous-assertion trap, inverted.
 
 **Q4 (items 6, 7) — answered, and it is not a screen filter.** It is a guard on
 the BULK ACTION from the **Evaluated** stat box:
