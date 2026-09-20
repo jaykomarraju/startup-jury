@@ -476,7 +476,13 @@ describe("EvaluationDrawer empty states", () => {
       <EvaluationDrawer open onClose={() => {}} deck={{ id: "x", name: "Fresh Co" }} />,
     );
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByText("The AI has not written an overall remark for this deck yet.")).toBeInTheDocument();
+    // V3-REP: a deck with no AI score at all is not "the AI wrote no narrative"
+    // (F0197) — it is `AISJ_SuperuserV3`'s `hideAi`, which names the next step.
+    // The F0197 copy still covers an EVALUATED deck with no overall remark; both
+    // are pinned in `reportV3.test.tsx`.
+    expect(
+      within(dialog).getByRole("heading", { name: /^Overall AI remarks/ })!.closest("section")!.textContent,
+    ).toMatch(/Not evaluated yet\. Click AI Evaluate on the Evaluate page/);
     expect(within(dialog).getByText("This deck has not been scored yet.")).toBeInTheDocument();
     expect(within(dialog).getByText(/These auto-fill from the role/)).toBeInTheDocument();
     expect(within(dialog).getByText("No intro call remarks yet.")).toBeInTheDocument();

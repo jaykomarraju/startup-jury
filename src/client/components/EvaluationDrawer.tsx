@@ -10,7 +10,7 @@ import { ScoreNumber, coreParamScores, deckMeta, scoreBandColor } from "./DeckCa
 import { INTAKE_FIELD_LABELS } from "../../shared/intake";
 import { weightedTotal } from "../../shared/scoring";
 import { AuthContext } from "../auth/AuthProvider";
-import { getDeckReport, type DeckReportMatrix, type ReportRow } from "../api";
+import { getDeckReport, type DeckReportMatrix, type ReportGroup, type ReportRow } from "../api";
 
 /** One entry of a deck's upload history (Session 5 — deck versioning). */
 export interface DeckVersionSummary {
@@ -62,6 +62,17 @@ interface EvaluationDrawerProps {
 /** The viewer's own column in the consolidated report, when they have scored. */
 interface MyCell {
   value: number;
+  comment?: string;
+}
+
+/** One row of the Parameter evaluation table — an AI score, or a placeholder. */
+interface ParamRow {
+  id: string;
+  key?: string;
+  label: string;
+  weight: number;
+  /** Absent before the AI has evaluated the deck (v3's `hideAi`). */
+  value?: number;
   comment?: string;
 }
 
@@ -154,13 +165,43 @@ export function EvaluationDrawer({
   const coreKeys = report?.core ? new Set(report.core.map((r) => r.key)) : null;
   const scored = coreParamScores(scores, coreKeys);
   const aiTotal = aiTotalProp ?? (scored.length > 0 ? weightedTotal(scored) : deck.aiScore);
-  const weightSum = scored.reduce((sum, s) => sum + s.weight, 0);
-  const myRows = scored.flatMap((s) => {
+
+  // Blind scoring (F0106) reaches here two ways — the caller's deck detail and
+  // the report route, which enforces the same rule. Either is enough: a caller
+  // that does not fetch the detail must not lose the explanation.
+  const aiWithheld = aiScoreWithheld || report?.aiScoreWithheld === true;
+
+  // V3 (item 1) — the "not evaluated yet" report. `openReport(..., {hideAi:…})`
+  // still draws the whole report; only the AI's own numbers and remarks read as
+  // absent, and each of them carries copy pointing at AI Evaluate. Blind scoring
+  // empties the same cells for an unrelated reason and keeps its own wording, so
+  // it wins where both would apply.
+  const notAiEvaluated = aiTotal === undefined && scored.length === 0 && !aiWithheld;
+
+  // The Parameter evaluation rows. Normally the AI's per-parameter breakdown;
+  // before the AI has run, the core parameters themselves — the prototype draws
+  // all 13 either way, so the table keeps its shape and the viewer can read what
+  // is about to be scored instead of an empty panel.
+  const paramRows: ParamRow[] =
+    scored.length > 0
+      ? scored.map((s) => ({
+          id: s.key ?? s.label,
+          key: s.key,
+          label: s.label,
+          weight: s.weight,
+          value: s.value,
+          comment: s.comment ?? undefined,
+        }))
+      : (report?.core ?? []).map((r) => ({ id: r.key, key: r.key, label: r.name, weight: r.weight }));
+
+  const weightSum = paramRows.reduce((sum, s) => sum + s.weight, 0);
+  const myRows = paramRows.flatMap((s) => {
     const cell = s.key ? mine.get(s.key) : undefined;
     return cell ? [{ weight: s.weight, value: cell.value }] : [];
   });
   const myTotal = myRows.length > 0 ? weightedTotal(myRows) : undefined;
-  const additional = report?.additional?.find((g) => g.role === viewerRole)?.rows ?? [];
+  const myGroup = report?.additional?.find((g) => g.role === viewerRole);
+  const additional = myGroup?.rows ?? [];
   const meta = deckMeta(deck);
 
   return (
@@ -197,6 +238,12 @@ export function EvaluationDrawer({
         <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:overflow-hidden">
           {/* .jr-deck — the pitch deck and the Research menu */}
           <section className="flex min-h-0 flex-col gap-4 border-line bg-surface-2/40 p-4 lg:overflow-y-auto lg:border-r">
+            {/* .jr-deck-h — `DeckPdfViewer` already draws the prototype's
+                "Pitch deck · N slides" title with its icon, so this row carries
+                only the Research menu. Adding a second title here broke
+                `e2e/upload.spec.ts:143` on a strict-mode violation. Putting
+                Research INSIDE that header, where the prototype has it, means
+                editing DeckPdfViewer — not this session's file. See plan §3. */}
             <div className="flex items-center justify-end">
               <ResearchMenu deck={deck} />
             </div>
@@ -277,9 +324,11 @@ export function EvaluationDrawer({
                   <span className="text-xs font-normal text-fg-muted">/10</span>
                 </div>
                 <div className="mt-1 text-[11px] text-fg-muted">
-                  {aiScoreWithheld
+                  {aiWithheld
                     ? "Hidden until you submit your own evaluation"
-                    : `Weighted across ${scored.length} parameter${scored.length === 1 ? "" : "s"}`}
+                    : notAiEvaluated
+                      ? "Run AI Evaluate to score"
+                      : `Weighted across ${paramRows.length} parameter${paramRows.length === 1 ? "" : "s"}`}
                 </div>
               </div>
               <div className="rounded-lg border border-olive-md bg-olive-lt px-4 py-3">
@@ -292,7 +341,7 @@ export function EvaluationDrawer({
                   <span className="text-xs font-normal text-fg-muted">/10</span>
                 </div>
                 <div className="mt-1 text-[11px] text-fg-muted">
-                  {myRows.length} of {scored.length} parameters scored
+                  {myRows.length} of {paramRows.length} parameters scored
                 </div>
               </div>
             </div>
@@ -300,6 +349,11 @@ export function EvaluationDrawer({
             <ReportSection title="Overall AI remarks">
               {overallRemarks ? (
                 <p className="text-[12.5px] leading-relaxed text-fg-2">{overallRemarks}</p>
+              ) : notAiEvaluated ? (
+                <EmptyNote icon="info">
+                  Not evaluated yet. Click <b>AI Evaluate</b> on the Evaluate page to generate the AI
+                  scores and remarks &mdash; they&rsquo;ll then appear here and on the Assign page.
+                </EmptyNote>
               ) : (
                 <EmptyNote icon="info">
                   The AI has not written an overall remark for this deck yet.
@@ -330,11 +384,11 @@ export function EvaluationDrawer({
 
             <ReportSection
               title="Parameter evaluation"
-              hint="tap any parameter to read the AI remark and your own"
+              hint="tap any parameter to read the AI remark and add yours"
             >
-              {scored.length === 0 ? (
+              {paramRows.length === 0 ? (
                 <EmptyNote icon="info">
-                  {aiScoreWithheld
+                  {aiWithheld
                     ? "Blind scoring is on — the AI breakdown appears once you submit your own evaluation."
                     : "This deck has not been scored yet."}
                 </EmptyNote>
@@ -351,8 +405,8 @@ export function EvaluationDrawer({
                       </tr>
                     </thead>
                     <tbody>
-                      {scored.map((s, i) => {
-                        const id = s.key ?? s.label;
+                      {paramRows.map((s, i) => {
+                        const id = s.id;
                         const isOpen = expanded === id;
                         const my = s.key ? mine.get(s.key) : undefined;
                         return (
@@ -388,7 +442,10 @@ export function EvaluationDrawer({
                                   <div className="text-[11.5px]">
                                     <b className="text-fg">AI remark</b>
                                     <p className="mt-0.5 text-fg-2">
-                                      {s.comment || "No AI remark was recorded for this parameter."}
+                                      {s.comment ||
+                                        (notAiEvaluated
+                                          ? "Not evaluated yet — run AI Evaluate to generate the AI remark."
+                                          : "No AI remark was recorded for this parameter.")}
                                     </p>
                                   </div>
                                   <div className="mt-2 text-[11.5px]">
@@ -420,7 +477,10 @@ export function EvaluationDrawer({
               )}
             </ReportSection>
 
-            <ReportSection title="My parameters evaluation" hint="role-specific additional parameters">
+            <ReportSection
+              title="My parameters evaluation"
+              hint={<AdditionalHint group={myGroup} />}
+            >
               {additional.length === 0 ? (
                 <EmptyNote icon="info">
                   These auto-fill from the role&apos;s parameters in <b>My Parameters</b> once you select a
@@ -451,7 +511,7 @@ function ReportSection({
   children,
 }: {
   title: string;
-  hint?: string;
+  hint?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -465,6 +525,28 @@ function ReportSection({
   );
 }
 
+/**
+ * The small print beside "My parameters evaluation" — the prototype's three
+ * `custBlock` headers, chosen by the section's mode:
+ *   editable  → "{Role} · from My Parameters · auto-filled by assigned role"
+ *   read only → "{Role} · read only"
+ *   completed → "{Role} · completed by jury" + a Submitted badge
+ * With no section configured it falls back to the prototype's bare header.
+ */
+function AdditionalHint({ group }: { group?: ReportGroup }) {
+  if (!group) return <>role-specific additional parameters</>;
+  if (group.mode === "completed") {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        {group.roleLabel} · completed by jury
+        <Badge tone="positive">Submitted</Badge>
+      </span>
+    );
+  }
+  if (group.mode === "read_only") return <>{group.roleLabel} · read only</>;
+  return <>{group.roleLabel} · from My Parameters · auto-filled by assigned role</>;
+}
+
 function EmptyNote({ icon, children }: { icon: "info" | "clock"; children: ReactNode }) {
   const Icon = icon === "clock" ? Clock : Info;
   return (
@@ -475,7 +557,17 @@ function EmptyNote({ icon, children }: { icon: "info" | "clock"; children: React
   );
 }
 
+/**
+ * The prototype's `custBlock` table — Parameter · Weight · My score · ⌄, each
+ * row expanding to the viewer's own remark, and an "Average of my scores" total.
+ *
+ * The Weight cell reads "Informational" rather than a percentage: every
+ * additional parameter is seeded `weight = 0` (migration 0013) because they do
+ * not enter the composite, so "0%" would state the opposite of what it means.
+ * The prototype's role parameters carry invented weights. See plan §3 item 1.
+ */
 function AdditionalTable({ rows, viewerId }: { rows: ReportRow[]; viewerId: string | null }) {
+  const [open, setOpen] = useState<string | null>(null);
   const values = rows.flatMap((r) => {
     const v = viewerId ? r.cells[viewerId]?.value : undefined;
     return typeof v === "number" ? [v] : [];
@@ -489,27 +581,57 @@ function AdditionalTable({ rows, viewerId }: { rows: ReportRow[]; viewerId: stri
             <th className="px-3 py-2">Parameter</th>
             <th className="px-3 py-2 text-center">Weight</th>
             <th className="px-3 py-2 text-center">My score</th>
+            <th className="w-8 px-2 py-2" aria-label="Expand" />
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => (
-            <tr key={r.key} className="border-t border-line-soft">
-              <td className="px-3 py-2 text-fg">
-                <span className="mr-2 font-mono text-[9.5px] text-fg-muted">C{i + 1}</span>
-                {r.name}
-              </td>
-              <td className="px-3 py-2 text-center text-fg-muted">Informational</td>
-              <td className="px-3 py-2 text-center">
-                <ScoreNumber value={viewerId ? r.cells[viewerId]?.value : undefined} outOf={10} />
-              </td>
-            </tr>
-          ))}
+          {rows.map((r, i) => {
+            const cell = viewerId ? r.cells[viewerId] : undefined;
+            const isOpen = open === r.key;
+            return (
+              <Fragment key={r.key}>
+                <tr
+                  className="cursor-pointer border-t border-line-soft hover:bg-offwhite"
+                  onClick={() => setOpen(isOpen ? null : r.key)}
+                  aria-expanded={isOpen}
+                >
+                  <td className="px-3 py-2 text-fg">
+                    <span className="mr-2 font-mono text-[9.5px] text-fg-muted">C{i + 1}</span>
+                    {r.name}
+                  </td>
+                  <td className="px-3 py-2 text-center text-fg-muted">Informational</td>
+                  <td className="px-3 py-2 text-center">
+                    <ScoreNumber value={cell?.value} outOf={10} />
+                  </td>
+                  <td className="px-2 py-2 text-center text-fg-muted">
+                    <ChevronDown
+                      className={`inline h-3.5 w-3.5 transition-transform ${isOpen ? "rotate-180" : ""}`}
+                      aria-hidden="true"
+                    />
+                  </td>
+                </tr>
+                {isOpen && (
+                  <tr className="bg-offwhite">
+                    <td colSpan={4} className="px-3 py-2.5">
+                      <div className="text-[11.5px]">
+                        <b className="text-fg">My remarks for this parameter</b>
+                        <p className="mt-0.5 text-fg-2">
+                          {cell?.comment || "You have not added a remark for this parameter."}
+                        </p>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
           <tr className="border-t border-line bg-surface-2 font-semibold">
             <td className="px-3 py-2 text-fg">Average of my scores</td>
             <td className="px-3 py-2 text-center text-fg-muted">—</td>
             <td className="px-3 py-2 text-center">
               <ScoreNumber value={avg} outOf={10} />
             </td>
+            <td />
           </tr>
         </tbody>
       </table>

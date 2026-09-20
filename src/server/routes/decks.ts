@@ -829,7 +829,6 @@ decks.get("/:id/report", async (c) => {
     submittedAt?: string;
   }
 
-  const columns: Column[] = [{ id: "ai", kind: "ai", name: "AI", rank: 0 }];
   const seenEvaluators = new Map<string, Column>();
   let hidden = 0;
 
@@ -846,6 +845,27 @@ decks.get("/:id/report", async (c) => {
   // rather than score — admin, superuser — are outside the toggle entirely.
   const scoring = await loadScoringSettings(c.env.DB, edition);
   const peerRestricted = !scoring.jurySeesPeerScores && isAssignableEvaluator(edition, role);
+
+  // ── Blind scoring (F0106) — the third route that has to hold it ───────────
+  // "Show AI score to jury before they score" · off for blind independent jury
+  // evaluation. It was enforced on GET /api/decks/:id, and Wave 2 integration
+  // found and closed the same hole on the LIST route with the note that
+  // "withholding on the detail route alone does not make scoring independent".
+  // This route was missed, and it is the widest of the three: an evaluator who
+  // had not submitted still received every AI per-parameter score AND its
+  // rationale here, so opening the report was a way round the toggle from all
+  // seven screens that render it. Measured on the seed before the fix: 13 of 13
+  // AI cells, with comments, for a juror whose deck detail correctly said
+  // `aiScoreWithheld`. Dropped HERE, in the payload — the browser never gets it.
+  //
+  // Blindness is per (deck, evaluator) and lifts on submission; this deck's
+  // evaluations are already loaded, so it costs no extra query.
+  const blind = withholdsAiScore(scoring, {
+    isEvaluator: isAssignableEvaluator(edition, role),
+    hasSubmitted: evaluationRows.some((e) => e.evaluator_id === viewerId),
+  });
+
+  const columns: Column[] = blind ? [] : [{ id: "ai", kind: "ai", name: "AI", rank: 0 }];
 
   const addEvaluator = (person: {
     evaluator_id: string | null;
@@ -900,7 +920,7 @@ decks.get("/:id/report", async (c) => {
       submittedAt: e.submitted_at ?? undefined,
     });
   }
-  for (const col of [columns[0], ...visibleEvaluators]) {
+  for (const col of [...columns, ...visibleEvaluators]) {
     const t = totals.get(col.id);
     if (t) Object.assign(col, t);
   }
@@ -979,6 +999,9 @@ decks.get("/:id/report", async (c) => {
     hiddenEvaluators: hidden,
     // Why they are hidden: an independent scoring round rather than rank.
     peerScoresHidden: peerRestricted,
+    // The AI column is withheld until this evaluator submits (F0106), exactly
+    // as GET /api/decks/:id reports it.
+    ...(blind ? { aiScoreWithheld: true as const } : {}),
     scoring: {
       showThreeScoreView: scoring.showThreeScoreView,
       showScoreDrift: scoring.showScoreDrift,

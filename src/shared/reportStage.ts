@@ -23,6 +23,25 @@
  * also shows the jury section on Assign and draws three further stages (Sign
  * up, Sign up pipeline, Jury pipeline); the written spec shows PA + PM on
  * Assign and calls every other stage single-role.
+ *
+ * ── `AISJ_SuperuserV3` (2026-09-19), read but NOT applied — plan §8 / Q21 ────
+ *
+ * The reshared superuser prototype does **not** delete this machine, which is
+ * what a grep of the file suggests and what the V3 plan's §3 first said. Its
+ * `openReport` deletes `__introCols` and `__jTot` — the **Jury Avg.** and
+ * **Avg.** COLUMNS, so the core table is the same five columns at every stage
+ * — and keeps `suevSections(stage)`. That is the whole of "the evaluation
+ * report should be consistent at each stage": the shape stops varying, the
+ * CONTENT still does.
+ *
+ * v3 does make two changes here, and neither was applied because both are
+ * permission changes rather than visual ones (plan §4 Q23):
+ *   • `assign`: `editable(pa) + readOnly(pm) + juryDone()` → `editable(pa) +
+ *     editable(pm)` — the superuser may now score on both roles' behalf, and
+ *     the jury section is gone (which this file already does).
+ *   • `intro`:  `readOnly(pa)` → `editable(pa)`.
+ * It also drops `jurypipeline` from `suevStage()` entirely; `SCREEN_STAGE`
+ * below never had it, so that one is already aligned.
  */
 import { ADDITIONAL_PARAM_OWNERS, type Edition, type Role } from "./roles";
 
