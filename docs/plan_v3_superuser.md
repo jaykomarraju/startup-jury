@@ -1212,10 +1212,138 @@ Remedy is a one-off re-evaluation, not a backfill.
 ### 12.4 Already done, and a live defect found in passing
 
 - **Item 11 — done.** V4-WEIGHT shipped it; owes two written answers, zero code.
-- **Item 14 — ~90% done** by V3-PT; the remainder is close to a one-word gate change.
+- **Item 14 — DONE** by `S3-ACCOUNT`. Measured first: every screen v3 added was already built by
+  V3-PT, and the whole remainder was the AUDIENCE — one gate, now `superuser` **or** `admin`. The
+  measurement, the deviation it records, the seventh assertion nobody had counted, and two questions
+  for the client are **§12.5**.
 - **Live defect:** `AssignPage.tsx:526` navigates to `/app/query` with `state: { deckIds }` and
   `QueryPage.tsx` never reads it — zero hits across 1,084 lines. The hand-off silently drops the
   selection today. Item 5 lands right on it.
+
+
+### 12.5 `S3-ACCOUNT` — item 14 measured, and the one thing that was left
+
+**The measurement first, because the prompt's "~90% done" was right about the number and wrong about
+where the missing part was.** It is not 10% of the screens. **Every screen v3 added is built; the gap
+was the AUDIENCE.**
+
+*How it was measured, not assumed.* The `#acct-overlay` block was cut out of BOTH `AISJ_IC_SuserV15`
+and `AISJ_SuperuserV3` (via `split-prototypes.py` → `_rest.html`) and diffed tag-per-line. The whole
+v3 delta to My account is six things, and each was then looked for in the build by its own copy or
+`data-testid`:
+
+| v3's change to `#acct-overlay` | Built? | Where |
+|---|---|---|
+| `acs-account` — the `.ac-trial` "Evaluate 3 pitchdecks free" strip **deleted** | ✓ | `AccountOverlay.tsx` `trialDecks={seatFlow ? 0 : …}` |
+| `acs-plan` — "Choose your plan" → **"Choose your seat"**, `#itiers` + `#iprice`/`#iperiods` + `#ac-extra`, both footer buttons disabled until a seat AND a period are picked | ✓ | `SeatScreen`, `ac-tiers` / `ac-periods` / `ac-extra` / `ac-take-trial` |
+| `acs-trial` — **new screen**, the 3-deck counter and the "Trial complete" fork | ✓ | `ac-trial-count` / `ac-trial-done` / `ac-pay-chosen` / `ac-try-paid` |
+| `acs-paidtrial` — **new screen**, 10–50 decks at the paid-trial rate | ✓ | `ac-paid-packs`, "Try a paid trial" |
+| `acs-orgplan` — **"Choose your Enterprise plan"**, seat-count cards, `#ac-orgextra`, an amber "Take a 3-deck free trial" | ✓ | `EnterpriseSeatScreen`, `ac-orgextra` |
+| `#ac-osum` / `#ac-suc-decks` gain ids (renderer hooks only) | ✓ | n/a — React |
+
+The prototype's own constants match the build exactly: `IEXTRA_PACKS` `[125,250,375,500]` =
+`EXTRA_CREDIT_PACKS`, `PAID_PACKS` `[10,20,30,40,50]` = `PAID_TRIAL_PACKS`, `iTrialLeft` 3 =
+`FREE_TRIAL_DECKS`.
+
+**`acs-team` is NOT a gap — it is dead in the prototype.** "Add your team" is drawn in both V15 and
+V3, but `acGo('team')` has exactly one caller, `acRoleNext()`, and **`acRoleNext` is called from
+nowhere** (`grep -rn acRoleNext` → its own definition and one `window.` export, in both files). V3
+also carries the comment `<!-- 3. ROLE (removed from flow) -->` right above it. Dead state, not
+missing work; do not let a future audit re-open it.
+
+**So the remainder was the gate, and it is now widened.** `AccountOverlay.tsx` —
+`edition === "incubator" && role === "superuser"` → `edition === "incubator" && (role === "superuser"
+|| role === "admin")`.
+
+**This is a deliberate deviation from `AISJ_ICAdmin_V6`, and it must be recorded or reverted.** That
+file was never re-exported and still draws "Choose your plan" with zero occurrences of `acs-trial` or
+`itiers` — which is exactly why §4 Q85 gated it in the first place. The client's 21-Sep row for My
+account reads **Superuser/Admin**, so the instruction wins over the stale file, on the same rule
+§12.3 applied to item 13's "Not required". **The next parity capture of `AISJ_ICAdmin_V6` will try to
+put the old screen back.**
+
+It also closes an inconsistency **§4 Q86 had already named from the other side**. A price book is
+GLOBAL — one `pricing_versions` row is live for everybody — which is precisely why Q86 left the
+console's seat-price cards UNGATED for the admin. Until now that same admin could *edit* the seat
+prices and then not see a seat to *buy*.
+
+**What it costs, said plainly: the incubator's legacy plan screens are now unreachable.** `billing` is
+`roles: ["admin"]` plus the superuser bypass (`shared/nav.ts:173,175`), and `AccountPage.tsx` shows
+the overlay only to whoever passes `canAccessNav(…, "billing")` — so the incubator has no third
+audience for this overlay. The pre-V3 layout is still live code for the **VC** edition, which was not
+rescoped, and the negative controls **moved there** rather than being deleted: `accountOverlay.test.tsx`
+now holds four positive controls on the incubator admin and five negatives on `VC_ADMIN` /
+`VC_SUPERUSER`. Both directions were proved by reverting (below).
+
+**A seventh assertion nobody counted.** §4 Q85 and §12.4 both say six controls fail when this gate
+widens — `accountOverlay.test.tsx` ×4, `parity.spec.ts`, `roles.spec.ts`. There are **seven**:
+`e2e/upload.spec.ts:164` asserts the incubator admin's Buy credits link lands on "Choose your plan".
+Anyone re-scoping a gate in this repo should grep the assertion, not the file list.
+
+**No server gate moved, and `npm run roles` is unchanged at 1180/1180.** The whole account router is
+`requireTask("upgrade", "admin")` (`server/routes/account.ts:59`) with no role or plan-code
+restriction below it, so the incubator admin could always have ORDERED any SKU the catalogue sells —
+the widening changes only what the screen offers them. No probe was added because no `requireTask` or
+`requireRole` in this change set is new or different.
+
+**The payment section was NOT built** — it is entangled with item 9, which §12.1 hard-blocks. For
+whoever unblocks it: the prototype's `acs-payment` draws four selectable methods with UPI-app chips
+and a `Pay ₹1,178 & activate plan` button; the build deliberately renders the method as a *category*
+with no card/UPI/bank field (§1.2) and a receipt that says the order was recorded, never "Payment
+successful" (§1.3). That is a decision, not a gap, and item 9 should re-open it explicitly rather
+than treat the screen as unfinished.
+
+**Two questions for the client, neither invented:**
+
+1. **Does "Superuser/Admin" on the item-14 row name the AUDIENCE or the requester?** Read as the
+   audience — which is how this was built — the incubator admin gets v3's wizard. Read as "who asked
+   for it", item 14 was already 100% done and this commit should be reverted. The audience reading is
+   the one that makes the row informative (My account is *already* superuser+admin only, so the other
+   reading says nothing), and it is the one that resolves Q86's half-gated price book — but it is one
+   sentence to confirm and one commit to undo.
+2. **The receipt's "What happens next? Go to 'Set up'" list is already wrong, before `S2-SETUP`
+   touches it.** `AccountScreens.tsx:2011-2018` reproduces the prototype verbatim: *1. Select your
+   role · 2. Invite team members*. Our Set up wizard's steps are `Org type · Configure · Select ·
+   Team` — where **"Select" is "Select your active context"** (sector/programme/cohort), not a role
+   picker. There is no role-selection step for any role today, so step 1 of that list points at
+   nothing. `S2-SETUP` deletes steps 1 and 4, which additionally kills step 2 of the list. **The
+   sentence needs new copy either way**; it is prototype copy, so replacing it is a recorded
+   deviation and the client should say what the two steps should read. `S3-ACCOUNT` did not guess —
+   changing it before `S2-SETUP` lands would describe a wizard that still has four steps.
+
+**Gate, measured on `parity/S3-ACCOUNT`** (box idle — `TIME_WAIT` 1 before the run, 169 after; no
+sibling suite running, `lsof` showed no listener before the dev server and PID 27428's `cwd` proved
+to be this worktree before `roles` was trusted):
+
+| Leg | Result | Baseline |
+|---|---|---|
+| `npm run typecheck` | clean | clean |
+| `npm run lint` | clean | clean |
+| `npm test` | **2344 passed · 1 skipped** | 2340 · 1 skipped (**+4** = exactly the four added) |
+| `npm run build` | clean | clean |
+| `npm run roles` | **1180 / 1180**, 0 failed | 1180 / 1180 |
+| `npm run parity:tokens` | 0 gaps | 0 gaps |
+| `npm run parity:nav` | 62 known gaps | 62 known gaps |
+| `npm run test:e2e` | **223 passed · 6 flaky · 2 failed**, 10.0 min | ~226 |
+
+**Both e2e failures are the two §9 rows, and they are the predicted ones** — `roles.spec.ts:82` and
+`upload.spec.ts:164`, both asserting the incubator admin sees "Choose your plan". Neither file is
+this session's to own, so neither was edited; each is a §9 row in `plan_parity.md` carrying its exact
+diff, and they must be taken **together or not at all**. The six flaky all passed on retry and none
+is in this session's files: `admin-console`, `agreements`, `all-decks`, `coverage` ×2 and
+`evaluate-stage-report:36` — the last being the instability §9 has documented since Wave 9.
+
+**The negative controls were run, both ways, and both are real.**
+ · Revert the gate to superuser-only → the **four** new incubator-admin tests fail, the five VC
+   controls still pass (4 failed / 16 passed).
+ · Drop the `edition` guard so any superuser/admin gets the seat flow → the **five** VC controls fail
+   (5 failed / 15 passed). Without that second control the VC half of the gate would be decoration.
+
+**Coverage was moved, not dropped.** `roles.spec.ts`'s pay-as-you-go assertions (the tab is
+preselected, `ac-plan-pack_50` is ₹20,000, nothing says "Added 20 credits") had no subject left on
+the incubator admin's screen, so `e2e/account-purchase.spec.ts` — owned here — gained *"the VC
+admin's Buy credits still opens on the published credit packs"*, which carries all three onto the
+edition that still has that screen.
 
 
 ## 13. The 21-Sep wave — session prompts
@@ -1378,7 +1506,7 @@ CONSTRAINTS
   Select your role" — if you delete that step, S3 must change that sentence. Raise it in §9.
 ```
 
-### `S3-ACCOUNT` — item 14
+### `S3-ACCOUNT` — item 14 · **CLOSED** — see §12.5 (measurement, deviation, 2 questions)
 
 ```
 BUILD
@@ -1463,6 +1591,7 @@ gaps, e2e ~224.
 
 | Session | Items | Migration | typecheck · lint | unit | roles | e2e | notes |
 |---|---|---|---|---|---|---|---|
+| `S3-ACCOUNT` | **14 done** | none (no allotment taken; ceiling untouched at 76) | clean · clean | **2344 passed / 1 skipped** (+4) | **1180 / 1180** | **223 passed · 6 flaky · 2 failed** | The 2 failures are the two §9 rows in `plan_parity.md` — `roles.spec.ts:82` and `upload.spec.ts:164`, both asserting the incubator admin sees "Choose your plan". Neither file is this session's; both carry an exact diff and must be taken together. Measurement, the recorded deviation and two client questions: **§12.5**. Negative controls run BOTH ways (revert the gate → 4 fail; drop the edition guard → 5 VC controls fail). |
 | `V3-SF` | 13 done · 3, 4 recorded | 0072 | clean · clean | **2093 passed / 1 skipped** (+24) | **1115 / 1115** | **209 passed · 15 flaky · 2 failed** of 226 (+2) — both failures are dev-server casualties, see below | negative control run on all four filters, the console gate and the audit trail |
 
 ### `V3-SF` — what the negative control actually proved

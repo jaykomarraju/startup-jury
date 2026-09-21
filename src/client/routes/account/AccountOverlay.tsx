@@ -291,14 +291,30 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
   }, [screen]);
 
   /**
-   * **Only the incubator superuser prototype was reshared** (2026-09-19). The
-   * incubator admin, program manager, program associate and jury files, and
-   * every VC file, still draw "Choose your plan" over fixed packs and the
-   * pay-as-you-go ladder — so v3's seat flow is gated to exactly one audience
-   * and everyone else's screens render as they did yesterday. Widening this is
-   * §4 Q85; it needs the other prototypes reshared first.
+   * **S3-ACCOUNT — the audience, widened on the client's word, not the file's.**
+   *
+   * `V3-PT` gated v3's seat flow to `incubator` + `superuser` because only
+   * `AISJ_SuperuserV3.HTM` had been reshared (§4 Q85): `AISJ_ICAdmin_V6` still
+   * draws "Choose your plan" with zero occurrences of `acs-trial` or `itiers`.
+   * The client's 21-Sep row for **My account** says **Superuser/Admin**, so the
+   * incubator ADMIN gets the same wizard — the instruction beats a prototype
+   * file that was never re-exported, the same way item 13's "Not required"
+   * beats the console copy it contradicts. **Recorded as a deviation in §12.4**;
+   * the next parity capture of `AISJ_ICAdmin_V6` will otherwise revert it.
+   *
+   * It also closes an inconsistency §4 Q86 had already named from the other
+   * side. A price book is GLOBAL — one `pricing_versions` row is live for
+   * everybody — which is why the console's seat-price cards were deliberately
+   * left UNgated for the admin. Until now that admin could EDIT the seat prices
+   * and then not see a seat to buy: a partial view of one set of numbers.
+   *
+   * **In the incubator this makes the legacy plan screens unreachable**, because
+   * `billing` is `roles: ["admin"]` plus the superuser bypass (`shared/nav.ts`)
+   * — the overlay has no third incubator audience. They stay in the code and
+   * stay reachable for the VC edition, which was NOT rescoped, and the negative
+   * controls that prove it moved to VC with them.
    */
-  const seatFlow = edition === "incubator" && role === "superuser";
+  const seatFlow = edition === "incubator" && (role === "superuser" || role === "admin");
 
   // ── The catalogue, projected ─────────────────────────────────────────────
   const currencies = useMemo(() => (book ? billableCurrencies(book) : []), [book]);
