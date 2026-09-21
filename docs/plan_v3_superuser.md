@@ -1088,6 +1088,48 @@ Files API carries a >24 MB deck, so it evaluates rather than being refused
 (`V4-SIZE`, §4.1 Q8). Items 3, 4, 6 and 7 are `V4-WEIGHT`'s and `V4-ROUTE`'s in
 the same wave. **Fourteen done.**
 
+
+### 8.1 The completeness mark — investigated, NOT fixed, and why
+
+The V4 verification reported that `PATCH /api/decks/:id` clears `missing_fields`
+without touching `decks.complete`, so a deck held back only by missing founder
+details routes to Query forever with nothing left to ask. **The finding is real.
+Two fixes were attempted and both were wrong; the tree is unchanged.**
+
+`decks.complete` is written once, by `evaluate.ts`, as
+`parsed.complete AND missingIntakeFields(details).length === 0`, and
+`isDeckComplete` ANDs the column with the LIVE `missing_fields` list.
+
+**Attempt 1 — re-derive `complete` in the PATCH.** Broke
+`test/worker/route-partition.test.ts` "(b) blanking a required detail moves an
+evaluated deck from Assign to Query", which pins `moved.complete === true`
+immediately AFTER blanking: routing follows the live list, and the column must
+NOT be lowered by an edit.
+
+**Attempt 2 — store the model's verdict alone and let `isDeckComplete` do the
+AND.** Broke `test/worker/automation.test.ts` "marks a high-scoring deck
+Incomplete when a required column is missing", which has pinned
+`complete: 0, missing_fields: "founderPhone,city"` since long before V4: the
+ANDed value in the column is the established, tested contract.
+
+**So the two pinned contracts are:** evaluation ANDs intake into the column, and
+an edit never lowers it. Both hold today. The gap they leave is the one reported:
+a deck whose evaluation saw missing fields keeps `complete = 0` permanently.
+
+**What a correct fix looks like,** for whoever owns these files: re-derive
+UPWARD ONLY — raise 0 -> 1 when the intake list empties AND the model's own
+verdict was positive; never lower. That needs the model's verdict stored
+separately (the column cannot distinguish the two causes after the fact, because
+`computeResult` receives the already-ANDed value, so an AI-flagged deck and an
+intake-short deck both carry status `incomplete`). One added column, a
+conservative backfill (`= complete`, leaving pre-existing rows stuck until their
+next evaluation), and both tests above stay green.
+
+**Not attempted a third time here.** It is a pre-existing defect, not a V4
+regression, and it sits between two tests written by different waves — the kind
+of change that belongs to a session that owns `evaluate.ts`, `decks.ts` and
+`queries.ts` together, with the allotment to add a column.
+
 ## 9. Progress — measured gates, one row per session
 
 Every number here was MEASURED on the session's own branch, never copied from a

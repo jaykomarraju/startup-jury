@@ -1303,7 +1303,15 @@ async function storeDeck(
 ): Promise<string> {
   const id = `deck_${crypto.randomUUID()}`;
   const key = versionKey(id, 1);
-  await c.env.DECKS.put(key, await file.arrayBuffer(), {
+  // V4 integration — hand R2 the File, do not materialise it.
+  //
+  // `await file.arrayBuffer()` copied the whole deck into the isolate on top of
+  // the `File` itself, so a 50 MB upload (the new ceiling) held ~100 MB live
+  // against a 128 MB Workers isolate limit — and exceeding that limit kills the
+  // isolate rather than throwing something catchable. `R2Bucket.put` accepts a
+  // Blob (a File is one) and streams it, so the copy is simply unnecessary.
+  // miniflare does not enforce the cap, which is why local green proved nothing.
+  await c.env.DECKS.put(key, file, {
     httpMetadata: { contentType: "application/pdf" },
   });
   await c.env.DB.batch([
