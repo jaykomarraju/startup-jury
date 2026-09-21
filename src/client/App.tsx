@@ -21,7 +21,7 @@ import { AdminConsole } from "./routes/admin";
 import { AccountPage } from "./routes/AccountPage";
 import { BuyCreditsPage } from "./routes/BuyCreditsPage";
 import { FounderHomePage, FounderQueriesPage, FounderSignupPage } from "./routes/FounderPortal";
-import { TicketsPage, ContactPage } from "./routes/SupportPages";
+import { TicketsPage, ContactPage, HelpPage } from "./routes/SupportPages";
 import { IssueLogPage } from "./routes/IssueLogPage";
 import { CallsPage, INCUBATOR_CALLS_CONFIG, VC_CALLS_CONFIG } from "./routes/CallsPage";
 import {
@@ -100,6 +100,7 @@ function NavRoute() {
   if (navId === "decisions") return <DecisionsPage />;
 
   // Tickets + Contact (Phase 7).
+  if (navId === "help") return <HelpPage />; // V3 item 15 · JURYbuddy
   if (navId === "support") return <TicketsPage />;
   if (navId === "issues") return <IssueLogPage />;
   if (navId === "contactadmin" || navId === "contactteam") return <ContactPage />;

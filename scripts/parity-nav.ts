@@ -118,6 +118,14 @@ function gap(reason: string, ...keys: string[]): [string, string][] {
 const EXPECTED_GAPS: ReadonlyMap<string, string> = new Map([
   // ── extra: the application shows something the prototype sidebar does not ──
   ...gap(
+    "DELIBERATE (V3 item 15) — JURYbuddy's spec is a SEPARATE file, Help_JURYbuddy.HTM, which this check does not index: it compares against the split `_sidebar.html` of AISJ_SuperuserV3.HTM, and that file has zero hits for Help/FAQ/JURYbuddy even with its console decoded. The spec's own copy puts the screen here (\"Under Support, Help can take you to search bar\"). INCUBATOR ONLY — opening it to VC is a question in §12, not a decision this wave took.",
+    "incubator/superuser · extra help",
+    "incubator/admin · extra help",
+    "incubator/program_manager · extra help",
+    "incubator/program_associate · extra help",
+    "incubator/jury · extra help",
+  ),
+  ...gap(
     "DELIBERATE — the internal issue log postdates the prototypes (shipped Session 7). Every internal role can file; triage is admin-only on the server.",
     "incubator/superuser · extra issues",
     "incubator/admin · extra issues",

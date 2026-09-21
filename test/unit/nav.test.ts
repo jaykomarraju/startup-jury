@@ -53,8 +53,11 @@ describe("nav manifest", () => {
     expect(su).toContain("billing");
     // Session 7 added the internal issue log.
     expect(su).toContain("issues");
-    // 25 on main; V3 item 10 removes the standalone Evaluate item (see below).
-    expect(su).toHaveLength(24);
+    // V3 item 15 added JURYbuddy.
+    expect(su).toContain("help");
+    // 25 on main; V3 item 10 removes the standalone Evaluate item (see below)
+    // and item 15 adds Help, so the two cancel back to 25.
+    expect(su).toHaveLength(25);
   });
 
   it("founder sees only the founder portal; internal roles never see portal items", () => {
@@ -224,6 +227,7 @@ describe("nav manifest", () => {
       "billing",
       "contactadmin",
       "contactteam",
+      "help", // V3 item 15 — first in Support, per the spec's own routing copy
       "support",
       "issues",
     ]);
@@ -297,7 +301,7 @@ describe("nav manifest", () => {
         "scoredrift:Score drift", "funnel:Pipeline funnel", "coreparams:Core Parameters",
         "myparams:My Parameters", "setup:Set up", "account:My account", "admin:Admin console",
         "billing:Buy credits", "contactadmin:Contact Admin", "contactteam:Contact team",
-        "support:Tickets", "issues:Issue log",
+        "help:Help", "support:Tickets", "issues:Issue log",
       ],
       program_manager: [
         "alldecks:All decks", "upload:Upload", "query:Query", "evaluate:Evaluate",
@@ -306,7 +310,7 @@ describe("nav manifest", () => {
         "archive:Archive", "cohortsummary:Cohort summary", "evaluatorscores:Evaluator scores",
         "scoredrift:Score drift", "funnel:Pipeline funnel", "myparams:My Parameters",
         "setup:Set up", "account:My account", "contactadmin:Contact Admin",
-        "contactteam:Contact team", "issues:Issue log",
+        "contactteam:Contact team", "help:Help", "issues:Issue log",
       ],
       program_associate: [
         "alldecks:All decks", "upload:Upload", "query:Query", "evaluate:Evaluate",
@@ -314,14 +318,15 @@ describe("nav manifest", () => {
         "curation:Onboard ready", "archive:Archive", "cohortsummary:Cohort summary",
         "evaluatorscores:Evaluator scores", "scoredrift:Score drift", "funnel:Pipeline funnel",
         "myparams:My Parameters", "setup:Set up", "account:My account",
-        "contactadmin:Contact Admin", "contactteam:Contact team", "issues:Issue log",
+        "contactadmin:Contact Admin", "contactteam:Contact team", "help:Help",
+        "issues:Issue log",
       ],
       jury: [
         "alldecks:My Pipeline", "jassigned:Assigned", "jurypipeline:Evaluated",
         "introcalls:My Intro calls", "archive:My Archive",
         "repdecks:My decks summary", "repscores:My Scores", "repdrift:My scores drift",
         "myparams:My Parameters", "account:My account", "contactadmin:Contact Admin",
-        "contactteam:Contact team", "issues:Issue log",
+        "contactteam:Contact team", "help:Help", "issues:Issue log",
       ],
     };
     for (const [role, expected] of Object.entries(PINNED)) {

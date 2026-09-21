@@ -1203,7 +1203,10 @@ Remedy is a one-off re-evaluation, not a backfill.
   not the file. He marked it "Not required", so the client wins; **record the deviation** or the next
   parity capture reverts it.
 - **Item 15 cites the wrong file.** `AISJ_SuperuserV3.HTM` has **zero** hits for JURYbuddy/FAQ/Help
-  even after decoding the console. `Help_JURYbuddy.HTM` is the only spec.
+  even after decoding the console. `Help_JURYbuddy.HTM` is the only spec. **DONE** by `S5-HELP` — and
+  the 8.2 MB turned out to be 99.5 % video: 38.5 KiB of markup, 5.86 MiB of clips. Six of the 41
+  answers are wrong about the app **today**, independently of items 8/9/12; see the session's entry
+  below §13, which is the list to send the client.
 - **Item 16 is not a re-dev — it ADDS a screen.** V3 still carries `panel-scoredrift` verbatim, and
   `AISJ_Drift.HTM` is a different report (policy drift per parameter, not temporal drift per deck).
   It also reads as a **marketing page**, not an in-app report: standalone header, no sidebar,
@@ -1453,6 +1456,229 @@ CONSTRAINTS
   Adding a nav id for all roles moves the roles harness: add probes in the same commit and report the
   number; integration re-baselines.
 ```
+
+
+### `S5-HELP` — item 15, JURYbuddy. **Complete.**
+
+Branch `parity/S5-HELP`. Gate on the branch: typecheck ok · lint ok · unit **2380 passed / 1 skipped**
+(from 2340/1, so **+40** and no regressions) · build ok · `parity:tokens` 0 gaps · `parity:nav` **67
+known gaps, 0 unexpected** (from 62; the 5 new ones are registered, see below) · `npm run roles`
+**1181 checks · 1181 passed · 0 failed**, from 1180 — the new nav id adds exactly one check
+(*nav "help" lists only roles that exist in the edition*) and **no gate moved**, because the item
+carries no `task`. Measured against a dev server on port 5199 proved mine by `lsof` (PID 68044,
+cwd `sj-S5-HELP`), not against the default 5173, which a sibling session held for most of this
+session. · e2e **231 passed · 4 flaky · 0 failed** (6.7 min), from ~226 — the 5 new ones are
+`e2e/help.spec.ts`. The run claimed a window at **TIME_WAIT 1,315** and ended at 352, so it was not
+port-poisoned. The 4 flaky are `calls.spec.ts` ×2 and `rubric-anchors.spec.ts` ×2, all the recorded
+infrastructure signature — `locator.fill` timing out on `getByPlaceholder("you@firm.com")`, i.e. the
+LOGIN page never loaded — in specs this session does not touch, and all recovered on retry. A
+targeted re-run of `coverage.spec.ts` showed the same signature twice (16 passed · 2 flaky · 0
+failed); it was fully green in the full run.
+
+#### What the 8.2 MB actually is — measured, and it changes the port
+
+| | bytes | share |
+|---|---|---|
+| whole file | 8,231,816 | 100 % |
+| 41 × `data:video/mp4` base64 | 8,192,440 (7.81 MiB) | **99.5 %** |
+| …decoded | 6,144,290 (**5.86 MiB**) | — |
+| markup + widget script | **39,376 (38.5 KiB)** | 0.5 % |
+
+All 41 payloads are **distinct** (sha-256, no duplicate to dedupe away), 77–342 KB each, 1,458 s of
+runtime in total. The file has 385 lines and **line 121 is 8,197,220 characters** — every clip is on
+one line, which is why a naive read is so expensive and why a line-ranged read does not help either.
+
+Strip the payloads and the entire spec is ~10k tokens and can be read in full. The tool that does it
+is **`docs/prototype/tools/extract-help-clips.py`**: it writes `faqs.json`, `clips.json` (titles and
+durations, no bytes) and 41 `.mp4` files ready to upload, and warns on any FAQ↔clip pairing that
+breaks in a re-shared spec.
+
+#### The content model
+
+- **41 FAQs, 41 clips, paired 1:1 in both directions** — no orphan clip, no answer without one, ids
+  unique. Asserted in `test/unit/help.test.ts`.
+- **8 categories**, in first-appearance order: What Is This Platform? (11) · Signing Up (5) · Choosing
+  a Plan (2) · The Evaluation Workflow (9) · First Login & Navigation (4) · Team & Collaboration (2) ·
+  Billing & Credits (5) · Getting Unstuck (3). **The array is not grouped by section** — First Login &
+  Navigation appears, then Team & Collaboration, then First Login again — so the browse-all view
+  regroups, and array order is load-bearing twice over (it also fixes "POPULAR RIGHT NOW", which is
+  literally `FAQS.slice(0, 4)`).
+- **Search: yes.** Keyword overlap, a hit in the question worth 2 and in the answer worth 1,
+  normalised by `words × 2`. Words of 1–2 characters are dropped.
+- **The widget calls nothing.** Both datasets are embedded. Its load-error branch still names
+  `faqs.json` and `clips.json` and tells the reader to run `start-preview.command` — the remains of an
+  earlier fetch-based version, dead in the file as shared.
+- Feedback (Yes/No + 5 stars) and the no-match "Raise a support ticket" are **unwired in the spec
+  itself** — two `// hook point` comments and an `alert('Would open the support ticket flow.')`.
+
+#### What existed before this session: nothing
+
+`grep -rliE "jurybuddy|faq" src/` → **zero files.** No help widget, no FAQ, no `help` nav id, no
+`/api/help`. `SupportPages.tsx` and `server/routes/support.ts` existed, but only for Tickets, Contact
+and the internal issue log. Stated plainly because the prompt asked: **item 15 was unbuilt, 0 % parity.**
+
+#### What shipped
+
+- `src/client/routes/help/` — `faqs.ts` (the 41 entries, verbatim, 12.7 KB of text), `search.ts` (the
+  spec's matcher, DOM-free and testable), `HelpPage.tsx`, `index.ts`.
+- `server/routes/support.ts` — `GET /api/help/clips/:clipId`, streaming from R2 with Range support.
+- `shared/nav.ts` — `help` / "Help" / `CircleQuestionMark`, section **Support**, first in it because
+  the spec's own copy routes readers that way. No `task`, matching the rest of the section.
+- `wrangler.jsonc` — the `HELP_MEDIA` bucket binding. **See the §9 row: one `wrangler r2 bucket
+  create` must run before the wave's next deploy.**
+- Tests: 13 unit, 19 client, 7 worker, 5 e2e.
+
+**The clips never enter the bundle, measured:** `main`'s `index-*.js` is 1,196.75 kB (gzip 314.43);
+this branch's is 1,222.77 kB (gzip 322.71). **+26.0 kB raw, +8.3 kB gzip** — against the ~6,000 kB a
+literal port would have added. `grep -c "data:video" dist/client/assets/*.js` is **0**.
+
+#### Two deliberate deviations from the spec
+
+1. **It is a SCREEN, not a floating launcher.** The spec is a fixed corner widget on a stand-in page;
+   everything inside the panel is reproduced, but the launcher chrome is not mounted app-wide. A fixed
+   60 px button at `right:28 bottom:28` with `z-index:1000` on every route would change how every
+   other role's screens render, which this wave's constraints forbid outright, and it would sit on top
+   of the bottom-right controls the e2e suite clicks. The spec's own copy backs the screen reading:
+   *"Under Support, Help can take you to search bar"*. **Question (b) below.**
+2. **Incubator only.** `test/unit/nav.test.ts` has a test named *"keeps every VC sidebar the size it
+   was — the VC edition was not rescoped"*, and this wave does not rescope it. The screen and the clip
+   route are edition-agnostic and ready. **Question (a) below.**
+
+#### The ticket path is stubbed, and the spec stubs it too
+
+The no-match footer's "Raise a support ticket" explains itself instead of filing anything, and links
+to **Contact Admin**, which every internal role really has. No ticket route was built.
+
+Worth recording: the blocker is narrower than it looks. An in-workspace ticket surface **already
+exists** — `TicketsPage`, `POST /api/tickets`, nav id `support` — so the FAQ's *"goes to your
+designated admin in your organization"* half is real. What has no destination is the other half,
+*"if you are an individual it comes to our support team"*: that is §12.1 item 12, and it needs a
+platform-owner principal the product does not have. **But the in-workspace half is also unreachable
+for most readers**: nav `support` is `roles: ["admin"]`, so 3 of the 5 incubator roles who can now
+open Help cannot open Tickets at all. Pointing them at Tickets would have been a dead link for the
+majority, which is the second reason the stub links to Contact Admin instead.
+
+#### Answers that are wrong. Six are wrong TODAY, and not because of items 8/9/12.
+
+The prompt asked for answers that will be wrong next week. Six are already wrong, which matters more,
+because all 41 ship verbatim. **The copy is the client's to own — none of these were quietly edited.**
+
+1. **`track-ticket` — wrong twice.** *"your submitted tickets show their status (Open, Pending,
+   Resolved)"*. Support tickets have exactly two states, `open` and `closed` (`support.ts`
+   `POST /:id/status`, `api.ts:997`); **neither "Pending" nor "Resolved" exists**. And
+   `GET /api/tickets` is `requireRole("admin")` with nav `support` admin-only, so a PM, associate or
+   jury member **cannot see their own tickets at all.** The answer promises a screen most readers
+   cannot reach.
+2. **`core-13-parameters` names a parameter that does not exist and omits one that does.** The answer
+   lists *"…Business Attractiveness, **Moat** and Story Telling"*. `migrations/0002_seed.sql:16-28`
+   ships position 12 as **Climate Impact & Integrity**; there is no Moat anywhere in the product.
+   12 of 13 map; this is the one that does not. (Also: the app calls 13 "Storytelling & Deck Quality".)
+3. **`overall-score-calc` hardcodes a configurable number.** *"It is finally 50% of AI and 50% of human
+   that's taken as final average scores."* `ai_weight_pct` is settable per org, programme and cohort
+   (`AI_WEIGHT_CHOICES = [40, 30, 50, 0]`, `shared/types.ts:236`; `programs`/`cohorts.ai_weight_pct`,
+   migration 0074), and `shared/scoring.ts:111` records the **prototype default as 40 % AI, not 50**.
+   This answer directly contradicts **item 11 / V4-WEIGHT**, whose whole purpose was to make that
+   weight observable and settable — a customer who moves the slider is then told the number is fixed.
+4. **`logged-in-dashboard` is missing two sidebar sections.** *"Workflows …, Reports, Settings,
+   Collaborate, and Support"*. `NAV_SECTIONS` has seven: **Evaluation** and **Due Diligence** are
+   absent from the answer, and Evaluation is where most of an incubator user's day happens.
+5. **`pipeline-stages` and `role-meaning` answer for the wrong edition.** Both describe only the VC
+   side — *"Managing Partner (Super User)"*, *"IC Member"*, `Upload → Review → Score → Decision →
+   Archive`. Incubator has different roles and different stages. Because Help is incubator-only today,
+   **every reader of these two answers is in the edition they do not describe.**
+6. **`find-program-settings` omits Buy credits** from its list of Settings items; the app puts it there
+   for admins.
+
+Wrong next week, exactly as the prompt anticipated — all four tied to items 8/9/10/12 (§12.1):
+
+7. **`raise-ticket`** — *"If you are an individual it comes to our support team."* Item 12: no such
+   recipient. This is the sentence the UI stub exists for.
+8. **`help-documentation`** — *"you can raise a ticket for support from us"*. Same blocker. Its first
+   half (*"Under Support, Help can take you to search bar … along with quick clips"*) is **made true
+   by this session**, which is a useful check that the placement and shape are what the client meant.
+9. **`who-manages-billing`** — *"users can send request for buying credits by raising a ticket … Only
+   the Superuser has to approve it finally."* Item 8 moves the approval recipient and item 12 moves
+   the ticket's destination.
+10. **`pricing-plans`, `buy-more-credits`, `upgrade-to-enterprise`** — the purchase path items 9
+    (merchant account) and 10 (price config ownership) are moving.
+
+#### The matcher is weaker than it looks — measured, not assumed
+
+The score is `hits / (words × 2)`, so a two-word query has only five possible values and **ties are
+the norm**. `"13 core parameters"` puts **four entries at 1.000**, and the entry actually titled
+*"What are the '13 core parameters'?"* comes **third**, because a tie falls back to array position.
+`"13"` is two characters, so the digits contribute nothing: the query ranks identically to
+`"core parameters"`. `"AI"` and `"DD"` match nothing at all, for the same reason.
+
+Pinned in `test/unit/help.test.ts` rather than fixed, because fixing it changes what the client's demo
+returns. The spec's own comment says to swap in embeddings "before scaling past a few dozen FAQs" — at
+41 it is already there. Cheapest real improvement: break ties toward the shortest question, which puts
+`core-13-parameters` first without touching the scoring. **Question (d).**
+
+#### Defects this session's own tests caught
+
+- **Every clip response was a 206.** `R2ObjectBody.range` is populated on a *full* GET too
+  (`{offset: 0, length: size}`), so inferring "a range was served" from it made plain requests
+  206 Partial Content with a `content-range` spanning the whole object.
+- **An unsatisfiable range was a 500.** `R2Bucket.get` with an offset past the end of the object
+  **throws**; only a missing object returns null. `bytes=99-120` on a 16-byte clip therefore reached
+  the client as a 500. Now 416 with `content-range: bytes */<size>`, and a backwards range
+  (`bytes=10-5`) is rejected before R2 is asked.
+
+Both were found by `test/worker/help-clips.test.ts`, and both were confirmed real by controls D and E
+below — neither would have been visible from the screen, because `<video>` never sends either request.
+
+#### Two measurement traps this session hit
+
+- **The runbook's own "is another e2e running?" check self-matches.**
+  `ps aux | grep -c "[p]laywright"` is fine typed once, but inside a poll loop
+  (`until [ "$(ps aux | grep -c '[p]laywright')" -eq 0 ]; do …`) the loop's OWN command line
+  contains the string, so the count never falls below 1 and the wait never ends. It also counts
+  browser helper and renderer processes, not test workers. What actually works is
+  `pgrep -f 'workerProcess[E]ntry'` — the bracket keeps the pattern from matching the watcher's own
+  cmdline, and `workerProcessEntry.js` is the test worker specifically.
+- **Three sessions of this wave queued on port 5173 back to back.** `playwright.config.ts` sets
+  `reuseExistingServer: false` with `--strictPort`, so a second run does not adopt a sibling's server
+  — it fails to bind. `E2E_PORT` moves it, but that does NOT make two concurrent runs safe: the
+  16,384-port budget is shared, and `TIME_WAIT` was observed at **16,414 — the entire budget** while
+  two sessions overlapped. Waiting remains the only correct move.
+
+#### Negative controls — five run, all five bite
+
+| Control | Reverted | Result |
+|---|---|---|
+| A | `key` on the search input, so it remounts per view | ✗ *never remounts the input while the results underneath it change* — the spec's own caret bug ("it read as typing backwards") |
+| B | Back always returns home | ✗ *returns from an answer to the RESULTS it was opened from* |
+| C | `help` added to `VC_NAV` | ✗ *keeps every VC sidebar the size it was* + ✗ *gives Help to nobody in the VC edition*, and `parity:nav` **FAIL, 6 unexpected** |
+| D | `CLIP_ID` guard removed | ✗ *refuses an id outside the manifest's shape, even when that key exists* |
+| E | the `try`/`catch` around the ranged `get` removed | ✗ *answers 416, not 500* — **expected 500 to be 416**, confirming the guard fixes a real 500 |
+
+D needed a second pass to be worth anything: the obvious version (request a traversal id, expect 404)
+**passes with the guard deleted**, because R2 keys are flat strings and `help/clips/../../x.mp4` is
+just a key that does not exist. The test now `put`s objects at those keys first, so the 404 can only
+come from the guard — and asserts afterwards that the objects really are in the bucket.
+
+#### Questions
+
+- **(a) Should Help open to the VC edition?** The screen and route are edition-agnostic; the 41 answers
+  cover VC heavily (VC pipeline stages, Managing Partner, IC Member). Cost: one entry in `VC_NAV`, six
+  pinned sidebar sizes in `nav.test.ts`, six `EXPECTED_GAPS` rows, six `e2e/parity.spec.ts` rows.
+  Blocked only by *"the VC edition was not rescoped"*, which is a scope rule, not a technical one.
+  **Note this interacts with wrong-answer (5):** VC readers are the ones those two answers are correct
+  for.
+- **(b) Should the floating launcher ship app-wide?** It is the spec's actual form. It needs a decision
+  because it changes every screen for every role, and the bottom-right corner is where several screens
+  put their row actions.
+- **(c) Should the feedback controls be persisted?** Yes/No and the 5-star rating are local-only today,
+  as in the spec. Persisting them needs a table, so a migration, which this session had no allotment
+  for. Without it there is no way to learn which answers fail their readers.
+- **(d) Fix the matcher's ties, or leave the client's demo behaviour?** One-line tie-break, described
+  above.
+- **(e) Who fixes the six wrong answers?** The copy is the client's. Recommend sending them items 1–6
+  as a list; 1, 2 and 3 are the ones that will cost support time, and **3 actively contradicts a
+  feature the client signed off in item 11**. A durable fix for 2 is to render the live parameter list
+  from `GET /api/config` instead of prose, since the 13 are configurable per programme and any
+  hardcoded list will drift again.
 
 ## 9. Progress — measured gates, one row per session
 
