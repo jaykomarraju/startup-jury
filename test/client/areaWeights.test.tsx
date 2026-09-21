@@ -184,6 +184,20 @@ function tableStartingWith(first: string): HTMLElement {
   return table!;
 }
 
+/**
+ * The `Additional configurable parameters` sub-line, whole and whitespace-
+ * normalised. 21-Sep item 13(a) deletes two SENTENCES out of the middle of it,
+ * so the assertion has to be the whole paragraph: a `queryByText(...).toBeNull()`
+ * on each deleted sentence would also pass against a section that never
+ * rendered, and a regex on what survives would not notice a sentence returning.
+ */
+function additionalSubline(): string {
+  const heading = screen.getByRole("heading", { name: "Additional configurable parameters" });
+  const sub = heading.parentElement?.querySelector("p");
+  expect(sub, "no sub-line under `Additional configurable parameters`").toBeTruthy();
+  return (sub!.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+
 /** The row editor's textarea — same accessible name as the button, other role. */
 function promptTextarea(name: string): HTMLTextAreaElement {
   return screen.getByRole("textbox", { name: `AI prompt — ${name}` }) as HTMLTextAreaElement;
@@ -369,11 +383,47 @@ describe("V3-AW item 11 · AI prompt per evaluation area", () => {
     }
   });
 
-  it("replaces the `Permit configuration` sentence, the control having gone", async () => {
+});
+
+// ── 21-Sep item 13(a) · two sentences the client struck ────────────────────
+
+describe("21-Sep item 13(a) · the two deleted sentences", () => {
+  it("drops both sentences the client struck", async () => {
+    // The client marked two sentences "Not required" on the screen he was
+    // reading, which is the SUPERUSER one. Both are deviations from the
+    // prototype: "These parameters are configurable by default." is verbatim in
+    // the decoded console, and the tier sentence is our wording for its "Super
+    // User" line. Recorded in plan_v3_superuser.md §12.3 / §13 `S4-COPY` so the
+    // next parity capture does not quietly restore them.
     mountSection();
     await screen.findByDisplayValue("Program fit");
-    expect(screen.getByText(/These parameters are configurable by default\./)).toBeTruthy();
-    expect(screen.queryByText(/Use Permit configuration to allow a role/)).toBeNull();
+    expect(additionalSubline()).toBe(
+      "Each role — Program Associate, Program Manager, Jury Member — configures its own " +
+        "set of 3 parameters, each scored 0–10 (set maximum 30).",
+    );
+  });
+
+  it("keeps the AI+ / AI++ / AI+++ CONCEPT while the sentence naming it goes", async () => {
+    // Reading (a) of item 13, not (b): only the sentences were deleted. The
+    // concept has five sites — the badges here, `AssignPage`'s tier filter and
+    // `server/routes/assignments.ts` among them — and none of them moved.
+    mountSection();
+    await screen.findByDisplayValue("Program fit");
+    expect(additionalSubline()).not.toContain("AI+");
+    for (const badge of ["AI+ score", "AI++ score", "AI+++ score"]) {
+      expect(screen.getByText(badge)).toBeTruthy();
+    }
+    // And the deleted sentence took no information with it — §4 Q62 kept the
+    // badges because "nothing else on this screen says which role produces
+    // which", but each card header already pairs the two, so the sentence was
+    // a restatement of the three headings below it.
+    for (const [badge, role] of [
+      ["AI+ score", "Program Associate"],
+      ["AI++ score", "Program Manager"],
+      ["AI+++ score", "Jury Member"],
+    ]) {
+      expect(screen.getByText(badge).closest("div")?.textContent).toContain(role);
+    }
   });
 });
 
@@ -479,7 +529,14 @@ describe("the un-reshared surfaces keep today's design", () => {
     expect(screen.queryByText("Seat configurability")).toBeNull();
     expect(screen.queryByRole("button", { name: "Restore all core AI prompts" })).toBeNull();
     expect(screen.getAllByText("Core").length).toBe(CORE.length);
-    expect(screen.getByText(/Use/)).toBeTruthy();
+    // 21-Sep item 13(a) deleted two sentences from the SUPERUSER sub-line only.
+    // The admin's still reads exactly as it did before that change.
+    expect(additionalSubline()).toBe(
+      "Each role — Program Associate, Program Manager, Jury Member — configures its own " +
+        "set of 3 parameters, each scored 0–10 (set maximum 30). Each role's additional " +
+        "score is surfaced as AI+ (Program Associate), AI++ (Program Manager), " +
+        "AI+++ (Jury Member). Use Permit configuration to allow a role to edit a parameter.",
+    );
     // …and it does not even ask for the prompts.
     expect(getPrompts).not.toHaveBeenCalled();
   });
@@ -489,6 +546,14 @@ describe("the un-reshared surfaces keep today's design", () => {
     await screen.findByDisplayValue("Problem & Market Clarity");
     expect(headers(0)).toEqual(["#", "Evaluation area", "Type", "Weight %", "Visual"]);
     expect(screen.queryByText("Seat configurability")).toBeNull();
+    // Item 13(a) is incubator-superuser copy. VC keeps both sentences, with its
+    // own role labels.
+    expect(additionalSubline()).toBe(
+      "Each role — Investment Associate, Partner, IC Member — configures its own set of " +
+        "3 parameters, each scored 0–10 (set maximum 30). Each role's additional score is " +
+        "surfaced as AI+ (Investment Associate), AI++ (Partner), AI+++ (IC Member). " +
+        "Use Permit configuration to allow a role to edit a parameter.",
+    );
     expect(getPrompts).not.toHaveBeenCalled();
   });
 
