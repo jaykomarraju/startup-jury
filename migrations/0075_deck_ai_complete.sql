@@ -1,0 +1,48 @@
+-- S1-DASH · item 3 — the model's OWN verdict, recorded separately.
+--
+-- The client asks for "Incomplete deck" and "Incomplete contact details" as two
+-- separate words. Today they are one: `evaluate.ts` writes
+--
+--     complete = parsed.complete AND missingIntakeFields(details).length === 0
+--
+-- and `isDeckComplete` re-ANDs the column with the live `missing_fields` list.
+-- After that AND, the two causes are indistinguishable — `evaluations.verdict`
+-- is computed from the already-ANDed value, so it is not a recovery source
+-- either. Plan §8.1 records two attempts at this, both of which changed what
+-- `decks.complete` MEANS and both of which were reverted, because two tests
+-- pin that meaning from opposite sides:
+--
+--   · test/worker/automation.test.ts — the column holds the ANDed value;
+--   · test/worker/route-partition.test.ts — an edit must never LOWER it.
+--
+-- A NEW COLUMN changes neither. `ai_complete` is `parsed.complete` alone: "the
+-- model could read and score this deck", with the intake question left out of
+-- it. The two statuses are then derived, not stored (`v3StatusKey`):
+--
+--     ai_complete = 0                        -> "Incomplete deck"
+--     ai_complete = 1 AND missing_fields set -> "Incomplete contact details"
+--
+-- It also unblocks the upward-only re-derive `PATCH /api/decks/:id` now does:
+-- raise `complete` 0 -> 1 when the intake list empties AND the model itself
+-- passed the deck. Never lower — that is route-partition's contract, untouched.
+-- Precedent for raising the column without re-reading the deck already ships:
+-- `POST /api/queries/:id/respond` (routes/pipeline.ts) sets `complete = 1`.
+--
+-- ── THE BACKFILL CANNOT RECOVER THE CAUSE, and is not papered over. ─────────
+-- Every row that already exists was evaluated before this column, so the only
+-- honest value is the ANDed one: `ai_complete = complete`. A deck currently at
+-- `complete = 0` therefore reads "Incomplete deck" whatever actually stopped
+-- it, and — because the re-derive only fires when the model passed — it STAYS
+-- stuck there even once its founder details are filled in. That is not a bug
+-- in the re-derive; the cause was never recorded, so there is nothing to
+-- recover. The remedy for an affected deck is a one-off re-evaluation
+-- (`POST /api/decks/:id/rescore`), which writes a real verdict into the new
+-- column. Told to the client in plan §12.
+--
+-- DEFAULT 1 matches `decks.complete`'s own default (0001_init.sql:67), so the
+-- upload INSERT — which names `complete` and not this column — keeps meaning
+-- "nothing has judged this deck yet".
+
+ALTER TABLE decks ADD COLUMN ai_complete INTEGER NOT NULL DEFAULT 1;
+
+UPDATE decks SET ai_complete = complete;

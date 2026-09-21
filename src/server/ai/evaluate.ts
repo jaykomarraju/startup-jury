@@ -992,7 +992,10 @@ export async function evaluateDeck(
       "UPDATE decks SET ai_score = ?, signal = ?, status = ?, name = ?, name_auto = ?, " +
         "stage = ?, founder = ?, founder_email = ?, " +
         "founder_phone = ?, city = ?, sector = ?, missing_fields = ?, intake_flag = ?, " +
-        "intake_flag_note = ?, related_deck_id = ?, complete = ?, updated_at = ?, " +
+        // S1-DASH (0075) — `ai_complete` is the model's verdict ALONE, so the
+        // two causes of an incomplete deck stay distinguishable after the AND
+        // below. `complete` keeps the ANDed value automation.test.ts pins.
+        "intake_flag_note = ?, related_deck_id = ?, ai_complete = ?, complete = ?, updated_at = ?, " +
         "ai_error = NULL, ai_failed_at = NULL, ai_attempts = 0 WHERE id = ?",
     ).bind(
       total,
@@ -1010,6 +1013,7 @@ export async function evaluateDeck(
       intake.flag,
       intakeNote,
       intake.matches[0]?.deckId ?? null,
+      parsed.complete ? 1 : 0,
       effective.complete ? 1 : 0,
       ts,
       deckId,

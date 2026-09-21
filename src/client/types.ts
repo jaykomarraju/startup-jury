@@ -26,6 +26,15 @@ export interface DeckView {
    * since. Absent reads as complete, matching the column's `DEFAULT 1`.
    */
   complete?: boolean;
+  /**
+   * S1-DASH (migration 0075) — `decks.ai_complete`: the model's verdict on the
+   * DECK alone, with the intake question left out of it. `complete` is the AND
+   * of this and an empty `missingFields`; after that AND the two causes are
+   * indistinguishable, which is the whole of item 3. Read the pair through
+   * `v3StatusKey`, never this alone. Absent reads as true (the column's
+   * DEFAULT 1).
+   */
+  aiComplete?: boolean;
   /** Soft duplicate / returning-company alert raised at intake. */
   intakeFlag?: IntakeFlag;
   intakeNote?: string;

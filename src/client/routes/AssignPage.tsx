@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -222,6 +222,31 @@ export function AssignPage() {
   }, []);
 
   useEffect(() => load(), [load]);
+
+  // ── S1-DASH item 4 · the other end of the hand-off ───────────────────────
+  //
+  // The Dashboard's row menu sends a deck here by NAVIGATING (the prototype's
+  // `addToAssign` puts a row on the Assign list; it does not pick an
+  // evaluator), so the screen has to open on that row already ticked or the
+  // click has done nothing the operator can see. Same shape as the Assign ->
+  // Query hand-off this session repaired, and resolved against the roster the
+  // server served: `?list=assign` is the authority, and an id it did not
+  // return is not assignable whatever the Dashboard believed.
+  const handOff = (useLocation().state as { deckIds?: unknown } | null)?.deckIds;
+  const handedIds = useMemo(
+    () => (Array.isArray(handOff) ? handOff.filter((v): v is string => typeof v === "string") : []),
+    [handOff],
+  );
+  // A ref, so StrictMode's second mount cannot re-tick a row the operator has
+  // just unticked.
+  const handOffApplied = useRef(false);
+  useEffect(() => {
+    if (handOffApplied.current || decks === null || handedIds.length === 0) return;
+    handOffApplied.current = true;
+    const known = new Set((decks ?? []).map((d) => d.id));
+    const arrived = handedIds.filter((id) => known.has(id));
+    if (arrived.length > 0) setDeckIds(arrived);
+  }, [decks, handedIds]);
 
   useEffect(() => {
     let live = true;

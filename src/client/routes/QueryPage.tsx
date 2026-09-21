@@ -23,6 +23,7 @@
 // only when the server reports the outbox actually delivered.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import {
   ArrowLeft,
   Bot,
@@ -124,6 +125,27 @@ export function QueryPage() {
   const filterRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // ── S1-DASH item 5 · the hand-off that was silently dropped ──────────────
+  //
+  // `AssignPage` has navigated here with `state: { deckIds }` since V4-ROUTE
+  // and this page never read it — 0 hits in the file — so "Send to Query" on
+  // the Assign screen landed the operator on an empty selection and they
+  // re-picked the same rows by hand. Measured in plan §12.4.
+  //
+  // Applied ONCE, and only against rows the server actually served: the
+  // partition is `deckListRoute`'s, so an id that is not in `rows` does not
+  // belong on this screen whatever the previous page believed. Silently
+  // dropping those is right here — they are not shown, so there is nothing to
+  // explain, and the count in the footer says how many did arrive.
+  const handOff = (useLocation().state as { deckIds?: unknown } | null)?.deckIds;
+  const handedIds = useMemo(
+    () => (Array.isArray(handOff) ? handOff.filter((v): v is string => typeof v === "string") : []),
+    [handOff],
+  );
+  // A ref, not a flag in state: StrictMode mounts the effect twice, and the
+  // operator's first deselection must not be undone by the second pass.
+  const handOffApplied = useRef(false);
+
   // Each view opens at its top, as the prototype's separate scroll panes do.
   useEffect(() => {
     scrollRef.current?.scrollTo?.({ top: 0 });
@@ -188,6 +210,17 @@ export function QueryPage() {
     () => (filter === "all" ? rows : rows.filter((d) => statusOf(d.id) === filter)),
     [rows, filter, statusOf],
   );
+
+  // Seed the selection from the hand-off, once the list it has to agree with
+  // has arrived. `decks === null` is "still loading", so this waits rather than
+  // resolving every id against an empty roster and dropping all of them.
+  useEffect(() => {
+    if (handOffApplied.current || decks === null || handedIds.length === 0) return;
+    handOffApplied.current = true;
+    const known = new Set(rows.map((d) => d.id));
+    const arrived = handedIds.filter((id) => known.has(id));
+    if (arrived.length > 0) setSelectedIds(arrived);
+  }, [decks, handedIds, rows]);
 
   const selected = useMemo(() => rows.filter((d) => selectedIds.includes(d.id)), [rows, selectedIds]);
   const preview = selected.find((d) => d.id === previewId) ?? selected[0];

@@ -8,6 +8,8 @@ import {
   pipelineProgress,
   v3DeckState,
   v3DeckStats,
+  v3StatusKey,
+  V3_STATUS_LABELS,
   vcFunnelLabel,
   isArchivedDeck,
   latestTimestamp,
@@ -345,6 +347,91 @@ describe("V3 superuser Dashboard stat boxes", () => {
     // Incomplete wins over both, so the three stay disjoint.
     expect(v3DeckState({ statusId: "incomplete", aiScore: 4.1 })).toBe("incomplete");
     expect(v3DeckState({ statusId: "ai_evaluated", aiScore: 4.1, signal: "flagged" })).toBe("incomplete");
+  });
+
+  // ── S1-DASH item 3 — the Status column's four words ──────────────────────
+  //
+  // The client asked for "Incomplete deck" and "Incomplete contact details" as
+  // SEPARATE statuses. They are the two causes of `complete = 0` that plan §8.1
+  // records as indistinguishable, so the word is a function of the pair
+  // migration 0075 made readable: (ai_complete, missing_fields).
+  describe("v3StatusKey — which of the two things is incomplete", () => {
+    const evaluated = { statusId: "ai_evaluated", aiScore: 7.2 };
+
+    it("derives all four combinations of (aiComplete, missingFields)", () => {
+      // (0, set) — both wrong. The deck wins: there is nothing to ask a founder
+      // whose deck could not be read in the first place.
+      expect(v3StatusKey({ ...evaluated, aiComplete: false, missingFields: ["founderPhone"] })).toBe("incompleteDeck");
+      // (0, empty) — the model could not read it; the contacts are fine.
+      expect(v3StatusKey({ ...evaluated, aiComplete: false, missingFields: [] })).toBe("incompleteDeck");
+      // (1, set) — the deck scored; a required intake column is blank. This is
+      // the word that did not exist before, and plan §4.1 case (b)'s row.
+      expect(v3StatusKey({ ...evaluated, aiComplete: true, missingFields: ["founderEmail"] })).toBe(
+        "incompleteContact",
+      );
+      // (1, empty) — neither fires, so the AI-evaluation state answers.
+      expect(v3StatusKey({ ...evaluated, aiComplete: true, missingFields: [] })).toBe("aieval");
+    });
+
+    it("prints the client's own words", () => {
+      expect(V3_STATUS_LABELS.incompleteDeck).toBe("Incomplete deck");
+      expect(V3_STATUS_LABELS.incompleteContact).toBe("Incomplete contact details");
+      // The prototype's other two are unchanged (`adRenderTable`'s `stMap`).
+      expect(V3_STATUS_LABELS.aieval).toBe("AI Evaluated");
+      expect(V3_STATUS_LABELS.noteval).toBe("Not AI Evaluated");
+    });
+
+    it("absent reads as complete, matching the columns' own DEFAULT 1", () => {
+      // A caller that selected neither column must not turn every deck red.
+      expect(v3StatusKey({ statusId: "ai_evaluated", aiScore: 7.2 })).toBe("aieval");
+      expect(v3StatusKey({ statusId: "uploaded" })).toBe("noteval");
+    });
+
+    it("says nothing about completeness before the AI has run", () => {
+      // The shipped resubmit loop: `POST /queries/:id/respond` walks an
+      // `incomplete` deck back to `uploaded` and raises `complete` without
+      // re-reading it, so the columns still hold the PREVIOUS run's verdict.
+      // The stage is the truth here, and the row must not contradict the
+      // Not-AI-Evaluated tile it is counted under.
+      expect(v3StatusKey({ statusId: "uploaded", aiComplete: false, missingFields: ["founderPhone"] })).toBe("noteval");
+      expect(v3StatusKey({ statusId: "pending_ai", aiComplete: false })).toBe("noteval");
+      // It costs the two words nothing: an evaluation lands a deck at
+      // `ai_evaluated` or `incomplete`, so a deck that HAS a verdict is never
+      // `noteval` and never reaches that early return.
+      for (const statusId of ["ai_evaluated", "incomplete"]) {
+        expect(v3DeckState({ statusId, aiScore: 4.1 })).not.toBe("noteval");
+      }
+    });
+
+    it("falls back to Incomplete deck where a human flagged it and no cause was recorded", () => {
+      // `flag_incomplete` (manual_review -> incomplete) writes no intake list
+      // and runs no model. Saying "contact details" there would name a cause
+      // nothing on the row supports.
+      expect(v3StatusKey({ statusId: "incomplete" })).toBe("incompleteDeck");
+      expect(v3StatusKey({ statusId: "ai_evaluated", signal: "flagged" })).toBe("incompleteDeck");
+    });
+
+    // NEGATIVE CONTROL. `aiComplete` is the ONLY thing separating the two
+    // words: take it away — which is every deck evaluated before 0075, whose
+    // backfill is `ai_complete = complete` — and both collapse onto one, which
+    // is exactly the indistinguishability §8.1 reported and could not fix.
+    it("collapses to one word when the model's verdict was never recorded", () => {
+      const stuck = { ...evaluated, aiComplete: false };
+      expect(v3StatusKey({ ...stuck, missingFields: ["founderPhone"] })).toBe("incompleteDeck");
+      expect(v3StatusKey({ ...stuck, missingFields: [] })).toBe("incompleteDeck");
+    });
+
+    // The word refines the STATUS only. `v3DeckState` and `matchesV3Stat` are
+    // untouched, so every V3-DASH tile count stays where item 19 put it — a
+    // deck can read "Incomplete contact details" and still be counted under AI
+    // Evaluated, because it was AI-evaluated.
+    it("does not move a tile", () => {
+      const stripped = { ...evaluated, aiComplete: true, missingFields: ["founderEmail"] };
+      expect(v3StatusKey(stripped)).toBe("incompleteContact");
+      expect(v3DeckState(stripped)).toBe("aieval");
+      expect(matchesV3Stat(stripped, "aieval")).toBe(true);
+      expect(matchesV3Stat(stripped, "incomplete")).toBe(false);
+    });
   });
 
   it("matchesV3Stat is the table filter: archived decks appear in ONE view", () => {

@@ -61,6 +61,10 @@ const DECK_COLUMNS =
   // V4-ROUTE — the complete/incomplete mark itself. It was written by the AI
   // path and selected by nothing, so no screen could route on it.
   "d.complete, " +
+  // S1-DASH (0075) — the model's own verdict, un-ANDed. `complete` says
+  // whether the deck may be assigned; this says WHICH of the two things is
+  // wrong when it may not, which is the whole of item 3.
+  "d.ai_complete, " +
   "d.ai_score, d.signal, d.status, d.assigned_to, d.ai_error, d.ai_attempts, d.ai_failed_at, " +
   "d.tags, d.created_at, d.updated_at";
 
@@ -135,6 +139,7 @@ interface DeckRow {
   founder_phone: string | null;
   missing_fields: string | null;
   complete?: number | null;
+  ai_complete?: number | null;
   intake_flag: string | null;
   intake_flag_note: string | null;
   related_deck_id: string | null;
@@ -297,6 +302,9 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: Shortli
     // V4-ROUTE — `decks.complete`, the AI's own "I could read and score this".
     // Blended with `missingFields` into one mark by `isDeckComplete`.
     complete: row.complete !== 0,
+    // S1-DASH (0075) — the un-ANDed verdict behind it. Absent reads as true,
+    // matching the column's DEFAULT 1 and `complete`'s own convention.
+    aiComplete: row.ai_complete !== 0,
     intakeFlag: (row.intake_flag as "duplicate" | "returning" | null) ?? undefined,
     intakeNote: row.intake_flag_note ?? undefined,
     relatedDeckId: row.related_deck_id ?? undefined,
@@ -750,7 +758,7 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
   // Re-derive what is still missing so the deck's Incomplete state follows the
   // correction instead of going stale.
   const row = await c.env.DB.prepare(
-    "SELECT founder, founder_email, founder_phone, city, sector FROM decks WHERE id = ?",
+    "SELECT founder, founder_email, founder_phone, city, sector, ai_complete, complete FROM decks WHERE id = ?",
   )
     .bind(id)
     .first<{
@@ -759,6 +767,8 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
       founder_phone: string | null;
       city: string | null;
       sector: string | null;
+      ai_complete: number | null;
+      complete: number | null;
     }>();
   if (row) {
     const missing = missingIntakeFields({
@@ -768,7 +778,32 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
       city: row.city,
       sector: row.sector,
     });
-    await c.env.DB.prepare("UPDATE decks SET missing_fields = ? WHERE id = ?")
+    // ── S1-DASH item 3 · the upward-only re-derive (plan §8.1, §12.2) ───────
+    //
+    // The gap §8.1 reports: a deck held back ONLY by missing founder details
+    // kept `complete = 0` forever, so it routed to Query with nothing left to
+    // ask. Raise it here — and only ever raise it:
+    //
+    //   · the intake list is now empty, AND
+    //   · `ai_complete` says the model itself passed the deck.
+    //
+    // Both arms matter. Without the second, this would launder an unreadable
+    // deck into Assign by typing a phone number; that is the confusion 0075
+    // exists to end. Never lowering is route-partition.test.ts's contract —
+    // "(b) blanking a required detail" pins `complete === true` immediately
+    // after the blanking, because routing follows the LIVE missing list and
+    // the column must not move under it.
+    //
+    // A deck evaluated before 0075 carries `ai_complete = complete`, so one
+    // stopped by missing details reads 0 and this guard correctly declines to
+    // raise it: the cause was never recorded and cannot be guessed. It needs a
+    // re-evaluation, not a backfill. Said plainly in the migration and in §12.
+    const raise = missing.length === 0 && row.ai_complete !== 0 && row.complete === 0;
+    await c.env.DB.prepare(
+      raise
+        ? "UPDATE decks SET missing_fields = ?, complete = 1 WHERE id = ?"
+        : "UPDATE decks SET missing_fields = ? WHERE id = ?",
+    )
       .bind(missing.length > 0 ? missing.join(",") : null, id)
       .run();
   }

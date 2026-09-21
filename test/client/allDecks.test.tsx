@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within, waitFor, configure } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { AuthContext, type AuthUser } from "../../src/client/auth/AuthProvider";
 import { DashboardPage, juryBucket } from "../../src/client/routes/DashboardPage";
 import { EvaluationDrawer } from "../../src/client/components/EvaluationDrawer";
@@ -679,10 +679,9 @@ describe("V3 — the superuser Dashboard", () => {
     const green = screen.getByRole("button", { name: "GreenRoute" }).closest("tr")!;
     expect(within(green).getByText("Queried")).toBeInTheDocument();
     expect(within(fin).queryByText("Queried")).toBeNull();
-    // V4-ROUTE — the Status word is the AI-evaluation state and cannot show the
-    // complete/incomplete MARK, so a deck can read "AI Evaluated" while being
-    // routed to Query. Nothing here is marked, so nothing carries the tag.
-    expect(screen.queryAllByTestId("v3-incomplete-mark")).toEqual([]);
+    // S1-DASH item 3 — the Status word now carries the mark itself, so nothing
+    // in this fixture (all of it complete) reads as either Incomplete word.
+    expect(screen.queryByText("Incomplete contact details")).toBeNull();
 
     // Every box but Shortlisted shares the default shape.
     for (const box of ["AI Evaluated", "Not AI Evaluated", "Incomplete", "Archived", "Assigned"]) {
@@ -697,18 +696,23 @@ describe("V3 — the superuser Dashboard", () => {
     expect(within(row).getByText("8.8")).toBeInTheDocument(); // Avg. score
   });
 
-  // V4-ROUTE — items 6 and 7. The routing mark lives on `decks.complete` +
-  // `missing_fields`; the Status column's three words are the AI-evaluation
-  // state. Those two disagree exactly when a deck was evaluated and then lost a
-  // required intake detail — measured case (b) in plan §4.1 — and that is the
-  // one case the operator changing nothing at all would otherwise never see.
-  it("tags an evaluated deck that is marked incomplete, where the Status word cannot", async () => {
+  // ── S1-DASH item 3 — the two statuses, on the screen ─────────────────────
+  //
+  // This replaces V4-ROUTE's `v3-incomplete-mark` test, whose own title said
+  // what was wrong: "where the Status word cannot". The word could not say
+  // "contact details" because `decks.complete` is the AND of the two causes
+  // and nothing else on the row remembered which arm failed (plan §8.1).
+  // Migration 0075 records the model's verdict separately, so the word can.
+  it("says WHICH of the two things is incomplete, from (aiComplete, missingFields)", async () => {
     vi.mocked(api.listDecks).mockResolvedValue({
       decks: V3_DECKS.map((d) => {
-        if (d.id === "d_fin") return { ...d, complete: true, missingFields: ["founderEmail" as const] };
-        // PayRoute is marked incomplete too — its pill already says so, which is
-        // what the tag's guard is for, so give it the mark to exercise that.
-        if (d.statusId === "incomplete") return { ...d, complete: false, missingFields: ["founderPhone" as const] };
+        // (1,set) — evaluated, then stripped of a required detail (plan §4.1
+        // case (b)). The model passed the deck; the contacts are the problem.
+        if (d.id === "d_fin") return { ...d, aiComplete: true, complete: true, missingFields: ["founderEmail" as const] };
+        // (0,set) — both wrong. Deck wins: there is no point asking a founder
+        // for a phone number when the deck itself could not be read.
+        if (d.statusId === "incomplete")
+          return { ...d, aiComplete: false, complete: false, missingFields: ["founderPhone" as const] };
         return d;
       }),
     });
@@ -716,15 +720,42 @@ describe("V3 — the superuser Dashboard", () => {
     await screen.findByRole("button", { name: "FinStack" });
 
     const fin = screen.getByRole("button", { name: "FinStack" }).closest("tr")!;
-    // The word is unchanged — the deck really is AI-evaluated…
-    expect(within(fin).getByText("AI Evaluated")).toBeInTheDocument();
-    // …and the mark says where it actually goes.
-    expect(within(fin).getByTestId("v3-incomplete-mark")).toHaveTextContent("Incomplete details");
-    // Not doubled up on the deck whose pill already says Incomplete deck.
+    expect(within(fin).getByText("Incomplete contact details")).toBeInTheDocument();
+    expect(within(fin).queryByText("AI Evaluated")).toBeNull();
+
     const pay = screen.getByRole("button", { name: "PayRoute" }).closest("tr")!;
-    expect(within(pay).queryByTestId("v3-incomplete-mark")).toBeNull();
-    // One row tagged, no others.
-    expect(screen.getAllByTestId("v3-incomplete-mark")).toHaveLength(1);
+    expect(within(pay).getByText("Incomplete deck")).toBeInTheDocument();
+
+    // Exactly one row of each — the other five decks are complete.
+    expect(screen.getAllByText("Incomplete contact details")).toHaveLength(1);
+    expect(screen.getAllByText("Incomplete deck")).toHaveLength(1);
+
+    // The tile is NOT moved by the word. FinStack was AI-evaluated and still
+    // counts there; `v3DeckState` and `matchesV3Stat` are untouched, which is
+    // what keeps every V3-DASH count where item 19 put it.
+    fireEvent.click(tile("AI Evaluated"));
+    expect(screen.getByRole("button", { name: "FinStack" })).toBeInTheDocument();
+  });
+
+  // Negative control for the above. `aiComplete` is the ONLY thing separating
+  // the two words: take it away — which is the state of every deck evaluated
+  // before migration 0075 — and both rows collapse onto "Incomplete deck",
+  // exactly the indistinguishability §8.1 reported.
+  it("without aiComplete recorded, the two statuses are one word again", async () => {
+    vi.mocked(api.listDecks).mockResolvedValue({
+      decks: V3_DECKS.map((d) => {
+        // `complete: false` is what the pre-0075 backfill leaves behind, and
+        // `aiComplete` follows it — so the cause is gone for BOTH rows.
+        if (d.id === "d_fin") return { ...d, aiComplete: false, complete: false, missingFields: ["founderEmail" as const] };
+        if (d.statusId === "incomplete")
+          return { ...d, aiComplete: false, complete: false, missingFields: ["founderPhone" as const] };
+        return d;
+      }),
+    });
+    mount("superuser", "u_super");
+    await screen.findByRole("button", { name: "FinStack" });
+    expect(screen.queryByText("Incomplete contact details")).toBeNull();
+    expect(screen.getAllByText("Incomplete deck")).toHaveLength(2);
   });
 
   it("sorts by recent activity descending and prints the row clock", async () => {
@@ -747,10 +778,15 @@ describe("V3 — the superuser Dashboard", () => {
     const actions = screen.getByRole("combobox", { name: "Actions for FinStack" });
     expect([...actions.querySelectorAll("option")].map((o) => o.textContent)).toEqual([
       "Actions ▾",
-      // The transitions the SERVER says this role may make from this stage —
-      // never an option it would refuse…
+      // S1-DASH item 2 — the prototype's four, framing the menu…
+      "Send to Assign",
+      "Send to Query — not on the Query list",
+      // …with the transitions the SERVER says this role may make from this
+      // stage kept underneath. Built literally, item 2 would have deleted this
+      // line from the screen; nobody asked for that (plan §12.3).
       "Reject (below AI gate)",
       "Edit",
+      "Archive — only from Rejected",
     ]);
     // …and never `assign_jury`, which the generic transition route would apply
     // WITHOUT an evaluator, stranding the deck at Assigned with assigned_to
@@ -761,7 +797,15 @@ describe("V3 — the superuser Dashboard", () => {
     const shortlisted = screen.getByRole("combobox", { name: "Actions for GreenRoute" });
     expect([...shortlisted.querySelectorAll("option")].map((o) => o.textContent)).toEqual([
       "Actions ▾",
+      // Item 4's guard, doing its job: a shortlisted deck is past the Assign
+      // roster, so the option says so rather than navigating to a list that
+      // will not hold it.
+      "Send to Assign — not available at Shortlisted",
+      // …and item 5's, the same way: a shortlisted deck is off the Query list
+      // too, queried once or not — `QUERYABLE_STAGES` does not hold it.
+      "Send to Query — not on the Query list",
       "Schedule intro call",
+      "Archive — only from Rejected",
     ]);
     expect([...shortlisted.querySelectorAll("option")].map((o) => o.textContent)).not.toContain("Edit");
   });
@@ -783,7 +827,14 @@ describe("V3 — the superuser Dashboard", () => {
     mount("superuser", "u_super");
     await screen.findByRole("button", { name: "GreenRoute" });
     const options = [...screen.getByRole("combobox", { name: "Actions for GreenRoute" }).querySelectorAll("option")];
-    expect(options.map((o) => o.textContent)).toEqual(["Actions ▾", "Edit"]);
+    expect(options.map((o) => o.textContent)).toEqual([
+      "Actions ▾",
+      "Send to Assign — not available at Signup",
+      "Send to Query — not on the Query list",
+      "Edit",
+      "Archive — only from Rejected",
+    ]);
+    expect(options.map((o) => o.textContent)).not.toContain("Complete signup");
   });
 
   it("Edit opens the inline contact row and saves it through the details route", async () => {
@@ -852,6 +903,141 @@ describe("V3 — the roles whose prototype was NOT reshared keep their screen", 
       expect(screen.queryByRole("combobox", { name: /^Actions for/ })).toBeNull();
     });
   }
+
+  // ═══ S1-DASH items 2, 4, 5 — the row menu's two real destinations ═══════
+  //
+  // "Send to Assign" is guarded NAVIGATION, not a transition: the prototype's
+  // own `addToAssign` pushes the row onto `asDecks` with `assigned:false`, so
+  // it puts the deck on the Assign LIST and does not pick an evaluator. Our
+  // roster already lists every deck the partition routes there, so the click's
+  // whole job is to carry the selection across — which is the hand-off that was
+  // silently dropped in the other direction (plan §12.4).
+
+  /** Mounts the Dashboard under a router that reports where it navigated to. */
+  function mountWithRoutes() {
+    const seen: { path: string; state: unknown } = { path: "/app/decks", state: null };
+    function Probe({ path }: { path: string }) {
+      const location = useLocation();
+      seen.path = path;
+      seen.state = location.state;
+      return <div>at {path}</div>;
+    }
+    render(
+      <MemoryRouter initialEntries={["/app/decks"]}>
+        <AuthContext.Provider
+          value={{
+            user: principal("superuser", "u_super"),
+            loading: false,
+            login: vi.fn(),
+            logout: vi.fn(),
+            updateUser: vi.fn(),
+          }}
+        >
+          <Routes>
+            <Route path="/app/decks" element={<DashboardPage />} />
+            <Route path="/app/assign" element={<Probe path="/app/assign" />} />
+            <Route path="/app/query" element={<Probe path="/app/query" />} />
+          </Routes>
+        </AuthContext.Provider>
+      </MemoryRouter>,
+    );
+    return seen;
+  }
+
+  it("Send to Assign carries the row to /app/assign as a selection", async () => {
+    const seen = mountWithRoutes();
+    await screen.findByRole("button", { name: "FinStack" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Actions for FinStack" }), {
+      target: { value: "__assign" },
+    });
+    expect(await screen.findByText("at /app/assign")).toBeInTheDocument();
+    // The selection, not just the screen — landing on an empty Assign list is
+    // the defect this fixes at the other end.
+    expect(seen.state).toEqual({ deckIds: ["d_fin"] });
+  });
+
+  // Negative control for item 4's guard: the ONLY thing standing between a
+  // blocked row and a navigation is `deckListRoute`. Give FinStack a missing
+  // contact detail — the partition then routes it to Query — and the option
+  // must go disabled and say so. Revert the guard and this passes with the
+  // deck landing on a list that will not hold it.
+  it("…and refuses the row the Assign list will not hold, with the reason", async () => {
+    vi.mocked(api.listDecks).mockResolvedValue({
+      decks: V3_DECKS.map((d) =>
+        d.id === "d_fin" ? { ...d, aiComplete: true, complete: true, missingFields: ["founderEmail" as const] } : d,
+      ),
+    });
+    const seen = mountWithRoutes();
+    await screen.findByRole("button", { name: "FinStack" });
+
+    const option = [...screen.getByRole("combobox", { name: "Actions for FinStack" }).querySelectorAll("option")].find(
+      (o) => o.textContent?.startsWith("Send to Assign"),
+    )!;
+    expect(option).toBeDisabled();
+    // The reason is the row's own Status word, not a second vocabulary.
+    expect(option.textContent).toBe("Send to Assign — incomplete contact details");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Actions for FinStack" }), {
+      target: { value: "__assign" },
+    });
+    expect(screen.queryByText("at /app/assign")).toBeNull();
+    expect(seen.state).toBeNull();
+  });
+
+  // Item 5. The GUARD is live and asserted above in both directions; the ACTION
+  // is blocked on a client answer, because one click here emails a founder a
+  // letter nobody composed (§12). The two reasons are different words on
+  // purpose — one says the row does not belong on Query, the other says it does
+  // and this is not where you send it from.
+  it("Send to Query is never armed, and says which of the two reasons applies", async () => {
+    vi.mocked(api.listDecks).mockResolvedValue({
+      decks: V3_DECKS.map((d) =>
+        d.id === "d_fin" ? { ...d, aiComplete: true, complete: true, missingFields: ["founderEmail" as const] } : d,
+      ),
+    });
+    const seen = mountWithRoutes();
+    await screen.findByRole("button", { name: "FinStack" });
+
+    const optionOf = (name: string) =>
+      [...screen.getByRole("combobox", { name: `Actions for ${name}` }).querySelectorAll("option")].find((o) =>
+        o.textContent?.startsWith("Send to Query"),
+      )!;
+
+    // FinStack is now routed to Query — so the guard passes and the BLOCK is
+    // what is left.
+    expect(optionOf("FinStack").textContent).toBe("Send to Query — compose it on the Query screen");
+    expect(optionOf("FinStack")).toBeDisabled();
+    // WealthOS is at Pending AI: nothing to ask, so it is the guard that speaks.
+    expect(optionOf("WealthOS").textContent).toBe("Send to Query — not on the Query list");
+    expect(optionOf("WealthOS")).toBeDisabled();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Actions for FinStack" }), {
+      target: { value: "__query" },
+    });
+    expect(screen.queryByText("at /app/query")).toBeNull();
+    expect(seen.state).toBeNull();
+  });
+
+  // Item 6 — the post-action statuses. Queried and Archived already shipped
+  // (V3-DASH); Assigned did not, because `assigned` is a POST_AI stage and so
+  // reads "AI Evaluated" like every other one. Same predicate as the tile.
+  it("a deck that has been assigned says so, as Queried and Archived already did", async () => {
+    vi.mocked(api.listDecks).mockResolvedValue({
+      decks: V3_DECKS.map((d) =>
+        d.id === "d_fin" ? { ...d, statusId: "assigned", status: "Assigned", assignedTo: "u_jury" } : d,
+      ),
+    });
+    mount("superuser", "u_super");
+    await screen.findByRole("button", { name: "FinStack" });
+
+    const fin = screen.getByRole("button", { name: "FinStack" }).closest("tr")!;
+    expect(within(fin).getByText("Assigned")).toBeInTheDocument();
+    // The Status word is unchanged — it IS AI-evaluated; the chip is the event.
+    expect(within(fin).getByText("AI Evaluated")).toBeInTheDocument();
+    // And it stays off rows that were not assigned.
+    const wealth = screen.getByRole("button", { name: "WealthOS" }).closest("tr")!;
+    expect(within(wealth).queryByText("Assigned")).toBeNull();
+  });
 
   it("the jury's My Pipeline is untouched", async () => {
     vi.mocked(api.listDecks).mockResolvedValue({
