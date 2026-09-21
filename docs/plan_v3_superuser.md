@@ -1217,6 +1217,243 @@ Remedy is a one-off re-evaluation, not a backfill.
   `QueryPage.tsx` never reads it — zero hits across 1,084 lines. The hand-off silently drops the
   selection today. Item 5 lands right on it.
 
+
+## 13. The 21-Sep wave — session prompts
+
+`main` ends at migration **0074**, `ALLOTMENT_CEILING` is **76**. Allotments: `S1` **0075**,
+`S6-DRIFT` **0076** (when unblocked). Nothing else takes a number.
+
+**Not in this wave:** items 8, 9, 12 (blocked on §12.1 — no vendor principal), item 16 (blocked on
+placement, §12.3). `W-PLATFORM` needs a go-ahead because it is a product decision, not a code one.
+
+**Three sessions move `scripts/role-matrix.ts` or `shared/nav.ts`.** Re-baseline the roles harness
+**once, at integration**, never per session — and remember it exits 1 against a dead port, so a
+"pass" with no server is not one.
+
+### The block every prompt carries
+
+```
+SETUP
+  cd /Users/jayanthkomarraju/Documents/GitHub/startup-jury && nvm use
+  git worktree add ../sj-<ID> -b parity/<ID> main
+  cd ../sj-<ID> && npm ci
+
+READ FIRST
+  1. docs/plan_v3_superuser.md §12 IN FULL — it is the scope for this wave, and §12.3 records five
+     items that do NOT mean what their sentence says. Then your own item's entry.
+  2. §8.1 and §12.2 if you touch deck completeness.
+  3. The V3 prototype is docs/prototype/source/incubator/AISJ_SuperuserV3.HTM. **Its admin console
+     is base64** — decode with docs/prototype/tools/decode-embedded.py before concluding anything is
+     missing; a plain grep returns ZERO hits for console content. Never read a .HTM whole, never read
+     docs/PARITY-FINDINGS.md (1.4 MB), and grep `_scripts.js` by function name.
+
+CONSTRAINTS
+  - Incubator SUPERUSER unless your item says otherwise. Every other role's screens must render
+    exactly as they do today, and a client test must say so.
+  - The VC edition was not rescoped. Where a file is shared with VC, every VC test passes unchanged.
+  - §2.2 hazard files: index.css, shared/nav.ts, shared/roles.ts, App.tsx. If two sessions are
+    listed as owning nav.ts, the LATER one raises a §9 request rather than editing.
+  - Take only your allotted migration; raise ALLOTMENT_CEILING from 76 in the SAME commit if used.
+  - A changed gate changes `npm run roles`: add probes in the same commit, run against a server you
+    PROVED you own with `lsof` (PID **and** cwd). Report the number; do not re-baseline.
+
+TEST + GATE
+  npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e
+  `nvm use` first — the build needs Node 22; on Node 20 it dies with a `registerHooks` error that
+  reads as a code fault and is not. Baselines off `main`: unit **2340 passed / 1 skipped**,
+  roles 1180/1180, parity:tokens 0 gaps, parity:nav 62 known gaps, e2e ~226.
+  **Before diagnosing ANY e2e failure:** `netstat -an | grep -c TIME_WAIT`. One full run burns ~9,000
+  of the 16,384 ephemeral ports by itself; over ~10,000 the run is meaningless and over ~14,000 the
+  dev server will not boot (it fails naming a MIGRATION file, which is not the problem). 98% of that
+  burn is Miniflare's internal dispatchFetch, not the browser — so fewer Playwright workers does NOT
+  help. `grep -c "fetch failed"` is the reliable tell; `Network connection lost` can read 0 on a
+  thoroughly poisoned run. **Never two e2e runs at once.**
+  Traps this codebase has paid for: gate client assertions on a POPULATED element, never a heading
+  the loading branch also renders; never locate an element by the attribute your click changes; one
+  sign-in per e2e test; guard a draft against StrictMode's double mount; when you narrow a guard,
+  check something is still left inside it; and **run the negative control — revert your fix and watch
+  the test fail, or the test is decoration.** That has caught three real defects here, including two
+  of my own tests that passed with the bug restored.
+
+FINISH
+  Update §12/§13 with what you closed and any question you hit. Anything outside your ownership is a
+  §9 row in docs/plan_parity.md with an exact diff. Commit to parity/<ID>. Do not merge to main.
+```
+
+### `S1-DASH` — items 2, 3, 4, 5, 6. The big one; read §12.3 before designing.
+
+```
+BUILD, in this order.
+
+  1. **Item 3 — the two statuses, and the column that makes them possible (migration 0075).**
+     The client wants "Incomplete deck" and "Incomplete contact details" as SEPARATE words. Today
+     `decks.complete` is `parsed.complete AND missingIntakeFields(...).length === 0` written at
+     src/server/ai/evaluate.ts:934, and the model's raw verdict is stored NOWHERE —
+     `evaluations.verdict` is derived from the already-ANDed value, so it is not a recovery source.
+     Add `decks.ai_complete`, write the model's verdict there, and derive the two statuses:
+       ai_complete = 0                        -> "Incomplete deck"
+       ai_complete = 1 AND missing_fields set -> "Incomplete contact details"
+     **Do NOT change the meaning of `decks.complete`.** Two attempts did and both were reverted
+     (§8.1): route-partition.test.ts pins that an edit must not LOWER it, automation.test.ts pins the
+     ANDed value. A new column changes neither, and I verified both tests are blind to it.
+     Then re-derive UPWARD ONLY on PATCH — raise 0->1 when the intake list empties and the model
+     passed; never lower. Precedent: pipeline.ts:832 already raises this column with no AI re-read.
+     **Backfill cannot recover the cause.** Old rows read "Incomplete deck" and stay stuck. Say so in
+     the migration comment and in §12; do not paper over it.
+     Full status set for the default shape: Incomplete deck · Incomplete contact details ·
+     AI Evaluated · Not AI Evaluated.
+
+  2. **Items 4 and 5 — the guards.** `deckListRoute` in src/shared/queries.ts ALREADY is the
+     predicate; do not write a second one. Send to Assign acts only on rows it routes to "assign";
+     Send to Query only on rows it routes to "query".
+     **OPEN QUESTION (§12) — do not invent an answer:** §4.1 answered "silently drop" for a BULK
+     select-all. These items put the guard on a per-row menu, where silent-drop is a button that
+     visibly does nothing. Build the guard, surface a clear reason on the blocked row, and record the
+     question in §12 for the client.
+     While you are here, fix the live defect: AssignPage.tsx:526 navigates to /app/query with
+     `state: { deckIds }` and QueryPage.tsx never reads it — 0 hits in 1,084 lines. The selection is
+     dropped today.
+     **Do NOT narrow QUERYABLE_STAGES** — that reverses F0214 (an answered query would vanish
+     instead of showing Responded). The guard goes on the action, which is what item 5 says.
+
+  3. **Item 2 — the four options, on routes that exist. THIS IS A CHANGE OF KIND (§12.3).**
+     The menu is `deck.actions` — the transitions the server permits — not four fixed labels.
+     Built literally it removes reject_ai_gate / shortlist / schedule_intro from the screen, and two
+     of the four options FAIL against the server as it stands:
+       · `archive` is `rejected -> archived` only (src/pipeline/incubator.ts) — 403 from ai_evaluated
+       · "Send to Query" is not a transition; POST /decks/:id/queries 400s on an empty body
+     **Send to Assign = guarded NAVIGATION to /app/assign, not a transition.** The prototype's own
+     `addToAssign` sets `assigned:false` — it puts the deck on the Assign list, it does not assign an
+     evaluator. Keep `assign_jury` excluded; Q32's reason still holds and its test still passes.
+     **Archive and one-click Send to Query are BLOCKED on a client answer** (§12). Build the two that
+     work, render the other two disabled with the reason, and record the question. Do not widen the
+     `archive` transition on your own — it moves the roles matrix.
+
+  4. **Item 6 — post-action statuses.** Assigned, Queried and Archived already ship as chips
+     (DashboardPage.tsx ~1587-1596); verify rather than rebuild. **"Contact Details Edited" has no
+     record of any kind** — PATCH writes no pipeline_events row. Decide with the client whether it is
+     a real event or display-only, and record it. Note an archived deck is excluded from every tile,
+     so it does not change status — it disappears from the view. That is correct per the prototype
+     and probably not what the client's sentence expects: ask.
+
+CONSTRAINTS
+  You own: DashboardPage.tsx · shared/deckStats.ts · shared/queries.ts · server/ai/evaluate.ts ·
+  server/routes/decks.ts · client/types.ts · pipeline/incubator.ts · QueryPage.tsx · AssignPage.tsx ·
+  migrations/0075 · and the four tests that pin them (allDecks, deckStats, route-partition,
+  automation). Migration 0075 is YOURS exclusively.
+
+TEST
+  Worker: both statuses derive correctly from (ai_complete, missing_fields) in all four combinations;
+  the upward-only re-derive raises 0->1 and NEVER lowers; both guards, both directions.
+  **Negative controls, mandatory:** revert the column and watch the two statuses collapse into one;
+  revert each guard and watch it fail. automation.test.ts and route-partition.test.ts must stay green
+  UNCHANGED — if you find yourself editing either, stop and re-read §8.1.
+```
+
+### `S2-SETUP` — item 7
+
+```
+BUILD
+  Delete step 1 (Org type) and step 4 (the team/superuser step) from the Set up wizard; only the
+  programme setup remains.
+
+  TWO THINGS IT STRANDS — resolve both before deleting, and record where they land:
+   1. **`branding.orgName`** — the wizard is its ONLY writer, and it has four readers including every
+      outgoing email and every invoice. Find it a new home (Branding in the console is the obvious
+      candidate) or the first invoice after this ships is unbranded.
+   2. **Buy-seats** — setup/TeamStep.tsx is the sole importer of `purchaseSeats`. Deleting the step
+      removes the only path to it. **Do not delete the seat-purchase capability** without a separate
+      yes; re-home or keep it reachable.
+
+  Note this DELETES work three commits old: V3 item 16 (§3) changed step 4 to "Nominate your super
+  user" with a handoff card to Team & roles, per this same client. Say so in the commit message.
+  The V3 prototype still draws all four steps — the client's instruction wins over the file here,
+  and that deviation belongs in §12 so the next parity capture does not revert it.
+
+  Non-admin roles already see three steps not four — find how, so the deletion does not double-apply.
+
+CONSTRAINTS
+  You own: SetupWizard.tsx · setup/** · test/client/setupTeam.test.tsx and the e2e specs that walk
+  the wizard. **One shared line with S3-ACCOUNT:** the V3 receipt tells the user to "Go to Set up /
+  Select your role" — if you delete that step, S3 must change that sentence. Raise it in §9.
+```
+
+### `S3-ACCOUNT` — item 14
+
+```
+BUILD
+  My Account, re-developed per the V3 file — but **§12.4 says this is ~90% done already**: V3-PT
+  shipped the pricing half (§3 item 17). START by measuring what is actually left, write that into
+  §12, and build only the remainder. Do not re-do shipped work.
+
+  The remaining gap is close to a one-word gate change (`seatFlow` in account/AccountOverlay.tsx).
+  **But six assertions exist specifically to catch that widening** (accountOverlay.test.tsx ×4,
+  parity.spec.ts, roles.spec.ts) because of §4's Q85. The client's row says **Superuser/Admin**, so
+  the incubator rows may move — the **VC rows must NOT**. Check each of those six before changing it.
+
+  **Do NOT build the payment section** — it is entangled with item 9, which is blocked (§12.1).
+
+CONSTRAINTS
+  You own: account/** · AccountPage.tsx · shared/accountOrder.ts · accountOverlay.test.tsx ·
+  e2e/account-purchase.spec.ts. Shares e2e/parity.spec.ts with S5 — re-capture only your own rows.
+```
+
+### `S4-COPY` — item 13(a), and item 11's write-up. Smallest; ship it first.
+
+```
+BUILD
+  1. **Item 13 — delete two sentences** from the Area weights console section:
+     "Each role's additional score is surfaced as AI+ (Program Associate), AI++ (Program Manager),
+      AI+++ (Jury Member). These parameters are configurable by default."
+     Find them in src/client/routes/admin/AreaWeights.tsx.
+     **This is PROTOTYPE COPY** — the second sentence is verbatim in the decoded console, and the
+     client quoted OUR wording for the first (the prototype says "Super User"). He is reading the
+     built app, not the file. He marked it "Not required", so it goes — but **record the deviation in
+     §12**, or the next parity capture puts it back.
+     **Reading (a) ONLY: delete the SENTENCES.** Do NOT touch the AI+/AI++/AI+++ concept itself —
+     AssignPage.tsx implements it as TIERS and server/routes/assignments.ts scores it, across five
+     sites and six test files. If you believe he means the concept, that is reading (b): stop and
+     record it as a question. Do not guess between them.
+
+  2. **Item 11 — no code.** The client said "if that's already working, it can continue". It is:
+     V4-WEIGHT shipped the observable preview and 62/62 are green. Write two short paragraphs into
+     §12 confirming what works and what the earlier finding was (the control was always wired; its
+     effect was invisible because AI and jury scores sit close together and the blend was not shown
+     on the Dashboard). That is the whole deliverable.
+
+CONSTRAINTS
+  You own: admin/AreaWeights.tsx and its test. Nothing else. No migration.
+```
+
+### `S5-HELP` — item 15, JURYbuddy
+
+```
+BUILD
+  A help widget, per ~/Downloads/Help_JURYbuddy.HTM — **8.2 MB, never read it whole.** Grep for ids,
+  classes and function names to get its structure, then read only the slices you need.
+  **Item 15 cites the wrong file (§12.3):** AISJ_SuperuserV3.HTM has ZERO hits for JURYbuddy, FAQ or
+  Help even after decoding its console. Help_JURYbuddy.HTM is the only spec. Do not go hunting in V3.
+
+  Establish and record FIRST, because it changes the whole port:
+   · What the 8.2 MB actually is. Early reading says ~6.14 MB of embedded video across ~41 clips.
+     **Those go to R2, never into the bundle.** Confirm the count and size yourself and record it.
+   · The content model — where the FAQ entries live, whether there are categories, whether there is
+     search, and whether the widget calls anything or is purely static.
+   · What exists today: grep src/client for a help widget, FAQ or JURYbuddy. State plainly if nothing.
+
+  **The no-match path ("raise a ticket") depends on item 12, which is blocked** (§12.1). Stub it and
+  say so; do not build a ticket route.
+  Caution before shipping 41 answers verbatim: several assert facts that items 8, 9 and 12 are
+  currently moving. Flag any answer that will be wrong next week.
+
+CONSTRAINTS
+  You own: a new src/client/routes/help/** · SupportPages.tsx · server/routes/support.ts ·
+  wrangler.jsonc (for the R2 binding if you add one). **You add a `help` nav item, so you own
+  shared/nav.ts this wave** — S6-DRIFT would too, but it is blocked, so there is no collision today.
+  Adding a nav id for all roles moves the roles harness: add probes in the same commit and report the
+  number; integration re-baselines.
+```
+
 ## 9. Progress — measured gates, one row per session
 
 Every number here was MEASURED on the session's own branch, never copied from a
