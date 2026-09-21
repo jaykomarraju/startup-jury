@@ -1130,6 +1130,93 @@ regression, and it sits between two tests written by different waves — the kin
 of change that belongs to a session that owns `evaluate.ts`, `decks.ts` and
 `queries.ts` together, with the allotment to add a column.
 
+
+---
+
+## 12. The 21-Sep feedback (items 2–16) — scoped 2026-09-21
+
+**Scoreboard: 1 already done · 5 buildable now · 5 need one answer · 4 hard-blocked.**
+
+### 12.1 Four items are one business question, not engineering work
+
+Items **8, 9, 10 and 12** all assume ai.STARTUPJURY exists as a principal *inside* the product.
+It does not. `migrations/0001_init.sql:1` — *"Single-tenant: one implicit organization"*;
+`src/shared/roles.ts` tops out at `superuser`, **inside the customer's own workspace**; there is no
+organisations table and `org_settings` is keyed by EDITION, not by org.
+
+- **10** — "Price Config: for AISJ Admin, not the client." Today **every customer admin can edit
+  ai.STARTUPJURY's own price list** (`PUT /api/pricing/draft`, `POST /api/pricing/publish`).
+  `migrations/0033_price_configuration.sql:5-7` already calls it *"a PLATFORM-OWNER surface"* — the
+  code's own comment agrees with the client; only the gate does not.
+- **12** — a client admin's ticket reaching AISJ support has nobody upstream to reach.
+- **8** — the approval recipient is a vendor inbox, not a user of any workspace.
+- **9** — the merchant account is AISJ's, not the customer's.
+
+**Three options, sized:**
+
+| | Scope | Unblocks |
+|---|---|---|
+| **(i) Deployment-level platform owner** — `PLATFORM_OWNER_EMAILS` in env, a `requirePlatformOwner` middleware over the four pricing editor routes, `pc` filtered from the console rail | **M**, mostly test restatement | **Item 10 fully.** Gives 8 and 9 a named recipient. |
+| (ii) A seventh role in the enum | **XL** — 20 files hardcode role literals, the visibility matrices are dimensioned 4×4/5×5, the roles harness multiplies. Also puts AISJ staff in the customer's `users` table, countable against seats | same as (i), worse |
+| (iii) Real multi-tenancy | out of scope this round (`plan_parity.md` Q69) | the only thing that gives **item 12** an actual inbox |
+
+**Recommend (i)**, and say plainly: it does **not** give item 12 a destination. That needs a second
+tenant or an outbound email bridge — and the bridge needs `EMAIL_FROM`, unset since 2026-08-12.
+
+### 12.2 Item 3 un-defers §8.1, and the fix now works
+
+The client wants **"Incomplete deck"** and **"Incomplete contact details"** as separate statuses —
+exactly the two causes of `complete = 0` that §8.1 records as indistinguishable. Re-verified from
+source: `evaluate.ts:934` writes the AND, `queries.ts:446-448` re-ANDs it, and `evaluations.verdict`
+is computed from the already-ANDed value, so it is not a recovery source either.
+
+**Both pinned tests survive a NEW COLUMN**, which is why this works where my two attempts did not —
+both tried to change the meaning of `decks.complete`:
+- `automation.test.ts:461-469` SELECTs four **named** columns with `toMatchObject` — a new
+  `ai_complete` is invisible to it.
+- `route-partition.test.ts:135` asserts after *blanking*; an upward-only re-derive fires only when
+  the missing list is empty, so it never runs there.
+- **No test pins the stuck case.** Nothing blocks the fix.
+
+Strengthening the case: `POST /queries/:id/respond` (`pipeline.ts:832`) **already** raises this
+column with no AI re-read, so upward-only re-derivation matches shipped behaviour.
+
+**Tell the client, plainly:** every deck evaluated before the migration with `complete = 0` will read
+"Incomplete deck" and stay stuck even after its contacts are filled — the cause was never recorded.
+Remedy is a one-off re-evaluation, not a backfill.
+
+### 12.3 Five items are not what their sentence says
+
+- **Item 2 is a change of KIND, not a relabel.** The Actions menu is `deck.actions` — the
+  transitions the server permits — not four fixed options. Built literally it (a) removes
+  `reject_ai_gate`, `shortlist`, `schedule_intro` from the screen and (b) ships two options that
+  fail: `archive` is `rejected → archived` only, so it **403s** from `ai_evaluated`, and "Send to
+  Query" is not a transition — `POST /decks/:id/queries` **400s** on an empty body.
+  The prototype supplies the safe reading: its `addToAssign` sets `assigned:false` — it puts the deck
+  on the Assign LIST, it does not assign an evaluator. So **Send to Assign = guarded navigation**,
+  and Q32's exclusion of `assign_jury` stays correct.
+- **Item 6** — 3 of 4 statuses already ship as chips. **"Contact Details Edited" has no record of any
+  kind**: `PATCH /api/decks/:id` writes no `pipeline_events` row. And an *archived* deck is excluded
+  from every tile, so it does not change status — it **vanishes from the view**.
+- **Item 13 is prototype copy.** *"These parameters are configurable by default."* is verbatim in the
+  decoded console, and he quoted OUR wording for the other sentence — he is reading the built app,
+  not the file. He marked it "Not required", so the client wins; **record the deviation** or the next
+  parity capture reverts it.
+- **Item 15 cites the wrong file.** `AISJ_SuperuserV3.HTM` has **zero** hits for JURYbuddy/FAQ/Help
+  even after decoding the console. `Help_JURYbuddy.HTM` is the only spec.
+- **Item 16 is not a re-dev — it ADDS a screen.** V3 still carries `panel-scoredrift` verbatim, and
+  `AISJ_Drift.HTM` is a different report (policy drift per parameter, not temporal drift per deck).
+  It also reads as a **marketing page**, not an in-app report: standalone header, no sidebar,
+  seeded sample data, a book-a-demo CTA. **Placement is unsettled — do not start it.**
+
+### 12.4 Already done, and a live defect found in passing
+
+- **Item 11 — done.** V4-WEIGHT shipped it; owes two written answers, zero code.
+- **Item 14 — ~90% done** by V3-PT; the remainder is close to a one-word gate change.
+- **Live defect:** `AssignPage.tsx:526` navigates to `/app/query` with `state: { deckIds }` and
+  `QueryPage.tsx` never reads it — zero hits across 1,084 lines. The hand-off silently drops the
+  selection today. Item 5 lands right on it.
+
 ## 9. Progress — measured gates, one row per session
 
 Every number here was MEASURED on the session's own branch, never copied from a
