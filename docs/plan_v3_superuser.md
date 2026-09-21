@@ -1218,6 +1218,79 @@ Remedy is a one-off re-evaluation, not a backfill.
   selection today. Item 5 lands right on it.
 
 
+### 12.5 Item 7 built — `S2-SETUP`. The deletion, and the two things it would have stranded.
+
+**Built, gated to the incubator SUPER USER** — `edition === "incubator" && role === "superuser"`,
+the same predicate V3-PT gated item 16 on (§4 Q85). That user's Set up wizard is now
+**Configure → Select**, Select finishes it, and the Org type and Team steps are not rendered.
+
+**It is a deliberate deviation from the prototype, and this is the record that stops the next parity
+capture reverting it.** Measured here, not taken on trust: `AISJ_SuperuserV3.HTM:7742-7750` and
+`AISJ_IC_SuserV15.HTM` draw the same four `.ac-step` labels — *Org type · Configure · Select · Team* —
+byte for byte. The client's instruction wins over the file. One detail worth having on record: the
+**Organisation name field was never the prototype's** either. `#sus-orgtype` is three org-type tiles
+and a Continue button and nothing else; we added the field, and it is the only reason item 7 strands
+anything at all.
+
+**Why the gate, and what widening it costs.** §13's constraints are explicit — every other role
+renders exactly as it does today, and the VC edition was not rescoped — and they are not abstract
+here: three e2e specs walk all four steps as somebody else (`programs` and `automation` as the
+incubator admin, `seats` as the VC admin) and `roles` walks three as the program associate. **No spec
+walked the wizard as the incubator super user at all**, which is why `e2e/setup-wizard.spec.ts` is new.
+Widening the deletion to the admin, or to VC, is deleting one predicate in `SetupWizard.tsx` — but it
+is the client's call, not ours, and the five negative controls in `test/client/setupWizard.test.tsx`
+turn it into a deliberate edit rather than a quiet one. **Ask him**, because a wizard where the super
+user sees two steps and the admin beside them sees four is a real inconsistency, not a tidy gate.
+
+**The two strandings, resolved before the deletion, as §13 required.**
+
+| | Was | Now |
+|---|---|---|
+| **`branding.orgName`** | Written ONLY by the Org type step. Four readers, all user-visible or outward-facing: `AccountPage.tsx:85` (My Account → Workspace), `routes/users.ts:134` (the account-invite email), `resubmit.ts:224` (the founder incomplete-deck email), `routes/billing.ts:381` (every invoice's bill-to name) | An **Organisation name** field in Admin console → **Branding**, which already re-read-and-merged the record for exactly this reason. Held beside `brandingPatch`, never inside it — `shared/branding.ts` is untouched, so its three pinned test files do not move |
+| **Buy additional seats** | `setup/TeamStep.tsx` was the sole importer of `purchaseSeats`; deleting the step removed the only path to it | Moved WHOLE to `src/client/routes/seats/BuySeats.tsx` and mounted in Admin console → **Team & roles**, gated to the same principal that lost it. **This is §4 Q84's own answer** — *"Moving 'Buy seats' into Team & roles would satisfy the prototype exactly"* — and the destination the deleted step's handoff card already pointed at. One implementation, two hosts: the wizard's step 4 still renders it for the roles that keep the step |
+
+**`branding.orgType` needed nothing.** Grepped across `src/`: the wizard wrote it and **nothing read
+it** — the Org type step's choice was already inert, because the workspace's real type is its
+`edition`, which Team & roles has stated since W4-A. The key still round-trips through the branding
+merge, so the four tests that pin its survival are untouched.
+
+**Nothing else was stranded.** Team & roles already carried the whole of the narrowed step 4's
+content before this change: `AccountOwnerCard` is the super-user nomination (F0062) and
+`WorkspaceTypeCard` is the workspace type. That is why the deletion is small.
+
+**"Non-admin roles already see three steps" — the mechanism, and the hazard §13 flagged.**
+`stepsFor()` slices `STEPS` at index 1 for any seat that is not `full`. Item 7's narrowing is
+therefore its own branch returning `{labels: ["Configure","Select"], first: 1}`, **not a second
+slice**: a slice on an already-sliced list would have cost a `readonly` seat its Configure step and
+landed a program associate on Select with nothing configured. A super user is always a `full` seat
+(`seatFor`), so the slice branch was unreachable for them anyway — the branch makes it unreachable by
+construction rather than by luck, and a test pins the associate's three steps either way.
+`ConfigureStep`'s Back button is the same hazard in the other direction: it was gated on
+`seat === "full"` alone, which is TRUE for this user, so it would have drawn a Back button pointing at
+a step that no longer exists.
+
+**Two real defects, both found by the negative control, both in code written this session.** Neither
+was visible in a passing run:
+1. The Branding section's org-name draft first shared the token draft's `touched` ref. It couples
+   them **both ways** — typing a name stopped the palette being adopted, so the next Save wrote the
+   shipped defaults over the workspace's colours; and editing a colour made an unread name look
+   edited, posting `""` over a name four surfaces depend on. Split into its own `orgTouched`.
+2. `SeatsCard` trusted `GET /api/seats` to be a `SeatsView`. A 200 with any other shape threw during
+   render and took the whole Team & roles section — roster, owner card and permission grid — down
+   with it. It now treats a response it does not recognise as no response.
+
+**Owed to `S3-ACCOUNT`, raised as a `plan_parity.md` §9 row with an exact diff** (the shared line §13
+named): the V3 receipt's *"What happens next? Go to Set up"* list sends the buyer to **Select your
+role** and **Invite team members**, and after this change neither is reachable from Set up for this
+user. `AccountScreens.tsx:2011-2024`, two strings, layout untouched.
+
+**Follow-up, not taken here.** `TeamStep`'s `nominateOnly` layout — V3-PT's "Nominate your super
+user" — is now unreachable from the wizard, since the only principal it was gated to no longer has a
+step 4. It is KEPT: the same client asked for item 16 and item 7 three commits apart, §3 records two
+items he has already reversed once, and deleting it would take four tests with it. If item 7 survives
+a round of review, that branch and its tests are a clean deletion.
+
+
 ## 13. The 21-Sep wave — session prompts
 
 `main` ends at migration **0074**, `ALLOTMENT_CEILING` is **76**. Allotments: `S1` **0075**,
@@ -1350,7 +1423,7 @@ TEST
   UNCHANGED — if you find yourself editing either, stop and re-read §8.1.
 ```
 
-### `S2-SETUP` — item 7
+### `S2-SETUP` — item 7 — **COMPLETE.** Built, measured and recorded in §12.5.
 
 ```
 BUILD

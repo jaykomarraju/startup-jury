@@ -40,6 +40,29 @@ import { useAdminSave } from "./saveContext";
  * was the first screen to hit this (plan §1.5, fixed by W1-A); this is the
  * second, and it merges the same way: read the current record, spread it, then
  * overwrite only the keys this section owns.
+ *
+ * ── S2-SETUP · 21-Sep item 7 ────────────────────────────────────────────────
+ * **Organisation name now lives here**, because the Set up wizard's Org type
+ * step — its only writer since the wizard shipped — is deleted for the
+ * incubator super user. It is not decoration: `branding.orgName` has four
+ * readers, and all four are user-visible or outward-facing —
+ *   · `AccountPage.tsx:85`        My Account → Workspace
+ *   · `server/routes/users.ts:134`  the account-invite email
+ *   · `server/resubmit.ts:224`      the founder incomplete-deck email
+ *   · `server/routes/billing.ts:381` the invoice document's bill-to name
+ * — so with no writer left, the first invoice after that deletion would have
+ * read "Incubator workspace" instead of the customer's name.
+ *
+ * It is deliberately NOT part of `Branding`/`brandingPatch` (`shared/branding.ts`):
+ * that type is the theme record the applier writes to `<html>`, an org name is
+ * not a token, and three test files pin `brandingPatch` emitting exactly its
+ * present keys. It is held as its own draft and merged in `save()` beside the
+ * patch — which is also why `branding.test.tsx`'s "orgName survives a token-only
+ * save" assertion keeps passing, and now proves something stronger: the field
+ * round-trips the value rather than the merge preserving a key nobody edits.
+ *
+ * The same read-once-then-stop discipline as the token draft applies to it, and
+ * for the same reason — see the refs below.
  */
 
 // ── The prototype's picker row: swatch · label · token name · hex field ──────
@@ -143,6 +166,14 @@ export function BrandingSection() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
+   * The organisation name, read straight from `branding_json` rather than from
+   * the provider: `readBranding` drops it deliberately (it is not a token), so
+   * `useBranding()` cannot supply it. Held as a pair — draft and last-saved —
+   * so it takes part in `dirty` exactly as the token draft does.
+   */
+  const [orgName, setOrgName] = useState("");
+  const [orgNameSaved, setOrgNameSaved] = useState("");
+  /**
    * Adopt the provider's value once it has READ THE SERVER, then stop — after
    * that this section is the one editing it.
    *
@@ -166,9 +197,48 @@ export function BrandingSection() {
     setSaved(branding);
   }, [branding, loaded]);
 
+  /**
+   * The org name's own read, guarded by its own ref for the reason the block
+   * above gives: StrictMode mounts this twice, the response can land after the
+   * first keystroke, and adopting it then would wipe what is being typed.
+   *
+   * A failed read leaves the field EMPTY but not dirty, so a save that follows
+   * posts no `orgName` key at all and the stored one survives the merge — the
+   * one outcome that cannot silently unbrand a workspace's invoices.
+   *
+   * Its own `orgTouched`, NOT the token draft's `touched`: the two drafts adopt
+   * from different reads and a shared flag couples them both ways. Typing a
+   * name would stop the palette being adopted (the section would then save the
+   * shipped defaults over the workspace's colours), and editing a colour would
+   * make an unread name look edited and post `""` over it. Both were caught by
+   * the tests below, in that order.
+   */
+  const orgAdopted = useRef(false);
+  const orgTouched = useRef(false);
+  useEffect(() => {
+    let live = true;
+    getConfigSummary()
+      .then((c) => {
+        if (!live || orgAdopted.current || orgTouched.current) return;
+        orgAdopted.current = true;
+        const raw = c.branding as Record<string, unknown> | null | undefined;
+        const name = raw && typeof raw.orgName === "string" ? raw.orgName : "";
+        setOrgName(name);
+        setOrgNameSaved(name);
+      })
+      .catch(() => {
+        /* see above — an unread name is not an empty one */
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
   const dirty = useMemo(
-    () => JSON.stringify(brandingPatch(draft)) !== JSON.stringify(brandingPatch(saved)),
-    [draft, saved],
+    () =>
+      JSON.stringify(brandingPatch(draft)) !== JSON.stringify(brandingPatch(saved)) ||
+      orgName.trim() !== orgNameSaved.trim(),
+    [draft, saved, orgName, orgNameSaved],
   );
 
   /** Edit the draft AND apply it, so every screen repaints as it is typed. */
@@ -203,18 +273,24 @@ export function BrandingSection() {
       const current = await getConfigSummary()
         .then((c) => c.branding)
         .catch(() => null);
-      const body = mergeBranding(current, brandingPatch(draft));
+      const patch = brandingPatch(draft);
+      // Only written when it was actually read or edited. An unread name must
+      // not overwrite the stored one with "" — see the load effect.
+      const name = orgName.trim();
+      if (orgAdopted.current || orgTouched.current) patch.orgName = name;
+      const body = mergeBranding(current, patch);
       const res = await updateBranding(body);
       const applied = readBranding(res.branding ?? body);
       setSaved(applied);
       setDraft(applied);
+      setOrgNameSaved(name);
       setBranding(res.branding ?? body);
     } catch {
       setError("Couldn't save branding. Try again.");
     } finally {
       setSaving(false);
     }
-  }, [draft, setBranding]);
+  }, [draft, orgName, setBranding]);
 
   useAdminSave({
     dirty,
@@ -250,6 +326,23 @@ export function BrandingSection() {
       <div className="grid max-w-[1000px] grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-3">
         {/* ── Logo & wordmark ── */}
         <Card>
+          {/* S2-SETUP item 7 — the Set up wizard's Org type step wrote this and
+              is deleted; four readers depend on it, one of them every invoice. */}
+          <Field
+            id="br-f-org"
+            label="Organisation name"
+            value={orgName}
+            placeholder="e.g. Horizon Ventures"
+            onChange={(v) => {
+              orgTouched.current = true;
+              setOrgName(v);
+            }}
+          />
+          <p className="mt-1 text-[10.5px] leading-[1.5] text-fg-muted">
+            Your workspace&rsquo;s own name. It appears on My Account, on invited members&rsquo;
+            invitation emails, on the emails founders get about an incomplete deck, and as the
+            bill-to name on every invoice.
+          </p>
           <Field
             id="br-f-a"
             label="Wordmark — part 1"
