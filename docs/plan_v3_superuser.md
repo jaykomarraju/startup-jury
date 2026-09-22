@@ -1511,6 +1511,139 @@ user" — is now unreachable from the wizard, since the only principal it was ga
 step 4. It is KEPT: the same client asked for item 16 and item 7 three commits apart, §3 records two
 items he has already reversed once, and deleting it would take four tests with it. If item 7 survives
 a round of review, that branch and its tests are a clean deletion.
+### 12.8 `S1-DASH` — items 2, 3, 4, 5, 6. Built 2026-09-21.
+
+**Closed: 3, 4, 5 and 6. Item 2 is built for the two options that work and
+blocked, on screen and in writing, for the two that do not.** Five questions
+for the client below; none of them blocks what shipped.
+
+#### Item 3 — `decks.ai_complete` (migration 0075), and §8.1 finally fixed
+
+§12.2's reading held up against the code. `evaluate.ts` now writes
+`parsed.complete` — the model's verdict **alone** — into a new column, while
+`decks.complete` keeps the ANDed value it has always had. The two statuses are
+then *derived*, never stored (`v3StatusKey` in `shared/deckStats.ts`):
+
+| `ai_complete` | `missing_fields` | Status word |
+|---|---|---|
+| 0 | anything | **Incomplete deck** |
+| 1 | set | **Incomplete contact details** |
+| 1 | empty | the AI-evaluation state (AI Evaluated · Not AI Evaluated) |
+
+Deck before contacts, deliberately: there is nothing to ask a founder whose deck
+could not be read. The fall-through keeps `flag_incomplete` — a human calling a
+deck incomplete, with no intake list and no model run — reading *Incomplete
+deck*, because naming "contact details" there would invent a cause.
+
+**Neither incomplete word is spoken before the AI has run**, which is a case the
+table above does not cover and the shipped code produces: `POST
+/queries/:id/respond` walks an `incomplete` deck back to `uploaded` and sets
+`complete = 1` **without re-reading the deck** (`routes/pipeline.ts:832` — the
+same precedent that justifies the re-derive), so the columns still hold the
+previous run's verdict. A deck at `Not AI Evaluated` therefore says exactly
+that, as it did before this change. It costs the two words nothing: an
+evaluation lands a deck at `ai_evaluated` or `incomplete`, so a deck that HAS a
+verdict is never in that state.
+
+`PATCH /api/decks/:id` now re-derives the mark **upward only**: `complete`
+0 → 1 when the intake list empties **and** the model itself passed. Both arms
+matter — without the second, typing a phone number would launder an unreadable
+deck onto the Assign roster, which is the confusion 0075 exists to end.
+
+**Both pinned tests are green and were never edited**, exactly as §12.2
+predicted: `automation.test.ts` SELECTs four named columns, `route-partition.ts`
+asserts after *blanking* (so an upward-only rule never fires there). The new
+behaviour is pinned separately in `test/worker/ai-complete.test.ts`.
+
+**Told to the client, not papered over:** every deck evaluated **before** this
+migration carries `ai_complete = complete`, so one that was stopped only by
+missing details reads *Incomplete deck* and **stays stuck even after its
+contacts are filled in** — the cause was never recorded and cannot be
+recovered. The remedy is a one-off re-evaluation (`POST /decks/:id/rescore`),
+which writes a real verdict. That is asserted on purpose, in
+`ai-complete.test.ts` → *"a pre-migration row stays stuck"*.
+
+#### Items 4 and 5 — the guards, and the hand-off that was dropping selections
+
+`deckListRoute` is the predicate, unchanged and un-duplicated: **Send to Assign
+is offered only on rows it routes to `assign`**, and the Send-to-Query option
+names which of two different things is wrong. `QUERYABLE_STAGES` was **not**
+narrowed — F0214's Responded row still stands.
+
+The §12.4 defect is fixed, and its mirror was built:
+
+- `AssignPage` → `/app/query` with `state: { deckIds }` is now **read**. The
+  Query screen opens with those founders ticked.
+- The Dashboard's Send to Assign is **guarded navigation** — the prototype's own
+  `addToAssign` sets `assigned:false`, so it puts the deck on the Assign LIST
+  and does not pick an evaluator — and `AssignPage` reads the hand-off the same
+  way. `assign_jury` stays excluded; Q32's reason is untouched.
+
+Both ends resolve the incoming ids against the list the **server** served, so an
+id the response does not contain is dropped rather than conjuring a row.
+
+#### Item 2 — a change of kind, built as one
+
+The menu is still `deck.actions` — the transitions the server permits — with the
+prototype's four options framing it. Built literally it would have deleted
+*Reject (below AI gate)*, *Shortlist* and *Schedule intro call* from the screen;
+they stay. Of the four:
+
+| Option | State |
+|---|---|
+| **Send to Assign** | built — guarded navigation |
+| **Edit** | already shipped (V3-DASH), unchanged |
+| **Send to Query** | **disabled, with the reason** — blocked on Q112 |
+| **Archive** | **disabled, with the reason** — blocked on Q113 |
+
+`archive` was **not** widened: it is still `rejected → archived`, so the roles
+matrix did not move (`npm run roles` 1180/1180, unchanged).
+
+#### Item 6 — measured, and one of the three was missing
+
+Queried and Archived did ship as chips. **Assigned did not** — `assigned` is a
+POST_AI stage, so an assigned deck read *AI Evaluated* and nothing else. Added,
+off `matchesV3Stat(deck, "assigned")`, so the chip and the Assigned tile cannot
+disagree. "Contact Details Edited" still has **no record of any kind** (Q114).
+
+#### Questions for the client
+
+- **Q111 — a blocked row in a per-row menu.** §4.1 answered *"silently drop"*
+  for a BULK select-all. On one row, a silent drop is a button that visibly does
+  nothing, so the option is rendered **disabled and says why**
+  (*"Send to Assign — incomplete contact details"*). Is that right, or should
+  the click go through with a warning?
+- **Q112 — one-click Send to Query.** Not a transition (`POST /decks/:id/queries`
+  400s on an empty body), and in this product a query is a real email to the
+  founder. Three options: (i) navigate to the Query screen with the row
+  preselected — the hand-off this session just built for Assign, and the
+  cheapest; (ii) send a default letter unreviewed; (iii) leave it disabled.
+  **Recommend (i).**
+- **Q113 — Archive from any stage.** Today `rejected → archived` only. Widening
+  it moves the role × stage matrix and needs the roles it should carry. Note
+  §12.3's second half: an archived deck is excluded from every tile but
+  Archived, so it does **not** change status — it **vanishes from the view**.
+  That is the prototype's own behaviour and probably not what the sentence
+  expects. **Ask before widening.**
+- **Q114 — "Contact Details Edited".** `PATCH /api/decks/:id` writes no
+  `pipeline_events` row, so there is nothing to render. Real event (a row, in
+  the deck's history, visible in Activity) or display-only?
+- **Q115 — the fourth Status word is a deviation from the prototype.**
+  `adRenderTable`'s `stMap` has **three** entries and *"Incomplete contact
+  details"* occurs **zero** times in `AISJ_SuperuserV3.HTM`. It is here because
+  the client asked for it. **Recorded so the next parity capture reads it as
+  intended rather than reverting it** — same class as item 13's deviation.
+
+#### One divergence worth stating plainly
+
+The Status word is refined; **the tiles are not**. `v3DeckState` and
+`matchesV3Stat` are byte-for-byte the prototype's `adData[].state`, so every
+V3-DASH count stays where item 19 put it. The consequence: a deck evaluated and
+then stripped of a required detail reads *Incomplete contact details* while
+still counting under the **AI Evaluated** tile. Both are true — it was
+AI-evaluated, and it is not assignable — and it is the same disagreement the old
+`v3-incomplete-mark` chip made visible, now said in words. Moving the tile would
+change counts nobody asked to change.
 
 
 ## 13. The 21-Sep wave — session prompts
@@ -1575,7 +1708,7 @@ FINISH
   §9 row in docs/plan_parity.md with an exact diff. Commit to parity/<ID>. Do not merge to main.
 ```
 
-### `S1-DASH` — items 2, 3, 4, 5, 6. The big one; read §12.3 before designing.
+### `S1-DASH` — items 2, 3, 4, 5, 6. **Built 2026-09-21 — see §12.5 for what landed.**
 
 ```
 BUILD, in this order.
@@ -1765,6 +1898,69 @@ gaps, e2e ~224.
 |---|---|---|---|---|---|---|---|
 | `S3-ACCOUNT` | **14 done** | none (no allotment taken; ceiling untouched at 76) | clean · clean | **2344 passed / 1 skipped** (+4) | **1180 / 1180** | **223 passed · 6 flaky · 2 failed** | The 2 failures are the two §9 rows in `plan_parity.md` — `roles.spec.ts:82` and `upload.spec.ts:164`, both asserting the incubator admin sees "Choose your plan". Neither file is this session's; both carry an exact diff and must be taken together. Measurement, the recorded deviation and two client questions: **§12.6**. Negative controls run BOTH ways (revert the gate → 4 fail; drop the edition guard → 5 VC controls fail). |
 | `V3-SF` | 13 done · 3, 4 recorded | 0072 | clean · clean | **2093 passed / 1 skipped** (+24) | **1115 / 1115** | **209 passed · 15 flaky · 2 failed** of 226 (+2) — both failures are dev-server casualties, see below | negative control run on all four filters, the console gate and the audit trail |
+
+#### The 21-Sep wave
+
+Baselines off `main` at the start of this wave: unit **2340 passed / 1 skipped**,
+roles **1180/1180**, `parity:tokens` 0 gaps, `parity:nav` 62 known gaps,
+e2e **230** tests.
+
+| Session | Items | Migration | typecheck · lint · build | unit | roles | parity | e2e | notes |
+|---|---|---|---|---|---|---|---|---|
+| `S1-DASH` | 3, 4, 5, 6 done · 2 built where the server allows it, blocked in writing where it does not | **0075** (`decks.ai_complete`) | clean · clean · clean | **2369 passed / 1 skipped** (+29) | **1180 / 1180** — unchanged, and expected to be: no gate moved | tokens 0 · nav 62 — both unchanged | **223 passed · 6 flaky · 1 failed** of 230; the failure is green alone, see below | five negative controls run, all five red on revert; `automation.test.ts` and `route-partition.test.ts` green and **unedited** |
+
+**`ALLOTMENT_CEILING` untouched at 76** — 0075 is inside it, so there was
+nothing to raise.
+
+**The roles number is unchanged on purpose.** Nothing this session did touches
+authorization: `archive` was NOT widened (it is still `rejected → archived`),
+`assign_jury` is still withheld from the row menu, and Send to Assign is
+navigation rather than a transition. A moved number here would have been the
+bug, so it is reported rather than re-baselined.
+
+**e2e, stated as it happened. A clean full run was never obtained, and the
+reason is measured rather than assumed.**
+
+| Run | Result | Conditions | `fetch failed` |
+|---|---|---|---|
+| 1 | **222 passed · 7 flaky · 1 failed** of 230 | a sibling worktree (`sj-S3-ACCOUNT`) had just finished its own e2e | **266** |
+| 2 | **223 passed · 6 flaky · 1 failed** of 230 | genuinely idle box, `TIME_WAIT` measured at **0** before start | **187** |
+
+`Network connection lost` read **0** on both runs while `fetch failed` read
+266 and 187 — the second signature `V3-DASH`'s §9 row warns about, confirmed
+twice more here. An idle box did **not** clear it.
+
+**The two failures are different tests, and neither survives being run on its
+own:**
+
+- Run 1: `scoring-framework.spec.ts:49` — *"blind scoring withholds the AI
+  score from the API"*. Attempt 1 died of `browserContext.clearCookies:
+  Protocol error (Storage.clearCookies): Failed to find browser context` and a
+  90 s timeout **at line 92**, which is inside the `finally` that restores
+  `showAiScoreToJury: true`. The setting was therefore left **off** in the
+  database and the retry's baseline assertion correctly received `true`. **The
+  test poisons its own retry when it dies mid-restore.** Alone on this branch:
+  **6 passed (15.2 s)**; it also passed in run 2.
+- Run 2: `coverage.spec.ts:73` — *"every VC nav slug renders a real screen"*,
+  `<h1>` not found. Alone on this branch: passes.
+
+**`coverage.spec.ts` fails somewhere on almost every run, and never in the same
+place — four runs, four different tests:** 73/115/192 flaky (run 1), 73 failed
+(run 2), 289 and 322 failed (isolation), 254 failed (isolation). It is the most
+dispatch-heavy file in the suite — it walks every nav slug for every role — so
+it is where a dropped dispatch lands. The last of those, `:254 "the deck table
+shows the program a deck belongs to"`, is the only one that names a screen this
+session touched, so it was run **4× with `--repeat-each`: 4 passed**. It also
+signs in as the incubator **admin**, whose Dashboard shape this session does not
+touch — `v3ActionCell` and the four-word status are behind `isV3Dash`
+(superuser + incubator).
+
+**The specs covering this session's own screens never failed or flaked in either
+run**: `all-decks`, `assign`, `query`, `resubmit`, `upload`, `incubator`. The
+one spec that captures the superuser Dashboard's columns — `parity.spec.ts:111`
+— was flaky in run 2 and **fully green run alone**, with its captured row
+unchanged (the header set did not move: the Status column gained a fourth
+possible *word*, not a column).
 
 ### `V3-SF` — what the negative control actually proved
 

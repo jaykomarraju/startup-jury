@@ -1,4 +1,5 @@
 import { StrictMode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import type { DeckView } from "../../src/client/types";
@@ -122,7 +123,13 @@ afterEach(() => {
 function renderPage() {
   return render(
     <StrictMode>
-      <QueryPage />
+      {/* S1-DASH — the page reads the Assign screen's hand-off off router
+          state (`state: { deckIds }`), so it needs the Router it always has
+          in the app. No assertion here changes; this suite was simply
+          mounting the page in a way `/app/query` never does. */}
+      <MemoryRouter>
+        <QueryPage />
+      </MemoryRouter>
     </StrictMode>,
   );
 }

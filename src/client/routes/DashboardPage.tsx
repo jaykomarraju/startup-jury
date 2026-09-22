@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Building2, ChevronDown, Clock, Download, FileText, Search, Table, Users, X } from "lucide-react";
 import { useAuth } from "../auth/useAuth";
 import { usePermissions } from "../auth/usePermissions";
@@ -66,8 +66,9 @@ import {
   matchesStat,
   matchesV3Stat,
   pipelineProgress,
-  v3DeckState,
   v3DeckStats,
+  v3StatusKey,
+  V3_STATUS_LABELS,
   vcFunnelLabel,
   vcReached,
   type DeckStat,
@@ -75,16 +76,22 @@ import {
   type MyBallot,
   type StatKey,
   type V3StatKey,
+  type V3StatusKey,
 } from "../../shared/deckStats";
 // V3-DASH — the Shortlisted table's Sign-up status column reads the REAL
 // sign-up record, the same source the Sign up Pipeline screen reads.
 import { SIGNUP_STATUS_LABELS, listSignups, type SignupSummary } from "./SignupWorkspace";
 import { canAccessNav, reachableNav } from "../../shared/nav";
-// V4-ROUTE — the mark that decides Assign vs Query (items 6, 7). The Status
-// column's three words are the AI-evaluation state and cannot show it: a deck
-// can read "AI Evaluated" while being marked incomplete, which is precisely the
-// drift measured in plan §4.1. The tag is that mark, where the operator is.
-import { isDeckComplete } from "../../shared/queries";
+// S1-DASH items 4 and 5 — the row menu's Send to Assign / Send to Query are
+// guarded by the SAME predicate the server partitions the two lists with. There
+// is no second predicate here and there must never be one: a button that offers
+// a destination the list will not hold is the defect, not the cure.
+//
+// (V4-ROUTE used `isDeckComplete` here for the `v3-incomplete-mark` tag, which
+// existed because "the Status word cannot show the mark". Item 3 gave the
+// Status word the vocabulary to show it — `v3StatusKey` — so the tag is gone
+// and the word carries it.)
+import { ASSIGNABLE_STAGES, deckListRoute } from "../../shared/queries";
 import type { Edition } from "../../shared/roles";
 import { useActiveContext } from "../activeContext";
 
@@ -108,16 +115,37 @@ function relativeTime(iso: string): string {
 }
 
 /**
- * V3-DASH — the Status column's three words, verbatim from `adRenderTable`'s
- * `stMap`: `{aieval:['up-st-ok','AI Evaluated'], noteval:['up-st-amber','Not AI
- * Evaluated'], incomplete:['up-st-inc','Incomplete deck']}`. Note this column
- * is the AI-evaluation state, NOT the intake completeness the old default
- * shape's Status column showed.
+ * V3-DASH — the Status column's words. Three come verbatim from
+ * `adRenderTable`'s `stMap`: `{aieval:['up-st-ok','AI Evaluated'],
+ * noteval:['up-st-amber','Not AI Evaluated'], incomplete:['up-st-inc',
+ * 'Incomplete deck']}`.
+ *
+ * S1-DASH item 3 adds the fourth — **Incomplete contact details** — which the
+ * client asked for on 2026-09-21 and the prototype does not have. Both
+ * incomplete words are red, as `up-st-inc` is; they are two causes of the same
+ * red state, not two severities, and the row's own contact cells already say
+ * which fields are blank.
+ *
+ * The tone map only; the WORD is `v3StatusKey`'s, which is shared with the
+ * tests and needs no DOM.
  */
-const V3_STATUS: Record<string, { label: string; tone: PillTone }> = {
-  aieval: { label: "AI Evaluated", tone: "green" },
-  noteval: { label: "Not AI Evaluated", tone: "amber" },
-  incomplete: { label: "Incomplete deck", tone: "red" },
+const V3_STATUS_TONES: Record<V3StatusKey, PillTone> = {
+  aieval: "green",
+  noteval: "amber",
+  incompleteDeck: "red",
+  incompleteContact: "red",
+};
+
+/**
+ * The tooltip under an incomplete Status word: what an operator can DO about
+ * it. `deckListRoute` has already sent both of these rows to the Query list, so
+ * the hint is the routing fact, not a guess.
+ */
+const V3_STATUS_HINTS: Partial<Record<V3StatusKey, string>> = {
+  incompleteDeck:
+    "The AI could not read or score this deck — it is on Query, not Assign. Re-evaluating it after a re-upload is what clears this.",
+  incompleteContact:
+    "Required founder details are missing — this deck is on Query, not Assign. Filling them in here (Actions ▾ · Edit) clears it.",
 };
 
 /**
@@ -664,6 +692,11 @@ export function DashboardPage() {
   // SUPERUSER ONLY. The admin, program-manager, program-associate and jury
   // prototypes were not reshared, so every other role keeps the screen it has.
   const isV3Dash = edition === "incubator" && user?.role === "superuser";
+  // S1-DASH item 4 — Send to Assign is guarded navigation, so the row menu
+  // needs the router. (The Dashboard's v3 shape is superuser-only, so the
+  // destination is always reachable; `canAccessNav` decides the sidebar, not
+  // this.)
+  const navigate = useNavigate();
   const defaultView: ViewKey = isJury ? "assigned" : isIc ? "myvote" : edition === "vc" ? "uploaded" : "all";
   const [ctx, setCtx] = useActiveContext(edition);
   const [decks, setDecks] = useState<DeckView[] | null>(null);
@@ -1252,6 +1285,70 @@ export function DashboardPage() {
     { name: "city", label: "City", read: (d: DeckView) => d.city },
   ] as const;
 
+  // ── S1-DASH items 2, 4, 5 — the prototype's four options, guarded ────────
+  //
+  // `adAction(i,val)` offers Send to Assign · Send to Query · Edit · Archive
+  // against in-memory data. Two of the four do not survive contact with the
+  // server, which is why item 2 is a change of KIND rather than a relabel
+  // (plan §12.3):
+  //
+  //   · `archive` is `rejected -> archived` only (src/pipeline/incubator.ts),
+  //     so a one-click Archive from `ai_evaluated` is a 403;
+  //   · "Send to Query" is not a transition at all — the prototype's version
+  //     sets `d.queried=true` and toasts "Query email sent", and here that
+  //     means actually emailing a founder a letter nobody composed.
+  //
+  // Both are BLOCKED on a client answer and render disabled with the reason.
+  // The transitions the server does permit stay in the menu underneath: built
+  // literally, item 2 would delete Reject (below AI gate), Shortlist and
+  // Schedule intro call from the screen, which nobody asked for.
+
+  /**
+   * Item 4 — may this row be sent to Assign, and if not, why not?
+   *
+   * The predicate is `deckListRoute`, the same function `GET /api/decks?list=`
+   * partitions the two screens with. **Not a second one**: a menu that offers
+   * Assign for a deck the Assign list will not hold is precisely the defect.
+   *
+   * Send to Assign is guarded NAVIGATION, not a transition. The prototype's own
+   * `addToAssign` pushes the row onto `asDecks` with `assigned:false` — it puts
+   * the deck on the Assign LIST, it does not pick an evaluator — and our Assign
+   * roster already lists every deck the partition routes there. So the click
+   * carries the selection to `/app/assign`; `assign_jury` stays withheld for
+   * the reason below (Q32).
+   */
+  function v3SendToAssign(deck: DeckView): { ok: boolean; reason: string } {
+    const route = deckListRoute(deck, edition, { queried: deck.queried ?? false });
+    if (route === "assign") return { ok: true, reason: "" };
+    // In the evaluated population but marked incomplete — the Status word in
+    // this very row already says which of the two causes it is, so reuse it
+    // rather than inventing a second wording for the same fact.
+    if (ASSIGNABLE_STAGES[edition].includes(deck.statusId ?? "")) {
+      return { ok: false, reason: V3_STATUS_LABELS[v3StatusKey(deck)].toLowerCase() };
+    }
+    return { ok: false, reason: `not available at ${deck.status ?? "this stage"}` };
+  }
+
+  /**
+   * Item 5 — the same guard, the other way round, plus the block.
+   *
+   * The guard is live and testable today: a row the partition does not route to
+   * Query cannot be sent there. The ACTION behind it is what waits on the
+   * client — one click here would email the founder (§12). Until that is
+   * answered the option names the Query screen, which is where a clarification
+   * letter is actually composed and reviewed before it is sent.
+   */
+  function v3SendToQueryReason(deck: DeckView): string {
+    const route = deckListRoute(deck, edition, { queried: deck.queried ?? false });
+    // The GUARD, and it is real: a row the partition does not route to Query
+    // cannot be sent there whatever the menu offers.
+    if (route !== "query") return "not on the Query list";
+    // The BLOCK. The guard passed; the ACTION is what waits on the client.
+    // Answering Q112 option (i) turns this line into the same guarded
+    // navigation `__assign` already does — the predicate is already here.
+    return "compose it on the Query screen";
+  }
+
   /** `<select class="ad-act"><option value="">Actions ▾</option>…` */
   function v3ActionCell(deck: DeckView, withEdit: boolean) {
     if (editing === deck.id) {
@@ -1263,7 +1360,15 @@ export function DashboardPage() {
         </td>
       );
     }
-    const actions = (deck.actions ?? []).filter((a) => !V3_EXCLUDED_ACTIONS.has(a.action));
+    // `archive` is drawn by the prototype's own option below, so it is not also
+    // listed here — when the server permits it (from Rejected) that option is
+    // the real transition, and when it does not the option says why.
+    const actions = (deck.actions ?? []).filter(
+      (a) => !V3_EXCLUDED_ACTIONS.has(a.action) && a.action !== "archive",
+    );
+    const toAssign = v3SendToAssign(deck);
+    const queryReason = v3SendToQueryReason(deck);
+    const archive = (deck.actions ?? []).find((a) => a.action === "archive");
     return (
       <td className={td}>
         <select
@@ -1285,17 +1390,36 @@ export function DashboardPage() {
               });
               return;
             }
-            const action = actions.find((a) => a.action === value);
+            if (value === "__assign") {
+              // Guarded navigation. The guard is also on the option itself, so
+              // this branch is unreachable from the UI — it is here because a
+              // disabled option is a presentation fact and the rule is not.
+              if (toAssign.ok) navigate("/app/assign", { state: { deckIds: [deck.id] } });
+              return;
+            }
+            const action = actions.find((a) => a.action === value) ?? (value === "archive" ? archive : undefined);
             if (action) void runRowAction(deck, action);
           }}
         >
           <option value="">Actions ▾</option>
+          <option value="__assign" disabled={!toAssign.ok}>
+            {toAssign.ok ? "Send to Assign" : `Send to Assign — ${toAssign.reason}`}
+          </option>
+          {/* Blocked on a client answer (§12): a one-click query emails the
+              founder. The reason distinguishes the GUARD (this row does not
+              belong on Query) from the BLOCK (it does, but not from here). */}
+          <option value="__query" disabled>
+            {`Send to Query — ${queryReason}`}
+          </option>
           {actions.map((a) => (
             <option key={a.action} value={a.action}>
               {a.label}
             </option>
           ))}
           {withEdit && <option value="__edit">Edit</option>}
+          <option value="archive" disabled={!archive}>
+            {archive ? archive.label : "Archive — only from Rejected"}
+          </option>
         </select>
       </td>
     );
@@ -1543,8 +1667,13 @@ export function DashboardPage() {
         );
       // ── Incubator · V3 superuser Dashboard ──
       case "v3Default": {
-        const state = v3DeckState(deck);
-        const pill = V3_STATUS[state];
+        // S1-DASH item 3 — one word, four possible values, derived from
+        // (ai_complete, missing_fields). The red "Incomplete details" chip this
+        // replaced existed only because the three-word vocabulary could not say
+        // "contact details"; it can now, so the chip is gone rather than
+        // doubled up beside it.
+        const status = v3StatusKey(deck);
+        const hint = V3_STATUS_HINTS[status];
         const isEditing = editing === deck.id;
         const cell = (f: (typeof V3_EDIT_FIELDS)[number]) => {
           const value = f.read(deck);
@@ -1571,16 +1700,18 @@ export function DashboardPage() {
               <ScoreChip value={deck.aiScore} />
             </td>
             <td className={td}>
-              <StatusPill tone={pill.tone}>{pill.label}</StatusPill>
-              {/* Only where the Status word would otherwise disagree with the
-                  routing: at the `incomplete` stage the pill already says so. */}
-              {state !== "incomplete" && !isDeckComplete(deck) && (
-                <span
-                  className="ml-1.5 inline-block rounded-full bg-red-lt px-[7px] py-px text-[9px] font-bold text-red"
-                  title="Marked incomplete — this deck is on Query, not Assign"
-                  data-testid="v3-incomplete-mark"
-                >
-                  Incomplete details
+              <span data-testid="v3-status" title={hint}>
+                <StatusPill tone={V3_STATUS_TONES[status]}>{V3_STATUS_LABELS[status]}</StatusPill>
+              </span>
+              {/* ── Item 6 · the post-action statuses ───────────────────────
+                  Measured rather than rebuilt: Queried and Archived already
+                  shipped, **Assigned did not** — a deck sent to Assign and
+                  given an evaluator reads "AI Evaluated" and nothing else,
+                  because `assigned` is one of POST_AI_STAGES. Same predicate
+                  as the Assigned tile, so chip and count cannot disagree. */}
+              {matchesV3Stat(deck, "assigned") && (
+                <span className="ml-1.5 inline-block rounded-full bg-blue-lt px-[7px] py-px text-[9px] font-bold text-blue-dk">
+                  Assigned
                 </span>
               )}
               {deck.queried && (

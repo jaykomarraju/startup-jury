@@ -434,6 +434,87 @@ export function v3DeckState(deck: StatDeck): V3DeckState {
   return "noteval";
 }
 
+// ── The Status column's words (S1-DASH · item 3) ─────────────────────────────
+
+/**
+ * The Status column's vocabulary — the prototype's three (`adRenderTable`'s
+ * `stMap`) plus the one the client asked for on 2026-09-21:
+ *
+ *   "Incomplete deck" and "Incomplete contact details" as SEPARATE statuses.
+ *
+ * Those are the two causes of `complete = 0` that plan §8.1 records as
+ * indistinguishable, which is why this needed `decks.ai_complete` (migration
+ * 0075) before it could be written at all: `decks.complete` is the AND of
+ * them, and nothing else on the row remembers which arm failed.
+ *
+ * **This is a deliberate deviation from the prototype** — `stMap` has three
+ * entries and the fourth word appears nowhere in `AISJ_SuperuserV3.HTM`. It is
+ * the client's own request, recorded here so the next parity capture reads it
+ * as intended rather than reverting it.
+ */
+export type V3StatusKey = "aieval" | "noteval" | "incompleteDeck" | "incompleteContact";
+
+/** The four words, as the Status pill prints them. */
+export const V3_STATUS_LABELS: Record<V3StatusKey, string> = {
+  aieval: "AI Evaluated",
+  noteval: "Not AI Evaluated",
+  incompleteDeck: "Incomplete deck",
+  incompleteContact: "Incomplete contact details",
+};
+
+/** What the Status word needs beyond the tile predicate's `StatDeck`. */
+export interface CompletenessDeck extends StatDeck {
+  /** `decks.ai_complete` — the model's verdict alone. Absent reads as true. */
+  aiComplete?: boolean;
+  /** `decks.missing_fields` — required intake columns nobody supplied. */
+  missingFields?: readonly string[];
+}
+
+/**
+ * The Status word for one deck, as a function of the pair 0075 made readable:
+ *
+ *   ai_complete = 0                        -> Incomplete deck
+ *   ai_complete = 1 AND missing_fields set -> Incomplete contact details
+ *   ai_complete = 1 AND nothing missing    -> the AI-evaluation state
+ *
+ * Deck before contacts, so a deck that fails BOTH says the thing the operator
+ * cannot fix by typing — there is no point asking a founder for a phone number
+ * when the deck itself could not be read.
+ *
+ * The third line falls through to `v3DeckState`, and its `incomplete` arm
+ * (stage `incomplete`, or signal `flagged`) resolves to **Incomplete deck**:
+ * that is the manual `flag_incomplete` route, where a human called the deck
+ * incomplete and no intake list was ever written. Saying "contact details"
+ * there would name a cause nothing recorded.
+ *
+ * **Neither incomplete word is spoken before the AI has run** — a deck at
+ * `noteval` says *Not AI Evaluated*, whatever the columns hold. There is no
+ * verdict yet, so any value in them is a STALE one from a previous run, and
+ * the shipped resubmit loop produces exactly that: `POST /queries/:id/respond`
+ * moves an `incomplete` deck back to `uploaded` and sets `complete = 1`
+ * (routes/pipeline.ts) without re-reading the deck, so the row would otherwise
+ * announce a verdict its own stage contradicts. This costs the two words
+ * nothing: an evaluation lands a deck at `ai_evaluated` or `incomplete`, both
+ * of which `v3DeckState` answers, so a deck that has a verdict is never
+ * `noteval`. Pinned in `deckStats.test.ts`.
+ *
+ * **This refines the Status WORD only; it does not move a tile.** `v3DeckState`
+ * and `matchesV3Stat` are untouched, so the six boxes still partition exactly
+ * as `adData[].state` does and every count is the one V3-DASH measured. The
+ * consequence, which is the old `v3-incomplete-mark` tag's situation in
+ * reverse: a deck evaluated and THEN stripped of a required detail (plan §4.1
+ * case (b)) reads "Incomplete contact details" while still counting under the
+ * **AI Evaluated** tile. It was AI-evaluated; it is also not assignable. Both
+ * are true, and the row now says the second one in words instead of a chip.
+ */
+export function v3StatusKey(deck: CompletenessDeck): V3StatusKey {
+  const state = v3DeckState(deck);
+  if (state === "noteval") return "noteval";
+  if (deck.aiComplete === false) return "incompleteDeck";
+  if ((deck.missingFields ?? []).length > 0) return "incompleteContact";
+  return state === "incomplete" ? "incompleteDeck" : state;
+}
+
 /**
  * The table filter, verbatim from `adRenderTable()`:
  *
