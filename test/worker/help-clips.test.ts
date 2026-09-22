@@ -100,6 +100,37 @@ describe("help clips", () => {
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(BYTES.slice(12));
   });
 
+  /**
+   * The bug three independent auditors found at wave integration (plan §12.9).
+   * A `<video>` asks for a fixed first chunk — `bytes=0-524287` — whatever the
+   * clip's real length. R2 clamps the READ to the bytes that exist; the headers
+   * were computed from the requested `end`, so the response promised 524,288
+   * bytes and wrote 16. A player treats that short read as a broken stream.
+   */
+  it("clamps a range that overruns the end of the clip to the bytes that exist", async () => {
+    const jury = await login(INC_JURY);
+    const res = await clip(PRESENT, jury, { range: "bytes=0-99" });
+    expect(res.status).toBe(206);
+    // The headers must describe the BODY, not the request.
+    expect(res.headers.get("content-range")).toBe("bytes 0-15/16");
+    expect(res.headers.get("content-length")).toBe("16");
+    const got = new Uint8Array(await res.arrayBuffer());
+    expect(got).toEqual(BYTES);
+    // The assertion that actually binds the two together: whatever we promised,
+    // that is what arrived. Without the clamp this reads 100 vs 16.
+    expect(Number(res.headers.get("content-length"))).toBe(got.byteLength);
+  });
+
+  it("clamps an overrunning range that starts mid-object too", async () => {
+    const jury = await login(INC_JURY);
+    const res = await clip(PRESENT, jury, { range: "bytes=12-4095" });
+    expect(res.status).toBe(206);
+    expect(res.headers.get("content-range")).toBe("bytes 12-15/16");
+    const got = new Uint8Array(await res.arrayBuffer());
+    expect(got).toEqual(BYTES.slice(12));
+    expect(Number(res.headers.get("content-length"))).toBe(got.byteLength);
+  });
+
   it("answers 416, not 500, for a range that cannot be satisfied", async () => {
     const jury = await login(INC_JURY);
     // Backwards — rejected by inspection, before R2 is asked.

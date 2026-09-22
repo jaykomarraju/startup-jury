@@ -158,6 +158,10 @@ function FeedbackRow({ faqId }: { faqId: string }) {
               key={n}
               type="button"
               aria-label={`Rate ${n} out of 5`}
+              // The Yes/No pair above reports its state with `aria-pressed`;
+              // the stars reported theirs only as a text colour, so neither a
+              // screen reader nor a test could read the rating back.
+              aria-pressed={n <= rating}
               onClick={() => setRating(n)}
               className={`text-base leading-none ${n <= rating ? "text-warn" : "text-line"}`}
             >

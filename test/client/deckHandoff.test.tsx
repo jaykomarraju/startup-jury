@@ -46,9 +46,18 @@ vi.mock("../../src/client/api", async (importOriginal) => {
   };
 });
 
+// `recordQuery` lives in `queryApi`, NOT `api` — mocking the wrong module here
+// leaves the real one to hit an unstubbed `fetch`, which throws into sendQuery's
+// catch, so nothing is recorded and no refetch happens.
+vi.mock("../../src/client/queryApi", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/client/queryApi")>();
+  return { ...actual, recordQuery: vi.fn() };
+});
+
 import { AssignPage } from "../../src/client/routes/AssignPage";
 import { QueryPage } from "../../src/client/routes/QueryPage";
 import { getAssignBoard, listAllQueries, listDecks, listEvaluators, listParameters } from "../../src/client/api";
+import { recordQuery } from "../../src/client/queryApi";
 
 function deck(over: Partial<DeckView>): DeckView {
   return { id: "d", name: "Deck", status: "AI Evaluated", statusId: "ai_evaluated", ...over };
@@ -175,6 +184,54 @@ describe("the Assign → Query hand-off (item 5)", () => {
     // Give the effect every chance to fire again.
     await waitFor(() => expect(screen.getByRole("checkbox", { name: "Select AgriChain" })).toBeChecked());
     expect(pay).not.toBeChecked();
+  });
+
+  /**
+   * …and the case the test above CANNOT catch, which the wave-integration audit
+   * found (plan §12.9). The seeding effect depends on `[decks, handedIds, rows]`
+   * and all three are stable after a click, so neutralising `handOffApplied`
+   * leaves that test green. The dependency that really does change is `decks`,
+   * and exactly one thing changes it: `sendQuery` calls `load()` when any query
+   * was recorded (`QueryPage.tsx`). So the refetch is where the ref earns its
+   * place, and this is the test that goes red without it.
+   */
+  it("does not re-seed when the post-send refetch replaces the deck list", async () => {
+    vi.mocked(recordQuery).mockResolvedValue({
+      ok: true,
+      queryId: "qry_1",
+      emailStatus: "recorded",
+      delivered: true,
+    } as Awaited<ReturnType<typeof recordQuery>>);
+
+    mount("query", { deckIds: ["d_pay", "d_agri"] });
+    const pay = await screen.findByRole("checkbox", { name: "Select PayRoute" });
+    await waitFor(() => expect(pay).toBeChecked());
+
+    // The operator drops PayRoute and writes to AgriChain alone.
+    fireEvent.click(pay);
+    expect(pay).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Email query/ }));
+    const body = (await screen.findByRole("textbox", { name: "Body" })) as HTMLTextAreaElement;
+    await waitFor(() => expect(body.value.length).toBeGreaterThan(0));
+    fireEvent.change(screen.getByRole("textbox", { name: "Subject" }), {
+      target: { value: "One quick question" },
+    });
+
+    const loadsBefore = vi.mocked(listDecks).mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Send query" }));
+
+    // One letter, to the founder who was still selected — not to the one dropped.
+    await waitFor(() => expect(vi.mocked(recordQuery)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(recordQuery).mock.calls[0][0]).toBe("d_agri");
+    // …and the refetch it triggers hands the effect a brand-new `decks`.
+    await waitFor(() =>
+      expect(vi.mocked(listDecks).mock.calls.length).toBeGreaterThan(loadsBefore),
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: /Founder queries/ }));
+    const payAfter = await screen.findByRole("checkbox", { name: "Select PayRoute" });
+    expect(payAfter).not.toBeChecked();
   });
 });
 

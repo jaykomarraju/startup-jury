@@ -1649,6 +1649,54 @@ AI-evaluated, and it is not assignable — and it is the same disagreement the o
 change counts nobody asked to change.
 
 
+
+### 12.9 Wave integration — what the adversarial pass found
+
+All five branches merged into `main` with three conflicts, all in the two planning docs and all
+pure appends (every session independently numbered its record §12.5; renumbered 12.5–12.8 in merge
+order). **`e2e/parity.spec.ts` was the only code collision and git resolved it correctly**:
+`incubator/admin/billing` keeps `S3-ACCOUNT`'s *"Choose your seat"* and gains `S5-HELP`'s help row.
+
+**The three §9 request patches were applied at integration**, as their rows instructed:
+`e2e/roles.spec.ts` and `e2e/upload.spec.ts` (the two that leave `S3-ACCOUNT` red in isolation —
+they must land together with the gate widening) and the receipt's *"What happens next?"* list in
+`AccountScreens.tsx`. `S1-DASH`'s `MemoryRouter` fix was already on its branch; it was **not**
+applied twice.
+
+**Gate on merged `main`:** typecheck clean · lint clean · unit **2432 passed / 1 skipped** (+92
+from 2340) · build clean · `parity:tokens` 0 gaps · `parity:nav` 67 known / 0 unexpected ·
+`npm run roles` **1181 / 1181** — the re-baseline `S5-HELP` predicted exactly, one new check from
+the `help` nav id, no gate moved.
+
+#### Six dimensions audited, each finding independently refuted. Four survived.
+
+Nine findings were raised across authZ, the migration, cross-session interference, test vacuity,
+the help assets and claimed-vs-actual. **Five were refuted** and should not be re-opened:
+
+- *Founders and mentors can stream the help clips.* Mechanically true (`support.ts:330` is
+  `requireAuth` alone) but refuted as a defect — the clips are product walkthroughs, not customer
+  data, and no `denyMentor` precedent covers them.
+- *`decks.ts:801`'s upward-only re-derive has no observable effect.* The finder's enumeration of
+  `decks.complete` writers was incomplete.
+- *The AreaWeights deviation record is wrong about the admin/VC arms.* The pre-wave non-v3 branch
+  never rendered the sentence, so nothing regressed.
+- *`deckHandoff.test.tsx:199` does not pin the resolve-against-the-served-list rule.* Both screens
+  re-resolve at render and at mutation; the finder only read the seed-time effect.
+- *The patched receipt header contradicts its own steps.* The prototype's block already points
+  outside Set up at step 3 in thirteen files; the patch did not introduce it.
+
+**Four stand, and three agents found the first one independently.**
+
+| # | Where | What | Severity |
+|---|---|---|---|
+| 1 | `src/server/routes/support.ts:396` | The 206 branch computes `content-length` and `content-range` from the **requested** end byte, never clamped to `object.size`. R2 clamps the read; the headers do not follow. A `<video>` asking for a fixed first chunk larger than the clip gets a 206 promising more bytes than the body carries. | **P1** |
+| 2 | `src/shared/deckStats.ts:515` | Repairing a deck's missing contact details flips its Status word from *Incomplete contact details* to ***Incomplete deck*** — the fall-through names the one cause that row's own `ai_complete = 1` rules out. | **P2** |
+| 3 | `src/shared/deckStats.ts:490` and §12.8 | The invariant *"Neither incomplete word is spoken before the AI has run"* is false for the AI-evaluated path the comment cites as its proof, and the test pinning it uses a deck shape that path cannot produce. | **P2** |
+| 4 | `test/client/helpPage.test.tsx:221` · `test/client/deckHandoff.test.tsx:168` | Two assertions cannot fail. The star-rating half asserts only that the button it just clicked still exists — the rating's state is pinned nowhere. The StrictMode re-tick guard survives neutralising the `handOffApplied` ref, because the seeding effect's dependencies never change after the click. | **P2** |
+
+Findings 1, 2 and 4 are fixed below with negative controls; 3 is a comment and a record, corrected
+in place.
+
 ## 13. The 21-Sep wave — session prompts
 
 `main` ends at migration **0074**, `ALLOTMENT_CEILING` is **76**. Allotments: `S1` **0075**,

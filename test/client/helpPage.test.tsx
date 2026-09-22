@@ -217,8 +217,26 @@ describe("Help screen — feedback controls are acknowledged, and go nowhere", (
     expect(yes).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(screen.getByRole("button", { name: "no" }));
     expect(yes).toHaveAttribute("aria-pressed", "false");
+    // Read the rating BACK, which is the whole point of the control. Asserting
+    // that the button you just clicked still exists passes against a component
+    // that does not record the click at all — this file shipped that version.
     fireEvent.click(screen.getByRole("button", { name: "Rate 4 out of 5" }));
-    expect(screen.getByRole("button", { name: "Rate 4 out of 5" })).toBeInTheDocument();
+    for (const n of [1, 2, 3, 4]) {
+      expect(screen.getByRole("button", { name: `Rate ${n} out of 5` })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    }
+    expect(screen.getByRole("button", { name: "Rate 5 out of 5" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    // Re-rating lower clears the stars above it rather than only adding.
+    fireEvent.click(screen.getByRole("button", { name: "Rate 2 out of 5" }));
+    expect(screen.getByRole("button", { name: "Rate 3 out of 5" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
   });
 
   it("does not carry one answer's rating over to the next", () => {
@@ -228,6 +246,22 @@ describe("Help screen — feedback controls are acknowledged, and go nowhere", (
     fireEvent.click(screen.getByRole("button", { name: "← Back" }));
     fireEvent.click(screen.getByRole("button", { name: HELP_FAQS[1].question }));
     expect(screen.getByRole("button", { name: "yes" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("does not carry one answer's STAR rating over to the next", () => {
+    view();
+    fireEvent.click(screen.getByRole("button", { name: HELP_FAQS[0].question }));
+    fireEvent.click(screen.getByRole("button", { name: "Rate 5 out of 5" }));
+    expect(screen.getByRole("button", { name: "Rate 5 out of 5" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "← Back" }));
+    fireEvent.click(screen.getByRole("button", { name: HELP_FAQS[1].question }));
+    expect(screen.getByRole("button", { name: "Rate 1 out of 5" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
   });
 });
 

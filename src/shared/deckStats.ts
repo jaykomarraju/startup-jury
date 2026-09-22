@@ -493,10 +493,17 @@ export interface CompletenessDeck extends StatDeck {
  * the shipped resubmit loop produces exactly that: `POST /queries/:id/respond`
  * moves an `incomplete` deck back to `uploaded` and sets `complete = 1`
  * (routes/pipeline.ts) without re-reading the deck, so the row would otherwise
- * announce a verdict its own stage contradicts. This costs the two words
- * nothing: an evaluation lands a deck at `ai_evaluated` or `incomplete`, both
- * of which `v3DeckState` answers, so a deck that has a verdict is never
- * `noteval`. Pinned in `deckStats.test.ts`.
+ * announce a verdict its own stage contradicts.
+ *
+ * **That justification is narrower than it first reads, and the wave-integration
+ * audit was right to say so.** `POST /queries/:id/respond` is the path for a
+ * deck the model could not complete; a deck the model READ and then had a
+ * detail stripped from does not travel it. So the guard earns its place for the
+ * resubmit loop and for pre-migration rows, not as the universal claim the
+ * first draft of this comment made. It still costs nothing: an evaluation lands
+ * a deck at `ai_evaluated` or `incomplete`, both of which `v3DeckState`
+ * answers, so a deck that has a verdict is never `noteval`. Pinned in
+ * `deckStats.test.ts`.
  *
  * **This refines the Status WORD only; it does not move a tile.** `v3DeckState`
  * and `matchesV3Stat` are untouched, so the six boxes still partition exactly
@@ -512,7 +519,20 @@ export function v3StatusKey(deck: CompletenessDeck): V3StatusKey {
   if (state === "noteval") return "noteval";
   if (deck.aiComplete === false) return "incompleteDeck";
   if ((deck.missingFields ?? []).length > 0) return "incompleteContact";
-  return state === "incomplete" ? "incompleteDeck" : state;
+  if (state !== "incomplete") return state;
+  // The fall-through is the MANUAL `flag_incomplete` route — a human called the
+  // deck incomplete, no intake list was written and no model verdict exists —
+  // so "Incomplete deck" is the only cause that was ever recorded.
+  //
+  // But a deck the model READ (`ai_complete = 1`) whose intake list has since
+  // been emptied reaches here too: the operator typed the missing phone number
+  // and `PATCH /api/decks/:id` raised `complete`, while the STAGE still lags at
+  // `incomplete` until the resubmit loop moves it. Calling that "Incomplete
+  // deck" names the one cause its own `ai_complete = 1` rules out, and it is
+  // the word the operator sees the instant they fix the thing they were asked
+  // to fix. It reads as its verdict instead, exactly as the reverse asymmetry
+  // above does: the WORD describes the deck, the TILE describes the pipeline.
+  return deck.aiComplete === true ? "aieval" : "incompleteDeck";
 }
 
 /**

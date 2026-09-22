@@ -373,6 +373,34 @@ describe("V3 superuser Dashboard stat boxes", () => {
       expect(v3StatusKey({ ...evaluated, aiComplete: true, missingFields: [] })).toBe("aieval");
     });
 
+    /**
+     * The regression the wave-integration audit found (plan §12.9). The
+     * fall-through used to answer "Incomplete deck" for ANY deck still staged
+     * `incomplete`, which is the word an operator sees the instant they finish
+     * the one job the previous word asked of them.
+     */
+    it("does not call a readable deck 'Incomplete deck' once its contacts are filled in", () => {
+      // Evaluated, then stripped of a required detail — plan §4.1 case (b).
+      // The stage is `incomplete`; the model read the deck perfectly well.
+      const stripped = { statusId: "incomplete", aiScore: 7.2, aiComplete: true };
+      expect(v3StatusKey({ ...stripped, missingFields: ["founderPhone"] })).toBe("incompleteContact");
+      // The operator types the phone number. `PATCH /api/decks/:id` empties the
+      // intake list and raises `complete`; the STAGE lags until the resubmit
+      // loop moves it. The row must not now blame the deck.
+      expect(v3StatusKey({ ...stripped, missingFields: [] })).toBe("aieval");
+      expect(V3_STATUS_LABELS[v3StatusKey({ ...stripped, missingFields: [] })]).toBe("AI Evaluated");
+    });
+
+    it("still blames the deck where that is the only cause ever recorded", () => {
+      // The manual `flag_incomplete` route: a human called the deck incomplete,
+      // no intake list was written and no model verdict exists. "Incomplete
+      // deck" is the only thing that was recorded, so it is what we say.
+      expect(v3StatusKey({ statusId: "incomplete", aiScore: 7.2 })).toBe("incompleteDeck");
+      expect(v3StatusKey({ statusId: "incomplete", aiScore: 7.2, missingFields: [] })).toBe("incompleteDeck");
+      // And a deck the model genuinely could not read is unaffected.
+      expect(v3StatusKey({ statusId: "incomplete", aiScore: 7.2, aiComplete: false })).toBe("incompleteDeck");
+    });
+
     it("prints the client's own words", () => {
       expect(V3_STATUS_LABELS.incompleteDeck).toBe("Incomplete deck");
       expect(V3_STATUS_LABELS.incompleteContact).toBe("Incomplete contact details");

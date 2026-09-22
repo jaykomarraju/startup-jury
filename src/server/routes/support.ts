@@ -393,9 +393,15 @@ help.get("/clips/:clipId", async (c) => {
   // so reading it turned every plain request into a 206. `offset` is the honest
   // signal: it is set only where the Range header parsed.
   if (offset !== undefined) {
-    const length = end === undefined ? object.size - offset : end - offset + 1;
+    // Clamp to the object, because R2 already has. A `<video>` asks for a fixed
+    // first chunk (`bytes=0-524287`) whatever the clip's real length, and R2
+    // serves only the bytes that exist — so computing the headers from the
+    // REQUESTED `end` promises a body longer than the one being written, and
+    // the player treats the short read as a broken stream.
+    const lastByte = end === undefined ? object.size - 1 : Math.min(end, object.size - 1);
+    const length = lastByte - offset + 1;
     headers.set("content-length", String(length));
-    headers.set("content-range", `bytes ${offset}-${offset + length - 1}/${object.size}`);
+    headers.set("content-range", `bytes ${offset}-${lastByte}/${object.size}`);
     return new Response(object.body, { status: 206, headers });
   }
   headers.set("content-length", String(object.size));
