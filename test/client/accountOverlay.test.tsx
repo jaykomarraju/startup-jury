@@ -37,12 +37,15 @@ function principal(role: AuthUser["role"] = "admin", permissions: string[] = ["u
 }
 
 /**
- * V3-PT — the seat flow's whole audience. Only the incubator SUPERUSER
- * prototype was reshared (2026-09-19); every other role and the entire VC
- * edition still draw "Choose your plan", which the controls at the end assert.
+ * The seat flow's audience, after `S3-ACCOUNT` widened it (the client's 21-Sep
+ * row for My account reads **Superuser/Admin**): the incubator SUPERUSER and the
+ * incubator ADMIN. The **VC edition was not rescoped** and still draws "Choose
+ * your plan" — which is what the controls at the end of this file assert, and
+ * the only place the legacy screens are still reachable from.
  */
 const SUPERUSER: AuthUser = { ...principal("superuser"), id: "inc_super", name: "Priya Sharma", initials: "PS" };
 const VC_SUPERUSER: AuthUser = { ...SUPERUSER, id: "vc_super", edition: "vc" };
+const VC_ADMIN: AuthUser = { ...principal("admin"), id: "vc_admin", edition: "vc" };
 
 const PROFILE: AccountProfile = {
   accountType: "individual",
@@ -584,27 +587,98 @@ describe("the Organization branch", () => {
   });
 });
 
-// ── V3-PT · the audience the reshare did NOT cover ───────────────────────────
+// ── S3-ACCOUNT · the incubator ADMIN now gets the seat flow ──────────────────
 
 /**
- * Only `AISJ_SuperuserV3.HTM` was reshared. The incubator admin (`V6`),
- * program-manager (`V5`), program-associate (`V3`) and jury (`V4`) files, and
- * every VC file, still contain "Choose your plan" and none of them contains
- * `acs-trial` or `itiers` — checked against the decoded prototypes.
+ * The client's 21-Sep row for My account reads **Superuser/Admin**, so `V3-PT`'s
+ * `edition === "incubator" && role === "superuser"` gained the admin. These are
+ * the positive controls: each one is the superuser's screen, asserted for the
+ * admin, and each fails if the gate is narrowed back.
  *
- * These are the negative controls for that. Each one fails the moment the seat
- * flow stops being gated, which is the only way this suite can tell the
- * difference between "built for the superuser" and "built for everybody".
+ * Note what this costs and why it is acceptable: `billing` is
+ * `roles: ["admin"]` plus the superuser bypass, so **the incubator has no third
+ * audience for this overlay** and its legacy plan screens are now unreachable.
+ * They are still the VC edition's screens, and the block below is where that is
+ * held — the negative controls moved there rather than being deleted.
  */
-describe("every audience v3 did not rescope keeps the old plan screen", () => {
+describe("the incubator ADMIN gets v3's seat flow", () => {
   async function openPlanScreen(user: AuthUser) {
     mount("/app/account", user);
     await screen.findByRole("heading", { level: 1, name: "Create your account" });
     fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
   }
 
-  it("the incubator ADMIN still chooses a plan, from the tabbed catalogues", async () => {
+  it("chooses a SEAT, not a plan, and the stepper says so", async () => {
     await openPlanScreen(principal("admin"));
+    await screen.findByRole("heading", { level: 1, name: "Choose your seat" });
+    expect(screen.getByTestId("ac-tiers")).toBeInTheDocument();
+    // Not one thing the pre-v3 screen drew is on it.
+    expect(screen.queryByRole("tab", { name: "Individual plans" })).toBeNull();
+    expect(screen.queryByTestId("ac-plan-standard")).toBeNull();
+    expect(stepLabels()).toEqual(["Account", "Seat & pricing", "Payment"]);
+  });
+
+  it("reaches the period, the extra decks and the free trial the superuser reaches", async () => {
+    await openPlanScreen(principal("admin"));
+    await screen.findByRole("heading", { level: 1, name: "Choose your seat" });
+    // Both footer buttons stay shut until a seat AND a period are picked.
+    expect(screen.getByTestId("ac-take-trial")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("ac-tier-pro"));
+    expect(screen.getByTestId("ac-take-trial")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("ac-period-12"));
+    expect(screen.getByTestId("ac-take-trial")).toBeEnabled();
+    expect(screen.getByTestId("ac-periods")).toBeInTheDocument();
+    expect(screen.getByTestId("ac-extra")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("ac-take-trial"));
+    await screen.findByRole("heading", { level: 1, name: "Your 3-deck free trial" });
+    expect(screen.getByTestId("ac-trial-count")).toHaveTextContent("3");
+  });
+
+  it("loses the free-trial strip v3 deleted from the Account screen", async () => {
+    mount("/app/account", principal("admin"));
+    await screen.findByRole("heading", { level: 1, name: "Create your account" });
+    expect(screen.queryByText(/Evaluate 3 pitchdecks free/)).toBeNull();
+  });
+
+  it("gets the seat-count Enterprise plans on the Organization branch", async () => {
+    mount("/app/account", principal("admin"));
+    await screen.findByRole("heading", { level: 1, name: "Create your account" });
+    fireEvent.click(screen.getByTestId("ac-type-organization"));
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+    await screen.findByRole("heading", { level: 1, name: "What best describes your organisation?" });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+    await screen.findByRole("heading", { level: 1, name: "Create your account" });
+    fireEvent.change(screen.getByLabelText("Organization name"), { target: { value: "Acme" } });
+    fireEvent.change(screen.getByLabelText("Country"), { target: { value: "India" } });
+    fireEvent.click(screen.getByRole("button", { name: /Create account/ }));
+
+    await screen.findByRole("heading", { level: 1, name: "Choose your Enterprise plan" });
+    expect(screen.getByTestId("ac-orgextra")).toBeInTheDocument();
+    expect(screen.queryByTestId("ac-plan-ent_100")).toBeNull();
+  });
+});
+
+// ── The VC edition, which was NOT rescoped ───────────────────────────────────
+
+/**
+ * Only `AISJ_SuperuserV3.HTM` was reshared, and no VC file was: every one still
+ * contains "Choose your plan" and none contains `acs-trial` or `itiers` —
+ * checked against the decoded prototypes.
+ *
+ * These are the negative controls, and after the widening above the VC edition
+ * is the ONLY place left that can hold them. Each one fails the moment the seat
+ * flow stops being gated by edition, which is the only way this suite can still
+ * tell the difference between "the incubator's screen" and "everybody's".
+ */
+describe("the VC edition keeps the old plan screen", () => {
+  async function openPlanScreen(user: AuthUser) {
+    mount("/app/account", user);
+    await screen.findByRole("heading", { level: 1, name: "Create your account" });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+  }
+
+  it("the VC ADMIN still chooses a plan, from the tabbed catalogues", async () => {
+    await openPlanScreen(VC_ADMIN);
     await screen.findByRole("heading", { level: 1, name: "Choose your plan" });
     expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
       "Individual plans",
@@ -628,7 +702,7 @@ describe("every audience v3 did not rescope keeps the old plan screen", () => {
   });
 
   it("keeps the seat SKUs off the old screen entirely", async () => {
-    await openPlanScreen(principal("admin"));
+    await openPlanScreen(VC_ADMIN);
     await screen.findByRole("heading", { level: 1, name: "Choose your plan" });
     const plans = within(screen.getByRole("radiogroup", { name: "Individual plans" })).getAllByRole("radio");
     // The catalogue has eleven subscription rows; nine of them are seats and
@@ -673,19 +747,19 @@ describe("every audience v3 did not rescope keeps the old plan screen", () => {
     expect(screen.getByText(/A paid trial is not sold in GBP right now/)).toBeInTheDocument();
   });
 
-  it("the incubator admin's account screen keeps the free-trial strip v3 deleted", async () => {
-    mount("/app/account", principal("admin"));
+  it("the VC admin's account screen keeps the free-trial strip v3 deleted", async () => {
+    mount("/app/account", VC_ADMIN);
     await screen.findByRole("heading", { level: 1, name: "Create your account" });
     expect(screen.getByText(/Evaluate 3 pitchdecks free/)).toBeInTheDocument();
-    // …and the superuser's does not.
+    // …and the incubator superuser's does not.
     cleanup();
     mount("/app/account", SUPERUSER);
     await screen.findByRole("heading", { level: 1, name: "Create your account" });
     expect(screen.queryByText(/Evaluate 3 pitchdecks free/)).toBeNull();
   });
 
-  it("the admin's Organization branch still shows the unit tiers, not the seat counts", async () => {
-    mount("/app/account", principal("admin"));
+  it("the VC admin's Organization branch still shows the unit tiers, not the seat counts", async () => {
+    mount("/app/account", VC_ADMIN);
     await screen.findByRole("heading", { level: 1, name: "Create your account" });
     fireEvent.click(screen.getByTestId("ac-type-organization"));
     fireEvent.click(screen.getByRole("button", { name: /Continue/ }));

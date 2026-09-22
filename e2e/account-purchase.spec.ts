@@ -8,11 +8,14 @@ import { test, expect, type Page } from "@playwright/test";
  *   Individual   (incubator superuser) Account → Seat & pricing → Payment → Done, in INR
  *   Organization (vc admin)            Account → Org type → Org details → Plan → Payment → Done, in USD
  *
- * V3-PT rebuilt the middle step FOR THE INCUBATOR SUPERUSER ONLY: v3 sells a
- * SEAT for a PERIOD, so that walk picks a tier and then a billing period from
- * the seat catalogue `0073` publishes. The VC admin's walk below is the pre-V3
- * screen, unchanged, because the VC edition was not rescoped — the two tests
- * together are what proves the gate holds in a real browser.
+ * V3-PT rebuilt the middle step for the incubator, which `S3-ACCOUNT` widened
+ * from the superuser to the ADMIN as well (the client's 21-Sep row for My
+ * account reads Superuser/Admin): v3 sells a SEAT for a PERIOD, so that walk
+ * picks a tier and then a billing period from the seat catalogue `0073`
+ * publishes. The VC admin's walk below is the pre-V3 screen, unchanged, because
+ * the VC edition was not rescoped — the two tests together are what proves the
+ * gate holds in a real browser, and the third pins the one surface the widening
+ * took off the incubator's screen: the pay-as-you-go credit packs.
  *
  * And the rules the screen exists to get right, pinned so a build that loses one
  * fails here:
@@ -215,4 +218,27 @@ test("a role that cannot buy never sees the wizard", async ({ page }) => {
   await expect(page.getByRole("dialog", { name: "My account" })).toHaveCount(0);
   const res = await page.request.get("/api/account");
   expect(res.status()).toBe(403);
+});
+
+/**
+ * `S3-ACCOUNT` — the credit-pack ladder, which the incubator no longer draws.
+ *
+ * `e2e/roles.spec.ts` used to hold this against the INCUBATOR admin. Widening
+ * the seat flow to that admin replaced their Buy credits screen with "Choose
+ * your seat", which has no pack tab at all — so the assertion moved here, onto
+ * the VC admin, who still has it. Delete this and the ladder's price is pinned
+ * nowhere in a browser.
+ */
+test("the VC admin's Buy credits still opens on the published credit packs", async ({ page }) => {
+  test.setTimeout(120_000);
+  await login(page, "nisha.kapoor.vc@demo.startupjury.ai"); // vc admin
+  await page.goto("/app/billing");
+  await expect(page.getByRole("heading", { level: 1, name: "Choose your plan" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Pay-as-you-go credit packs" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByTestId("ac-plan-pack_50")).toContainText("₹20,000");
+  // §1.3 — nothing here grants credits for free.
+  await expect(page.getByText("Added 20 credits")).toHaveCount(0);
 });
