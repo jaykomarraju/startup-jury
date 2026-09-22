@@ -878,22 +878,32 @@ export function AreaWeightsSection() {
         <p className="mt-0.5 max-w-3xl text-[12.5px] text-fg-muted">
           Each role — {owners.map((r) => roleLabel(edition, r)).join(", ")} — configures its own set
           of {MAX_ADDITIONAL_PER_ROLE} parameters, each scored 0–10 (set maximum{" "}
-          <strong className="text-fg">{MAX_ADDITIONAL_PER_ROLE * 10}</strong>). Each role&apos;s
-          additional score is surfaced as {TIER_BADGES.map((b, i) => (
-            <span key={b}>
-              {i > 0 ? ", " : ""}
-              <strong className="text-fg">{b}</strong> ({roleLabel(edition, owners[i])})
-            </span>
-          ))}
-          .{" "}
-          {v3 ? (
-            // v3 replaces the per-parameter permit pill with the Seat
-            // configurability grid above, so the sentence that explained the
-            // pill goes with it.
-            "These parameters are configurable by default."
-          ) : (
+          <strong className="text-fg">{MAX_ADDITIONAL_PER_ROLE * 10}</strong>).
+          {/* 21-Sep item 13(a): the client struck two sentences off the screen he
+              was reading, which is the SUPERUSER one. Only one of the two is a
+              deviation from the prototype, measured by decoding `ADMIN_B64`:
+               · "These parameters are configurable by default." is VERBATIM at
+                 `admin.html:410`, so a parity capture will offer to restore it.
+                 Recorded in plan_v3_superuser.md §12.5 — keep it out.
+               · The AI+ / AI++ / AI+++ sentence is not in the console at all
+                 (`grep "surfaced as"` over the decoded 210 KB → 0). It was ours,
+                 added by V3-AW. Dropping it moves TOWARD the prototype.
+              Only the SENTENCES went. The AI+ / AI++ / AI+++ concept stays, here
+              and at four other sites (F0078, §4 Q62): the per-card badges below
+              still pair each role with its tier, which is what the deleted
+              sentence restated — so nothing on this screen became unexplained.
+              Superuser only. The un-reshared editions keep both sentences. */}
+          {!v3 && (
             <>
-              Use <em>Permit configuration</em> to allow a role to edit a parameter.
+              {" "}
+              Each role&apos;s additional score is surfaced as{" "}
+              {TIER_BADGES.map((b, i) => (
+                <span key={b}>
+                  {i > 0 ? ", " : ""}
+                  <strong className="text-fg">{b}</strong> ({roleLabel(edition, owners[i])})
+                </span>
+              ))}
+              . Use <em>Permit configuration</em> to allow a role to edit a parameter.
             </>
           )}
         </p>

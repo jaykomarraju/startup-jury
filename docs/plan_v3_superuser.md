@@ -1201,7 +1201,8 @@ Remedy is a one-off re-evaluation, not a backfill.
 - **Item 13 is prototype copy.** *"These parameters are configurable by default."* is verbatim in the
   decoded console, and he quoted OUR wording for the other sentence — he is reading the built app,
   not the file. He marked it "Not required", so the client wins; **record the deviation** or the next
-  parity capture reverts it.
+  parity capture reverts it. **Corrected by measurement in §12.5** — only ONE of the two sentences is
+  prototype copy; the tier sentence is not in the V3 console at all.
 - **Item 15 cites the wrong file.** `AISJ_SuperuserV3.HTM` has **zero** hits for JURYbuddy/FAQ/Help
   even after decoding the console. `Help_JURYbuddy.HTM` is the only spec.
 - **Item 16 is not a re-dev — it ADDS a screen.** V3 still carries `panel-scoredrift` verbatim, and
@@ -1216,6 +1217,102 @@ Remedy is a one-off re-evaluation, not a backfill.
 - **Live defect:** `AssignPage.tsx:526` navigates to `/app/query` with `state: { deckIds }` and
   `QueryPage.tsx` never reads it — zero hits across 1,084 lines. The hand-off silently drops the
   selection today. Item 5 lands right on it.
+
+
+### 12.5 `S4-COPY` — item 13(a) closed, item 11 confirmed. Measured 2026-09-21.
+
+#### Item 13(a) — both sentences deleted, incubator superuser only
+
+`AreaWeights.tsx`'s *Additional configurable parameters* sub-line now reads, in full:
+
+> Each role — Program Associate, Program Manager, Jury Member — configures its own set of 3
+> parameters, each scored 0–10 (set maximum 30).
+
+**Reading (a), and there is no question to raise.** Only the sentences went. The AI+ / AI++ / AI+++
+concept is untouched at all five sites — the per-card tier badges in this same file, `AssignPage`'s
+`TIERS`, `RubricAnchors`, `server/routes/assignments.ts` and the report. The deletion also loses no
+information, which is the strongest argument that (a) is what he meant: §4 Q62 kept the badges
+because *"nothing else on this screen says which role produces which"* — but each card header already
+prints `Program Manager` next to `AI++ score`. The sentence was restating the three headings under
+it. That is now pinned by a test rather than left as an argument.
+
+#### The deviation, recorded — and it is ONE sentence, not two
+
+Decoded `AISJ_SuperuserV3.HTM` with `docs/prototype/tools/decode-embedded.py` (`ADMIN_B64`, 280,192
+b64 chars → 210,144 bytes). `admin.html:410` is the prototype's sub-line:
+
+> Each role — **Super User**, **Program Manager** and **Jury Member** — configures its own set of
+> three parameters, each scored 0–10 (set maximum **30**). These parameters are configurable by default.
+
+- **"These parameters are configurable by default." IS verbatim prototype copy.** Deleting it is a
+  real deviation, and the next parity capture will offer to put it back. **This is the line to keep
+  out.**
+- **The AI+ / AI++ / AI+++ sentence is not in the V3 console at all.** `grep "surfaced as"` over the
+  decoded 210 KB returns **0**; the only `AI+` in the whole console is a JS comment at
+  `admin.html:1063`. It was ours, added by `V3-AW` alongside the badges. Deleting it moves the screen
+  **toward** the prototype, not away from it, and needs no deviation record.
+
+This corrects §12.3's item-13 bullet, which reads the "Super User" divergence as belonging to the
+tier sentence. It belongs to the **first** sentence — the one that survives.
+
+#### A divergence I did not touch, because it is not item 13
+
+The prototype's prose names the owners *Super User, Program Manager, Jury Member*, but its own
+`addlRender()` builds the cards from `['Program Associate','Program Manager','Jury Member']` — which
+is what `ADDITIONAL_PARAM_OWNERS` follows. **The prototype contradicts itself, and our code followed
+its executable half.** So the surviving sentence still says "Program Associate" where the prototype's
+prose says "Super User". Flagged, not fixed: it is neither item 13 nor a sentence he struck.
+
+#### Scope, and the un-reshared editions
+
+Gated on `usesV3AreaWeights(edition, role)` — incubator superuser only. An incubator **admin** and a
+**VC superuser** keep both sentences, and `test/client/areaWeights.test.tsx` now pins each of the
+three sub-lines as a whole string rather than by regex, because a
+`queryByText(deleted).toBeNull()` also passes against a section that never rendered, and a regex on
+what survives would not notice a sentence coming back.
+
+**Negative control run.** Reverting `AreaWeights.tsx` and re-running the file: the two new tests
+fail, and the admin and VC pins still pass — which is the point of them. They describe today's
+rendering, so they are evidence the un-reshared editions did not move, not decoration.
+
+#### Item 11 — confirmed working, no code, as instructed
+
+**What works.** The control was never broken, and nothing about it is hidden: all four splits and all
+three formulas are still offered, and `scoringFramework.test.tsx`'s tripwire still pins them
+(§4.1.1) — hiding was withdrawn once *"I saw no difference"* was read as the bug report it is. What
+`V4-WEIGHT` added is the part that was missing, which is **visibility**. The *Score composition* card
+draws a live before/after strip under the select (`data-testid="ai-weight-preview"`): real decks,
+blended at the saved split and at the selected one, at **two decimals** — deliberately finer than the
+deck tables' one decimal. The numbers come from `reweightPreview`, which computes through
+`decisionScore`, so there is still exactly one blend in the codebase; decks the control cannot move
+(a pinned programme or cohort) are counted and named rather than quietly dropped, and a deck with
+only one half of the blend is excluded, because it would have drawn `8.2 → 8.2` and printed the very
+impression the strip exists to correct. Measured on this branch, not copied: **127 tests green**
+across the five files that touch the control — 27 `client/scoringFramework`, 43 `unit/scoring`, 33
+`worker/scoring-framework`, 13 `client/workbench`, 11 in the dedicated `worker/ai-weight-effect`.
+
+**What the earlier finding was.** *"I saw no difference"* was accurate, and neither cause was the
+control. (a) AI and jury scores sit close together on the seed and the deck tables round to one
+decimal, so a genuine re-blend moved a displayed number by less than the rounding — the strip's two
+decimals exist for exactly that. (b) The blend was not shown on the Dashboard at all. Underneath both
+sat a real defect: `compositionChanged()` counted `aiWeightPct` as a control that invalidates stored
+scores, so a split-only save ran `rescoreEdition` — which has **zero** references to `ai_weight_pct`.
+Measured on the seed, changing only 40 → 50 and nothing else: 15 decks, **0** `ai_score` values
+moved, **12** `updated_at` values moved, and the console reported *"Saved — 12 decks re-scored."*
+Since `lastActivityAt` derives from `updated_at` and the V3 Dashboard sorts by it, the one visible
+effect of changing the AI split was to **reorder the Dashboard while every score stayed exactly where
+it was** — the inverse of what he expected. `aiWeightPct` is now out of `compositionChanged`; the
+scale and the formula stay in, because both genuinely change what is stored.
+
+**Two questions from §4.1.1 are still open and still his**, and item 11 does not close them: whether a
+programme should be able to set its own split from the Programmes screen, and whether there should be
+an explicit *apply this split to all programmes* action. Today the create-time stamp is the only
+writer, so a pinned programme can be changed only in the database.
+
+**One correction to the `S4-COPY` prompt**, so it is not propagated: it says item 11's tests are
+"62/62 green". No such number appears in the `V4-WEIGHT` record — **62 is `parity:nav`'s known-gap
+count**, which is not a pass count and has nothing to do with the AI weight. The measured figure is
+the 127 above.
 
 
 ## 13. The 21-Sep wave — session prompts
@@ -1399,6 +1496,11 @@ CONSTRAINTS
 ```
 
 ### `S4-COPY` — item 13(a), and item 11's write-up. Smallest; ship it first.
+
+**DONE, 2026-09-21, on `parity/S4-COPY`. Both closed; §12.5 is the record.** Reading (a) was taken
+and needed no question raised — each card header already pairs its role with its badge, so the
+deleted sentence carried no information the screen loses. One correction the prompt should not
+outlive: only ONE of the two sentences is prototype copy, so only one is a deviation (§12.5).
 
 ```
 BUILD
@@ -2987,3 +3089,47 @@ TEST
   - E2E: the upload screen states 50 MB wherever it states a size.
   - Report the real numbers from step 1 in §4.1 whatever they turn out to be.
 ```
+
+
+### The 21-Sep wave — `S4-COPY`
+
+Baselines taken from the §13 shared block and re-measured on this branch where the gate produced a
+comparable number.
+
+| Session | Items | State | Measured gate | Notes |
+|---|---|---|---|---|
+| `S4-COPY` | 13(a), 11 | **both closed — 13(a) built, 11 confirmed with no code** | typecheck ✓ · lint ✓ · build ✓ · **unit 2341 passed / 1 skipped** ✓ (baseline **2340 / 1**; **+1** — one test replaced by two) · **`parity:tokens` 0 gaps** ✓ · **`parity:nav` 62 known gaps** ✓ · **e2e exit 0 — 230 tests, 223 passed · 7 flaky · 0 failed in 5.6 min** ✓ | No migration taken; `ALLOTMENT_CEILING` untouched at 76. `npm run roles` NOT run and NOT re-baselined: no gate, route or nav id changed, and integration re-baselines the harness once for the whole wave. |
+
+**The e2e leg, stated as it happened, including the run I threw away.**
+
+The gate number above is the **first** run: started on an idle box (`TIME_WAIT` **293**), exit 0,
+0 failed, 7 flaky. `reuseExistingServer: false` means it booted and wiped its own server, so it was
+this branch's code against a clean seed. That run burned `TIME_WAIT` 293 → **11,371**, which is the
+~9,000-per-run the §13 block documents.
+
+I then re-ran the 7 flaky specs alone to check they were not mine. Two things happened, and both are
+worth recording:
+
+1. **It refused to start**: port 5173 was held by a dev server whose `lsof` cwd was
+   `sj-S3-ACCOUNT` — a sibling session's. `reuseExistingServer: false` did exactly its job rather
+   than silently adopting S3's code and database. Re-run on `E2E_PORT=5273`.
+2. **That re-run is meaningless by the block's own rule and is not reported as a result.** 48 tests
+   burned `TIME_WAIT` to **12,833** with **123** `fetch failed`, and the dev server itself was
+   returning `Internal server error: fetch failed` out of miniflare's `dispatchFetch` throughout. It
+   reported 1 failed / 4 flaky. The failure was
+   `parity.spec.ts:111 incubator/program_manager` — **`Expected: "Score drift" / Received: "Sign in"`**:
+   the walk was bounced to the login page mid-sweep. A sibling `notifications` test timed out waiting
+   for the login placeholder to exist at all. That is a dead backend, not an assertion.
+
+**Why none of it can be this change, established by construction rather than by a green run.**
+`parity.spec.ts` reads exactly two things per screen — the `h1` and every `thead th`. This change
+deletes text from a `<p>` under an `<h3>`. The spec is structurally incapable of observing it. And
+no e2e spec anywhere asserts on either deleted sentence: grepping `e2e/` for *"configurable by
+default"* and *"surfaced as"* returns zero; the only nearby hit is
+`scoring-framework.spec.ts:216`, which asserts the **heading** *Additional configurable parameters*
+is visible — untouched.
+
+**Do not read the 7 flaky specs in the first run as instability introduced here.** They are the
+documented dropped-connection class that `playwright.config.ts:27` keeps visible as `flaky` on
+purpose; all 7 passed on retry, and the run exited 0.
+
