@@ -79,15 +79,11 @@ test("program manager reaches the intro-call decision screen", async ({ page }) 
 // credits") — the ladder §8 Q51 did not choose and the free grant §1.3 forbids.
 // Buy credits is now the account overlay opened on the PUBLISHED credit packs;
 // ordering one, through to the receipt, is walked in e2e/account-purchase.spec.ts.
-test("admin opens Buy credits on the published credit packs", async ({ page }) => {
+test("admin opens Buy credits on the published seat catalogue", async ({ page }) => {
   await login(page, INC_ADMIN);
   await page.goto("/app/billing");
-  await expect(page.getByRole("heading", { level: 1, name: "Choose your plan" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Pay-as-you-go credit packs" })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
-  await expect(page.getByTestId("ac-plan-pack_50")).toContainText("₹20,000");
+  await expect(page.getByRole("heading", { level: 1, name: "Choose your seat" })).toBeVisible();
+  await expect(page.getByTestId("ac-tier-pro")).toBeVisible();
   await expect(page.getByText("Added 20 credits")).toHaveCount(0);
 });
 

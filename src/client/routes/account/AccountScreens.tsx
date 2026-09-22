@@ -2012,10 +2012,12 @@ export function ReceiptScreen({
       </div>
       {[
         <>
-          <b className="text-fg">Select your role</b> — choose how you'll use the platform (analyst, jury member, etc.)
+          <b className="text-fg">Configure your programmes</b> — add the sectors, programmes and cohorts your
+          workspace runs on
         </>,
         <>
-          <b className="text-fg">Invite team members</b> — add colleagues and assign their roles from the dashboard
+          <b className="text-fg">Invite team members</b> — add colleagues and assign their roles in{" "}
+          <b className="text-fg">Admin console → Team &amp; roles</b>
         </>,
         <>
           Once done, go to <b className="text-fg">Upload</b> on the sidebar and start working on your decks

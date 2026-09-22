@@ -161,14 +161,14 @@ test("a PA uploads a deck, reviews it, sends it to Query — and is never shown 
   expect(violations, `CSP violations:\n${violations.join("\n")}`).toEqual([]);
 });
 
-test("an admin's Buy credits lands on Choose your plan", async ({ page }) => {
+test("an admin's Buy credits lands on the seat screen", async ({ page }) => {
   await login(page, "nisha.kapoor@demo.startupjury.ai"); // incubator admin
   await page.goto("/app/upload");
   const buy = page.getByTestId("up-credits-bar").getByRole("link", { name: "Buy credits" });
   await expect(buy).toBeVisible();
   await buy.click();
   await page.waitForURL(/\/app\/billing/);
-  await expect(page.getByRole("heading", { name: "Choose your plan" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("heading", { name: "Choose your seat" })).toBeVisible({ timeout: 30_000 });
 });
 
 /** A ZIP with two deflated copies of the sample deck and one file that is not a deck. */
