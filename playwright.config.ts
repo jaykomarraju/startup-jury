@@ -7,23 +7,39 @@ const baseURL = `http://localhost:${PORT}`;
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
-  // One vite+miniflare dev server backs the whole suite. Above ~4 browser
-  // workers the local Worker runtime starts dropping requests ("fetch failed" /
-  // ERR_ADDRESS_INVALID) and the tail of the run fails for reasons that have
-  // nothing to do with the app. Two workers is both reliable and faster than the
-  // default, because nothing burns a 30s timeout.
+  // One vite+miniflare dev server backs the whole suite, and the worker count
+  // is a RATE limiter on a fixed OS resource, not a concurrency fix.
+  //
+  // Measured at the 21-Sep wave integration (plan §12.9). `miniflare`'s
+  // `DispatchFetchDispatcher.dispatch()` sets undici's `options.reset = true`,
+  // which sends `connection: close` and tears the socket down after every
+  // response — defeating the connection `Pool` miniflare itself built. So each
+  // request the Cloudflare vite plugin proxies to workerd costs ~2 fresh TCP
+  // sockets. This suite drives ~16,600 requests in ~42s (most of them `/src/*`,
+  // because every test gets an empty browser cache and vite dev serves
+  // unbundled modules), against a macOS ephemeral range of 16,384 ports with a
+  // 30s TIME_WAIT. The range saturates ~25-30s in and `connect()` then fails
+  // with EADDRNOTAVAIL — which surfaces as "fetch failed".
+  //
+  // Fewer workers only slows the request RATE enough to squeak under the
+  // ceiling (measured: `--workers=1` peaks at 15,684 of 16,384, i.e. 95.7%).
+  // That is why this number is 2 and why raising it reddens the tail.
   workers: 2,
   forbidOnly: !!process.env.CI,
-  // `W5-A`'s measurement, applied at Wave 5 integration (§8 Q28 / Q32). The
-  // failures this suite produces locally are not assertion failures: the dev
-  // server itself dies mid-run with `[vite] Internal server error: Network
-  // connection lost` out of miniflare's runner-worker, and every test after it
-  // fails for a reason that has nothing to do with the app. A sibling
-  // Playwright stack makes that near-certain but is not required for it.
+  // `W5-A`'s measurement, applied at Wave 5 integration (§8 Q28 / Q32), with
+  // its DIAGNOSIS corrected at the 21-Sep wave integration.
+  //
+  // The failures this suite produces locally are not assertion failures. But
+  // the dev server does NOT die mid-run, which is what this comment used to
+  // say: a 0.5s PID sampler showed one stable workerd for the whole run, with
+  // no restart, reload or OOM in the logs. It stays up and cannot open sockets
+  // — see the `workers` note above for the mechanism.
+  //
   // One retry is the cheapest honest mitigation: a genuinely broken test still
-  // fails twice, and a dropped connection is reported as `flaky` rather than
+  // fails twice, and an exhausted port range is reported as `flaky` rather than
   // `failed`, which keeps the instability VISIBLE and countable instead of
-  // either fatal or hidden.
+  // either fatal or hidden. It is a mitigation, not the fix; the fix is the
+  // one-line upstream change recorded in plan §12.9.
   retries: 1,
   reporter: process.env.CI ? "list" : "html",
   use: { baseURL, trace: "on-first-retry" },

@@ -1697,6 +1697,69 @@ the help assets and claimed-vs-actual. **Five were refuted** and should not be r
 Findings 1, 2 and 4 are fixed below with negative controls; 3 is a comment and a record, corrected
 in place.
 
+#### The `fetch failed` instability, diagnosed — and the recorded cause was wrong
+
+`e2e/coverage.spec.ts` has been intermittently red for waves, always with the same signature:
+`[vite] Internal server error: fetch failed` through undici → `_Miniflare.dispatchFetch`, the
+browser showing Vite's HMR overlay instead of the page. The programme recorded this as **ephemeral
+port exhaustion caused by TWO concurrent e2e runs**. That is wrong in both halves, and it was
+falsified before it was explained: the failure reproduces on a **cold box** (`TIME_WAIT` = 1) and
+reproduces identically on **pre-wave `main`** (`ce9f3b0`: 2 failed, 216 `fetch failed`), with the
+failing tests scattering to a different set each run — 48/73, then 254/272, then 289/322.
+
+**The cause, confirmed by controlled intervention.**
+`node_modules/miniflare/dist/src/index.js:60690`, in `DispatchFetchDispatcher.dispatch()`:
+
+```js
+options.reset = true;
+```
+
+Per undici's own docs, `reset: true` sends `connection: close` and closes the socket after the
+response — **defeating the connection `Pool` miniflare builds two thousand lines away**. Every
+request the Cloudflare vite plugin proxies to workerd therefore costs ~2 fresh TCP sockets
+(measured: `/src/main.tsx` ×100 → **+198** `TIME_WAIT`; the same 100 requests straight to workerd
+over one reused connection → **1**).
+
+The chain, all measured:
+
+| | |
+|---|---|
+| undici's `cause` behind "fetch failed" | `connect EADDRNOTAVAIL 127.0.0.1:… errno -49` — all 56 occurrences in one run. Never `ECONNRESET`, never a hang-up. The kernel is refusing a **local** port. |
+| workerd | **not crashing** — one stable PID for the whole run after boot, no restart/reload/OOM in the logs |
+| correlation with a request kind | **none** — not R2, not the AI path, not large responses. Uniform. |
+| volume | the spec drives **16,592 requests in 42 s**, 15,701 of them `/src/*` — every test gets an empty browser cache and vite dev serves unbundled modules |
+| the ceiling | macOS `portrange` 49152–65535 = **16,384** ports, `tcp.msl` 15000 → 30 s `TIME_WAIT`. Measured peak on a failing run: **16,360–16,385.** |
+
+So it IS port exhaustion — but **one run alone exhausts the range**, and `TIME_WAIT` only reads
+high *during* the 42-second window, which is exactly why every cold-box sample said otherwise.
+
+**The intervention.** Flipping that one line to `options.reset = false`, changing nothing else:
+
+| | unpatched | patched |
+|---|---|---|
+| `/src/main.tsx` ×100 | +198 `TIME_WAIT` | **0** |
+| `coverage.spec.ts` | 2 flaky, peak 16,360 | **18 passed**, peak 166 |
+| full suite | 2 failed · 6 flaky · 230 passed · 445 `fetch failed` | **238 passed · 0 failed · 0 flaky · 0 `fetch failed`**, peak 390 |
+
+Control: unpatched `--workers=1` (which halves the request *rate*, not the total) → 18 passed,
+peak 15,684 = **95.7 % of the ceiling**. It squeaks under, which is why fewer workers "works" and
+why it is not a fix.
+
+**This does not block the wave** — the failing artifact is the dev proxy, not the app; nothing in
+the failure path touches worker or client source; and it reproduces on pre-wave `main`.
+
+**The durable fix is not applied here**, because pinning a line inside `node_modules` is a
+dependency decision, not an integration one. Cheapest first: (1) `patch-package` on that one line;
+(2) file it upstream against miniflare — `reset: true` costs a TCP connection per dev request on
+every platform, macOS just has the smallest ephemeral range; (3) run e2e against a built preview so
+the browser fetches a bundle instead of ~150 modules per page load, which also cuts run time.
+Widening `net.inet.ip.portrange` or lowering `tcp.msl` was deliberately NOT done — those are system
+settings and they only paper over a 16k-socket-per-run leak.
+
+`playwright.config.ts`'s two comments have been corrected in place: the worker count is a **rate**
+limiter on a fixed OS resource, not a concurrency fix, and the dev server does **not** "die mid-run"
+— it stays up and cannot open sockets.
+
 ## 13. The 21-Sep wave — session prompts
 
 `main` ends at migration **0074**, `ALLOTMENT_CEILING` is **76**. Allotments: `S1` **0075**,
