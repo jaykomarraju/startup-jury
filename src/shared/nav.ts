@@ -177,6 +177,19 @@ const INCUBATOR_NAV: NavItem[] = [
   { id: "contactadmin", label: "Contact Admin", icon: "Mail", section: "Collaborate", roles: ["admin", "program_manager", "program_associate", "jury"] },
   { id: "contactteam", label: "Contact team", icon: "MessagesSquare", section: "Collaborate", roles: ["admin", "program_manager", "program_associate", "jury"] },
   // Support
+  // V3 item 15 — JURYbuddy, the searchable FAQ + clip library. First in the
+  // section because the spec's own copy routes users through it: *"Under
+  // Support, Help can take you to search bar … If your query is unresolved, you
+  // can raise a ticket"*. Content is role-invariant product documentation, so
+  // every internal role sees it and there is no `task` cell to switch it off —
+  // the same rule the rest of the Support section already follows.
+  //
+  // INCUBATOR ONLY, deliberately. The screen and `GET /api/help/clips/:clipId`
+  // are edition-agnostic, but `test/unit/nav.test.ts` pins every VC sidebar's
+  // size under the name "the VC edition was not rescoped", and this wave does
+  // not rescope it. Opening Help to VC is one entry in `VC_NAV` plus six pinned
+  // sizes and five parity rows — recorded as a question in §12, not assumed.
+  { id: "help", label: "Help", icon: "CircleQuestionMark", section: "Support", roles: ["admin", "program_manager", "program_associate", "jury"] },
   { id: "support", label: "Tickets", icon: "LifeBuoy", section: "Support", roles: ["admin"] },
   // The team's internal testing/bug log (Session 7). Every internal role can
   // file; triage is admin-only on the server.

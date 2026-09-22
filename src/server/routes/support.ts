@@ -2,6 +2,10 @@
 // admin-only Tickets screen; contact messages (to Admin / to team) back the
 // Collaborate nav for every role. Tables `tickets` + `messages` exist from 0001.
 //
+// V3 item 15 adds the **JURYbuddy help clips** router: one read-only route that
+// streams an FAQ clip out of R2. The FAQ text itself is bundled client-side
+// (`src/client/routes/help/faqs.ts`) — only the 5.86 MB of video is served.
+//
 // Session 7 adds the **internal issue log** on the same `tickets` table, split by
 // `tickets.category` ('support' vs 'issue', migration 0018). One table, two
 // queues: the support queue is customer-facing triage, the issue log is where
@@ -309,4 +313,93 @@ messages.post("/", async (c) => {
   return c.json({ ok: true, id });
 });
 
-export { tickets, messages, issues, ISSUE_STATUSES, ISSUE_SEVERITIES };
+// ── JURYbuddy help clips (V3 item 15) ────────────────────────────────────────
+// The spec ships its 41 clips as base64 `data:` URIs inside an 8.2 MB HTML file.
+// Bundling them would add 5.86 MB to every page load, so they live in R2 under
+// `help/clips/<clipId>.mp4` and are streamed from here instead.
+//
+// AUTHENTICATED, NOT AUTHORISED: these are product documentation, identical for
+// every role and every edition, so there is nothing per-user to check beyond
+// holding a session. The `help` NAV item is narrower than this route — internal
+// incubator roles only — so a founder holds a session that can reach the route
+// but no screen that links to it. That asymmetry is deliberate and harmless: the
+// route leaks nothing role-specific, and it does not have to move again if Help
+// later opens to VC (§12 question (a)).
+
+const help = new Hono<AppEnv>();
+help.use("*", requireAuth);
+
+/** `clipId`s are opaque keys from the bundled manifest; reject anything that
+ *  could escape the `help/clips/` prefix before it reaches R2. */
+const CLIP_ID = /^[a-z0-9_]{1,64}$/;
+
+/** GET /api/help/clips/:clipId — stream one FAQ clip from R2.
+ *
+ *  404 covers all three "no video" cases — binding absent, object absent, bad id
+ *  — because the client treats them identically: show the answer, hide the
+ *  player. Range is honoured so `<video>` can seek; without it a seek re-fetches
+ *  the whole object. */
+help.get("/clips/:clipId", async (c) => {
+  const clipId = c.req.param("clipId");
+  if (!CLIP_ID.test(clipId)) return c.json({ error: "not_found" }, 404);
+  const bucket = c.env.HELP_MEDIA;
+  if (!bucket) return c.json({ error: "no_clip" }, 404);
+
+  const range = c.req.header("range");
+  // Only `bytes=<start>-[<end>]` — the single-range form `<video>` actually
+  // sends. A suffix range (`bytes=-500`) or a multi-range falls through to the
+  // full object, which is a correct (if unoptimised) response either way.
+  const m = range ? /^bytes=(\d+)-(\d*)$/.exec(range.trim()) : null;
+  const offset = m ? Number(m[1]) : undefined;
+  const end = m && m[2] ? Number(m[2]) : undefined;
+  // A backwards range (`bytes=10-5`) is unsatisfiable by inspection. One that
+  // starts past the end of the object is too, but that needs `size`, so R2 is
+  // left to reject it below — it THROWS rather than returning null, which would
+  // otherwise surface as a 500.
+  if (offset !== undefined && end !== undefined && end < offset) {
+    return c.json({ error: "range_not_satisfiable" }, 416);
+  }
+
+  const key = `help/clips/${clipId}.mp4`;
+  let object: R2ObjectBody | null;
+  try {
+    object = await bucket.get(key, {
+      range:
+        offset === undefined
+          ? undefined
+          : { offset, length: end === undefined ? undefined : end - offset + 1 },
+    });
+  } catch {
+    // The only get that throws here is an unsatisfiable range; a missing object
+    // returns null. Answer 416 with the real size so a client can retry.
+    const meta = await bucket.head(key);
+    if (!meta) return c.json({ error: "no_clip" }, 404);
+    return c.json({ error: "range_not_satisfiable" }, 416, {
+      "content-range": `bytes */${meta.size}`,
+    });
+  }
+  if (!object) return c.json({ error: "no_clip" }, 404);
+
+  const headers = new Headers();
+  headers.set("content-type", "video/mp4");
+  headers.set("accept-ranges", "bytes");
+  headers.set("etag", object.httpEtag);
+  // Immutable product media, but keep it private: it is behind a session, so a
+  // shared cache must not hold it.
+  headers.set("cache-control", "private, max-age=86400");
+
+  // 206 ONLY when a range was actually requested. `object.range` is not the test
+  // for that — R2 populates it on a full GET too (`{offset: 0, length: size}`),
+  // so reading it turned every plain request into a 206. `offset` is the honest
+  // signal: it is set only where the Range header parsed.
+  if (offset !== undefined) {
+    const length = end === undefined ? object.size - offset : end - offset + 1;
+    headers.set("content-length", String(length));
+    headers.set("content-range", `bytes ${offset}-${offset + length - 1}/${object.size}`);
+    return new Response(object.body, { status: 206, headers });
+  }
+  headers.set("content-length", String(object.size));
+  return new Response(object.body, { headers });
+});
+
+export { tickets, messages, issues, help, ISSUE_STATUSES, ISSUE_SEVERITIES };

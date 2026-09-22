@@ -35,6 +35,22 @@
     {
       "binding": "DECKS",
       "bucket_name": "startup-jury-decks"
+    },
+    // JURYbuddy help clips (V3 item 15). The client's spec ships 41 FAQ clips as
+    // base64 inside an 8.2 MB HTML file — 5.86 MB decoded. They are served from
+    // here (`GET /api/help/clips/:clipId`) instead of being bundled.
+    //
+    // NB `wrangler r2 bucket create startup-jury-help-media` must run before the
+    // first deploy that references this binding, exactly like the DLQ below.
+    // Until the clips are uploaded the route 404s and the Help screen renders
+    // the answer text with no player, so an empty bucket is not a failure:
+    //   python3 docs/prototype/tools/extract-help-clips.py <Help_JURYbuddy.HTM> --out /tmp/help-clips
+    //   for f in /tmp/help-clips/*.mp4; do \
+    //     npx wrangler r2 object put "startup-jury-help-media/help/clips/$(basename "$f")" \
+    //       --file "$f" --content-type video/mp4 --remote; done
+    {
+      "binding": "HELP_MEDIA",
+      "bucket_name": "startup-jury-help-media"
     }
   ],
   "queues": {

@@ -13,6 +13,20 @@ export interface Env {
   SESSIONS: KVNamespace;
   /** Pitch-deck PDFs (key `decks/<id>.pdf`) + exported reports. */
   DECKS: R2Bucket;
+  /**
+   * JURYbuddy help clips (key `help/clips/<clipId>.mp4`), V3 item 15. A SEPARATE
+   * bucket from `DECKS` on purpose: these are product media any authenticated
+   * user may stream, while `DECKS` holds tenant-confidential PDFs behind a
+   * per-deck authorisation check. Sharing one bucket would put a
+   * read-for-everyone path on the same keyspace as that data.
+   *
+   * OPTIONAL because the bucket is created out-of-band (see wrangler.jsonc) and
+   * the clips are uploaded by hand: `GET /api/help/clips/:clipId` answers 404
+   * when the binding or the object is missing, and the Help screen then shows
+   * the answer text with no player. A forgotten bucket is a missing video,
+   * never a broken screen.
+   */
+  HELP_MEDIA?: R2Bucket;
   /** Bulk-upload evaluation jobs consumed by `src/server/queue.ts`. */
   EVAL_QUEUE: Queue<EvalMessage>;
   /** Anthropic API key (set via `wrangler secret`); absent in tests (mocked). */

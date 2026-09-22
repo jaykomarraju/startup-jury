@@ -10,6 +10,9 @@ declare namespace Cloudflare {
     DB: D1Database;
     SESSIONS: KVNamespace;
     DECKS: R2Bucket;
+    /** JURYbuddy help clips (V3 item 15). Optional, mirroring src/server/types.ts:
+     *  the bucket is created out-of-band and the clips are uploaded by hand. */
+    HELP_MEDIA?: R2Bucket;
     EVAL_QUEUE: Queue<import("../../src/server/types").EvalMessage>;
     ANTHROPIC_API_KEY?: string;
     ANTHROPIC_MODEL?: string;

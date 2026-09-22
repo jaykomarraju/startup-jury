@@ -252,6 +252,8 @@ const EXPECTED: Record<string, Screen> = {
   "incubator/superuser/billing": { title: "Choose your seat", tables: [] },
   "incubator/superuser/contactadmin": { title: "Contact Admin", tables: [] },
   "incubator/superuser/contactteam": { title: "Contact team", tables: [] },
+  // V3 item 15 — JURYbuddy. No table: the FAQ list is a column of buttons.
+  "incubator/superuser/help": { title: "Help", tables: [] },
   "incubator/superuser/support": {
     title: "Tickets",
     tables: [["SUBJECT", "FROM", "ROUTING", "STATUS", "RAISED", ""]],
@@ -324,6 +326,8 @@ const EXPECTED: Record<string, Screen> = {
   "incubator/admin/billing": { title: "Choose your seat", tables: [] },
   "incubator/admin/contactadmin": { title: "Contact Admin", tables: [] },
   "incubator/admin/contactteam": { title: "Contact team", tables: [] },
+  // V3 item 15 — JURYbuddy. No table: the FAQ list is a column of buttons.
+  "incubator/admin/help": { title: "Help", tables: [] },
   "incubator/admin/support": { title: "Tickets", tables: [["SUBJECT", "FROM", "ROUTING", "STATUS", "RAISED", ""]] },
   "incubator/admin/issues": {
     title: "Issue log",
@@ -387,6 +391,8 @@ const EXPECTED: Record<string, Screen> = {
   "incubator/program_manager/account": { title: "My account", tables: [] },
   "incubator/program_manager/contactadmin": { title: "Contact Admin", tables: [] },
   "incubator/program_manager/contactteam": { title: "Contact team", tables: [] },
+  // V3 item 15 — JURYbuddy. No table: the FAQ list is a column of buttons.
+  "incubator/program_manager/help": { title: "Help", tables: [] },
   "incubator/program_manager/issues": {
     title: "Issue log",
     tables: [["ISSUE", "AREA", "SEVERITY", "STATUS", "OWNER", "RAISED", "AGE"]],
@@ -441,6 +447,8 @@ const EXPECTED: Record<string, Screen> = {
   "incubator/program_associate/account": { title: "My account", tables: [] },
   "incubator/program_associate/contactadmin": { title: "Contact Admin", tables: [] },
   "incubator/program_associate/contactteam": { title: "Contact team", tables: [] },
+  // V3 item 15 — JURYbuddy. No table: the FAQ list is a column of buttons.
+  "incubator/program_associate/help": { title: "Help", tables: [] },
   "incubator/program_associate/issues": {
     title: "Issue log",
     tables: [["ISSUE", "AREA", "SEVERITY", "STATUS", "OWNER", "RAISED", "AGE"]],
@@ -472,6 +480,8 @@ const EXPECTED: Record<string, Screen> = {
   "incubator/jury/account": { title: "My account", tables: [] },
   "incubator/jury/contactadmin": { title: "Contact Admin", tables: [] },
   "incubator/jury/contactteam": { title: "Contact team", tables: [] },
+  // V3 item 15 — JURYbuddy. No table: the FAQ list is a column of buttons.
+  "incubator/jury/help": { title: "Help", tables: [] },
   "incubator/jury/issues": {
     title: "Issue log",
     tables: [["ISSUE", "AREA", "SEVERITY", "STATUS", "OWNER", "RAISED", "AGE"]],

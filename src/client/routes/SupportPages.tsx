@@ -1,6 +1,10 @@
 // Phase 7 — Tickets (admin) + Contact (Admin / team) screens. Tickets surface
 // support requests with billing routing; Contact sends messages to Admin or the
 // team. Backed by /api/tickets and /api/messages.
+//
+// V3 item 15 adds the third Support screen, JURYbuddy. It lives in `./help/`
+// rather than here because it carries 12.7 KB of ported FAQ copy plus its own
+// matcher; it is re-exported so `App.tsx` keeps one import for the section.
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Card, Button, Badge, EmptyState } from "../components";
@@ -13,6 +17,8 @@ import {
   type Ticket,
   type ContactMessage,
 } from "../api";
+
+export { HelpPage } from "./help";
 
 function fmt(iso: string): string {
   const d = new Date(iso);

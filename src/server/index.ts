@@ -23,7 +23,7 @@ import seats from "./routes/seats"; // W6-C · purchased seats (Set up → Team)
 import esign from "./esign/routes";
 import signups, { esignWorkspaceGate } from "./routes/signups";
 import diligence from "./routes/diligence";
-import { tickets, messages, issues } from "./routes/support";
+import { tickets, messages, issues, help } from "./routes/support";
 import { calls } from "./routes/calls";
 import { assignments } from "./routes/assignments"; // W7-E · Assign: board + cross-product confirm
 import { handleQueue } from "./queue";
@@ -74,6 +74,7 @@ app.route("/api/diligence", diligence); // W9-C · VC diligence checklists, deal
 app.route("/api/tickets", tickets);
 app.route("/api/issues", issues);
 app.route("/api/messages", messages);
+app.route("/api/help", help); // V3 item 15 · JURYbuddy FAQ clips (R2)
 app.route("/api/calls", calls);
 app.route("/api/assignments", assignments);
 app.route("/api/decks", decks);
