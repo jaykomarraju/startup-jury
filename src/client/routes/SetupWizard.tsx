@@ -11,6 +11,38 @@
 // Non-admin roles see three steps, not four — the prototype drops Org type for
 // every role file that is not an Admin or Super User build (F1069).
 //
+// ── S2-SETUP · 21-Sep item 7 ────────────────────────────────────────────────
+// "Delete step 1 (Org type) and step 4; only the programme setup remains." So
+// for the incubator SUPER USER the wizard is Configure → Select, and Select
+// finishes it. This REVERSES part of V3-PT item 16 (§3), which three commits ago
+// turned step 4 into "Nominate your super user" — the same client asked for
+// both, and the later instruction wins.
+//
+// **It is a deliberate deviation from the prototype.** Measured, not assumed:
+// `AISJ_SuperuserV3.HTM:7742-7750` and `AISJ_IC_SuserV15.HTM` draw the same four
+// `.ac-step` labels — Org type · Configure · Select · Team — byte for byte. The
+// client's instruction wins over the file; §12 records it so the next parity
+// capture does not put the two steps back.
+//
+// Gated to `incubator` + `superuser`, per §13's constraint that every other
+// role renders exactly as it does today and the VC edition was not rescoped.
+// `AISJ_ICAdmin_V6` and the VC files still draw all four steps (§4 Q85), and
+// three e2e specs walk them: `programs`/`automation` as the incubator admin and
+// `seats` as the VC admin. Widening the gate is one predicate — §12 has it.
+//
+// Nothing the two deleted steps owned is stranded (§13's two-part requirement):
+//   · `branding.orgName` — the wizard was its ONLY writer and it has four
+//     readers (`AccountPage` "Workspace", the invite email, the founder
+//     resubmit email, every invoice document). It now has a field in Admin
+//     console → Branding, which already re-reads and merges the record.
+//   · Buy additional seats — `TeamStep` was the sole importer of
+//     `purchaseSeats`. The flow moved WHOLE to `routes/seats/BuySeats.tsx` and
+//     is mounted in Admin console → Team & roles, which is §4 Q84's own answer
+//     and the destination the handoff card already pointed at.
+//   · `branding.orgType` is written here and read by NOTHING (grepped across
+//     src/): the Org type step's choice was already inert. Team & roles states
+//     the workspace type instead, from the edition, and has since W4-A.
+//
 // Session 4 — role-scoped seats. admin/superuser get full editing. A program
 // MANAGER can manage cohorts for the programs they LEAD (owner-scoped; sectors +
 // programs stay org-admin-owned). A program ASSOCIATE is read-only ("Standard
@@ -57,9 +89,26 @@ import {
 // itself does (`TeamStep`'s `nominateOnly`).
 const STEPS = ["Org type", "Configure", "Select", "Team"] as const;
 const STEPS_SUPERUSER = ["Org type", "Configure", "Select", "Super user"] as const;
+/** S2-SETUP item 7 — the programme setup alone, for the incubator super user. */
+const STEPS_PROGRAMME = ["Configure", "Select"] as const;
 
-/** The steps a seat walks: Org type is an Admin / Super User step only. */
-function stepsFor(seat: Seat, nominateOnly = false): { labels: readonly string[]; first: number } {
+/**
+ * The steps a seat walks: Org type is an Admin / Super User step only.
+ *
+ * `first` indexes the FULL four-step numbering that `step` is held in, so the
+ * two narrowings compose without compounding: `programmeOnly` returns `first: 1`
+ * outright rather than slicing, because slicing an already-sliced list is
+ * exactly how "non-admin roles already see three steps" would double-apply and
+ * cost a `readonly` seat its Configure step. A super user is always a `full`
+ * seat (`seatFor`), so the branch below is unreachable for them either way —
+ * this just makes it unreachable by construction rather than by luck.
+ */
+function stepsFor(
+  seat: Seat,
+  nominateOnly = false,
+  programmeOnly = false,
+): { labels: readonly string[]; first: number } {
+  if (programmeOnly) return { labels: STEPS_PROGRAMME, first: 1 };
   const all = nominateOnly ? STEPS_SUPERUSER : STEPS;
   return seat === "full" ? { labels: all, first: 0 } : { labels: all.slice(1), first: 1 };
 }
@@ -98,9 +147,21 @@ export function SetupWizard() {
   const edition = user?.edition ?? "incubator";
   const [, setCtx] = useActiveContext(edition);
   const seat = seatFor(user?.role);
-  const nominateOnly = edition === 'incubator' && user?.role === 'superuser';
+  /**
+   * The reshared prototype's audience, and nobody else — the same predicate
+   * V3-PT gated step 4's narrowing on (§4 Q85). Item 7 now deletes the step
+   * outright for them, so `nominateOnly` no longer reaches `TeamStep` from
+   * here; it stays because the ADMIN and VC wizards still render step 4, and
+   * `TeamStep` decides its own layout from the same two facts.
+   */
+  const programmeOnly = edition === "incubator" && user?.role === "superuser";
 
-  const { labels: stepLabels, first: firstStep } = stepsFor(seat, nominateOnly);
+  // The same predicate twice, and deliberately: `nominateOnly` only ever
+  // relabelled step 4 for the incubator super user, and that is exactly the
+  // principal who no longer HAS a step 4 — so `STEPS_SUPERUSER` is unreachable
+  // today and is kept, like `TeamStep`'s matching branch, against a reversal of
+  // item 7 (§12.5). Passing it keeps the two in step if one is reversed.
+  const { labels: stepLabels, first: firstStep } = stepsFor(seat, programmeOnly, programmeOnly);
   const [step, setStep] = useState(firstStep);
   const [buying, setBuying] = useState(false);
   const [data, setData] = useState<ProgramsResponse | null>(null);
@@ -161,7 +222,7 @@ export function SetupWizard() {
 
       {seat === "readonly" && <StandardSeatBanner />}
 
-      {step === 0 && seat === "full" && (
+      {step === 0 && seat === "full" && !programmeOnly && (
         <OrgTypeStep
           edition={edition}
           orgType={orgType}
@@ -182,14 +243,25 @@ export function SetupWizard() {
           edition={edition}
           seat={seat}
           userId={user.id}
-          onBack={seat === "full" ? () => setStep(0) : undefined}
+          // No step 0 to return to once Org type is deleted — this is the other
+          // half of the double-apply hazard, and it is a `full` seat, so the
+          // seat check alone would have drawn a Back button into nothing.
+          onBack={seat === "full" && !programmeOnly ? () => setStep(0) : undefined}
           onNext={() => setStep(2)}
         />
       )}
       {step === 2 && (
-        <SelectStep data={data} setCtx={setCtx} onBack={() => setStep(1)} onNext={() => setStep(3)} />
+        <SelectStep
+          data={data}
+          setCtx={setCtx}
+          onBack={() => setStep(1)}
+          // With step 4 deleted, Select is the end of the wizard and its own
+          // Continue has to finish it, or the last step leads nowhere.
+          onNext={programmeOnly ? () => navigate("/app/alldecks") : () => setStep(3)}
+          isLast={programmeOnly}
+        />
       )}
-      {step === 3 && (
+      {step === 3 && !programmeOnly && (
         <TeamStep
           user={user}
           edition={edition}
@@ -734,11 +806,14 @@ function SelectStep({
   setCtx,
   onBack,
   onNext,
+  isLast = false,
 }: {
   data: ProgramsResponse | null;
   setCtx: (ctx: { programId: string | null; cohortId: string | null }) => void;
   onBack: () => void;
   onNext: () => void;
+  /** S2-SETUP item 7 — Select is the last step once Team is deleted. */
+  isLast?: boolean;
 }) {
   const [sector, setSector] = useState("");
   const [programId, setProgramId] = useState("");
@@ -821,7 +896,9 @@ function SelectStep({
           <ArrowLeft className="h-4 w-4" /> Back
         </Button>
         <Button onClick={onNext}>
-          Continue <ArrowRight className="h-4 w-4" />
+          {/* The wording the deleted step's footer used, so finishing the
+              wizard reads the same as it did before the step went. */}
+          {isLast ? "Confirm & go to dashboard" : "Continue"} <ArrowRight className="h-4 w-4" />
         </Button>
       </div>
     </Card>

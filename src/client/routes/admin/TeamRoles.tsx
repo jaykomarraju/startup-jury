@@ -29,7 +29,12 @@ import {
 import { creatableStaffRoles, roleLabel, type Edition, type Role } from "../../../shared/roles";
 import { PERMISSION_TASKS, PERMISSION_TASK_GROUPS } from "../../../shared/types";
 import { PLANS, PLAN_LABELS, type Plan } from "../../../shared/plans";
-import { setMemberTier } from "../../seatsApi";
+import { getSeats, setMemberTier } from "../../seatsApi";
+import type { SeatsView, SeatTier } from "../../../shared/seats";
+// S2-SETUP — 21-Sep item 7 deletes the Set up wizard's step 4 for the incubator
+// super user, and that step held the ONLY entry to buying a seat. §4 Q84's own
+// answer is this screen, and the step's handoff card already pointed here.
+import { SeatBar, BuySeatsFlow } from "../seats/BuySeats";
 
 /** `users.plan_tier`'s column default (`0052`): what a new member holds. */
 const DEFAULT_TIER: Plan = "standard";
@@ -205,6 +210,8 @@ export function TeamRolesSection() {
 
       <AccountOwnerCard rows={rows} selfId={user?.id} selfRole={user?.role} />
 
+      <SeatsCard edition={edition} role={user?.role} onPurchased={load} />
+
       <MembersCard
         edition={edition}
         rows={rows}
@@ -216,6 +223,88 @@ export function TeamRolesSection() {
 
       <PermissionCards workspace={workspace} selfRole={user?.role} />
     </div>
+  );
+}
+
+// ── 1a. Seats — the wizard's seat bar and its buy flow, re-homed ─────────────
+
+/**
+ * S2-SETUP, 21-Sep item 7. The Set up wizard's step 4 is deleted for the
+ * incubator super user, so the seat bar and **Buy additional seats** land here.
+ *
+ * ── Why this gate, and not none ──────────────────────────────────────────────
+ * Shown to exactly the audience that LOST the control: `incubator` + `superuser`
+ * — the same predicate the deletion uses, so the two cannot drift apart. Every
+ * other role and the whole VC edition still reach the flow through their own
+ * step 4, which §13 requires to render exactly as it does today; giving them a
+ * second entry to the same server route would be a change nobody asked for, and
+ * `e2e/seats.spec.ts` (VC admin) and `e2e/team-roles.spec.ts` are the two specs
+ * that would notice. §4 Q84 wants the move for everybody and calls it small:
+ * widening this is deleting the gate, once the wizard's step 4 goes with it.
+ *
+ * The card fetches nothing for anyone else — `getSeats` is behind the same
+ * predicate, so the admin's console makes no extra request.
+ *
+ * `onPurchased` re-reads the roster: a purchase raises `billing_subscriptions.
+ * seats`, which is what the rows' capacity refusals are measured against.
+ */
+function SeatsCard({
+  edition,
+  role,
+  onPurchased,
+}: {
+  edition: Edition;
+  role: Role | undefined;
+  onPurchased: () => void;
+}) {
+  const shown = edition === "incubator" && role === "superuser";
+  const [view, setView] = useState<SeatsView | null>(null);
+  const [buying, setBuying] = useState<SeatTier | null>(null);
+
+  useEffect(() => {
+    if (!shown) return;
+    let live = true;
+    getSeats()
+      // `SeatBar` indexes a tier map built from `tiers`, so a 200 that is not a
+      // `SeatsView` would throw during render and take the whole section — the
+      // roster, the owner card and the permission grid — down with it. The card
+      // is an addition to this screen and must not be able to do that, so a
+      // response it does not recognise is treated as no response.
+      .then((v) => live && Array.isArray(v?.tiers) && setView(v))
+      .catch(() => {
+        /* the console's other sections do not depend on this one */
+      });
+    return () => {
+      live = false;
+    };
+  }, [shown]);
+
+  if (!shown || !view) return null;
+
+  if (buying) {
+    return (
+      <BuySeatsFlow
+        view={view}
+        start={buying}
+        onSeats={(v) => {
+          setView(v);
+          onPurchased();
+        }}
+        onClose={() => setBuying(null)}
+        backLabel="Back to Team & roles"
+      />
+    );
+  }
+
+  return (
+    <Card>
+      <div className="u-label">Seats</div>
+      <p className="mt-1 max-w-3xl text-[13px] text-fg-muted">
+        Your purchased seats, per plan. Adding a member below takes a seat of that plan — buy more
+        here when a plan is full.
+      </p>
+      <SeatBar view={view} onBuy={setBuying} />
+    </Card>
   );
 }
 

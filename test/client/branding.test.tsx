@@ -258,3 +258,90 @@ describe("the section shell", () => {
     ).toBeInTheDocument();
   });
 });
+
+// ── S2-SETUP · 21-Sep item 7 — the org name's new home ───────────────────────
+
+/**
+ * `branding.orgName` was written ONLY by the Set up wizard's Org type step,
+ * which item 7 deletes for the incubator super user. It has four readers and
+ * all four are user-visible: My Account's Workspace row, the account-invite
+ * email, the founder incomplete-deck email, and every invoice's bill-to name.
+ * With no writer it would not go blank — it would quietly freeze, and a
+ * workspace set up after the deletion would bill as "Incubator workspace".
+ *
+ * `persists the picked accent as a MERGE, so orgName survives` above is the
+ * older, weaker guarantee (the merge does not drop a key nobody edits). These
+ * are the new one: the field reads it, writes it, and cannot blank it.
+ */
+describe("organisation name", () => {
+  it("loads the stored name into the field", async () => {
+    renderSection({ orgName: "T-Hub" });
+    await waitFor(() => expect(screen.getByLabelText("Organisation name")).toHaveValue("T-Hub"));
+  });
+
+  it("is empty, and not dirty, in a workspace that has never set one", async () => {
+    renderSection({});
+    await waitFor(() => expect(screen.getByLabelText("Organisation name")).toHaveValue(""));
+    expect(registered?.dirty).toBe(false);
+  });
+
+  it("edits and persists it — the wizard's only writer, replaced", async () => {
+    renderSection({ orgName: "T-Hub", tokens: { "--gold": "#ABCDEF" } });
+    const field = await screen.findByLabelText("Organisation name");
+    fireEvent.change(field, { target: { value: "Nasscom Foundation" } });
+
+    await waitFor(() => expect(registered?.dirty).toBe(true));
+    await registered!.onSave();
+
+    await waitFor(() => expect(updateBranding).toHaveBeenCalled());
+    const body = vi.mocked(updateBranding).mock.calls[0][0] as Record<string, unknown>;
+    expect(body.orgName).toBe("Nasscom Foundation");
+    // The name is not a theme token and must not have become one.
+    expect(body.tokens).toMatchObject({ "--gold": "#ABCDEF" });
+    expect((body.tokens as Record<string, string>).orgName).toBeUndefined();
+  });
+
+  it("trims, and a name-only edit is enough to make the section dirty", async () => {
+    renderSection({ orgName: "T-Hub" });
+    const field = await screen.findByLabelText("Organisation name");
+    fireEvent.change(field, { target: { value: "  Horizon Ventures  " } });
+    await waitFor(() => expect(registered?.dirty).toBe(true));
+    await registered!.onSave();
+    await waitFor(() => expect(updateBranding).toHaveBeenCalled());
+    expect((vi.mocked(updateBranding).mock.calls[0][0] as Record<string, unknown>).orgName).toBe(
+      "Horizon Ventures",
+    );
+  });
+
+  /**
+   * The failure that would actually reach a customer: the read fails, the field
+   * renders empty, an admin changes a colour, and the save posts `orgName: ""`
+   * over a name four surfaces depend on. `getConfigSummary` is the section's
+   * own read AND the provider's, so failing it fails both, which is the real
+   * shape of an offline or 500 response.
+   */
+  it("a failed read cannot blank a stored name — the key is not posted at all", async () => {
+    registered = null;
+    vi.mocked(getConfigSummary).mockRejectedValue(new Error("offline"));
+    render(
+      <ThemeProvider>
+        <BrandingProvider>
+          <AdminSaveContext.Provider value={{ register: (s) => { registered = s; } }}>
+            <BrandingSection />
+          </AdminSaveContext.Provider>
+        </BrandingProvider>
+      </ThemeProvider>,
+    );
+    const accent = await screen.findByLabelText("Accent hex");
+    expect(screen.getByLabelText("Organisation name")).toHaveValue("");
+
+    fireEvent.change(accent, { target: { value: "#C2185B" } });
+    fireEvent.blur(accent);
+    await waitFor(() => expect(registered?.dirty).toBe(true));
+    await registered!.onSave();
+
+    await waitFor(() => expect(updateBranding).toHaveBeenCalled());
+    const body = vi.mocked(updateBranding).mock.calls[0][0] as Record<string, unknown>;
+    expect("orgName" in body).toBe(false);
+  });
+});

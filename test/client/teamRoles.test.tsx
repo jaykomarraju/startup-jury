@@ -124,6 +124,7 @@ function mockApi(
       return json(gridPayload(edition));
     }
     if (url === "/api/users") return json({ users });
+    if (url === "/api/seats") return json(seatsPayload());
     if (url === "/api/config/summary") return json({ plan: "pro" });
     if (url.includes("/reset-password") || url.includes("/resend-invite")) {
       return json({ ok: true, tempPassword: "aisj-abc123", invite: { delivered: false, status: "skipped" } });
@@ -131,6 +132,42 @@ function mockApi(
     return json({ ok: true });
   }) as unknown as typeof fetch;
   return sent;
+}
+
+/**
+ * S2-SETUP — what `GET /api/seats` sends. Kept minimal: the card renders the
+ * seat bar and opens the shared buy flow, both of which are already pinned in
+ * full by `setupTeam.test.tsx`. What is tested HERE is that the card exists for
+ * the right principal and for nobody else.
+ */
+function seatsPayload() {
+  const tier = (t: string, used: number, capacity: number, price: boolean) => ({
+    tier: t,
+    label: t === "standard" ? "Standard" : t === "pro" ? "Pro" : "Premium",
+    capacity,
+    used,
+    available: Math.max(0, capacity - used),
+    over: Math.max(0, used - capacity),
+    price: price
+      ? { tier: t, code: t, name: t, currency: "INR", amountMinor: 199_900, period: "month" }
+      : null,
+  });
+  return {
+    edition: "incubator",
+    tiers: [tier("standard", 0, 2, true), tier("pro", 1, 2, true), tier("premium", 1, 1, false)],
+    capacity: 5,
+    used: 2,
+    left: 3,
+    over: 0,
+    purchasedSeats: 5,
+    members: [],
+    superuser: null,
+    roles: [{ value: "admin", label: "Admin" }],
+    currency: "INR",
+    tax: { ratePct: 18, registration: null, inclusive: false, internationalNotice: true },
+    catalogue: { version: 3, publishedAt: "2026-09-01" },
+    paymentConfigured: false,
+  };
 }
 
 function json(body: unknown) {
@@ -607,5 +644,81 @@ describe("user access (F0021 / F0124 — reset only)", () => {
     expect(screen.getByText("Your account")).toBeInTheDocument();
     expect(screen.getByText("Account owner")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Reset password/ })).toBeNull();
+  });
+});
+
+// ── Seats — S2-SETUP · 21-Sep item 7 ────────────────────────────────────────
+
+/**
+ * Item 7 deletes the Set up wizard's step 4 for the incubator super user, and
+ * `setup/TeamStep.tsx` was the ONLY importer of `purchaseSeats`. §4 Q84 names
+ * this screen as the destination, so the seat bar and the Buy-additional-seats
+ * flow are mounted here — for the principal that lost them, and no one else.
+ *
+ * The flow's own three screens are pinned in `setupTeam.test.tsx` and are not
+ * re-asserted: this is one component rendered in two places, not a copy. What
+ * these tests exist for is the GATE, which is the part that can silently widen.
+ */
+describe("the re-homed seat card", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("the incubator super user gets the seat bar and can open the buy flow", async () => {
+    mockApi("incubator", [member()]);
+    renderSection(<TeamRolesSection />, "incubator", "superuser");
+
+    const bar = await screen.findByTestId("seat-bar");
+    expect(bar).toHaveTextContent("2 total users · 3 seats left for nomination");
+    expect(within(bar).getByTestId("seat-tier-pro")).toHaveTextContent("Pro 1 / 2");
+
+    fireEvent.click(within(bar).getByRole("button", { name: "Buy a Pro seat" }));
+    expect(await screen.findByRole("heading", { name: "Buy additional seats" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Pro seats")).toHaveValue("1");
+
+    // Back returns to the screen, not to a blank card.
+    fireEvent.click(screen.getByRole("button", { name: /^Back$/ }));
+    expect(await screen.findByTestId("seat-bar")).toBeInTheDocument();
+  });
+
+  /**
+   * The negative controls. Every one of these principals still reaches the flow
+   * through their own step 4, which §13 requires to render exactly as it does
+   * today — a second entry point is a change nobody asked for. Widen the gate
+   * in `SeatsCard` and all four of these fail.
+   */
+  it.each([
+    ["an incubator admin", "incubator" as Edition, "admin" as Role],
+    ["a VC super user", "vc" as Edition, "superuser" as Role],
+    ["a VC admin", "vc" as Edition, "admin" as Role],
+  ])("%s does not get it — and makes no seats request", async (_label, edition, role) => {
+    mockApi(edition, [member()]);
+    renderSection(<TeamRolesSection />, edition, role);
+
+    // Gate on a POPULATED element that proves the section finished rendering,
+    // never on the absence alone — which a still-loading screen also satisfies.
+    await screen.findByTestId("permission-grid");
+    expect(screen.queryByTestId("seat-bar")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Buy a .* seat/ })).toBeNull();
+
+    const seatCalls = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.filter(([u]) => String(u) === "/api/seats");
+    expect(seatCalls).toHaveLength(0);
+  });
+
+  it("survives a /api/seats response that is not a SeatsView", async () => {
+    mockApi("incubator", [member()]);
+    // The shape a proxy or an error page can return with a 200.
+    const inner = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input) === "/api/seats"
+        ? json({ ok: true })
+        : (inner as typeof fetch)(input, init),
+    ) as unknown as typeof fetch;
+
+    renderSection(<TeamRolesSection />, "incubator", "superuser");
+    // The rest of the section still renders — the card is an addition to this
+    // screen and must never be able to take the roster or the grid down.
+    expect(await screen.findByTestId("permission-grid")).toBeInTheDocument();
+    expect(screen.queryByTestId("seat-bar")).toBeNull();
   });
 });
