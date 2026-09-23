@@ -113,6 +113,9 @@ const DECK_DERIVED =
   // V3-DASH — the row's `.ad-tag.q` "Queried" tag: a clarification letter has
   // been raised on this deck at least once.
   "(SELECT COUNT(*) FROM queries qq WHERE qq.deck_id = d.id) AS query_count, " +
+  // 21-Sep item 6 — the "Contact Details Edited" chip's source. The most recent
+  // contact correction on this deck, written by `PATCH /api/decks/:id`.
+  "(SELECT MAX(pe.created_at) FROM pipeline_events pe WHERE pe.deck_id = d.id AND pe.action = 'edit_contact') AS contact_edited_at, " +
   // W7-E — every evaluator on the deck (migration 0058), first assignee included.
   "(SELECT GROUP_CONCAT(da.evaluator_id, '||') FROM deck_assignments da WHERE da.deck_id = d.id) AS assignee_ids, " +
   // Issue 27/29 — the intro call's schedule + status.
@@ -154,6 +157,7 @@ interface DeckRow {
   created_at?: string | null;
   updated_at?: string | null;
   last_event_at?: string | null;
+  contact_edited_at?: string | null;
   query_count?: number | null;
   assigned_to?: string | null;
   assigned_to_name?: string | null;
@@ -357,6 +361,7 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: Shortli
     // V3-DASH — the Dashboard sorts by this and prints it as "· 2h ago".
     lastActivityAt: latestTimestamp(row.last_event_at, row.updated_at, row.created_at),
     queried: (row.query_count ?? 0) > 0,
+    contactEditedAt: row.contact_edited_at ?? undefined,
     assignedTo: row.assigned_to ?? undefined,
     assignedToName: row.assigned_to_name ?? undefined,
     assigneeIds: [...new Set([...(row.assigned_to ? [row.assigned_to] : []), ...splitList(row.assignee_ids)])],
@@ -738,6 +743,12 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
     programId: "program_id",
     cohortId: "cohort_id",
   };
+  // 21-Sep item 6 — the four fields the Dashboard's inline edit exposes, which
+  // are what "Contact Details Edited" is about. A change to `sector` or a
+  // programme re-assignment is an edit too, but it is not a CONTACT edit and
+  // must not claim to be one.
+  const CONTACT_FIELDS = new Set(["founder", "founderEmail", "founderPhone", "city"]);
+  const contactEdited: string[] = [];
   for (const [field, column] of Object.entries(columns)) {
     const value = text(body[field]);
     if (value === undefined) continue;
@@ -746,6 +757,7 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
     sets.push(`${column} = ?`);
     binds.push(value);
     if (field === "name") sets.push("name_auto = 0");
+    if (CONTACT_FIELDS.has(field)) contactEdited.push(field);
   }
   if (sets.length === 0) return c.json({ error: "nothing_to_update" }, 400);
 
@@ -758,7 +770,7 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
   // Re-derive what is still missing so the deck's Incomplete state follows the
   // correction instead of going stale.
   const row = await c.env.DB.prepare(
-    "SELECT founder, founder_email, founder_phone, city, sector, ai_complete, complete FROM decks WHERE id = ?",
+    "SELECT founder, founder_email, founder_phone, city, sector, status, ai_complete, complete FROM decks WHERE id = ?",
   )
     .bind(id)
     .first<{
@@ -767,6 +779,7 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
       founder_phone: string | null;
       city: string | null;
       sector: string | null;
+      status: string | null;
       ai_complete: number | null;
       complete: number | null;
     }>();
@@ -805,6 +818,38 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
         : "UPDATE decks SET missing_fields = ? WHERE id = ?",
     )
       .bind(missing.length > 0 ? missing.join(",") : null, id)
+      .run();
+  }
+
+  // ── 21-Sep item 6 · "Contact Details Edited" ────────────────────────────
+  //
+  // The client's row asks the Status cell to say this after an Edit. It could
+  // not: this handler UPDATEd the deck and wrote NO `pipeline_events` row, so
+  // there was no record to render and the chip had no source. One event per
+  // contact edit fixes both halves — the chip, and the deck's own history,
+  // which until now showed the correction as if it had never happened.
+  //
+  // `from_stage === to_stage` deliberately: an edit is not a transition and
+  // must not read as one. The exit-reason columns select on
+  // `to_stage IN ('rejected','archived')`, so this never pollutes them;
+  // `last_event_at` does move, which is right — an edit IS activity.
+  if (contactEdited.length > 0 && row) {
+    // `decks.status` is the PIPELINE stage. `decks.stage` is the startup's
+    // funding stage ("Seed", "Pre-seed") and is not this at all.
+    const stage = row.status ?? null;
+    await c.env.DB.prepare(
+      "INSERT INTO pipeline_events (id, deck_id, actor_id, from_stage, to_stage, action, note, created_at) " +
+        "VALUES (?, ?, ?, ?, ?, 'edit_contact', ?, ?)",
+    )
+      .bind(
+        `${id}_evt_${crypto.randomUUID()}`,
+        id,
+        c.var.user.id,
+        stage,
+        stage ?? "",
+        contactEdited.sort().join(","),
+        new Date().toISOString(),
+      )
       .run();
   }
 

@@ -95,6 +95,64 @@ describe("incubator role permissions", () => {
     });
   });
 
+  /**
+   * 21-Sep item 2 — Archive is one of the four row actions the client asked for
+   * on the Dashboard, and that screen shows working stages. It was
+   * `rejected -> archived` alone, so a one-click Archive from a dashboard row
+   * 403'd and the option shipped disabled. Widened 2026-09-23.
+   */
+  it("archives from any working stage, not just Rejected", () => {
+    for (const from of [
+      "uploaded",
+      "pending_ai",
+      "manual_review",
+      "incomplete",
+      "ai_evaluated",
+      "assigned",
+      "jury_evaluation",
+      "shortlisted",
+      "intro",
+      "signup",
+      "rejected",
+    ]) {
+      expect(performAction("incubator", from, "archive", "superuser"), from).toEqual({
+        ok: true,
+        to: "archived",
+      });
+    }
+    // Restore is the way back out of all of them — nothing is stranded.
+    expect(performAction("incubator", "archived", "restore", "superuser")).toEqual({
+      ok: true,
+      to: "ai_evaluated",
+    });
+  });
+
+  it("widening Archive did not widen WHO may do it, or reach the terminal stage", () => {
+    // The roles are the original entry's, unchanged.
+    for (const role of ["program_manager", "admin", "superuser"] as const) {
+      expect(performAction("incubator", "ai_evaluated", "archive", role), role).toEqual({
+        ok: true,
+        to: "archived",
+      });
+    }
+    for (const role of ["program_associate", "jury", "founder"] as const) {
+      expect(performAction("incubator", "ai_evaluated", "archive", role), role).toEqual({
+        ok: false,
+        error: "forbidden",
+      });
+    }
+    // `onboard_ready` is terminal — the deck has been taken on — and `archived`
+    // cannot archive itself.
+    expect(performAction("incubator", "onboard_ready", "archive", "superuser")).toEqual({
+      ok: false,
+      error: "terminal",
+    });
+    expect(performAction("incubator", "archived", "archive", "superuser")).toEqual({
+      ok: false,
+      error: "unknown_action",
+    });
+  });
+
   it("unknown actions and terminal stages are rejected", () => {
     expect(performAction("incubator", "shortlisted", "nope", "superuser")).toEqual({
       ok: false,

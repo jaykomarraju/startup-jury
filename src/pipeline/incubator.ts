@@ -131,13 +131,37 @@ export const incubatorPipeline: PipelineConfig = {
       label: "Complete signup",
       roles: ["founder", "admin", "superuser"],
     },
-    {
-      from: "rejected",
+    // 21-Sep item 2 — Archive is one of the four row actions the client asked
+    // for on the Dashboard, and that screen shows working stages, not rejected
+    // ones. It was `rejected -> archived` alone, so a one-click Archive from a
+    // dashboard row was a 403 and the option shipped disabled. Widened here,
+    // one entry per stage a dashboard row can hold.
+    //
+    // `onboard_ready` (terminal — the deck has been taken on) and `archived`
+    // itself are deliberately absent; `rejected` keeps the original entry. The
+    // way out of all of them is the existing `archived -> ai_evaluated`
+    // Restore, so nothing archived is stranded.
+    ...(
+      [
+        "uploaded",
+        "pending_ai",
+        "manual_review",
+        "incomplete",
+        "ai_evaluated",
+        "assigned",
+        "jury_evaluation",
+        "shortlisted",
+        "intro",
+        "signup",
+        "rejected",
+      ] as const
+    ).map((from) => ({
+      from,
       to: "archived",
       action: "archive",
       label: "Archive",
-      roles: ["program_manager", "admin", "superuser"],
-    },
+      roles: ["program_manager", "admin", "superuser"] as const,
+    })),
     // Aug-2026 issue 31 — "Restore any of them back into the workflow." A
     // restored startup re-enters at the AI gate, ready to be assigned again.
     {

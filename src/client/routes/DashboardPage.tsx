@@ -1338,15 +1338,33 @@ export function DashboardPage() {
    * answered the option names the Query screen, which is where a clarification
    * letter is actually composed and reviewed before it is sent.
    */
-  function v3SendToQueryReason(deck: DeckView): string {
+  /**
+   * Item 5 — may this row be sent to Query, and if not, why not?
+   *
+   * The mirror of `v3SendToAssign`, and guarded NAVIGATION for the same reason:
+   * the client's own row reads "should GO TO QUERY screen WHEN Send to Query is
+   * clicked", exactly as the Assign row reads "GO TO ASSIGN screen". It is not
+   * the prototype's `d.queried = true` + "Query email sent" toast, which here
+   * would mean emailing a founder a letter nobody composed. The letter is
+   * composed on the Query screen, which has read `state.deckIds` since this
+   * wave — so the click carries the selection and the operator sends from
+   * there. Shipped disabled at first on a question this sentence had already
+   * answered; corrected 2026-09-23.
+   */
+  function v3SendToQuery(deck: DeckView): { ok: boolean; reason: string } {
     const route = deckListRoute(deck, edition, { queried: deck.queried ?? false });
     // The GUARD, and it is real: a row the partition does not route to Query
-    // cannot be sent there whatever the menu offers.
-    if (route !== "query") return "not on the Query list";
-    // The BLOCK. The guard passed; the ACTION is what waits on the client.
-    // Answering Q112 option (i) turns this line into the same guarded
-    // navigation `__assign` already does — the predicate is already here.
-    return "compose it on the Query screen";
+    // cannot be sent there whatever the menu offers. Same function the server
+    // partitions `GET /api/decks?list=` with, never a second predicate.
+    if (route === "query") return { ok: true, reason: "" };
+    // "Already queried" only where that is the OPERATIVE cause — i.e. the row
+    // would route to Query but for the flag. A deck that is off the list
+    // because it is assigned, and happens to have been queried weeks ago, is
+    // not kept off it BY the query, and saying so would name the wrong reason.
+    if (deck.queried === true && deckListRoute(deck, edition, { queried: false }) === "query") {
+      return { ok: false, reason: "already queried" };
+    }
+    return { ok: false, reason: "not on the Query list" };
   }
 
   /** `<select class="ad-act"><option value="">Actions ▾</option>…` */
@@ -1367,7 +1385,7 @@ export function DashboardPage() {
       (a) => !V3_EXCLUDED_ACTIONS.has(a.action) && a.action !== "archive",
     );
     const toAssign = v3SendToAssign(deck);
-    const queryReason = v3SendToQueryReason(deck);
+    const toQuery = v3SendToQuery(deck);
     const archive = (deck.actions ?? []).find((a) => a.action === "archive");
     return (
       <td className={td}>
@@ -1397,6 +1415,13 @@ export function DashboardPage() {
               if (toAssign.ok) navigate("/app/assign", { state: { deckIds: [deck.id] } });
               return;
             }
+            if (value === "__query") {
+              // The same shape, the other arm of the partition. `QueryPage`
+              // resolves the handed id against `?list=query` before ticking
+              // anything, so this carries a suggestion, not an instruction.
+              if (toQuery.ok) navigate("/app/query", { state: { deckIds: [deck.id] } });
+              return;
+            }
             const action = actions.find((a) => a.action === value) ?? (value === "archive" ? archive : undefined);
             if (action) void runRowAction(deck, action);
           }}
@@ -1405,11 +1430,8 @@ export function DashboardPage() {
           <option value="__assign" disabled={!toAssign.ok}>
             {toAssign.ok ? "Send to Assign" : `Send to Assign — ${toAssign.reason}`}
           </option>
-          {/* Blocked on a client answer (§12): a one-click query emails the
-              founder. The reason distinguishes the GUARD (this row does not
-              belong on Query) from the BLOCK (it does, but not from here). */}
-          <option value="__query" disabled>
-            {`Send to Query — ${queryReason}`}
+          <option value="__query" disabled={!toQuery.ok}>
+            {toQuery.ok ? "Send to Query" : `Send to Query — ${toQuery.reason}`}
           </option>
           {actions.map((a) => (
             <option key={a.action} value={a.action}>
@@ -1717,6 +1739,14 @@ export function DashboardPage() {
               {deck.queried && (
                 <span className="ml-1.5 inline-block rounded-full bg-blue-lt px-[7px] py-px text-[9px] font-bold text-blue-dk">
                   Queried
+                </span>
+              )}
+              {/* The fourth post-action word. It had no source until the PATCH
+                  handler began recording an `edit_contact` event — the row
+                  simply never said an edit had happened. */}
+              {deck.contactEditedAt && (
+                <span className="ml-1.5 inline-block rounded-full bg-blue-lt px-[7px] py-px text-[9px] font-bold text-blue-dk">
+                  Contact Details Edited
                 </span>
               )}
               {isArchivedDeck(deck) && (

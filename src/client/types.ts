@@ -123,6 +123,11 @@ export interface DeckView {
   lastActivityAt?: string;
   /** V3-DASH — a clarification letter has been raised on this deck (`.ad-tag.q`). */
   queried?: boolean;
+  /**
+   * 21-Sep item 6 — when this deck's contact details were last corrected, from
+   * the `edit_contact` pipeline event. Absent means never.
+   */
+  contactEditedAt?: string;
   /** Transitions the current user may perform from this deck's stage. */
   actions?: DeckAction[];
 }

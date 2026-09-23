@@ -259,3 +259,73 @@ describe("the API exposes the new column", () => {
     expect(status("ac_v_ok")).toBe("aieval");
   });
 });
+
+/**
+ * 21-Sep item 6 — "Contact Details Edited", the fourth post-action Status word.
+ *
+ * It could not be rendered: `PATCH /api/decks/:id` updated the deck and wrote
+ * NO `pipeline_events` row, so nothing recorded that an edit had happened and
+ * the chip had no source. That is now one event per contact correction, which
+ * also repairs the deck's own history — until now a correction was invisible
+ * there too.
+ */
+describe("a contact correction is recorded, not just applied", () => {
+  const events = (id: string) =>
+    env.DB.prepare(
+      "SELECT action, from_stage, to_stage, note FROM pipeline_events WHERE deck_id = ? AND action = 'edit_contact'",
+    )
+      .bind(id)
+      .all<{ action: string; from_stage: string | null; to_stage: string; note: string | null }>();
+
+  it("writes one edit_contact event naming the fields that changed", async () => {
+    const su = await login(SUPER);
+    await seedDeck("ce_write", { status: "incomplete" });
+    expect((await events("ce_write")).results).toHaveLength(0);
+
+    const res = await patch("ce_write", su, { founderPhone: "+91 90000 00001", city: "Pune" });
+    expect(res.status).toBe(200);
+
+    const rows = (await events("ce_write")).results;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].note).toBe("city,founderPhone");
+    // An edit is NOT a transition and must not read as one.
+    expect(rows[0].from_stage).toBe("incomplete");
+    expect(rows[0].to_stage).toBe("incomplete");
+    // …and the deck did not move.
+    expect((await marks("ce_write"))!.status).toBe("incomplete");
+  });
+
+  it("surfaces it as contactEditedAt on the deck view", async () => {
+    const su = await login(SUPER);
+    await seedDeck("ce_view", { status: "incomplete" });
+
+    const before = await SELF.fetch(`${BASE}/api/decks/ce_view`, { headers: { cookie: su } });
+    expect(((await before.json()) as { deck: { contactEditedAt?: string } }).deck.contactEditedAt).toBeUndefined();
+
+    const res = await patch("ce_view", su, { founderPhone: "+91 90000 00002" });
+    const body = (await res.json()) as { deck: { contactEditedAt?: string } };
+    expect(body.deck.contactEditedAt).toEqual(expect.any(String));
+  });
+
+  it("a non-contact edit is not a contact edit", async () => {
+    const su = await login(SUPER);
+    await seedDeck("ce_other", { founderPhone: "+91 90000 00003", city: "Pune", status: "ai_evaluated" });
+    // `sector` is an edit, and a real one — but it is not a CONTACT detail, so
+    // claiming "Contact Details Edited" for it would name the wrong change.
+    const res = await patch("ce_other", su, { sector: "Climatetech" });
+    expect(res.status).toBe(200);
+    expect((await events("ce_other")).results).toHaveLength(0);
+  });
+
+  it("does not disturb the exit-reason columns, which select on to_stage", async () => {
+    const su = await login(SUPER);
+    await seedDeck("ce_exit", { status: "incomplete" });
+    await patch("ce_exit", su, { founderPhone: "+91 90000 00004" });
+    // `exit_*` reads the latest event with to_stage IN ('rejected','archived').
+    // An edit_contact row carries the deck's own stage, so it can never win.
+    const res = await SELF.fetch(`${BASE}/api/decks/ce_exit`, { headers: { cookie: su } });
+    const body = (await res.json()) as { deck: { exitAt?: string; exitAction?: string } };
+    expect(body.deck.exitAt).toBeUndefined();
+    expect(body.deck.exitAction).toBeUndefined();
+  });
+});

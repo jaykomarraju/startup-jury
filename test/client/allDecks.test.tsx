@@ -989,7 +989,14 @@ describe("V3 — the roles whose prototype was NOT reshared keep their screen", 
   // letter nobody composed (§12). The two reasons are different words on
   // purpose — one says the row does not belong on Query, the other says it does
   // and this is not where you send it from.
-  it("Send to Query is never armed, and says which of the two reasons applies", async () => {
+  /**
+   * Send to Query shipped DISABLED on 21-Sep, blocked on a question the
+   * client's own row had already answered — "should GO TO QUERY screen when
+   * Send to Query is clicked", the same sentence as the Assign row, which was
+   * built as guarded navigation. Corrected 2026-09-23; this test is the old
+   * one inverted, so the block cannot come back unnoticed.
+   */
+  it("Send to Query carries the row to the Query screen, and says why when it cannot", async () => {
     vi.mocked(api.listDecks).mockResolvedValue({
       decks: V3_DECKS.map((d) =>
         d.id === "d_fin" ? { ...d, aiComplete: true, complete: true, missingFields: ["founderEmail" as const] } : d,
@@ -1003,17 +1010,29 @@ describe("V3 — the roles whose prototype was NOT reshared keep their screen", 
         o.textContent?.startsWith("Send to Query"),
       )!;
 
-    // FinStack is now routed to Query — so the guard passes and the BLOCK is
-    // what is left.
-    expect(optionOf("FinStack").textContent).toBe("Send to Query — compose it on the Query screen");
-    expect(optionOf("FinStack")).toBeDisabled();
-    // WealthOS is at Pending AI: nothing to ask, so it is the guard that speaks.
+    // FinStack is routed to Query, so the option is armed and unqualified.
+    expect(optionOf("FinStack").textContent).toBe("Send to Query");
+    expect(optionOf("FinStack")).toBeEnabled();
+    // WealthOS is at Pending AI: nothing to ask, so the guard speaks.
     expect(optionOf("WealthOS").textContent).toBe("Send to Query — not on the Query list");
     expect(optionOf("WealthOS")).toBeDisabled();
 
     fireEvent.change(screen.getByRole("combobox", { name: "Actions for FinStack" }), {
       target: { value: "__query" },
     });
+    // Guarded NAVIGATION — it carries the selection, it does not email anyone.
+    expect(screen.getByText("at /app/query")).toBeInTheDocument();
+    expect(seen.state).toEqual({ deckIds: ["d_fin"] });
+  });
+
+  it("a row the Query list will not hold cannot be navigated there", async () => {
+    const seen = mountWithRoutes();
+    await screen.findByRole("button", { name: "WealthOS" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Actions for WealthOS" }), {
+      target: { value: "__query" },
+    });
+    // The option is disabled, and the handler re-checks anyway: a disabled
+    // option is a presentation fact and the rule is not.
     expect(screen.queryByText("at /app/query")).toBeNull();
     expect(seen.state).toBeNull();
   });
