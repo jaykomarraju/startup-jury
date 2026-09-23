@@ -11,7 +11,6 @@ import {
   v3StatusKey,
   V3_STATUS_LABELS,
   vcFunnelLabel,
-  isArchivedDeck,
   latestTimestamp,
   ASSIGNED_TILE_RETAINED_PENDING_Q7,
   type IcStatDeck,
@@ -297,40 +296,58 @@ describe("V3 superuser Dashboard stat boxes", () => {
     });
   });
 
-  it("counts an archived deck ONLY under Archived", () => {
+  /**
+   * 2026-09-23 — the client: "archive is a state, not a move." Archiving used
+   * to drop the row out of Uploaded entirely, so the "Archived" status their
+   * own row asks for was a status no row ever showed again. These three tests
+   * are the old ones inverted; the relocation cannot come back unnoticed.
+   */
+  it("keeps an archived deck in Uploaded, and counts it under Archived only", () => {
     const by = Object.fromEntries(v3DeckStats(V3).map((s) => [s.key, s.value]));
     expect(by.archived).toBe(3);
-    // Uploaded excludes them: 9 decks, 6 live.
-    expect(by.all).toBe(6);
-    // The archived decks carry an AI score and one is at a shortlist stage in
-    // no version of this data — but even scored, they are absent here.
+    // Uploaded holds every deck now — 9, not the 6 live ones.
+    expect(by.all).toBe(9);
+    // The WORKING tiles still exclude them: an archived deck's state is
+    // Archived, and letting it also sit under AI Evaluated would double-count
+    // it and make the six boxes overlap.
     expect(by.aieval).toBe(2);
     expect(by.noteval).toBe(3);
     expect(by.incomplete).toBe(1);
     expect(by.shortlisted).toBe(1);
-    // The three states partition the live decks, exactly as `adData[].state` does.
-    expect(by.aieval + by.noteval + by.incomplete).toBe(by.all);
+    // So the four states — three live plus Archived — partition Uploaded.
+    expect(by.aieval + by.noteval + by.incomplete + by.archived).toBe(by.all);
   });
 
-  it("THE DENOMINATOR: every bar divides by the live count, not the deck count", () => {
+  it("THE DENOMINATOR: every bar divides by Uploaded, which now includes archived", () => {
     const by = Object.fromEntries(v3DeckStats(V3).map((s) => [s.key, s.progress]));
-    // 6 live decks. 2/6 = 33%, not 2/9 = 22%.
-    expect(by.aieval).toBe(33);
-    expect(by.noteval).toBe(50); // 3/6, not 3/9 = 33
-    expect(by.incomplete).toBe(17); // 1/6, not 1/9 = 11
-    expect(by.shortlisted).toBe(17); // 1/6, not 1/9 = 11
+    // 9 decks in Uploaded. 2/9 = 22%, not 2/6 = 33%.
+    expect(by.aieval).toBe(22);
+    expect(by.noteval).toBe(33); // 3/9
+    expect(by.incomplete).toBe(11); // 1/9
+    expect(by.shortlisted).toBe(11); // 1/9
     // Uploaded's bar is pinned full, as `(k==='all')?100` pins it.
     expect(by.all).toBe(100);
-    // Archived divides by the LIVE count too — the prototype applies the same
-    // `c[k]/c.all` to it, so 3 archived against 6 live is 50%.
-    expect(by.archived).toBe(50);
+    expect(by.archived).toBe(33); // 3/9
+    // The base is the All tile itself — the invariant that keeps a bar from
+    // disagreeing with the rows its view draws.
+    const all = v3DeckStats(V3).find((t) => t.key === "all")!.value;
+    expect(all).toBe(V3.length);
   });
 
-  it("an all-archived workspace reports zeroes rather than dividing by zero", () => {
+  it("an all-archived workspace reports every deck, not an empty screen", () => {
     const stats = v3DeckStats([{ statusId: "archived" }, { statusId: "archived" }]);
     const by = Object.fromEntries(stats.map((s) => [s.key, s]));
-    expect(by.all.value).toBe(0);
+    // This is the case the old behaviour made unreachable: archive everything
+    // and Uploaded read 0 with the rows nowhere to be seen.
+    expect(by.all.value).toBe(2);
     expect(by.archived.value).toBe(2);
+    expect(by.archived.progress).toBe(100);
+    expect(by.aieval.progress).toBe(0);
+  });
+
+  it("still does not divide by zero on an empty workspace", () => {
+    const by = Object.fromEntries(v3DeckStats([]).map((s) => [s.key, s]));
+    expect(by.all.value).toBe(0);
     expect(by.archived.progress).toBe(0);
     expect(by.aieval.progress).toBe(0);
   });
@@ -462,10 +479,12 @@ describe("V3 superuser Dashboard stat boxes", () => {
     });
   });
 
-  it("matchesV3Stat is the table filter: archived decks appear in ONE view", () => {
+  it("matchesV3Stat is the table filter: an archived deck stays in Uploaded", () => {
     const archived: StatDeck = { statusId: "archived", aiScore: 5.2 };
     expect(matchesV3Stat(archived, "archived")).toBe(true);
-    for (const key of ["all", "aieval", "noteval", "incomplete", "shortlisted"] as const) {
+    // The whole point of "a state, not a move": the row is still in the list.
+    expect(matchesV3Stat(archived, "all")).toBe(true);
+    for (const key of ["aieval", "noteval", "incomplete", "shortlisted"] as const) {
       expect(matchesV3Stat(archived, key), `archived must not show under ${key}`).toBe(false);
     }
     // …and a live deck never appears under Archived.
@@ -477,7 +496,7 @@ describe("V3 superuser Dashboard stat boxes", () => {
     for (const tile of v3DeckStats(V3)) {
       expect(V3.filter((d) => matchesV3Stat(d, tile.key)).length, `${tile.key} count vs rows`).toBe(tile.value);
     }
-    expect(V3.filter((d) => matchesV3Stat(d, "all")).length).toBe(V3.filter((d) => !isArchivedDeck(d)).length);
+    expect(V3.filter((d) => matchesV3Stat(d, "all")).length).toBe(V3.length);
   });
 
   it("Q7 — the Assigned tile is RETAINED until the client confirms its removal", () => {

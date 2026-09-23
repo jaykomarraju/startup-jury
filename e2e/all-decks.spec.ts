@@ -44,7 +44,7 @@ async function tileValue(page: Page, label: string): Promise<number> {
 const V3_DEFAULT = ["STARTUP NAME", "FOUNDER", "PHONE", "EMAIL", "CITY", "AI SCORE", "STATUS", "ACTIONS"];
 const V3_SHORTLISTED = ["STARTUP NAME", "AI SCORE", "AVG. SCORE", "SIGNUP STATUS", "ACTIONS"];
 
-test("superuser: the Dashboard's two shapes, the archived exclusion, and the report", async ({
+test("superuser: the Dashboard's two shapes, archived as a STATE, and the report", async ({
   page,
 }) => {
   test.setTimeout(90_000);
@@ -74,16 +74,25 @@ test("superuser: the Dashboard's two shapes, the archived exclusion, and the rep
     "Shortlisted",
   ]);
 
-  // THE DENOMINATOR. Data-independent, so a concurrent spec cannot move it: an
-  // archived deck is excluded from every view but Archived, so no row in the
-  // Uploaded view may carry the Archived tag — and every row in the Archived
-  // view must.
+  // THE DENOMINATOR. Data-independent, so a concurrent spec cannot move it.
+  //
+  // 2026-09-23 — the client: "archive is a state, not a move." An archived deck
+  // STAYS in the Uploaded view wearing its Archived tag; it used to vanish from
+  // every view but Archived, which made the "Archived" status their own row
+  // asks for a status no row ever showed again. So the Uploaded view carries
+  // exactly as many Archived tags as the tile counts, and the Archived view
+  // carries the same number — the tag no longer distinguishes the two views,
+  // the row COUNT does.
   const tbody = page.locator("table[data-shape] tbody");
-  await expect(tbody.getByText("Archived", { exact: true })).toHaveCount(0);
+  const archivedCount = await tileValue(page, "Archived");
+  const uploadedCount = await tileValue(page, "Uploaded");
+  await expect(tbody.getByText("Archived", { exact: true })).toHaveCount(archivedCount);
+  await expect(tbody.locator("tr")).toHaveCount(uploadedCount);
+
   await tile(page, "Archived").click();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Archived");
   await expect.poll(() => headers(page)).toEqual(V3_DEFAULT);
-  const archivedCount = await tileValue(page, "Archived");
+  await expect(tbody.locator("tr")).toHaveCount(archivedCount);
   if (archivedCount > 0) {
     await expect(tbody.getByText("Archived", { exact: true })).toHaveCount(archivedCount);
   }

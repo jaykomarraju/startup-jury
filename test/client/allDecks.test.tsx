@@ -633,25 +633,35 @@ describe("V3 — the superuser Dashboard", () => {
     expect(screen.queryByText(/shortlist rate/)).toBeNull();
   });
 
-  it("THE DENOMINATOR: the archived deck is counted once and excluded everywhere else", async () => {
+  /**
+   * 2026-09-23 — the client: "archive is a state, not a move." The archived row
+   * used to leave Uploaded the moment it was archived, so the "Archived" status
+   * their own row asks for was one no row ever showed again. Inverted here.
+   */
+  it("THE DENOMINATOR: the archived deck stays in Uploaded and is counted once", async () => {
     mount("superuser", "u_super");
     await screen.findByRole("button", { name: "FinStack" });
 
-    // Seven decks in the payload, ONE archived.
+    // Seven decks in the payload, ONE archived — and Uploaded holds all seven.
     expect(Object.fromEntries(v3Tiles().map((t) => [t.label, t.value]))).toEqual({
-      Uploaded: "6", // not 7
-      "AI Evaluated": "2", // FinStack + GreenRoute — NOT the archived DormantAI, which is scored
+      Uploaded: "7",
+      // Still counted ONCE: its state is Archived, so the scored DormantAI does
+      // not also swell AI Evaluated.
+      "AI Evaluated": "2",
       "Not AI Evaluated": "3",
       Incomplete: "1",
       Archived: "1",
       Assigned: "0",
       Shortlisted: "1",
     });
-    // The default view draws the six live decks and not the archived one.
-    expect(screen.getByText(/^Recent activity · 6 decks/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "DormantAI" })).toBeNull();
+    // The default view draws every deck, the archived one included…
+    expect(screen.getByText(/^Recent activity · 7 decks/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "DormantAI" })).toBeInTheDocument();
+    // …and it says so, which is the whole point of the change.
+    const dormant = screen.getByRole("button", { name: "DormantAI" }).closest("tr")!;
+    expect(within(dormant).getByText("Archived")).toBeInTheDocument();
 
-    // Archived is the one view it appears in — and the only row there.
+    // The Archived tile still narrows to it alone.
     fireEvent.click(tile("Archived"));
     expect(await screen.findByRole("button", { name: "DormantAI" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "FinStack" })).toBeNull();
@@ -765,8 +775,18 @@ describe("V3 — the superuser Dashboard", () => {
       (tr) => tr.querySelector("button")?.textContent,
     );
     // GreenRoute 1h · FinStack 2h · PayRoute 26h · WealthOS 50h · TaxPilot 74h
-    // · CreditBridge 98h. The payload's own order is none of these.
-    expect(names).toEqual(["GreenRoute", "FinStack", "PayRoute", "WealthOS", "TaxPilot", "CreditBridge"]);
+    // · CreditBridge 98h, and DormantAI last. The payload's own order is none
+    // of these. DormantAI is archived and, since archiving became a state
+    // rather than a move (2026-09-23), it sorts here like any other row.
+    expect(names).toEqual([
+      "GreenRoute",
+      "FinStack",
+      "PayRoute",
+      "WealthOS",
+      "TaxPilot",
+      "CreditBridge",
+      "DormantAI",
+    ]);
     const green = screen.getByRole("button", { name: "GreenRoute" }).closest("tr")!;
     expect(within(green).getByText(/ago$/)).toBeInTheDocument();
   });
@@ -866,7 +886,8 @@ describe("V3 — the superuser Dashboard", () => {
     }
     // Uploaded is the denominator, not a rail row.
     expect(within(rail).queryByText("Uploaded")).toBeNull();
-    expect(within(rail).getByText("6 decks uploaded · across 6 stages")).toBeInTheDocument();
+    // Seven now: the archived deck stays in Uploaded.
+    expect(within(rail).getByText("7 decks uploaded · across 6 stages")).toBeInTheDocument();
   });
 });
 

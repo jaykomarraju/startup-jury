@@ -9,9 +9,11 @@
  *
  * **V3-DASH** adds a THIRD incubator set at the foot of this file —
  * `v3DeckStats` / `matchesV3Stat`, the reshared superuser prototype's six —
- * with its own builder, because its denominator excludes archived decks and
- * `build()` below divides by `decks.length`. It is superuser-only; the six
- * described here still serve admin, PM, PA and the VC edition unchanged.
+ * with its own builder, because its tiles are a different partition and it
+ * pins Uploaded's own bar to 100. It is superuser-only; the six described here
+ * still serve admin, PM, PA and the VC edition unchanged. (Its denominator
+ * once excluded archived decks; since 2026-09-23 archiving is a STATE rather
+ * than a move, so Uploaded — and therefore the denominator — holds them.)
  *
  * Each edition has its own six (`STAT_ORDER`): the incubator's cohort stages
  * (`AISJ_IC_SuserV15`) and the VC edition's deal funnel (`AISJ_VC_Superuser_V8`
@@ -536,21 +538,36 @@ export function v3StatusKey(deck: CompletenessDeck): V3StatusKey {
 }
 
 /**
- * The table filter, verbatim from `adRenderTable()`:
+ * The table filter. The prototype's `adRenderTable()` reads:
  *
  *   if(activeStat==='archived') show=d.archived;
- *   else if(d.archived)        show=false;
+ *   else if(d.archived)        show=false;     // <- NOT ours; see below
  *   else if(activeStat==='all')show=true;
  *   else if(activeStat==='shortlisted') show=!!d.shortlisted;
  *   else show=(d.state===activeStat);
+ *
+ * **The second line is a deliberate deviation, 2026-09-23.** Taken verbatim it
+ * makes Archive a RELOCATION: the row leaves All the moment it is archived and
+ * is only findable by switching tiles. The client's instruction is that
+ * archiving sets a STATE — the deck stays in the list and says "Archived" —
+ * which is also what their own row asks for ("After actions, Status would
+ * change to … 'Archived'"): a status a row never shows again because the row is
+ * gone is not a status. So `all` is answered BEFORE the archived test.
+ *
+ * Archived decks still do not count under the WORKING tiles. Their state is
+ * Archived; letting them also sit under AI Evaluated would double-count them
+ * and make the six boxes overlap, which is the one thing the tile set must not
+ * do. So the order is: Archived tile, then All, then the working tiles.
  *
  * `assigned` is not a v3 box; it is accepted here only while the Assigned tile
  * is retained pending Q7 (see `V3_TILES`).
  */
 export function matchesV3Stat(deck: StatDeck, key: V3StatKey | "assigned"): boolean {
   if (key === "archived") return isArchivedDeck(deck);
-  if (isArchivedDeck(deck)) return false;
+  // All holds every deck, archived included — that is what "a state, not a
+  // move" means at the level of the list.
   if (key === "all") return true;
+  if (isArchivedDeck(deck)) return false;
   if (key === "shortlisted") return SHORTLISTED_STAGES.includes(deck.statusId ?? "");
   if (key === "assigned") return Boolean(deck.assignedTo) || ASSIGNED_STAGES.includes(deck.statusId ?? "");
   return v3DeckState(deck) === key;
@@ -598,10 +615,14 @@ const V3_TILES: V3Tile[] = [
  * workspace that is mostly archived; that is the prototype's own arithmetic).
  */
 export function v3DeckStats(decks: StatDeck[]): DeckStat<V3StatKey | "assigned">[] {
-  // The denominator, and `matchesV3Stat(d, "all")`'s own answer — every tile's
-  // count therefore comes from the SAME predicate the table filter uses, so a
-  // tile can never disagree with the rows its view draws.
-  const active = decks.filter((d) => !isArchivedDeck(d));
+  // The denominator IS the All tile, and it is `matchesV3Stat(d, "all")`'s own
+  // answer — every tile's count therefore comes from the SAME predicate the
+  // table filter uses, so a tile can never disagree with the rows its view
+  // draws. Since archiving became a state rather than a move, All holds
+  // archived decks too, so they are in the denominator as well: they are still
+  // decks in this workspace, and a percentage that quietly shrinks its own base
+  // each time a row is archived would make every other tile drift upward.
+  const active = decks.filter((d) => matchesV3Stat(d, "all"));
   return V3_TILES.map((t) => {
     const value = decks.filter((d) => matchesV3Stat(d, t.key)).length;
     return {
