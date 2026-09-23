@@ -3,14 +3,36 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
 import { Logo, Button, Card } from "../components";
 
-/** Seed demo logins (all use password demo1234) surfaced as a dev convenience. */
+/**
+ * Seed demo logins (all use password demo1234) surfaced as a dev convenience.
+ *
+ * **Keep this in step with `migrations/0002_seed.sql:45-56`.** It listed six of
+ * the twelve seeded accounts and omitted the incubator Admin and Program
+ * Manager, which produced the client's 21-Sep report that "there should be 5
+ * roles … Prog. manager and Admin. are missing": this card is the only set of
+ * credentials the product hands out, so a tester who has not been sent
+ * `docs/DEMO.md` cannot sign in as a role it leaves off, and reasonably
+ * concludes the role does not exist. Both roles were fully built the whole
+ * time — 26 and 22 sidebar items, their own prototypes and their own pinned
+ * screen sets in `e2e/parity.spec.ts`. Nothing was missing but this list.
+ *
+ * Ordered by edition, then by the role order in `PERMISSION_ROLES`, so the card
+ * reads as the role model rather than as a sample. Pinned in
+ * `test/client/loginDemoLogins.test.tsx`.
+ */
 const DEMO_LOGINS: { label: string; email: string }[] = [
   { label: "Incubator · Superuser", email: "priya.sharma@demo.startupjury.ai" },
+  { label: "Incubator · Admin", email: "nisha.kapoor@demo.startupjury.ai" },
+  { label: "Incubator · Program Manager", email: "raj.kumar@demo.startupjury.ai" },
   { label: "Incubator · Program Associate", email: "sunita.rao@demo.startupjury.ai" },
-  { label: "Incubator · Jury", email: "rajesh.kumar@demo.startupjury.ai" },
+  { label: "Incubator · Jury Member", email: "rajesh.kumar@demo.startupjury.ai" },
+  { label: "Incubator · Founder", email: "meera.sharma@demo.startupjury.ai" },
   { label: "VC · Managing Partner", email: "aarav.khanna@demo.startupjury.ai" },
-  { label: "VC · Analyst", email: "rhea.nair@demo.startupjury.ai" },
+  { label: "VC · Admin", email: "nisha.kapoor.vc@demo.startupjury.ai" },
+  { label: "VC · Partner", email: "ishaan.sethi@demo.startupjury.ai" },
   { label: "VC · IC Member", email: "rajesh.kumar.vc@demo.startupjury.ai" },
+  { label: "VC · Investment Associate", email: "sunita.rao.vc@demo.startupjury.ai" },
+  { label: "VC · Analyst", email: "rhea.nair@demo.startupjury.ai" },
 ];
 
 export function LoginPage() {
