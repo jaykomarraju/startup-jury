@@ -47,6 +47,9 @@ import {
   reserveCredits as reserveEditionCredits,
   refundCredits as refundEditionCredits,
 } from "../decks/versions";
+// P0-1 — the one answer to "is this person assigned?" (`decks.assigned_to` UNION
+// `deck_assignments`). Read the union, never the join table alone.
+import { ASSIGNEE_PAIRS_SQL } from "../decks/assignments";
 
 const decks = new Hono<AppEnv>();
 // The deck pipeline is staff-only: a mentor is a directory record, not an
@@ -376,6 +379,78 @@ function parseListParam(raw: string | undefined): Exclude<DeckListRoute, null> |
   return raw === "assign" || raw === "query" ? raw : null;
 }
 
+// ── Row scope: which decks a caller may read at all ──────────────────────────
+//
+// P0-1 (`docs/plan_roles_incubator.md` §5 and §7). Until this, the only row
+// filter on `GET /api/decks` was `role === "founder"`, so a juror's response
+// carried EVERY deck in the edition — founder name, email, phone, city, sector,
+// tags and stage — and "My Pipeline", "Evaluated" and "My Archive" were client-
+// side filters over it. Measured 2026-09-23 as `inc_jury`: 15 decks returned, 7
+// actually assigned, 8 of the rest carrying full founder contact.
+// `DashboardPage.tsx:899` said so in its own words — "F0193 asks the API to
+// scope this; until it does, the screen does". This is the API doing it.
+//
+// The shape is lifted from `CallsPage.tsx:685`, the one place that already got
+// it right — "read-only participants (jury, IC members, analysts) see only the
+// decks they're actually on a call for ... plus any they were delegated to
+// schedule" — and moved off the screen onto the query, because a screen that
+// filters is not a scope.
+//
+// The union is deliberately the same set those screens already draw, so nothing
+// that rendered before this stops rendering:
+//   • assigned to them — `ASSIGNEE_PAIRS_SQL`, i.e. `decks.assigned_to` UNION
+//     `deck_assignments` (W7-E: a deck can carry several evaluators, and rows
+//     written before migration 0058 only have the column);
+//   • on a call for the deck — by user id OR by the account's email, the same
+//     two halves as `ON_CALL_SQL` in `routes/calls.ts`, which is how §8's
+//     "jury/IC members involved in a call can view their calls" is already
+//     enforced on `/api/calls`. Without this half the jury's own thirteen-column
+//     "My Intro calls" screen loses its rows: it joins the calls listing to THIS
+//     response for the AI score, the parameter matrix and the average;
+//   • delegated to schedule that deck's call (W9-E, `call_schedulers`).
+//
+// **Incubator `jury` only.** The VC read-only roles are a different question and
+// are deliberately untouched: an IC member's Dashboard pool is a STAGE — "every
+// deal that has reached the committee" (`DashboardPage.tsx:915`) — not an
+// allocation, so the same clause would change what that screen means. That call
+// belongs to whoever scopes the VC lane, not to this one.
+const ASSIGNEE_SCOPED_ROLES = ["jury"] as const;
+
+/** Is this caller's read narrowed to their own decks? */
+function scopesToOwnDecks(role: Role): boolean {
+  return (ASSIGNEE_SCOPED_ROLES as readonly string[]).includes(role);
+}
+
+/**
+ * The predicate, against the `decks` row aliased `d`. Binds the caller's user id
+ * FOUR times, in the order written — see `ownDecksBinds`.
+ */
+const OWN_DECKS_SQL =
+  `(d.id IN (SELECT deck_id FROM (${ASSIGNEE_PAIRS_SQL}) WHERE evaluator_id = ?) ` +
+  "OR EXISTS (SELECT 1 FROM calls ca JOIN call_participants cp ON cp.call_id = ca.id " +
+  "WHERE ca.deck_id = d.id AND (cp.user_id = ? OR lower(cp.email) = (SELECT lower(email) FROM users WHERE id = ?))) " +
+  "OR EXISTS (SELECT 1 FROM call_schedulers cs WHERE cs.deck_id = d.id AND cs.user_id = ?))";
+
+function ownDecksBinds(userId: string): string[] {
+  return [userId, userId, userId, userId];
+}
+
+/**
+ * May this caller read this ONE deck? The by-id reads below (`/:id`,
+ * `/:id/report`, `/:id/versions`, `/:id/file`) all resolved any deck in the
+ * edition, so scoping the listing alone would have hidden the index and left the
+ * same founder contact one request away. Costs a query only for the roles that
+ * are actually scoped; everyone else short-circuits.
+ */
+async function canReadDeck(db: D1Database, role: Role, userId: string, deckId: string): Promise<boolean> {
+  if (!scopesToOwnDecks(role)) return true;
+  const row = await db
+    .prepare(`SELECT 1 AS n FROM decks d WHERE d.id = ? AND ${OWN_DECKS_SQL}`)
+    .bind(deckId, ...ownDecksBinds(userId))
+    .first<{ n: number }>();
+  return Boolean(row);
+}
+
 /** GET /api/decks — decks in the caller's edition (Review-decks table),
  *  optionally filtered by `programId` / `cohortId` (toolbar filter dropdowns).
  *  Founders are isolated to their own submissions (portal scope).
@@ -401,6 +476,12 @@ decks.get("/", async (c) => {
   if (role === "founder") {
     clauses.push("d.uploaded_by = ?");
     params.push(id);
+  }
+  // P0-1 — a juror's rows are their own allocation plus the calls they are on.
+  // See `OWN_DECKS_SQL` above for why this is the API's job and not a screen's.
+  if (scopesToOwnDecks(role)) {
+    clauses.push(OWN_DECKS_SQL);
+    params.push(...ownDecksBinds(id));
   }
   if (programId) {
     clauses.push("d.program_id = ?");
@@ -533,6 +614,10 @@ decks.get("/:id", async (c) => {
   if (!row) return c.json({ error: "not_found" }, 404);
   // Founders may only open their own submissions.
   if (role === "founder" && row.uploaded_by !== userId) return c.json({ error: "not_found" }, 404);
+  // P0-1 — and a juror only the decks in their scope. `not_found`, not
+  // `forbidden`: a 403 would confirm the deck exists, which is half of what the
+  // listing was leaking.
+  if (!(await canReadDeck(c.env.DB, role, userId, id))) return c.json({ error: "not_found" }, 404);
 
   const extraction = (
     await c.env.DB.prepare(
@@ -923,6 +1008,8 @@ decks.get("/:id/report", async (c) => {
     .bind(id, edition)
     .first<DeckRow>();
   if (!deckRow) return c.json({ error: "not_found" }, 404);
+  // P0-1 — the report carries the same founder block as the listing row.
+  if (!(await canReadDeck(c.env.DB, role, viewerId, id))) return c.json({ error: "not_found" }, 404);
 
   const params = (
     await c.env.DB.prepare(
@@ -1232,6 +1319,7 @@ decks.get("/:id/versions", async (c) => {
     .first<{ id: string; uploaded_by: string | null }>();
   if (!row) return c.json({ error: "not_found" }, 404);
   if (role === "founder" && row.uploaded_by !== userId) return c.json({ error: "not_found" }, 404);
+  if (!(await canReadDeck(c.env.DB, role, userId, id))) return c.json({ error: "not_found" }, 404);
   return c.json({ versions: await loadVersions(c, id) });
 });
 
@@ -1247,6 +1335,9 @@ decks.get("/:id/file", async (c) => {
     .first<{ r2_key: string | null; uploaded_by: string | null }>();
   if (!row) return c.json({ error: "not_found" }, 404);
   if (role === "founder" && row.uploaded_by !== userId) return c.json({ error: "not_found" }, 404);
+  // P0-1 — scoping the listing but streaming any PDF by id would hide the index
+  // and leave the deck itself open.
+  if (!(await canReadDeck(c.env.DB, role, userId, id))) return c.json({ error: "not_found" }, 404);
   // No stored PDF yet (seed decks / still pending) — the viewer shows its
   // graceful "not stored" state on a 404.
   if (!row.r2_key) return c.json({ error: "no_pdf" }, 404);
