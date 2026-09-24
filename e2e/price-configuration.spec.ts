@@ -20,8 +20,10 @@ import { test, expect, type Page } from "@playwright/test";
  * gated on `PLATFORM_OWNER_EMAILS`, which ships EMPTY so a deployment that
  * forgets it fails closed.
  *
- * So the journey above is no longer an admin's to walk, and this spec asserts
- * what the product now does. **The editor's own behaviour did not lose its
+ * Then, hours later, the client went further: *"Price configuration in the
+ * admin console should be removed entirely — why would a user set their
+ * price."* So the section is gone from the customer console too, and this spec
+ * asserts BOTH halves: the screen is absent, and the API still refuses. **The editor's own behaviour did not lose its
  * coverage, it moved**: `test/worker/pricing.test.ts` (21 assertions) walks
  * draft → publish → rollback against the real routes, and
  * `test/client/priceConfiguration.test.tsx` (22) covers the screen. Both
@@ -41,31 +43,41 @@ async function login(page: Page, email: string) {
   await page.waitForURL("**/app/**");
 }
 
-test("the price catalogue is not the customer admin's to edit", async ({ page }) => {
+test("Price configuration is not in the customer's console at all", async ({ page }) => {
   test.setTimeout(120_000);
   await login(page, ADMIN);
+  await page.goto("/app/admin");
+
+  // Not in the rail, under any group.
+  await expect(page.getByRole("button", { name: "Price configuration" })).toHaveCount(0);
+  await expect(page.getByText("Price configuration")).toHaveCount(0);
+});
+
+test("a saved ?section=pc link falls back rather than showing a blank console", async ({ page }) => {
+  test.setTimeout(120_000);
+  await login(page, ADMIN);
+  // Somebody's bookmark from before 24-Sep. `resolveAdminSection` sends an
+  // unknown id to the default section; a blank console would be the failure.
   await page.goto("/app/admin?section=pc");
-
-  // The section still resolves — this is an authorisation answer, not a 404.
-  await expect(page.getByTestId("admin-section-title")).toHaveText("Price configuration");
-
-  // …and it says so in words an operator can act on. "Could not be loaded"
-  // would read as a bug and send somebody hunting for one.
-  await expect(page.getByText(/managed by ai\.STARTUPJURY/i)).toBeVisible({ timeout: 30_000 });
-
-  // The editor itself is absent: no GST field, no publish control.
-  await expect(page.getByTestId("pc-gst-rate")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /^Publish/ })).toHaveCount(0);
+  await expect(page.getByTestId("admin-section-title")).toHaveText("Scoring framework");
 });
 
 test("the admin can still SEE prices everywhere they are quoted", async ({ page }) => {
   test.setTimeout(120_000);
   await login(page, ADMIN);
-  // The gate is on editing the catalogue, not on reading it. If this regresses,
-  // Buy credits and My Account go dark — which is a far worse outcome than the
-  // defect being fixed, so it is pinned here rather than assumed.
+  // The catalogue left the console; it did not leave the product. If this
+  // regresses, Buy credits and My Account go dark.
   const res = await page.request.get("/api/pricing/published");
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { plans?: unknown[] };
   expect(Array.isArray(body.plans) ? body.plans.length : 0).toBeGreaterThan(0);
+});
+
+test("and the API still refuses the customer, section or no section", async ({ page }) => {
+  test.setTimeout(120_000);
+  await login(page, ADMIN);
+  // Defence in depth: removing a screen from a rail does not make a route
+  // unreachable, so PLATFORM_OWNER_EMAILS stays.
+  expect((await page.request.get("/api/pricing")).status()).toBe(403);
+  expect((await page.request.put("/api/pricing/draft", { data: { plans: [] } })).status()).toBe(403);
 });

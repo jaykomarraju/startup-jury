@@ -193,25 +193,29 @@ const ORGANISATION: AdminSection[] = [
       ],
     },
   },
-  {
-    id: "pc",
-    label: "Price configuration",
-    group: "Organisation",
-    icon: "IndianRupee",
-    heading: "Price configuration",
-    // v3's own `sec-sub`, verbatim. The old one advertised "per-deck rates",
-    // which §8 Q1 retired on 2026-09-11 and no surface has shown since.
-    subtitle:
-      "Set prices centrally — changes apply to the My Account signup flow immediately. All prices in INR, exclusive of GST.",
-    placeholder: {
-      owner: "W4-D",
-      contents: [
-        "~50 editable price fields and 14 toggles",
-        "Seven currencies with editable FX and the 18 % GST rate",
-        "Plan, pack and enterprise catalogues, with preview and publish",
-      ],
-    },
-  },
+  // ── "pc" · Price configuration — REMOVED FROM THE CUSTOMER CONSOLE ──────────
+  //
+  // Deleted 24-Sep-2026 at the client's instruction: *"Price configuration in
+  // the admin console should be removed entirely — why would a user set their
+  // price."* He is right, and it is a better answer than the gate that landed
+  // hours earlier: the catalogue is ONE document serving every customer
+  // (`migrations/0033_price_configuration.sql:6-7`), so a customer's console
+  // had no business offering it even read-only. `PLATFORM_OWNER_EMAILS` still
+  // guards the API — the section going is not a reason to unguard the route,
+  // and a screen removed from a rail is not a screen made unreachable.
+  //
+  // **THIS IS A DELIBERATE DEVIATION AND THE NEXT PARITY CAPTURE WILL TRY TO
+  // PUT IT BACK.** `AISJ_ICAdmin_V6.html`'s own console carries
+  // `pc:'Price configuration'` in its section map (decoded from `ADMIN_B64` —
+  // a plain grep of that file finds nothing). The client's instruction wins
+  // over the stale prototype, on the same rule §12.3 applied to item 13 and
+  // §12.6 to the seat screen.
+  //
+  // The EDITOR ITSELF IS NOT DELETED. `admin/PriceConfiguration.tsx` and its
+  // 22 tests stay: the screen returns with the AISJ Admin dashboard the client
+  // confirmed on 24-Sep (`docs/plan_multitenancy.md`), and rebuilding a
+  // 50-field catalogue editor from scratch then would be waste. It is simply
+  // mounted nowhere a customer can reach.
 ];
 
 const SIGNUP_COMMON: AdminSection[] = [

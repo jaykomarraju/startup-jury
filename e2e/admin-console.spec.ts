@@ -53,7 +53,7 @@ const NON_ADMINS: { email: string; edition: Edition; role: Role }[] = [
 ];
 
 for (const admin of ADMINS) {
-  test(`${admin.edition}/${admin.role} walks all 16 admin console sections`, async ({ page }) => {
+  test(`${admin.edition}/${admin.role} walks all 15 admin console sections`, async ({ page }) => {
     test.setTimeout(120_000);
     await login(page, admin.email);
     await page.goto("/app/admin");
@@ -68,7 +68,11 @@ for (const admin of ADMINS) {
     }
 
     const sections = adminSections(admin.edition);
-    expect(sections).toHaveLength(16);
+    // Fifteen since 24-Sep: "Price configuration" left the customer console at
+    // the client's instruction ("why would a user set their price"). The
+    // catalogue is one document serving every customer, so it is the AISJ
+    // Admin's, not the workspace's — see `src/client/routes/admin/sections.ts`.
+    expect(sections).toHaveLength(15);
 
     // Opens on Scoring framework, as the prototype's `.ni on` does.
     await expect(page.getByTestId("admin-section-title")).toHaveText("Scoring framework");
@@ -206,7 +210,10 @@ for (const person of NON_ADMINS) {
     // console cannot hand it over if reachability ever widens (F0038).
     const visible = adminSectionsFor(person.edition, person.role);
     expect(visible.map((s) => s.group)).not.toContain("Sign-up");
-    expect(visible).toHaveLength(12);
+    // Eleven, not twelve — "Price configuration" left the console entirely on
+    // 24-Sep. It was in the Organisation group, which this role DOES see, so
+    // its removal moves this count as well as the admin's.
+    expect(visible).toHaveLength(11);
   });
 }
 

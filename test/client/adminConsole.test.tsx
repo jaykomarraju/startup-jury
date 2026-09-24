@@ -24,7 +24,17 @@ vi.mock("../../src/client/api", async (importOriginal) => ({
   listPrograms: vi.fn(),
 }));
 
-/** The sixteen sections the prototype's `secs`/`lbls` declare, in rail order. */
+/**
+ * The customer console's sections, in rail order.
+ *
+ * FIFTEEN, not the prototype's sixteen. "Price configuration" was removed on
+ * 24-Sep-2026 at the client's instruction — *"why would a user set their
+ * price"* — because the catalogue is one document serving every customer, not
+ * a per-workspace setting. `AISJ_ICAdmin_V6`'s console map still carries
+ * `pc:'Price configuration'`, so this list deliberately DIVERGES from the
+ * prototype and the next parity capture will try to restore it; the reasoning
+ * is at the foot of `src/client/routes/admin/sections.ts`.
+ */
 const INCUBATOR_LABELS = [
   "Scoring framework",
   "Area weights",
@@ -33,7 +43,6 @@ const INCUBATOR_LABELS = [
   "Team & roles",
   "CRM sync",
   "Credits & billing",
-  "Price configuration",
   "Required documents",
   "Agreements library",
   "Authorised signatories",
@@ -78,7 +87,7 @@ function renderConsole(
   );
 }
 
-// The console mounts a sixteen-item rail, lucide's icon set and two fetches per
+// The console mounts a fifteen-item rail, lucide's icon set and two fetches per
 // render, and several of these tests mount it more than once. On a machine
 // running the wave's other sessions in parallel that comfortably exceeds the
 // 5 s default, so the whole file gets the same accommodation `e2e/parity.spec.ts`
@@ -98,13 +107,13 @@ beforeEach(() => {
 // ── The registry ─────────────────────────────────────────────────────────────
 
 describe("admin console section registry", () => {
-  it("declares sixteen sections in four groups per edition", () => {
+  it("declares fifteen sections in four groups per edition", () => {
     for (const edition of ["incubator", "vc"] as Edition[]) {
       const sections = adminSections(edition);
-      expect(sections).toHaveLength(16);
+      expect(sections).toHaveLength(15);
       expect([...new Set(sections.map((s) => s.group))]).toEqual(ADMIN_SECTION_GROUPS);
       // Ids are unique and each section names its owning session and contents.
-      expect(new Set(sections.map((s) => s.id)).size).toBe(16);
+      expect(new Set(sections.map((s) => s.id)).size).toBe(15);
       for (const s of sections) {
         expect(s.placeholder.owner).toMatch(/^W\d/);
         expect(s.placeholder.contents.length).toBeGreaterThan(0);
@@ -123,7 +132,6 @@ describe("admin console section registry", () => {
       ["tm", "Team & roles"],
       ["crm", "CRM sync"],
       ["bl", "Credits & billing"],
-      ["pc", "Price configuration"],
       ["sudocs", "Required documents"],
       ["suagr", "Agreements library"],
       ["susign", "Authorised signatories"],
@@ -164,7 +172,7 @@ describe("admin console section registry", () => {
       expect(canOpenAdminConsole(role)).toBe(true);
       expect(canSeeAdminGroup(role, "Sign-up")).toBe(true);
       expect(adminGroupsFor("incubator", role)).toEqual(ADMIN_SECTION_GROUPS);
-      expect(adminSectionsFor("incubator", role)).toHaveLength(16);
+      expect(adminSectionsFor("incubator", role)).toHaveLength(15);
     }
     for (const role of ["program_manager", "program_associate", "jury"] as Role[]) {
       expect(canOpenAdminConsole(role)).toBe(false);
@@ -198,7 +206,7 @@ describe("admin console section registry", () => {
 // ── The shell ────────────────────────────────────────────────────────────────
 
 describe("AdminConsole shell", () => {
-  it("renders the overlay header, the four rail groups and all sixteen sections", () => {
+  it("renders the overlay header, the four rail groups and all fifteen sections", () => {
     renderConsole(user("incubator", "admin"));
 
     const overlay = screen.getByRole("dialog", { name: "Admin console" });
@@ -209,7 +217,7 @@ describe("AdminConsole shell", () => {
     for (const group of ADMIN_SECTION_GROUPS) {
       expect(within(rail()).getByText(group)).toBeInTheDocument();
     }
-    // One query, not sixteen: the rail's buttons in order are the sixteen
+    // One query, not fifteen: the rail's buttons in order are the fifteen
     // sections and nothing else.
     const railLabels = within(rail())
       .getAllByRole("button")

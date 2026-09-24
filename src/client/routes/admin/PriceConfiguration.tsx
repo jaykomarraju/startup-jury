@@ -1,3 +1,19 @@
+/**
+ * ⚠ NOT MOUNTED IN THE CUSTOMER CONSOLE since 24-Sep-2026.
+ *
+ * The client: *"Price configuration in the admin console should be removed
+ * entirely — why would a user set their price."* The catalogue is one document
+ * serving every customer (`migrations/0033_price_configuration.sql:6-7`), so
+ * the section was deleted from `admin/sections.ts` and `/api/pricing` is gated
+ * on `PLATFORM_OWNER_EMAILS`.
+ *
+ * **This file is kept deliberately, not left behind.** It is a ~50-field
+ * catalogue editor with preview, publish and rollback, covered by 22 tests, and
+ * it is the screen the AISJ Admin dashboard needs when multi-tenancy lands
+ * (`docs/plan_multitenancy.md`). Rebuilding it then would be waste. If you are
+ * here because nothing references it: that is expected, and deleting it is a
+ * decision to make with that plan open, not a tidy-up.
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
