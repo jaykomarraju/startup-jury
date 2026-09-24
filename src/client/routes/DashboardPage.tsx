@@ -410,6 +410,22 @@ type Tile = Omit<DeckStat, "key"> & { key: ViewKey };
 function juryTiles(mine: DeckView[]): Tile[] {
   const total = mine.length;
   return JURY_TILES.map((t) => {
+    /**
+     * R7-JURY re-examined the `drafts` zero and LEFT IT, which is a decision
+     * rather than an omission. `evaluations.submitted_at` is already nullable
+     * (`0001_init.sql`), so a draft needs no migration — but four server
+     * derivations read `evaluations` unconditionally and each would be
+     * corrupted by an unsubmitted row: `assignee_submitted` would report the
+     * deck as scored, `human_avg` would fold a half-finished score into the
+     * deck's jury mean and hence `decisionScore`, blind scoring would lift and
+     * hand the juror the AI's numbers, and `pipeline.ts`'s score write would
+     * advance the deck to `jury_evaluation` on a save the juror has not made.
+     * Three of the four are in `src/server/routes/decks.ts`, which R7 did not
+     * own. Shipping the tile without narrowing all four would make the other
+     * four tiles — and the deck's Avg. score — wrong, so the honest fallback is
+     * a tile that counts nothing until draft state exists. See
+     * `docs/parity-requests/R7-JURY.md`.
+     */
     const value = t.key === "drafts" ? 0 : mine.filter((d) => juryBucket(d) === t.key).length;
     return {
       key: t.key,
@@ -941,10 +957,28 @@ export function DashboardPage() {
     };
   }, [selected]);
 
-  // The jury member's own allocation (F0193 asks the API to scope this; until it
-  // does, the screen does).
+  /**
+   * The jury member's own allocation.
+   *
+   * R6-SCOPE closed F0193 — `GET /api/decks` now scopes a juror server-side —
+   * so this is no longer the only thing standing between a juror and every
+   * founder's contact details. It stays as a SECOND filter because the server's
+   * scope is deliberately wider than "decks I must score": it also returns
+   * decks a juror is on a call for, and decks they schedule as a delegate.
+   * My Pipeline counts allocations, so it keeps its own predicate.
+   *
+   * R7-JURY widened that predicate from `assignedTo` to `assigneeIds`. Since
+   * migration 0058 a deck carries SEVERAL evaluators (`deck_assignments`;
+   * `decks.assigned_to` is only the first of them), so the old test dropped a
+   * deck the server had correctly returned whenever this juror was the second
+   * assignee — fetched, then hidden by the screen. `assigneeIds` is served on
+   * every deck row and is the authority on who may score it.
+   */
   const mine = useMemo(
-    () => (isJury && user ? (decks ?? []).filter((d) => d.assignedTo === user.id) : []),
+    () =>
+      isJury && user
+        ? (decks ?? []).filter((d) => (d.assigneeIds ?? (d.assignedTo ? [d.assignedTo] : [])).includes(user.id))
+        : [],
     [decks, isJury, user],
   );
 

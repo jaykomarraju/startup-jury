@@ -95,18 +95,27 @@ test("a program manager — pending Q-P — still sees the v15 Evaluate", async 
   await expect(page.getByTestId("ev-col1-count")).toHaveCount(0);
 });
 
-test("a juror's own Assigned screen is untouched — the same component, the v15 shape", async ({ page }) => {
+test("a juror's own Assigned screen is their prototype's table — and never V3's", async ({ page }) => {
   await login(page, "rajesh.kumar@demo.startupjury.ai"); // incubator jury
   await page.goto("/app/jassigned");
-  await expect(page.getByRole("heading", { name: "Evaluate" })).toBeVisible();
-  await decksSettled(page);
+  // R7-JURY rebuilt this screen from `panel-jassigned`, so the v15 shape is no
+  // longer what it draws. The boundary this test exists for is unchanged and is
+  // what it still asserts: whatever `jassigned` draws, it is never V3-UP's.
+  await expect(page.getByRole("heading", { name: "Assigned to me" })).toBeVisible();
+  // Not `decksSettled` — that waits on the v15 list, which this screen no
+  // longer draws. The table (or its empty state) is the settled signal here.
+  await expect(page.getByRole("table").or(page.getByText("Nothing to evaluate yet"))).toBeVisible({
+    timeout: 20_000,
+  });
 
-  await expect(page.getByText("Click a deck to open its evaluation report · set its status alongside")).toBeVisible();
-  await expect(page.getByTestId("ev-decks-label")).toContainText("click to open report");
+  await expect(
+    page.getByText("Decks allocated to you for evaluation · click a startup name to open the deck and score it"),
+  ).toBeVisible();
+  await expect(page.getByTestId("ja-foot")).toContainText("assigned to you");
 
   await expect(page.getByRole("button", { name: "AI Evaluate" })).toHaveCount(0);
   await expect(page.getByLabel("Select all decks")).toHaveCount(0);
   await expect(page.getByTestId("ev-col1-count")).toHaveCount(0);
   // No per-row checkbox either — that is v3's, and it is not a juror's control.
-  await expect(page.getByRole("list", { name: "Decks to evaluate" }).getByRole("checkbox")).toHaveCount(0);
+  await expect(page.getByRole("table").getByRole("checkbox")).toHaveCount(0);
 });

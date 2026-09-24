@@ -42,12 +42,13 @@ test("jury member scores an assigned deck and shortlists it", async ({ page }) =
   // Jury reaches the scoring form via their "Assigned" nav item.
   await page.goto("/app/jassigned");
 
-  await expect(page.getByRole("heading", { name: "Evaluate" })).toBeVisible();
-  // Issue 19 — panel 1 lists the startups. W7-D: clicking the deck opens the
-  // workbench, as the prototype's row does; there is no Score button (§4).
+  await expect(page.getByRole("heading", { name: "Assigned to me" })).toBeVisible();
+  // R7-JURY — `panel-jassigned`'s table lists the startups now. Clicking the
+  // name still opens the workbench, as the prototype's row does; there is
+  // still no Score button (§4).
   await page
-    .locator("li", { hasText: "InsureFlow" })
-    .getByTitle("Open evaluation report")
+    .getByRole("row", { name: /InsureFlow/ })
+    .getByRole("button", { name: "InsureFlow", exact: true })
     .click();
 
   // The evaluator workbench opens with the AI · My · Average tiles.
@@ -64,8 +65,9 @@ test("jury member scores an assigned deck and shortlists it", async ({ page }) =
 
   await page.getByRole("button", { name: "Shortlist" }).click();
 
-  // Deck leaves the to-evaluate list once shortlisted.
-  await expect(page.getByRole("button", { name: /InsureFlow/ })).toBeHidden();
+  // Deck leaves the allocation table once shortlisted. Exact — the row's
+  // Parameter scores cell is also labelled "…for InsureFlow".
+  await expect(page.getByRole("button", { name: "InsureFlow", exact: true })).toBeHidden();
 });
 
 test("staff query an incomplete deck; it records a sent query", async ({ page }) => {

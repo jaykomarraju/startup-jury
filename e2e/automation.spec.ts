@@ -48,15 +48,13 @@ test("admin sets a per-program shortlist minimum in the Set up wizard", async ({
 test("the evaluator workbench shows the program's shortlist minimum", async ({ page }) => {
   await login(page, "rajesh.kumar@demo.startupjury.ai"); // inc jury
   await page.goto("/app/jassigned");
-  await expect(page.getByRole("heading", { name: "Evaluate" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Assigned to me" })).toBeVisible();
 
   // TaxPilot sits in Climate Cohort, whose seeded floor is 5.5 (migration 0016).
-  // Aug-2026 issue 19 — the workbench opens from panel 1. W7-D: from the deck
-  // itself, as the prototype's row does; the Score button is gone (§4).
-  await page
-    .locator("li", { hasText: "TaxPilot" })
-    .getByTitle("Open evaluation report")
-    .click();
+  // R7-JURY — the workbench now opens from the `panel-jassigned` table row's
+  // startup name rather than from the v15 deck list (§4 is unchanged: there is
+  // still no Score button).
+  await page.getByRole("row", { name: /TaxPilot/ }).getByRole("button", { name: "TaxPilot", exact: true }).click();
   await expect(page.getByRole("heading", { name: "TaxPilot" })).toBeVisible();
   await expect(page.getByText(/Shortlist minimum 5\.5 · this deck \d\.\d\d/)).toBeVisible();
 });

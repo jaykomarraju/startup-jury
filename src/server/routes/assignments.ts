@@ -312,3 +312,50 @@ assignments.post(
     });
   },
 );
+
+// ── R7-JURY · GET /api/assignments/mine ─────────────────────────────────────
+//
+// `AISJ_IC_Jury_V4` asks three of its columns for facts the deck list does not
+// carry: `panel-jassigned`'s **Due date** and **Assigned by** (`jaDecks[].due`
+// / `.by`) and `panel-jurypipeline`'s **Due date**, which its `+/- Days` column
+// (`jpDelta`) is measured against. All three live on `deck_assignments`, which
+// until now only `GET /api/assignments/board` read — and that route is
+// `requireRole("program_manager","program_associate","admin")`, so a juror
+// cannot reach it.
+//
+// This is the caller's OWN allotment and nothing else: the WHERE clause binds
+// `evaluator_id = <viewer>`, so the route cannot widen R6-SCOPE. It carries no
+// founder contact detail, no other evaluator's identity and no score — only
+// when a deck was given to this juror, by whom, and when it is due. A juror who
+// asks for a deck they do not hold gets no row for it.
+//
+// It deliberately does NOT grow `DeckView`: `decks.ts` is owned by other work
+// this wave, and `due_at` is per (deck, evaluator) while every `DECK_DERIVED`
+// column today is per deck. See `docs/parity-requests/R7-JURY.md`.
+export interface MyAssignment {
+  deckId: string;
+  assignedAt: string;
+  dueAt: string | null;
+  /** The name of the person who assigned it, or null when the user is gone. */
+  assignedByName: string | null;
+}
+
+assignments.get("/mine", async (c) => {
+  const { id: viewerId } = c.var.user;
+  const rows = (
+    await c.env.DB.prepare(
+      "SELECT da.deck_id, da.assigned_at, da.due_at, u.name AS assigned_by_name " +
+        "FROM deck_assignments da LEFT JOIN users u ON u.id = da.assigned_by " +
+        "WHERE da.evaluator_id = ? ORDER BY da.assigned_at DESC",
+    )
+      .bind(viewerId)
+      .all<{ deck_id: string; assigned_at: string; due_at: string | null; assigned_by_name: string | null }>()
+  ).results;
+  const out: MyAssignment[] = rows.map((r) => ({
+    deckId: r.deck_id,
+    assignedAt: r.assigned_at,
+    dueAt: r.due_at,
+    assignedByName: r.assigned_by_name,
+  }));
+  return c.json({ assignments: out });
+});

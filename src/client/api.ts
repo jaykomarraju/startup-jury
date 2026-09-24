@@ -239,6 +239,22 @@ export function getAssignBoard(): Promise<{ decks: Record<string, AssignBoardDec
   return fetch("/api/assignments/board").then((r) => json(r));
 }
 
+/**
+ * R7-JURY — the caller's own `deck_assignments` rows. The jury prototype's Due
+ * date / Assigned by / +/- Days columns read this; `DeckView` carries none of
+ * the three because they are per (deck, evaluator), not per deck.
+ */
+export interface MyAssignment {
+  deckId: string;
+  assignedAt: string;
+  dueAt: string | null;
+  assignedByName: string | null;
+}
+
+export function getMyAssignments(): Promise<{ assignments: MyAssignment[] }> {
+  return fetch("/api/assignments/mine").then((r) => json(r));
+}
+
 export interface AssignmentRow {
   deckId: string;
   deckName: string;

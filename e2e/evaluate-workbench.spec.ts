@@ -16,23 +16,22 @@ async function login(page: Page, email: string) {
 test("incubator juror works a deck in the evaluator workbench", async ({ page }) => {
   await login(page, "rajesh.kumar@demo.startupjury.ai"); // inc jury
   await page.goto("/app/jassigned");
-  await expect(page.getByRole("heading", { name: "Evaluate" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Assigned to me" })).toBeVisible();
 
-  // Aug-2026 issue 19 — Evaluate is three panels (startups · parameters ·
-  // parameter detail). W7-D: the prototype has no Score button — clicking the
-  // deck opens its evaluation workbench ("Click a deck to open its evaluation
-  // report"), so the locator follows the row, not a retired button (§4).
-  await page
-    .locator("li", { hasText: "TaxPilot" })
-    .getByTitle("Open evaluation report")
-    .click();
+  // R7-JURY — `jassigned` is the jury prototype's `panel-jassigned` allocation
+  // table now, not the v15 three-panel launcher. Clicking the startup NAME
+  // still opens the workbench (`jrOpen(i)`), so only the locator moves: the
+  // table row's name button, exact, because the row's Parameter scores cell is
+  // also labelled "…for TaxPilot".
+  await page.getByRole("row", { name: /TaxPilot/ }).getByRole("button", { name: "TaxPilot", exact: true }).click();
   const workbench = page.getByRole("dialog", { name: /Evaluate TaxPilot/ });
   await expect(workbench.getByRole("heading", { name: "TaxPilot" })).toBeVisible();
 
-  // AI · My · Average summary tiles.
-  await expect(page.getByText("AI Score", { exact: true })).toBeVisible();
-  await expect(page.getByText("My Score", { exact: true })).toBeVisible();
-  await expect(page.getByText("Average", { exact: true })).toBeVisible();
+  // AI · My · Average summary tiles. Scoped to the dialog: the allocation
+  // table behind it has an "AI Score" column header of its own now.
+  await expect(workbench.getByText("AI Score", { exact: true })).toBeVisible();
+  await expect(workbench.getByText("My Score", { exact: true })).toBeVisible();
+  await expect(workbench.getByText("Average", { exact: true })).toBeVisible();
 
   // Per-parameter AI breakdown (score rationale) is visible on the scorecard.
   await expect(page.getByText("No climate or sustainability angle presented.")).toBeVisible();

@@ -397,6 +397,37 @@ describe("All decks — the jury's My Pipeline (F0189)", () => {
     expect(screen.getByText("1 deck · Updated just now")).toBeInTheDocument();
   });
 
+  /**
+   * R7-JURY · P2 — My Pipeline counted `assignedTo`, which since migration 0058
+   * is only the FIRST of a deck's evaluators. `deck_assignments` is the
+   * authority on who may score it, and `assigneeIds` is that list, served on
+   * every row. A juror added as a second assignee was fetched by the server
+   * (R6-SCOPE returns them the deck) and then dropped by the screen — the one
+   * deck they had been asked to score was the one they could not see.
+   *
+   * Negative control: put `d.assignedTo === user.id` back in `DashboardPage`'s
+   * `mine` and this fails on InsureFlow.
+   */
+  it("counts a deck this juror is a SECOND assignee on, not just the first", async () => {
+    vi.mocked(api.listDecks).mockResolvedValue({
+      decks: DECKS.map((d) =>
+        // InsureFlow's `assignedTo` stays someone else's; the juror is on the
+        // join table beside them.
+        d.name === "InsureFlow" ? { ...d, assigneeIds: ["u_other", "u_jury"] } : d,
+      ),
+    });
+    mount("jury", "u_jury");
+    await screen.findByRole("button", { name: "FinStack" });
+    // InsureFlow is at `jury_evaluation` and unsubmitted, so it buckets to
+    // Pending Evaluation rather than to the landing view.
+    fireEvent.click(tile("Pending Evaluation"));
+
+    expect(screen.getByRole("button", { name: "InsureFlow" })).toBeInTheDocument();
+    // …and the predicate did not simply go slack: a deck on nobody's join table
+    // is still not theirs, in any view.
+    expect(screen.queryByRole("button", { name: "PayRoute" })).toBeNull();
+  });
+
   it("the Submitted view has its own columns and the viewer's own score", async () => {
     mount("jury", "u_jury");
     await screen.findByRole("button", { name: "FinStack" });
@@ -407,6 +438,14 @@ describe("All decks — the jury's My Pipeline (F0189)", () => {
     expect(within(row).getByText("9 Jun 2026")).toBeInTheDocument(); // my submitted date
   });
 
+  /**
+   * R7-JURY looked at this one specifically and kept it. The tile is the
+   * prototype's — label, sub-line and colour — and it counts nothing, because
+   * the build has no unsubmitted evaluation to count: see the note at
+   * `juryTiles` for the four server derivations a draft row would corrupt and
+   * why R7 did not narrow them. This asserts the fallback that shipped, not a
+   * stub awaiting removal; the session that builds draft state inverts it.
+   */
   it("Drafts is an empty view with the prototype's message", async () => {
     mount("jury", "u_jury");
     await screen.findByRole("button", { name: "FinStack" });

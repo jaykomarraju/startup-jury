@@ -26,7 +26,9 @@ import {
   ApiError,
   sendSignup,
   updateDeckOnboarding,
+  type DeckReportMatrix,
   type DeckVersionView,
+  type MyAssignment,
   type PipelineEvent,
 } from "../api";
 import {
@@ -41,12 +43,19 @@ import {
   BandScore,
   builtinTab,
   DeckSlides,
+  DeltaChip,
   DetailPane,
   FilterMenu,
+  MyAddlCell,
+  ParamSparkCell,
+  dayDelta,
   legendFor,
   LegendPill,
+  myEvaluation,
   StageFooter,
+  useMyAssignments,
   usePaneEvaluation,
+  useReportMatrices,
   type FilterOption,
   type LegendItem,
   type PaneTab,
@@ -124,6 +133,21 @@ export interface StageRow {
   decided?: PipelineEvent;
   /** W9-C — whatever the config's `extra` loader returned for this deck. */
   extra?: unknown;
+  /**
+   * R7-JURY — this deck's evaluation report, when `rowDetail.reports` asked for
+   * it. `undefined` until it arrives, `null` when the read failed. It is what
+   * the jury's per-evaluator cells (Parameters score, Addl., My score,
+   * Submitted date, Status) are drawn from; the deck list carries one averaged
+   * jury number and none of those five.
+   */
+  matrix?: DeckReportMatrix | null;
+  /**
+   * R7-JURY — the VIEWER's own `deck_assignments` row for this deck, when
+   * `rowDetail.assignments` asked for it. Carries the Due date and the
+   * Assigned by that `DeckView` does not, because both are per (deck,
+   * evaluator) rather than per deck.
+   */
+  assignment?: MyAssignment;
 }
 
 /** W9-B — a row's Status pill (`key` is what the legend decodes) and its submission. */
@@ -144,6 +168,8 @@ export interface StageRowStatus {
  */
 export interface StageContext {
   role?: Role;
+  /** R7-JURY — the signed-in user's id, for the cells that show "my" number. */
+  viewerId?: string;
   busy: boolean;
   reload: () => Promise<void>;
   openTab: (deck: DeckView, tab: string) => void;
@@ -222,7 +248,14 @@ export interface StageConfig {
    */
   legend?: LegendItem[];
   /** W7-F — the footer's count sentence (`jpFoot` / `suFoot` / `cuFoot`), over every row in the stage. */
-  footer?: (rows: StageRow[]) => string;
+  footer?: (rows: StageRow[], ctx: StageContext) => string;
+  /**
+   * R7-JURY — per-row detail the deck list does not carry, fetched for the rows
+   * on screen and handed back as `row.matrix` / `row.assignment`. Both cost one
+   * request per row (`reports`) or one per screen (`assignments`), so a screen
+   * opts in rather than every screen paying. Omitted → neither is read.
+   */
+  rowDetail?: { reports?: boolean; assignments?: boolean };
   /**
    * W6-A — rows open the §8.3 sign-up workspace (`openSuWork`): a "Sign-up"
    * action, the Documents column as a derived roll-up badge linking into it, and
@@ -389,6 +422,9 @@ function resolveTab(tab: StageSubTab): PaneTab {
  */
 export function StagePage({ config: base }: { config: StageConfig }) {
   const role = useContext(AuthContext)?.user?.role;
+  // R7-JURY — the jury's Evaluated table shows the viewer's OWN score, their own
+  // submission date and their own status, so the cells need to know who is asking.
+  const viewerId = useContext(AuthContext)?.user?.id;
   const config = useMemo<StageConfig>(() => {
     const variant = role ? base.roleVariants?.[role] : undefined;
     return variant ? { ...base, ...variant } : base;
@@ -517,7 +553,7 @@ export function StagePage({ config: base }: { config: StageConfig }) {
   }, [candidateKey, stagesKey]);
 
   /** Every row in the stage — what the footer counts. */
-  const stageRows = useMemo<StageRow[]>(() => {
+  const baseRows = useMemo<StageRow[]>(() => {
     const decided = candidateKey && decisions.stages === stagesKey ? decisions.events : {};
     return (decks ?? []).flatMap((deck): StageRow[] => {
       const id = deck.statusId;
@@ -532,6 +568,23 @@ export function StagePage({ config: base }: { config: StageConfig }) {
         : [];
     });
   }, [decks, signups, extras, config, candidateKey, decisions, stagesKey]);
+
+  // R7-JURY — the per-row detail `rowDetail` asked for. `useReportMatrices` is
+  // keyed on the joined id list, so re-deriving the array every render does not
+  // refetch; `useMyAssignments` is one request for the whole screen.
+  const wantsReports = config.rowDetail?.reports === true;
+  const reportIds = useMemo(() => baseRows.map((r) => r.deck.id), [baseRows]);
+  const matrices = useReportMatrices(wantsReports ? reportIds : [], wantsReports);
+  const myAssignments = useMyAssignments(config.rowDetail?.assignments === true);
+
+  const stageRows = useMemo<StageRow[]>(() => {
+    if (!config.rowDetail) return baseRows;
+    return baseRows.map((r) => ({
+      ...r,
+      matrix: wantsReports ? matrices[r.deck.id] : undefined,
+      assignment: myAssignments?.[r.deck.id],
+    }));
+  }, [baseRows, config.rowDetail, wantsReports, matrices, myAssignments]);
 
   const activeFilter = config.toolbar?.filters?.find((f) => f.id === filterId);
   /** The rows on screen — what the table draws and Export writes. */
@@ -611,6 +664,7 @@ export function StagePage({ config: base }: { config: StageConfig }) {
   /** W9-C — what a declared cell or tab may do to the screen. */
   const ctx: StageContext = {
     role,
+    viewerId,
     busy: busy !== null,
     reload: load,
     openTab: (deck, tab) => setPane({ deckId: deck.id, tab }),
@@ -957,7 +1011,7 @@ export function StagePage({ config: base }: { config: StageConfig }) {
     return <DeckSlides extraction={paneEval?.extraction ?? null} />;
   }
 
-  const stat = config.footer?.(stageRows);
+  const stat = config.footer?.(stageRows, ctx);
   const toolbar = config.toolbar;
   // The Action column sits where `columns` places it, else last; the BUILT-IN one
   // (W9-B's transitions cell) is never drawn on a read-only screen. A screen that
@@ -1738,6 +1792,105 @@ const JURY_PIPELINE_V3: Partial<Omit<StageConfig, "roleVariants">> = {
   emptyDescription: "Assigned decks appear here until they are sent to intro calls.",
 };
 
+// ── R7-JURY — the jury's own `panel-jurypipeline`, "Evaluated" ──────────────
+//
+// `AISJ_IC_Jury_V4/panel-jurypipeline` declares TWELVE `<th>`, in this order:
+//
+//   Startup · AI score · Parameters score · Addl. Parameters Score · My score ·
+//   Avg. score · Assigned date · Due date · Submitted date · +/- Days ·
+//   Status · Action
+//
+// Four of them were already right (Startup, AI score, Avg. score, Assigned
+// date), three were half-right and five were absent; two columns the staff
+// screen draws — Jury members & status, and Jury score — are **not on the jury's
+// table at all**, because their per-evaluator number IS "My score" and their
+// deck-level one IS "Avg. score".
+//
+// It is a SEPARATE object from `JURY_PIPELINE_V3`, not a widening of it:
+// `StagePage` applies exactly one variant per role with no composition, and the
+// two screens disagree about the two things V3 is (Status deleted, the
+// two-option select). §5 items 3 and 7 are binding on that.
+//
+// The three cells that read the viewer's own evaluation come from
+// `GET /api/decks/:id/report`, via `rowDetail.reports`; Due date comes from
+// `GET /api/assignments/mine`, via `rowDetail.assignments`.
+
+/** `jpStatusLabel` — the JUROR's own state, not the deck's stage. */
+function jurorStatus(row: StageRow, viewerId?: string): { key: "submitted" | "draft" | "pending"; label: string } {
+  // `In draft` is declared by the prototype and is unreachable in the build:
+  // every score write is a submission (F0195), and giving `evaluations` a
+  // draft row would corrupt four server derivations that read the table
+  // unconditionally. See `docs/parity-requests/R7-JURY.md`.
+  return myEvaluation(row.matrix, viewerId)?.submittedAt
+    ? { key: "submitted", label: "Submitted" }
+    : { key: "pending", label: "Pending" };
+}
+
+const JURY_PIPELINE_JURY: Partial<Omit<StageConfig, "roleVariants">> = {
+  // `.jp-tb-title`. The sidebar has said "Evaluated" since `nav.ts` shipped the
+  // jury's `labelOverrides`; the H1 said "Jury Pipeline" over it.
+  title: "Evaluated",
+  columns: [
+    "startup",
+    "ai",
+    col("paramScores", "Parameters score", (row, ctx) => (
+      <ParamSparkCell deck={row.deck} matrix={row.matrix} onOpen={() => ctx.openReport(row.deck, "core")} />
+    )),
+    col("myAddl", "Addl. Parameters Score", (row, ctx) => (
+      <MyAddlCell
+        deckName={row.deck.name}
+        viewerId={ctx.viewerId}
+        viewerRole={ctx.role}
+        matrix={row.matrix}
+        onOpen={() => ctx.openReport(row.deck, "additional")}
+      />
+    )),
+    // `jpOpenScores(i,'my')` — my own weighted total, opening my parameter scores.
+    col("myScore", "My score", (row, ctx) => (
+      <button
+        type="button"
+        title="View my parameter scores"
+        className="underline-offset-2 hover:underline"
+        onClick={() => ctx.openReport(row.deck, "core")}
+      >
+        <BandScore value={myEvaluation(row.matrix, ctx.viewerId)?.total} />
+      </button>
+    )),
+    "avg",
+    "assignedDate",
+    col("dueDate", "Due date", (row) => (
+      <span className="text-sm text-fg-muted">{fmtDate(row.assignment?.dueAt ?? undefined)}</span>
+    )),
+    col("mySubmittedDate", "Submitted date", (row, ctx) => (
+      <span className="text-sm text-fg-muted">{fmtDate(myEvaluation(row.matrix, ctx.viewerId)?.submittedAt)}</span>
+    )),
+    col("deltaDays", "+/- Days", (row, ctx) => (
+      <DeltaChip delta={dayDelta(row.assignment?.dueAt, myEvaluation(row.matrix, ctx.viewerId)?.submittedAt)} />
+    )),
+    // `.jp-stat` — NOT the deck's stage word. A juror on a shortlisted deck they
+    // have not scored reads "Pending", which is the fact their screen is about.
+    col("myStatus", "Status", (row, ctx) => {
+      const s = jurorStatus(row, ctx.viewerId);
+      return <Badge tone={s.key === "submitted" ? "positive" : "amber"}>{s.label}</Badge>;
+    }),
+    "action",
+  ],
+  minWidth: "92rem",
+  rowDetail: { reports: true, assignments: true },
+  // `jpActionSelect` — one `Action ▾` select whose first option is View deck
+  // (the `#jp-side` "Pitch deck" pane). The prototype's other three options are
+  // deliberately NOT built; the handoff records why, and what a juror keeps.
+  actionMenu: {},
+  // `jpFoot` — counted on the JUROR's own status, like the column above it.
+  footer: (rows, ctx) => {
+    const n = (key: string) => count(rows, (r) => jurorStatus(r, ctx.viewerId).key === key);
+    return (
+      `${plural(rows.length, "deck")} · ${n("submitted")} submitted · ` +
+      `${n("draft")} in draft · ${n("pending")} pending`
+    );
+  },
+};
+
 /** Config for each incubator stage nav slug rendered by StagePage. */
 export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
   // Issue 25 — Startup · Jury members & status · AI · Jury · Avg · Addl.
@@ -1764,10 +1917,16 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
     // V3 item 2 — the v15 shape above is what the JURY keeps, and only the
     // jury: their own `AISJ_IC_Jury_V4` prototype declares both Status and
     // Action, so the repeat the client reported does not exist there (§2 ˢ).
+    // R7-JURY — every role that reaches this slug now declares a variant: the
+    // three staff roles take v3's eight columns, the jury takes their own
+    // prototype's twelve. The base config above is what a role with NEITHER
+    // would get, and is still what `stagePage.test.tsx` renders with no
+    // AuthContext, so the default stays pinned rather than drifting unread.
     roleVariants: {
       superuser: JURY_PIPELINE_V3,
       admin: JURY_PIPELINE_V3,
       program_manager: JURY_PIPELINE_V3,
+      jury: JURY_PIPELINE_JURY,
     },
   },
   // Issue 26 — "as per image9", which is the prototype's `panel-forsignup`

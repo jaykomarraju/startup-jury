@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { Download, Filter, Hand, ListChecks, Settings, Sparkles, UserCheck, X } from "lucide-react";
 import { EvaluationReportModal, PanelFrame, ToolbarButton } from "../components";
 import { EvalScorecard, type AiParamScore } from "../components/EvalScorecard";
@@ -22,7 +22,10 @@ import {
   type RubricParameter,
   type RubricAnchor,
   type HumanScoreInput,
+  type DeckReportMatrix,
+  type MyAssignment,
 } from "../api";
+import { ParamSparkCell, scoreColor, useMyAssignments, useReportMatrices } from "./StageKit";
 import {
   DEFAULT_SCORING_SETTINGS,
   formatScore,
@@ -136,6 +139,26 @@ export function EvaluatePage() {
    * them would rebuild the juror's own Assigned screen.
    */
   const v3 = isV3Up(user?.edition, user?.role);
+  /**
+   * R7-JURY — `AISJ_IC_Jury_V4/panel-jassigned`, "Assigned to me".
+   *
+   * `App.tsx` routes the jury-exclusive `jassigned` slug through this component
+   * as well as `evaluate`. Their prototype draws a six-column table on
+   * `panel-jassigned`, not the v15 three-column workbench launcher — but the
+   * workbench modal below is unchanged and is still what a row opens
+   * (`jrOpen(i)`). This swaps what LAUNCHES the scorer, not the scorer.
+   *
+   * It is gated on the SLUG, not on the role alone. `jassigned` is the only
+   * screen the jury prototype speaks for; `evaluate` is not in their nav at all
+   * (`nav.ts` gives them `jassigned`, `exclusive: true`), and `evaluate-v3`
+   * pins what a juror sees if they reach `/app/evaluate` anyway — the v15
+   * surface. Widening this to the role would silently redraw that screen too.
+   *
+   * It is emphatically NOT V3-UP: `v3` above still excludes the jury, and
+   * `evaluate-v3` pins that boundary on purpose.
+   */
+  const navId = useParams().navId;
+  const juryAssigned = user?.edition === "incubator" && user?.role === "jury" && navId === "jassigned";
   /** V3 column 1's checkboxes. Ids, not indices — the list re-filters. */
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [aiBusy, setAiBusy] = useState(false);
@@ -167,6 +190,9 @@ export function EvaluatePage() {
   const [saved, setSaved] = useState(false);
   /** The deck whose consolidated report is open. */
   const [reportFor, setReportFor] = useState<DeckView | null>(null);
+  // R7-JURY — the Assigned table's sparkline opens the report on Core
+  // Parameters (`jaShowParams`); everything else still opens it on Addl.
+  const [reportTab, setReportTab] = useState<"core" | "additional">("additional");
   /**
    * Which workbench load a response belongs to. StrictMode runs the mount
    * effect twice and a deck can be switched mid-flight; a response for an
@@ -472,12 +498,21 @@ export function EvaluatePage() {
   const activeAdditional = detail?.kind === "additional" ? detail.index : 0;
   const scale = scoringCfg.scoreScale;
 
+  // R7-JURY — the Assigned table's Parameter scores sparkline and its Due date /
+  // Assigned by cells. Both reads are gated on the jury branch, so the v15
+  // screen every other role sees costs exactly what it did before.
+  const rowIds = useMemo(() => rows.map((d) => d.id), [rows]);
+  const matrices = useReportMatrices(juryAssigned ? rowIds : [], juryAssigned);
+  const myAssignments = useMyAssignments(juryAssigned);
+
   return (
     <PanelFrame
       flush
-      title="Evaluate"
+      title={juryAssigned ? "Assigned to me" : "Evaluate"}
       subtitle={
-        v3 ? (
+        juryAssigned ? (
+          "Decks allocated to you for evaluation · click a startup name to open the deck and score it"
+        ) : v3 ? (
           <>
             Select decks and click <b>AI Evaluate</b> · evaluated decks move to the Assign screen. Click a deck to
             open its report.
@@ -548,6 +583,20 @@ export function EvaluatePage() {
           </div>
         )}
 
+        {juryAssigned ? (
+          <JuryAssignedTable
+            rows={rows}
+            loaded={decks !== null}
+            scale={scale}
+            matrices={matrices}
+            assignments={myAssignments}
+            onOpen={openDeck}
+            onOpenParams={(deck) => {
+              setReportTab("core");
+              setReportFor(deck);
+            }}
+          />
+        ) : (
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
           {/* COLUMN 1 — the decks */}
           <section
@@ -745,6 +794,7 @@ export function EvaluatePage() {
             </div>
           </section>
         </div>
+        )}
       </div>
 
       {/* The evaluator workbench — where a deck is scored. */}
@@ -795,7 +845,10 @@ export function EvaluatePage() {
                   : undefined
               }
               onRescored={() => loadDeckData(selected)}
-              onOpenReport={() => setReportFor(selected)}
+              onOpenReport={() => {
+                setReportTab("additional");
+                setReportFor(selected);
+              }}
               busy={busy}
               saved={saved}
               onSave={submit}
@@ -838,12 +891,135 @@ export function EvaluatePage() {
         <EvaluationReportModal
           deckId={reportFor.id}
           deckName={reportFor.name}
-          initialTab="additional"
+          initialTab={reportTab}
           onClose={() => setReportFor(null)}
         />
       )}
     </PanelFrame>
   );
+}
+
+/**
+ * R7-JURY — `panel-jassigned`'s table (`jaRender`), verbatim in its six `<th>`:
+ *
+ *   Startup · AI Score · Parameter scores · Assigned date · Due date · Assigned by
+ *
+ * and its footer, `jaDecks.length + ' decks assigned to you'`. The startup name
+ * is the launcher (`jrOpen(i)`), the sparkline opens the AI's parameter scores
+ * (`jaShowParams(i)`), and the last three cells are `.ja-dim`.
+ *
+ * Due date and Assigned by are per (deck, evaluator) and are not on `DeckView`;
+ * they come from `GET /api/assignments/mine`. Both read "—" while that request
+ * is in flight or if it failed, which is also what an assignment predating
+ * migration 0058's backfill would show.
+ *
+ * Blind scoring is visible here by design, not by accident: a juror who has not
+ * yet submitted for a deck gets no `aiScore` and no AI parameter cells from the
+ * server (`withholdsAiScore`), so those two columns legitimately read "—" until
+ * they score it. That is the toggle working, not a missing cell.
+ */
+function JuryAssignedTable({
+  rows,
+  loaded,
+  scale,
+  matrices,
+  assignments,
+  onOpen,
+  onOpenParams,
+}: {
+  rows: DeckView[];
+  loaded: boolean;
+  scale: ScoringSettings["scoreScale"];
+  matrices: Record<string, DeckReportMatrix | null>;
+  assignments: Record<string, MyAssignment> | null;
+  onOpen: (deck: DeckView) => void;
+  onOpenParams: (deck: DeckView) => void;
+}) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 overflow-auto">
+        {loaded && rows.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 px-6 py-10 text-center text-fg-muted">
+            <ListChecks className="h-9 w-9 opacity-25" aria-hidden="true" />
+            <p className="text-xs leading-relaxed">Nothing to evaluate yet — assigned decks appear here.</p>
+          </div>
+        ) : (
+          <table className="w-full min-w-[60rem] border-collapse text-sm">
+            <thead className="sticky top-0 z-10 bg-surface-2">
+              <tr className="text-left text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-muted">
+                {["Startup", "AI Score", "Parameter scores", "Assigned date", "Due date", "Assigned by"].map((h) => (
+                  <th key={h} className="whitespace-nowrap border-b border-line px-4 py-2.5">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((deck) => {
+                const a = assignments?.[deck.id];
+                return (
+                  <tr key={deck.id} className="border-t border-line align-top">
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
+                        title="Open the deck and score it"
+                        className="text-left font-medium text-fg hover:underline"
+                        onClick={() => onOpen(deck)}
+                      >
+                        {deck.name}
+                      </button>
+                      <div className="mt-0.5 text-xs text-fg-muted">
+                        {[deck.sector, deck.stage, deck.city].filter(Boolean).join(" · ")}
+                      </div>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3">
+                      {deck.aiScore === undefined ? (
+                        <span className="text-sm text-fg-muted">—</span>
+                      ) : (
+                        <span className="font-mono text-sm font-semibold" style={{ color: scoreColor(deck.aiScore) }}>
+                          {formatScore(deck.aiScore, scale)}
+                          <small className="ml-0.5 font-sans font-normal text-fg-muted">
+                            /{toDisplayScale(10, scale)}
+                          </small>
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <ParamSparkCell deck={deck} matrix={matrices[deck.id]} onOpen={() => onOpenParams(deck)} />
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-fg-muted">{fmtDay(a?.assignedAt)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-fg-muted">{fmtDay(a?.dueAt)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-fg-muted">{a?.assignedByName ?? "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+      {/* `ja-foot` */}
+      <div className="border-t border-line bg-surface px-4 py-2.5 text-xs text-fg-muted" data-testid="ja-foot">
+        {rows.length} {rows.length === 1 ? "deck" : "decks"} assigned to you
+      </div>
+    </div>
+  );
+}
+
+/**
+ * `.ja-dim` — "2 Jun 2026", or a dash.
+ *
+ * `en-GB` is pinned, not left to the browser: the prototype writes day-month-
+ * year and `StagePage.fmtDate` already pins the same locale for the same
+ * reason, so the Assigned table and the Evaluated table next to it must not
+ * disagree about what a date looks like. On a US-locale browser `undefined`
+ * gives "Jun 2, 2026".
+ */
+function fmtDay(iso?: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? "—"
+    : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }
 
 /**

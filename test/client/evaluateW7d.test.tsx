@@ -359,7 +359,23 @@ const PARAMETERS: RubricParameter[] = [
   { key: "add_trl", name: "TRL stage", weight: 0, informational: true, roleScope: "program_manager" },
 ];
 
-function mountEvaluate(role: Role = "jury", recommendations?: () => ReturnType<typeof listRecommendations>) {
+/**
+ * The v15 Evaluate surface — the three-column workbench launcher.
+ *
+ * It mounts at `/app/evaluate`, not at `/app/jassigned`. R7-JURY rebuilt the
+ * jury's own `jassigned` screen from `panel-jassigned` as a six-column
+ * allocation table, so the slug that used to render this surface for a juror no
+ * longer does; `evaluate` still does, for every role that reaches it. The role
+ * stays `jury` because the additional parameters these tests read are
+ * `roleScope: "jury"` — it is the caller's role that is load-bearing here, not
+ * the route. `panel-jassigned` itself is pinned in its own describe at the
+ * bottom of this file.
+ */
+function mountEvaluate(
+  role: Role = "jury",
+  recommendations?: () => ReturnType<typeof listRecommendations>,
+  entry = "/app/evaluate",
+) {
   vi.mocked(listDecks).mockResolvedValue({ decks: DECKS } as never);
   vi.mocked(listParameters).mockResolvedValue({ parameters: PARAMETERS, anchors: [] });
   if (recommendations) {
@@ -375,7 +391,7 @@ function mountEvaluate(role: Role = "jury", recommendations?: () => ReturnType<t
   vi.mocked(getMyScores).mockResolvedValue({ scores: [] });
   return render(
     withAuth(
-      <MemoryRouter initialEntries={["/app/jassigned"]}>
+      <MemoryRouter initialEntries={[entry]}>
         <Routes>
           <Route path="/app/:navId" element={<EvaluatePage />} />
         </Routes>
@@ -566,5 +582,144 @@ describe("Scoring framework authors the delta and threshold on the org's scale",
         {},
       ),
     );
+  });
+});
+
+// ── R7-JURY — `panel-jassigned`, "Assigned to me" ───────────────────────────
+//
+// The jury prototype's own allocation table, which is what `/app/jassigned`
+// draws for a juror. The v15 surface above is unchanged and still lives at
+// `/app/evaluate`; this is the screen that replaced it on the jury's slug.
+//
+// Due date and Assigned by are per (deck, evaluator) and are not on `DeckView`,
+// so they come from `GET /api/assignments/mine` — the route R7 added. The last
+// test here is the one that matters most: when that request fails, the screen
+// degrades to dashes instead of breaking.
+
+describe("R7-JURY · the jury's Assigned screen is panel-jassigned", () => {
+  const ASSIGNMENTS = {
+    assignments: [
+      {
+        deckId: "inc_deck_taxpilot",
+        assignedAt: "2026-06-02T12:00:00.000Z",
+        dueAt: "2026-06-09T12:00:00.000Z",
+        assignedByName: "Priya Nair",
+      },
+      {
+        deckId: "inc_deck_insureflow",
+        assignedAt: "2026-06-03T12:00:00.000Z",
+        dueAt: null,
+        assignedByName: null,
+      },
+    ],
+  };
+
+  /** `/api/assignments/mine` answers; everything else 404s, as it did before. */
+  function mockAssignments(body: unknown = ASSIGNMENTS) {
+    globalThis.fetch = vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(
+        String(url).startsWith("/api/assignments/mine")
+          ? new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } })
+          : new Response(null, { status: 404 }),
+      ),
+    ) as typeof fetch;
+  }
+
+  beforeEach(() => {
+    // `useReportMatrices` calls this per row; the default `vi.fn()` returns
+    // undefined and would throw inside the effect.
+    vi.mocked(getDeckReport).mockResolvedValue({ core: [], additional: [], columns: [] } as never);
+    mockAssignments();
+  });
+
+  function mountAssigned() {
+    return mountEvaluate("jury", undefined, "/app/jassigned");
+  }
+
+  it("draws the prototype's title, sub-line, six columns and footer", async () => {
+    mountAssigned();
+    const table = await screen.findByRole("table");
+    await within(table).findByText("TaxPilot");
+
+    expect(screen.getByRole("heading", { level: 1, name: "Assigned to me" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Decks allocated to you for evaluation · click a startup name to open the deck and score it"),
+    ).toBeInTheDocument();
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
+      "Startup",
+      "AI Score",
+      "Parameter scores",
+      "Assigned date",
+      "Due date",
+      "Assigned by",
+    ]);
+    // `jaDecks.length + ' decks assigned to you'` — the juror's own two, not
+    // the four in the fixture.
+    expect(screen.getByTestId("ja-foot")).toHaveTextContent("2 decks assigned to you");
+    // The v15 launcher is gone from this slug.
+    expect(screen.queryByRole("list", { name: "Decks to evaluate" })).toBeNull();
+  });
+
+  /** The rows render before the assignments read lands, so every date assertion waits for it. */
+  const cellsOf = (name: RegExp) => within(screen.getByRole("row", { name })).getAllByRole("cell");
+
+  it("fills Due date and Assigned by from /api/assignments/mine", async () => {
+    mountAssigned();
+    await screen.findByRole("row", { name: /TaxPilot/ });
+
+    await waitFor(() => expect(cellsOf(/TaxPilot/)[4]).toHaveTextContent("9 Jun 2026"));
+    expect(cellsOf(/TaxPilot/)[3]).toHaveTextContent("2 Jun 2026");
+    expect(cellsOf(/TaxPilot/)[5]).toHaveTextContent("Priya Nair");
+  });
+
+  it("a row with no due date and no assigner reads as dashes, not as blank cells", async () => {
+    mountAssigned();
+    await screen.findByRole("row", { name: /InsureFlow/ });
+
+    // Dashes are also the pre-fetch state, so gate on the OTHER row's due date:
+    // one response fills both, so once TaxPilot has its date the read is in and
+    // InsureFlow's dashes are the real answer.
+    await waitFor(() => expect(cellsOf(/TaxPilot/)[4]).toHaveTextContent("9 Jun 2026"));
+    expect(cellsOf(/InsureFlow/)[3]).toHaveTextContent("3 Jun 2026");
+    expect(cellsOf(/InsureFlow/)[4]).toHaveTextContent("—");
+    expect(cellsOf(/InsureFlow/)[5]).toHaveTextContent("—");
+  });
+
+  it("the startup name opens the workbench — the scorer is unchanged, only its launcher", async () => {
+    mountAssigned();
+    const table = await screen.findByRole("table");
+    // Exact — the Parameter scores cell is also labelled "…for TaxPilot".
+    fireEvent.click(await within(table).findByRole("button", { name: "TaxPilot" }));
+
+    // `jrOpen(i)` — the same modal the v15 deck list opened.
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  /**
+   * A 500 from `/api/assignments/mine` must leave the screen usable. The dashes
+   * this asserts are the same dashes the pre-fetch state shows, so the load-
+   * bearing part is not the dash — it is that the rest of the row is intact and
+   * the table is still on screen.
+   *
+   * Its negative control is the one above it — remove the `juryAssigned` branch
+   * in `EvaluatePage` and this fails with the rest of the block. It is NOT a
+   * control on `useMyAssignments`'s `catch`: `null` and `{}` both render dashes,
+   * so emptying that handler leaves this green (measured). The `catch` earns its
+   * place by keeping the rejection handled, which is a different claim, and this
+   * file does not pretend to pin it.
+   */
+  it("survives a failed assignments read — the deck list is still there, the dates are dashes", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 500 })) as typeof fetch;
+    mountAssigned();
+    await screen.findByRole("row", { name: /TaxPilot/ });
+
+    // Everything that does NOT come from the failed read is unaffected.
+    expect(cellsOf(/TaxPilot/)[0]).toHaveTextContent("TaxPilot");
+    expect(cellsOf(/TaxPilot/)[1]).toHaveTextContent("6.9");
+    expect(screen.getByTestId("ja-foot")).toHaveTextContent("2 decks assigned to you");
+    // …and the three cells that do, read as dashes rather than blanking.
+    expect(cellsOf(/TaxPilot/)[3]).toHaveTextContent("—");
+    expect(cellsOf(/TaxPilot/)[4]).toHaveTextContent("—");
+    expect(cellsOf(/TaxPilot/)[5]).toHaveTextContent("—");
   });
 });
