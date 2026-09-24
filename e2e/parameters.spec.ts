@@ -67,17 +67,36 @@ test("an administrator renames a jury parameter and edits its scoring descriptio
     await expect(page.getByLabel(`Scoring description for ${RENAMED}`, { exact: true })).toHaveValue(DESCRIPTION);
 
     // The juror, in a context of their own (a second sign-in on this page would
-    // be redirected to /app), opens their Evaluate screen.
+    // be redirected to /app), sees the rename.
+    //
+    // R7-JURY — this used to read the "at a glance" panel on `/app/jassigned`,
+    // which was column 3 of the v15 Evaluate screen. That screen is now the
+    // jury prototype's six-column allocation table and carries no such panel.
+    // The juror's own My Parameters screen draws the identical panel and IS in
+    // their nav, so the assertions move there unchanged — and the second half
+    // below is the stronger claim anyway: the rename reaches the surface the
+    // juror actually scores on.
     const jurorContext = await browser.newContext({ baseURL: new URL(page.url()).origin });
     try {
       const juror = await jurorContext.newPage();
       await login(juror, JURY);
-      await juror.goto("/app/jassigned");
-      const glance = juror.getByRole("article", { name: "My additional parameters" });
+
+      await juror.goto("/app/myparams");
+      await juror.getByRole("button", { name: "Preview in scoring view" }).click();
+      const glance = juror.getByRole("dialog", { name: "Preview in scoring view" });
       await expect(glance.getByText("Your three additional parameters at a glance")).toBeVisible();
       await expect(glance.getByText(RENAMED)).toBeVisible();
       await expect(glance.getByText(DESCRIPTION)).toBeVisible();
       await expect(glance.getByText("Scalability", { exact: true })).toHaveCount(0);
+      await glance.getByRole("button", { name: "Close preview" }).click();
+
+      // …and in the scorecard itself, opened from the Assigned table.
+      await juror.goto("/app/jassigned");
+      await juror.getByTitle("Open the deck and score it").first().click();
+      const workbench = juror.getByRole("dialog", { name: /^Evaluate / });
+      await expect(workbench.getByText("Additional parameters · your lens")).toBeVisible();
+      await expect(workbench.getByText(RENAMED)).toBeVisible();
+      await expect(workbench.getByText("Scalability", { exact: true })).toHaveCount(0);
     } finally {
       await jurorContext.close();
     }

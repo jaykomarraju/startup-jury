@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, within, configure } from "@testing-library/react";
+import { render, screen, fireEvent, within, configure, waitFor } from "@testing-library/react";
 import {
   StagePage,
   SignupPaneBody,
@@ -606,39 +606,190 @@ describe("V3 · Jury Pipeline is redrawn for the three staff roles, and not for 
     },
   );
 
-  // ── The negative control ──────────────────────────────────────────────────
+  // ── The negative control, and the jury's own twelve columns ───────────────
   //
   // Not "the role we ran out of time for" — the role whose own prototype says
-  // no. `AISJ_IC_Jury_V4`'s `panel-jurypipeline` declares twelve `<th>`,
-  // Status and Action among them, and `jpRender` emits View deck · Submit ·
-  // Save draft · Re-assign. §5 item 7: do not extend V3-JP to the jury.
-  it("the jury still draws the v15 screen — nine headers, Status, and the legend", async () => {
-    mockApi([underJury(), assigned()]);
+  // no. `AISJ_IC_Jury_V4`'s `panel-jurypipeline` declares TWELVE `<th>`, Status
+  // and Action among them. §5 item 7: do not extend V3-JP to the jury.
+  //
+  // R7-JURY built those twelve. What this block still has to prove is the part
+  // that has not changed — that whatever the jury's screen is, it is NOT
+  // `JURY_PIPELINE_V3`: Status survives, the legend survives, and the
+  // two-option "Send to intro calls" select never appears. What it now also
+  // proves is that the jury's table is their own and not the staff's: the two
+  // deck-level columns the staff screen draws are gone, and Status is the
+  // JUROR's state rather than the deck's stage word.
+
+  /**
+   * `mockApi`, plus the two reads the jury's columns need: the per-deck report
+   * (My score, Submitted date, Status) and the caller's own assignments (Due
+   * date, and the `+/- Days` measured against it).
+   *
+   * `submitted` names the decks THIS viewer (`u1`) has submitted for.
+   */
+  function mockJuryApi(
+    decks: DeckView[],
+    opts: { submitted?: Record<string, string>; due?: Record<string, string> } = {},
+  ) {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      let body: unknown = {};
+      if (url === "/api/decks" || url.startsWith("/api/decks?")) body = { decks };
+      else if (url.startsWith("/api/assignments/mine")) {
+        body = {
+          assignments: decks.map((d) => ({
+            deckId: d.id,
+            assignedAt: "2026-06-01T12:00:00.000Z",
+            dueAt: opts.due?.[d.id] ?? null,
+            assignedByName: "Priya Nair",
+          })),
+        };
+      } else if (/^\/api\/decks\/[^/]+\/report/.test(url)) {
+        const id = url.split("/")[3];
+        const at = opts.submitted?.[id];
+        body = {
+          core: [],
+          additional: [],
+          columns: at ? [{ kind: "human", id: "u1", total: 7.6, submittedAt: at }] : [],
+        };
+      } else if (url.startsWith("/api/decks/")) {
+        body = { deck: decks[0], scores: SCORES, extraction: EXTRACTION, versions: [] };
+      }
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+  }
+
+  it("the jury draws their own twelve columns — not the staff nine, and not V3's eight", async () => {
+    mockJuryApi([underJury(), assigned()]);
     renderAs("jury");
     await screen.findByRole("row", { name: /InsureFlow/ });
 
+    // `panel-jurypipeline`'s `<th>` set, in the prototype's order.
     expect(headers(screen.getByRole("table"))).toEqual([
       "Startup",
-      "Jury members & status",
       "AI score",
-      "Jury score",
+      "Parameters score",
+      "Addl. Parameters Score",
+      "My score",
       "Avg. score",
-      "Addl. Parameter scores",
       "Assigned date",
+      "Due date",
+      "Submitted date",
+      "+/- Days",
       "Status",
       "Action",
     ]);
+    // `.jp-tb-title`, which the sidebar has always called "Evaluated".
+    expect(screen.getByRole("heading", { level: 1, name: "Evaluated" })).toBeInTheDocument();
+
+    // The two deck-level columns the STAFF screen draws are not on the jury's
+    // table: their per-evaluator number is "My score", their deck-level one is
+    // "Avg. score".
+    expect(headers(screen.getByRole("table"))).not.toContain("Jury members & status");
+    expect(headers(screen.getByRole("table"))).not.toContain("Jury score");
+
+    // …and none of V3-JP reaches them: the legend and Status both survive, and
+    // the two-option select never appears.
     expect(within(screen.getByTestId("stage-legend")).getAllByText(/./).map((n) => n.textContent)).toEqual([
       "Assigned",
       "Shortlisted",
       "Rejected",
       "Pending",
     ]);
-    // The v15 transitions, as buttons — not the two-option select.
-    expect(screen.getByRole("button", { name: "Shortlist" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
-    expect(within(screen.getByRole("row", { name: /InsureFlow/ })).getByText("Submitted")).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Send to intro calls" })).not.toBeInTheDocument();
+  });
+
+  /**
+   * The behaviour change with the sharpest edge. The build's Status cell drew
+   * `deck.status` — the DECK's stage word — for every role. The prototype's
+   * `jpStatusLabel` is the JUROR's own state, so a deck sitting at Jury
+   * Evaluation that this juror has not scored reads "Pending", and one they
+   * have scored reads "Submitted" whatever the stage says.
+   *
+   * The third row is the one that separates the two readings: a SHORTLISTED
+   * deck the viewer never submitted for. Under the old cell it read
+   * "Shortlisted"; under the prototype's it reads "Pending".
+   */
+  it("Status is the juror's own state, not the deck's stage word", async () => {
+    mockJuryApi([underJury(), assigned(), deck({ id: "d-sl", name: "GreenRoute", actions: [] })], {
+      submitted: { "d-jury": "2026-06-08T12:00:00.000Z" },
+    });
+    renderAs("jury");
+    await screen.findByRole("row", { name: /GreenRoute/ });
+
+    const statusOf = (name: RegExp) =>
+      within(screen.getByRole("row", { name })).getAllByRole("cell")[10];
+
+    // "Pending" is also what a row reads BEFORE its report arrives, so the two
+    // Pending assertions below would pass on the pre-fetch state. Gate them on
+    // the one row that must change: `useReportMatrices` resolves every deck in
+    // a single `Promise.all`, so once InsureFlow reads "Submitted" every matrix
+    // on the screen has landed.
+    await waitFor(() => expect(statusOf(/InsureFlow/)).toHaveTextContent("Submitted"));
+    expect(statusOf(/TaxPilot/)).toHaveTextContent("Pending");
+    // Shortlisted deck, unscored by this juror — the stage word does not leak.
+    expect(statusOf(/GreenRoute/)).toHaveTextContent("Pending");
+    expect(statusOf(/GreenRoute/)).not.toHaveTextContent("Shortlisted");
+  });
+
+  it("Submitted date and +/- Days come from the juror's own submission against their own due date", async () => {
+    mockJuryApi([underJury(), assigned()], {
+      // Due the 10th, submitted the 8th — two days early.
+      submitted: { "d-jury": "2026-06-08T12:00:00.000Z" },
+      due: { "d-jury": "2026-06-10T12:00:00.000Z", "d-assigned": "2026-06-10T12:00:00.000Z" },
+    });
+    renderAs("jury");
+    await screen.findByRole("row", { name: /InsureFlow/ });
+    const cellsOf = (name: RegExp) => within(screen.getByRole("row", { name })).getAllByRole("cell");
+
+    // The delta needs BOTH reads — the due date and the submission — so waiting
+    // for it is the gate on the whole row.
+    await waitFor(() => expect(cellsOf(/InsureFlow/)[9]).toHaveTextContent("-2d early"));
+    expect(cellsOf(/InsureFlow/)[7]).toHaveTextContent("10 Jun 2026"); // Due date
+    expect(cellsOf(/InsureFlow/)[8]).toHaveTextContent("8 Jun 2026"); // Submitted date
+
+    // An unsubmitted row has no delta at all — not "0", not "On time" — even
+    // though it has a due date.
+    expect(cellsOf(/TaxPilot/)[7]).toHaveTextContent("10 Jun 2026");
+    expect(cellsOf(/TaxPilot/)[8]).toHaveTextContent("—");
+    expect(cellsOf(/TaxPilot/)[9]).toHaveTextContent("—");
+  });
+
+  it("the footer counts the juror's own statuses, not the stage's", async () => {
+    mockJuryApi([underJury(), assigned(), deck({ id: "d-sl", name: "GreenRoute", actions: [] })], {
+      submitted: { "d-jury": "2026-06-08T12:00:00.000Z" },
+    });
+    renderAs("jury");
+    await screen.findByRole("row", { name: /GreenRoute/ });
+
+    // `jpFoot`. "In draft" is always 0 in the build — see the handoff.
+    await waitFor(() =>
+      expect(screen.getByTestId("stage-footer-stat")).toHaveTextContent(
+        "3 decks · 1 submitted · 0 in draft · 2 pending",
+      ),
+    );
+  });
+
+  /**
+   * The Action column is the one place the prototype and the build disagree
+   * about substance rather than shape. `jpAction`'s options are View deck ·
+   * Submit · Save draft · Re-assign; a juror in the build holds neither a draft
+   * nor a re-assign, and DOES hold shortlist and reject, which the prototype's
+   * select never offers.
+   *
+   * What shipped takes the prototype's SHAPE — one `Action ▾` select, View deck
+   * first — and keeps the build's substance inside it. The assertion that
+   * matters is the second one: the two transitions must still be reachable.
+   * Dropping them to match the prototype's option list literally would remove
+   * two permissions `pipeline/incubator.ts` grants.
+   */
+  it("the Action column is the prototype's select, and the juror's two transitions survive inside it", async () => {
+    mockJuryApi([underJury()]);
+    renderAs("jury");
+    const row = await screen.findByRole("row", { name: /InsureFlow/ });
+
+    expect(within(row).getByRole("combobox", { name: "Action for InsureFlow" })).toBeInTheDocument();
+    expect(optionsOf(row)).toEqual(["Action ▾", "View deck", "Shortlist", "Reject"]);
   });
 
   // The program associate has no `jurypipeline` nav at all (`nav.ts`,

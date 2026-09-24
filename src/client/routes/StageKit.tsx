@@ -12,9 +12,9 @@
 // declares what it needs instead of re-deriving the markup.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { BarChart3, Filter, Presentation, Signature, X } from "lucide-react";
+import { BarChart3, Filter, Presentation, Signature, Table2, X } from "lucide-react";
 import { ToolbarButton, type ParamScoreView, type ExtractionSlide } from "../components";
-import { getDeck, getDeckReport, type DeckReportMatrix } from "../api";
+import { getDeck, getDeckReport, getMyAssignments, type DeckReportMatrix, type MyAssignment } from "../api";
 import type { DeckView } from "../types";
 
 /** `jpColor` / `ncColor` / `suColor` — ≥8 green, ≥6 olive, else amber. */
@@ -408,4 +408,193 @@ export function Sparkline({ values }: { values: number[] }) {
       ))}
     </span>
   );
+}
+
+// ── R7-JURY · the cells the jury's own panels share ─────────────────────────
+//
+// `AISJ_IC_Jury_V4` draws the same four cells on three of its screens —
+// `panel-jassigned` ("Parameter scores"), `panel-jurypipeline` ("Parameters
+// score", "Addl. Parameters Score", "My score") and `panel-introcalls`. They
+// were built once already, inside `CallsPage`, for the thirteen-column intro
+// calls table; `jaSparkCell` and `jaAddlCell` are `window`-scoped in the
+// prototype for exactly this reason. They live here now so `StagePage`,
+// `CallsPage` and `EvaluatePage` draw the juror's numbers from ONE
+// implementation rather than three.
+
+/** `jaSparkCell` — the AI's core parameter values for one deck, rubric order. */
+export function aiParamValues(matrix: DeckReportMatrix | null | undefined): number[] {
+  return (matrix?.core ?? [])
+    .map((row) => row.cells.ai?.value)
+    .filter((v): v is number => typeof v === "number");
+}
+
+/** `jaSparkCell` — the clickable sparkline, opening the report's Core Parameters tab. */
+export function ParamSparkCell({
+  deck,
+  matrix,
+  onOpen,
+}: {
+  deck: DeckView;
+  matrix: DeckReportMatrix | null | undefined;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title="View AI parameter scores"
+      aria-label={`AI parameter scores for ${deck.name}`}
+      className="inline-flex items-center gap-1"
+      onClick={onOpen}
+    >
+      <Sparkline values={aiParamValues(matrix)} />
+      <BarChart3 className="h-3 w-3 text-fg-muted" aria-hidden="true" />
+    </button>
+  );
+}
+
+/**
+ * `jaAddlCell` — the viewer's own three additional parameters as chips
+ * (`CUSTOM_PARAMS`: Barriers of entry · Scalability · Industry growth), opening
+ * the report's Addl. parameters tab. Lifted verbatim from `CallsPage`, which
+ * now calls this.
+ *
+ * The button carries a STABLE `aria-label`, and that is load-bearing rather
+ * than decoration. What it draws changes as the report lands — the "View
+ * scores" fallback before, the viewer's chips after, and the chips' own text
+ * once they arrive — so without a fixed name the only way to click this cell is
+ * to name one of those states and race the fetch. `evaluate-stage-report` did
+ * exactly that (`getByRole("button", { name: /View scores/ })`) and flaked for
+ * it: measured alone on a drained box, the first attempt timed out after 120s
+ * because the chips had legitimately replaced the fallback, and the retry
+ * passed only by clicking inside the pre-fetch window. Name the cell, not its
+ * current contents.
+ */
+export function MyAddlCell({
+  deckName,
+  viewerId,
+  viewerRole,
+  matrix,
+  onOpen,
+}: {
+  deckName: string;
+  viewerId?: string;
+  viewerRole?: string;
+  matrix: DeckReportMatrix | null | undefined;
+  onOpen: () => void;
+}) {
+  const group = matrix?.additional?.find((g) => g.role === viewerRole);
+  const mine = (group?.rows ?? [])
+    .map((r) => ({ name: r.name, value: viewerId ? r.cells[viewerId]?.value : undefined }))
+    .slice(0, 3);
+  return (
+    <button
+      type="button"
+      title="See each role's three additional parameters & scores"
+      aria-label={`Additional parameter scores for ${deckName}`}
+      className="flex flex-wrap items-center gap-1"
+      onClick={onOpen}
+    >
+      {mine.length > 0 ? (
+        mine.map((m) => (
+          <span
+            key={m.name}
+            title={m.name}
+            className="rounded-md bg-olive-lt px-1.5 py-0.5 font-mono text-[11px] font-semibold"
+            style={{ color: m.value !== undefined ? scoreColor(m.value) : undefined }}
+          >
+            {m.value !== undefined ? m.value.toFixed(1) : "—"}
+          </span>
+        ))
+      ) : (
+        <span className="inline-flex items-center gap-1 rounded-md border border-line bg-olive-lt px-2 py-1 text-[11px] font-semibold text-olive-dk">
+          <Table2 className="h-3 w-3" aria-hidden="true" /> View scores
+        </span>
+      )}
+    </button>
+  );
+}
+
+/**
+ * The viewer's own evaluation of a deck, from the report matrix.
+ *
+ * `submittedAt` is the gate on the score, not the presence of the column: an
+ * evaluator who holds the deck but has not scored it has a column with no
+ * total, and the prototype's `My score` is blank until they submit.
+ */
+export function myEvaluation(
+  matrix: DeckReportMatrix | null | undefined,
+  viewerId?: string,
+): { total?: number; submittedAt?: string } | undefined {
+  // `columns?.` rather than `columns.` — a report that arrived without the key
+  // (a truncated payload, an older stage layout) must leave the cell blank, not
+  // throw inside a table cell and blank the whole screen.
+  const me = matrix?.columns?.find((c) => c.kind === "human" && c.id === viewerId);
+  if (!me) return undefined;
+  return { total: me.submittedAt ? me.total : undefined, submittedAt: me.submittedAt };
+}
+
+/**
+ * `jpDelta` — the Evaluated table's `+/- Days`: the submission measured against
+ * the deadline. Negative reads "-3d early", zero "On time", positive "+4d
+ * late", and a row with no due date or no submission has no delta at all.
+ *
+ * The two timestamps are whole days apart in intent (`dueAtFrom` adds days), so
+ * the comparison is made on calendar days rather than on the raw millisecond
+ * difference — a submission at 09:00 on the due date is "On time", not "-1d
+ * early".
+ */
+export function dayDelta(dueAt?: string | null, submittedAt?: string | null): number | null {
+  if (!dueAt || !submittedAt) return null;
+  const due = Date.parse(dueAt);
+  const sub = Date.parse(submittedAt);
+  if (Number.isNaN(due) || Number.isNaN(sub)) return null;
+  const day = 86_400_000;
+  return Math.round(sub / day) - Math.round(due / day);
+}
+
+/** `jpDelta`'s chip — green early or on time, red late, a dash for neither. */
+export function DeltaChip({ delta }: { delta: number | null }) {
+  if (delta === null) return <span className="text-sm text-fg-muted">—</span>;
+  const late = delta > 0;
+  return (
+    <span
+      className="rounded-md px-1.5 py-0.5 text-[11px] font-semibold"
+      style={{
+        background: late ? "var(--red-lt)" : "var(--green-lt)",
+        color: late ? "var(--red)" : "var(--green)",
+      }}
+    >
+      {delta === 0 ? "On time" : late ? `+${delta}d late` : `${delta}d early`}
+    </span>
+  );
+}
+
+/**
+ * The caller's own `deck_assignments` rows, keyed by deck id
+ * (`GET /api/assignments/mine`). Read by the jury screens that draw a Due date,
+ * an Assigned by or a `+/- Days`.
+ *
+ * `null` until the first response, and an empty map if it fails. The two are
+ * deliberately NOT distinguished on screen — a cell with no assignment reads
+ * "—" either way — so the `catch` is here to stop a failed side read becoming
+ * an unhandled rejection, not to drive a different rendering. Do not add an
+ * error state to it without giving the screens something to draw for one.
+ */
+export function useMyAssignments(enabled: boolean): Record<string, MyAssignment> | null {
+  const [rows, setRows] = useState<Record<string, MyAssignment> | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let live = true;
+    getMyAssignments()
+      .then((r) => {
+        if (live) setRows(Object.fromEntries(r.assignments.map((a) => [a.deckId, a])));
+      })
+      .catch(() => {
+        if (live) setRows({});
+      });
+    return () => {
+      live = false;
+    };
+  }, [enabled]);
+  return rows;
 }

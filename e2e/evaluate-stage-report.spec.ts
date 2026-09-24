@@ -40,34 +40,40 @@ test("a juror works a deck end to end, and the Assigned report differs from the 
   await login(page, "rajesh.kumar@demo.startupjury.ai"); // inc_jury
   await page.goto("/app/jassigned");
 
-  // ── The toolbar and the columns, as the prototype draws them ───────────────
-  await expect(page.getByRole("heading", { level: 1, name: "Evaluate" })).toBeVisible();
-  await expect(page.getByText("Click a deck to open its evaluation report · set its status alongside")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Filter" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Export" })).toBeVisible();
+  // ── The columns, as the JURY's prototype draws them ────────────────────────
+  //
+  // R7-JURY — `panel-jassigned`, the six-column allocation table. It replaced
+  // the v15 three-panel launcher this test used to walk, so the steps that
+  // belonged to that launcher are gone with it: the parameter browser
+  // (columns 2 and 3, "Review Traction & Validation") and the per-row
+  // recommendation select ("Status for WealthOS"). Neither is on the jury
+  // prototype's screen — it declares no toolbar, no Status and no Action — and
+  // neither has another home for a juror. Both are recorded as an open question
+  // in `docs/parity-requests/R7-JURY.md`; if the client wants the
+  // recommendation back, this is the test that should grow it again.
+  //
+  // What this test is actually about is untouched: a juror scores a deck and
+  // the report they open differs by the stage they opened it from.
+  await expect(page.getByRole("heading", { level: 1, name: "Assigned to me" })).toBeVisible();
+  await expect(
+    page.getByText("Decks allocated to you for evaluation · click a startup name to open the deck and score it"),
+  ).toBeVisible();
 
-  const list = page.getByRole("list", { name: "Decks to evaluate" });
-  const row = list.getByRole("listitem").filter({ hasText: "WealthOS" });
+  const row = page.getByRole("row", { name: /WealthOS/ });
   await expect(row).toBeVisible();
-  await expect(page.getByTestId("ev-decks-label")).toHaveText(/^\d+ decks? · click to open report$/);
-  await expect(page.getByText("Click Review to see the full prompt")).toBeVisible();
-  await expect(page.getByText("My additional parameters (Jury Member)")).toBeVisible();
-  await expect(page.getByText("Core evaluation parameters")).toBeVisible();
-
-  // ── Review a parameter: prompt, clarification questions, rubric anchors ────
-  await page.getByRole("button", { name: "Review Traction & Validation" }).click();
-  const detail = page.getByRole("article", { name: "Traction & Validation detail" });
-  await expect(detail.getByText("AI clarification questions (asked when signals are weak)")).toBeVisible();
-  await expect(detail.getByText("Rubric anchors")).toBeVisible();
-
-  // ── Set its status alongside ───────────────────────────────────────────────
-  const status = row.getByLabel("Status for WealthOS");
-  await status.selectOption("hold");
-  await expect(page.getByText("WealthOS → Hold")).toBeVisible();
-  await expect(status).toHaveValue("hold");
+  await expect(page.getByTestId("ja-foot")).toHaveText(/^\d+ decks? assigned to you$/);
+  // `jaRender`'s six `<th>`, in order.
+  await expect(page.getByRole("table").getByRole("columnheader")).toHaveText([
+    "Startup",
+    "AI Score",
+    "Parameter scores",
+    "Assigned date",
+    "Due date",
+    "Assigned by",
+  ]);
 
   // ── Open it and score every parameter ──────────────────────────────────────
-  await row.getByTitle("Open evaluation report").click();
+  await row.getByRole("button", { name: "WealthOS", exact: true }).click();
   const workbench = page.getByRole("dialog", { name: "Evaluate WealthOS" });
   await expect(workbench.getByRole("heading", { name: "WealthOS" })).toBeVisible();
   const submit = workbench.getByRole("button", { name: "Submit my evaluation" });
@@ -101,7 +107,16 @@ test("a juror works a deck end to end, and the Assigned report differs from the 
   // ── The report opened from Intro calls ─────────────────────────────────────
   await page.goto("/app/introcalls");
   await expect(page.getByRole("heading", { name: "My Intro calls" })).toBeVisible();
-  await page.getByRole("row", { name: /GreenRoute/ }).getByRole("button", { name: /View scores/ }).click();
+  // The Addl. Parameters Score cell, by its stable name rather than by whatever
+  // it happens to be showing. It used to be clicked as /View scores/, which is
+  // only the cell's EMPTY state: this juror has their own three chips on
+  // GreenRoute, so once the report matrix lands the fallback is gone and the
+  // click can never resolve. Measured alone on a drained box, that timed out
+  // after 120s and passed on retry only by beating the fetch. See `MyAddlCell`.
+  await page
+    .getByRole("row", { name: /GreenRoute/ })
+    .getByRole("button", { name: "Additional parameter scores for GreenRoute" })
+    .click();
   const introReport = page.getByRole("dialog", { name: "Evaluation report — GreenRoute" });
   await expect(introReport.getByTestId("report-stage")).toHaveText("Intro calls stage");
   const fromIntro = await reportSections(page, "GreenRoute");
@@ -122,6 +137,11 @@ test("a programme manager's Intro calls report shows the jury's section as compl
   await login(page, "raj.kumar@demo.startupjury.ai"); // inc_pm
   await page.goto("/app/introcalls");
   await expect(page.getByRole("heading", { name: "Intro calls" })).toBeVisible();
+  // NOT the same cell as the juror's above, and deliberately left alone. The
+  // staff column set draws "Addl. Parameter scores" as a plain, permanent
+  // `View scores` button (`CallsPage`'s `columns`), never as the viewer's own
+  // chips — `MyAddlCell` is on the JURY's thirteen-column variant only. So this
+  // locator has no state to race and is correct as it stands.
   await page.getByRole("row", { name: /GreenRoute/ }).getByRole("button", { name: /View scores/ }).click();
 
   const report = page.getByRole("dialog", { name: "Evaluation report — GreenRoute" });

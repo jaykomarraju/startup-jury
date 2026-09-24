@@ -288,17 +288,56 @@ describe("the negative control — the two roles that must NOT have it", () => {
    * The trap, made explicit. `App.tsx` points the jury-exclusive `jassigned`
    * screen at this same component, so a juror added to `V3_UP_ROLES` would not
    * gain a new screen — they would lose the one they score on, rebuilt around a
-   * multi-select and an "AI Evaluate" button they hold no permission for. The
-   * two assertions below are the pair: the workbench entry point is still there,
-   * and none of v3's chrome is.
+   * multi-select and an "AI Evaluate" button they hold no permission for.
+   *
+   * R7-JURY rebuilt this screen from `panel-jassigned`, so it is no longer the
+   * v15 deck list — but the boundary this test exists for is unchanged and is
+   * what is asserted: whatever `jassigned` draws, it is never V3-UP's chrome.
+   * The row still opens the workbench, and nothing selects it.
    */
   it("and on their OWN screen, /app/jassigned, which is the one that matters", async () => {
     mount("jury", "incubator", "/app/jassigned");
-    const list = await deckList();
-    expectV15Surface();
+    const table = await screen.findByRole("table");
+    await within(table).findByText("TaxPilot");
 
-    // Still a juror's screen: the row opens the report, and nothing selects it.
-    expect(within(list).getByRole("button", { name: /TaxPilot/ })).toBeInTheDocument();
-    expect(within(list).queryByRole("checkbox")).toBeNull();
+    // The jury prototype's six columns, not V3's — and not the v15 launcher.
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
+      "Startup",
+      "AI Score",
+      "Parameter scores",
+      "Assigned date",
+      "Due date",
+      "Assigned by",
+    ]);
+    expect(screen.getByTestId("ja-foot")).toHaveTextContent("2 decks assigned to you");
+
+    // None of V3's chrome reaches it.
+    expect(screen.queryByRole("button", { name: "AI Evaluate" })).toBeNull();
+    expect(screen.queryByLabelText("Select all decks")).toBeNull();
+    expect(screen.queryByTestId("ev-col1-count")).toBeNull();
+    expect(screen.queryByLabelText("Select TaxPilot")).toBeNull();
+    expect(within(table).queryByRole("checkbox")).toBeNull();
+
+    // Still a juror's screen: the startup name opens the scorer. Exact — the
+    // Parameter scores cell is also labelled "…for TaxPilot".
+    expect(within(table).getByRole("button", { name: "TaxPilot" })).toBeInTheDocument();
+  });
+
+  /**
+   * The slug half of the same boundary, at component level. `juryAssigned` is
+   * gated on the `jassigned` slug rather than on the role, so the Assigned
+   * table cannot leak onto a screen the jury prototype does not speak for.
+   *
+   * In the running app a juror never reaches `/app/evaluate` at all —
+   * `RequireNav` refuses it, because `evaluate` is not in their nav — so this
+   * mounts the component directly, as the test above it always has. What it
+   * pins is the gate, not a route a juror can walk.
+   */
+  it("a juror at /app/evaluate gets neither V3 nor the Assigned table", async () => {
+    mount("jury");
+    await deckList();
+    expectV15Surface();
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByTestId("ja-foot")).toBeNull();
   });
 });

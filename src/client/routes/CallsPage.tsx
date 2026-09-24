@@ -37,7 +37,6 @@ import {
   X,
   BarChart3,
   Archive,
-  Table2,
   Leaf,
   CheckCircle2,
 } from "lucide-react";
@@ -84,9 +83,10 @@ import {
   DeckSlides,
   DetailPane,
   FilterMenu,
-  Sparkline,
+  MyAddlCell,
+  ParamSparkCell,
   StageFooter,
-  scoreColor,
+  myEvaluation,
   useReportMatrices,
   usePaneEvaluation,
   type FilterOption,
@@ -1445,36 +1445,22 @@ export function CallsPage({ config }: { config: CallsConfig }) {
     );
   }
 
-  /** `jaAddlCell` — the viewer role's additional parameters, as chips. */
+  /**
+   * `jaAddlCell` — the viewer role's additional parameters, as chips.
+   *
+   * R7-JURY lifted the body into `StageKit.MyAddlCell`: the jury's Evaluated
+   * table draws the same cell, and the prototype's own `jaAddlCell` is one
+   * `window`-scoped function shared by all three of their panels.
+   */
   function myAddlCell(deck: DeckView, matrix: DeckReportMatrix | null | undefined) {
-    const group = matrix?.additional.find((g) => g.role === user?.role);
-    const mine = (group?.rows ?? [])
-      .map((r) => ({ name: r.name, value: user ? r.cells[user.id]?.value : undefined }))
-      .slice(0, 3);
     return (
-      <button
-        type="button"
-        title="See each role's three additional parameters & scores"
-        className="flex flex-wrap items-center gap-1"
-        onClick={() => setReportFor({ deck, tab: "additional" })}
-      >
-        {mine.length > 0 ? (
-          mine.map((m) => (
-            <span
-              key={m.name}
-              title={m.name}
-              className="rounded-md bg-olive-lt px-1.5 py-0.5 font-mono text-[11px] font-semibold"
-              style={{ color: m.value !== undefined ? scoreColor(m.value) : undefined }}
-            >
-              {m.value !== undefined ? m.value.toFixed(1) : "—"}
-            </span>
-          ))
-        ) : (
-          <span className="inline-flex items-center gap-1 rounded-md border border-line bg-olive-lt px-2 py-1 text-[11px] font-semibold text-olive-dk">
-            <Table2 className="h-3 w-3" /> View scores
-          </span>
-        )}
-      </button>
+      <MyAddlCell
+        deckName={deck.name}
+        viewerId={user?.id}
+        viewerRole={user?.role}
+        matrix={matrix}
+        onOpen={() => setReportFor({ deck, tab: "additional" })}
+      />
     );
   }
 
@@ -1552,29 +1538,18 @@ export function CallsPage({ config }: { config: CallsConfig }) {
     { header: "AI score", render: (r) => aiCell(r.deck) },
     {
       header: "Parameters score",
-      render: (r) => {
-        const values = (matrices[r.deck.id]?.core ?? [])
-          .map((row) => row.cells.ai?.value)
-          .filter((v): v is number => typeof v === "number");
-        return (
-          <button
-            type="button"
-            title="AI parameter scores"
-            aria-label={`AI parameter scores for ${r.deck.name}`}
-            onClick={() => setReportFor({ deck: r.deck, tab: "core" })}
-          >
-            <Sparkline values={values} />
-          </button>
-        );
-      },
+      render: (r) => (
+        <ParamSparkCell
+          deck={r.deck}
+          matrix={matrices[r.deck.id]}
+          onOpen={() => setReportFor({ deck: r.deck, tab: "core" })}
+        />
+      ),
     },
     { header: "Addl. Parameters Score", render: (r) => myAddlCell(r.deck, matrices[r.deck.id]) },
     {
       header: "My score",
-      render: (r) => {
-        const me = matrices[r.deck.id]?.columns.find((c) => c.kind === "human" && c.id === user?.id);
-        return <BandScore value={me?.submittedAt ? me.total : undefined} />;
-      },
+      render: (r) => <BandScore value={myEvaluation(matrices[r.deck.id], user?.id)?.total} />,
     },
     { header: "Av. Score", render: (r) => <BandScore value={r.deck.decisionScore} /> },
     { header: "Call scheduled", render: (r) => scheduledCell(r) },
