@@ -440,8 +440,25 @@ describe("the buy-seats sub-flow", () => {
 
 /**
  * v3 turned step 4 into **Nominate your super user**. Everything above this
- * block is the admin's step, unchanged — `AISJ_ICAdmin_V6` still contains
+ * block is the full `manages` step — `AISJ_ICAdmin_V6` still contains
  * `su-addmember` and `su-seatbar`, so it must render exactly as it did.
+ *
+ * ── R3-SETUP · where that step is still REACHED ─────────────────────────────
+ * Item 6 deletes step 4 for the incubator admin and programme manager as well
+ * as the super user, so in the incubator NO role reaches `TeamStep`'s `manages`
+ * half any more — the program associate's `readonly` seat lands in the `!manages`
+ * branch, and nobody else has a step 4 at all. The branch is now unreachable for
+ * that edition exactly as `nominateOnly` already was, and is KEPT for the same
+ * reason: the VC edition was never rescoped and its admin and super user still
+ * walk all four steps, and item 6 is a recorded deviation that can be reversed.
+ *
+ * That is why the negative control below is a VC principal and no longer an
+ * incubator admin: a test named "an ADMIN's step 4 is untouched" would have
+ * gone on passing against a step that incubator admin can no longer open. The
+ * tests ABOVE this block still render an incubator admin deliberately — they
+ * pin the component, which is shared, not the route that reaches it — and the
+ * dead incubator branch is recorded for a Wave R+1 cleanup rather than deleted
+ * here, where deleting it would mix a restyle with a removal.
  */
 describe("the super user's team step", () => {
   /** The signed-in principal, not the roster row — `SUPER` above is that. */
@@ -505,13 +522,17 @@ describe("the super user's team step", () => {
   });
 
   /**
-   * The negative control. `AISJ_ICAdmin_V6` and every VC file still contain
-   * `su-addmember`, so this is what tells the difference between "narrowed for
-   * the super user" and "narrowed for everybody".
+   * The negative controls, and they are VC now — see the block comment above.
+   * Every VC file still contains `su-addmember`, and both VC `full` seats still
+   * walk all four steps, so this is what tells the difference between "narrowed
+   * for the incubator's three managing roles" and "narrowed for everybody".
    */
-  it("an ADMIN's step 4 is untouched — the owner card, the roster and the add row", async () => {
+  it.each([
+    ["super user", "superuser" as const],
+    ["admin", "admin" as const],
+  ])("a VC %s's step 4 is untouched — the VC edition was not rescoped", async (_label, role) => {
     mockApi(seatsView());
-    renderTeam();
+    renderTeam({ edition: "vc", user: { ...SUPER_USER, role, edition: "vc" } });
     await screen.findByTestId("seat-bar");
     expect(screen.getByRole("heading", { name: "Add team members" })).toBeInTheDocument();
     expect(screen.getByText("You — account owner")).toBeInTheDocument();
@@ -519,13 +540,5 @@ describe("the super user's team step", () => {
     expect(screen.getByRole("tab", { name: /View all members/ })).toBeInTheDocument();
     expect(screen.queryByTestId("su-handoff")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Nominate your super user" })).toBeNull();
-  });
-
-  it("a VC super user's step 4 is untouched too — the VC edition was not rescoped", async () => {
-    mockApi(seatsView());
-    renderTeam({ edition: "vc", user: { ...SUPER_USER, edition: "vc" } });
-    await screen.findByTestId("seat-bar");
-    expect(screen.getByRole("heading", { name: "Add team members" })).toBeInTheDocument();
-    expect(screen.queryByTestId("su-handoff")).toBeNull();
   });
 });

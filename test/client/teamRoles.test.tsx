@@ -550,15 +550,22 @@ describe("account owner (F0062)", () => {
   it("names the owner, and offers the handover only to the owner", async () => {
     mockApi("incubator", ROSTER);
     const view = renderSection(<TeamRolesSection />, "incubator", "admin");
+    // Gate on the POPULATED card, never on the testid: `AccountOwnerCard`
+    // renders the same `<div>` before the roster lands, carrying "This workspace
+    // has no owner" — so `findByTestId` resolves on the EMPTY state and the
+    // assertion below raced its own fetch. Latent since W4-A; R3-SETUP's extra
+    // `/api/seats` request for the admin is what finally made it lose.
     const card = await screen.findByTestId("account-owner");
-    expect(card).toHaveTextContent("Priya Sharma");
+    await waitFor(() => expect(card).toHaveTextContent("Priya Sharma"));
     // An administrator can SEE who owns the account but cannot hand it on.
     expect(screen.queryByLabelText("Transfer ownership to")).toBeNull();
     view.unmount();
 
     mockApi("incubator", ROSTER);
     renderSection(<TeamRolesSection />, "incubator", "superuser");
-    await screen.findByTestId("account-owner");
+    await waitFor(() =>
+      expect(screen.getByTestId("account-owner")).toHaveTextContent("Priya Sharma"),
+    );
     const picker = screen.getByLabelText("Transfer ownership to");
     // Only an active staff member who has signed in is eligible: not the owner,
     // not a pending invite, not a deactivated row, not a mentor.
@@ -569,7 +576,9 @@ describe("account owner (F0062)", () => {
   it("confirms before transferring, and says what the handover costs you", async () => {
     const sent = mockApi("incubator", ROSTER);
     renderSection(<TeamRolesSection />, "incubator", "superuser");
-    await screen.findByTestId("account-owner");
+    await waitFor(() =>
+      expect(screen.getByTestId("account-owner")).toHaveTextContent("Priya Sharma"),
+    );
 
     fireEvent.change(screen.getByLabelText("Transfer ownership to"), { target: { value: "u_pm" } });
     fireEvent.click(screen.getByRole("button", { name: "Transfer ownership" }));
@@ -653,7 +662,14 @@ describe("user access (F0021 / F0124 — reset only)", () => {
  * Item 7 deletes the Set up wizard's step 4 for the incubator super user, and
  * `setup/TeamStep.tsx` was the ONLY importer of `purchaseSeats`. §4 Q84 names
  * this screen as the destination, so the seat bar and the Buy-additional-seats
- * flow are mounted here — for the principal that lost them, and no one else.
+ * flow are mounted here — for the principals that lost them, and no one else.
+ *
+ * R3-SETUP — item 6 deletes the same step 4 for the incubator ADMIN, who is a
+ * `full` seat and so loses the same two controls. The gate widens with it, and
+ * the admin moves from the negative-control table below into the positive one.
+ * The PROGRAMME MANAGER loses a step 4 too and stays OUT: a `cohorts` seat never
+ * rendered `TeamStep`'s `manages` half, so they had no seat bar to lose, and
+ * `admin` nav is `roles: ["admin"]`, so they cannot reach this screen anyway.
  *
  * The flow's own three screens are pinned in `setupTeam.test.tsx` and are not
  * re-asserted: this is one component rendered in two places, not a copy. What
@@ -662,9 +678,11 @@ describe("user access (F0021 / F0124 — reset only)", () => {
 describe("the re-homed seat card", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("the incubator super user gets the seat bar and can open the buy flow", async () => {
+  it.each([["super user", "superuser" as Role], ["admin", "admin" as Role]])(
+    "the incubator %s gets the seat bar and can open the buy flow",
+    async (_label, role) => {
     mockApi("incubator", [member()]);
-    renderSection(<TeamRolesSection />, "incubator", "superuser");
+    renderSection(<TeamRolesSection />, "incubator", role);
 
     const bar = await screen.findByTestId("seat-bar");
     expect(bar).toHaveTextContent("2 total users · 3 seats left for nomination");
@@ -677,16 +695,21 @@ describe("the re-homed seat card", () => {
     // Back returns to the screen, not to a blank card.
     fireEvent.click(screen.getByRole("button", { name: /^Back$/ }));
     expect(await screen.findByTestId("seat-bar")).toBeInTheDocument();
-  });
+    },
+  );
 
   /**
-   * The negative controls. Every one of these principals still reaches the flow
-   * through their own step 4, which §13 requires to render exactly as it does
-   * today — a second entry point is a change nobody asked for. Widen the gate
-   * in `SeatsCard` and all four of these fail.
+   * The negative controls. Each of these principals still reaches the flow
+   * through their own step 4 — which the VC edition keeps, because it was never
+   * rescoped — so a second entry point is a change nobody asked for. Widen the
+   * gate in `SeatsCard` past the incubator and both of these fail.
+   *
+   * The incubator PROGRAMME MANAGER is not in this table, and cannot be: they
+   * never reach the Admin console, so `renderSection` would be asserting the
+   * absence of a card on a screen they cannot open. Their gate is the nav's
+   * (`nav.ts:174`), covered by `npm run roles`.
    */
   it.each([
-    ["an incubator admin", "incubator" as Edition, "admin" as Role],
     ["a VC super user", "vc" as Edition, "superuser" as Role],
     ["a VC admin", "vc" as Edition, "admin" as Role],
   ])("%s does not get it — and makes no seats request", async (_label, edition, role) => {
