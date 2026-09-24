@@ -23,11 +23,18 @@
  * swapped results region, and only `answer`/`all` replace the whole body.
  */
 import { Search } from "lucide-react";
-import { useMemo, useState } from "react";
+import { createContext, useContext, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "../../components";
 import { HELP_CLIPS, HELP_FAQS, HELP_POPULAR_COUNT, helpSections, type HelpFaq } from "./faqs";
 import { closestMatch, topMatches } from "./search";
+
+/**
+ * True when `HelpPage`'s views are rendering INSIDE the floating launcher's own
+ * panel, which brings its own chrome. A context rather than a prop because the
+ * frame is nested three components deep inside four branches.
+ */
+export const BareBody = createContext(false);
 
 /** Which of the spec's four views is showing. `query` is the search behind it. */
 type View =
@@ -356,6 +363,11 @@ export function HelpPage() {
  * stand-in page carries its own title above the widget.
  */
 function HelpFrame({ children }: { children: React.ReactNode }) {
+  // `bare` — the launcher supplies its OWN fixed panel and header, so it renders
+  // the body alone. One implementation, two hosts: the `help` SCREEN and the
+  // floating widget must never drift apart, which is what a second copy of the
+  // four views would guarantee.
+  if (useContext(BareBody)) return <>{children}</>;
   return (
     <div className="flex flex-col gap-4 p-5">
       <h1 className="text-xl font-semibold text-fg">Help</h1>

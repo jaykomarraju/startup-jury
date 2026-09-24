@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
+import { JuryBuddyLauncher } from "../routes/help/JuryBuddyLauncher";
 import { X } from "lucide-react";
 import { Topbar } from "./Topbar";
 import { Sidebar } from "./Sidebar";
@@ -107,6 +108,10 @@ export function AppShell() {
             <Outlet />
           </main>
         </div>
+        {/* JURYbuddy's floating launcher — the form `Help_JURYbuddy.HTM` ships.
+            Mounted at the shell, not per route, because the spec fixes it to the
+            viewport; it gates itself to whoever reaches the `help` nav item. */}
+        <JuryBuddyLauncher />
       </div>
     </ToastProvider>
   );
