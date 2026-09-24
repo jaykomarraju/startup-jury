@@ -324,3 +324,95 @@ Raise it to the **wave's** ceiling, never to a session's number — the conventi
 **Stage 0: move price configuration behind a platform principal, this week, as its own session.** It is a live P0 the client independently asked for; it is the only one of the four items where the data model is already right; it unblocks the wave that is actually ready by answering My Account's Q4 as a side effect; and it is the cheapest possible test of the platform-principal concept. Parking a scoped, valuable wave behind a 4–6 week foundation rewrite in order to close a gate that takes 3–5 days would be the expensive mistake available here.
 
 **And the session prompt carries one prohibition in these words: do not touch `src/server/routes/users.ts`.**
+
+---
+
+## 11. The tenancy wave — session split, verified 2026-09-24
+
+**Shape: ONE sequential foundation session, then SEVEN in parallel, then integration.** This work
+cannot be run as eight parallel sessions from a standing start, and saying otherwise would waste a
+wave: every T1 session scopes its routes against a key that does not exist until T0 creates it, and
+the migration sequence is a single number line that two sessions cannot both extend.
+
+### T0-SCHEMA — the foundation. **Runs alone. Everything waits on it.**
+
+```
+migrations/                        (0081–0106; the ceiling raise is its first commit)
+src/server/auth/                   the tenant resolver — session carries tenant_id
+src/server/types.ts                SessionUser gains tenantId
+src/server/db.ts
+src/server/routes/auth.ts          login, and the users.email UNIQUE blocker
+src/shared/tenant.ts               NEW — the scope helper every T1 session uses
+test/worker/migrations-w1b.test.ts the ceiling
+test/worker/tenant-scope.test.ts   NEW — the invariant, see below
+scripts/role-matrix.ts             the harness gains a tenant dimension
+```
+
+It delivers four things, and the third is the one that makes the parallel wave possible:
+
+1. An `organizations` table, `tenant_id` on the **28 tenant-owned** tables, the backfill to a single
+   `t_default`, and the **21 non-unique indexes re-cut as `(tenant_id, edition, …)`** — they lead
+   with `edition` today and stop being selective the moment a second customer exists.
+2. `users.email` loses its global `UNIQUE` and becomes unique **per tenant**, plus whatever the
+   login flow needs to resolve a tenant. Two customers employing the same person is not an edge
+   case; it is the second customer.
+3. **`src/shared/tenant.ts` — ONE helper, which every T1 session uses and none of them writes.**
+   The seven sessions are applying the same transformation 211 times across 51 files; if each
+   invents its own predicate, the review surface is 211 judgements instead of one. T0 ships the
+   helper and one worked example per shape (direct column, one-hop join, aggregate).
+4. `test/worker/tenant-scope.test.ts` — a **generic** invariant test: seed a second tenant, then
+   assert that a principal of tenant A receives zero rows belonging to tenant B, table by table.
+   T1 sessions extend its table list; they do not each invent an isolation test.
+
+**Do not start a T1 session before T0 merges.** A T1 branch cut from today's `main` has no
+`tenant_id` to scope against and will conflict on every file it touches.
+
+### T1 — seven sessions, in parallel, after T0 merges
+
+Verified disjoint by path, and verified to cover **50 of the 51 files** that mention the scope key.
+The 51st is `src/server/routes/pricing.ts`, deliberately excluded: the catalogue is platform-global
+(§3), it is already gated on `PLATFORM_OWNER_EMAILS`, and it must **not** gain a tenant key.
+
+| Session | Owns | Weight |
+|---|---|---|
+| **T1-DECKS** | `routes/decks.ts` · `routes/pipeline.ts` · `routes/assignments.ts` · `ai/evaluate.ts` · `ai/health.ts` · `decks/**` · `intake.ts` + 4 tests | 263 |
+| **T1-CONFIG** | `routes/config.ts` · `routes/aiPrompts.ts` · `routes/questions.ts` · `routes/permissions.ts` · `routes/anchors.ts` · `config/**` + 3 tests | 278 |
+| **T1-PEOPLE** | `routes/users.ts` · `routes/seats.ts` · `seats/**` · `routes/notifications.ts` · `email/**` · `scheduled.ts` + 4 tests | 210 |
+| **T1-COMMERCE** | `routes/account.ts` · `routes/billing.ts` · `billing/**` · `routes/support.ts` + 3 tests | 165 |
+| **T1-FLOW** | `routes/calls.ts` · `routes/signups.ts` · `routes/signup-config.ts` · `routes/programs.ts` · `routes/resubmit.ts` · `resubmit.ts` + 3 tests | 209 |
+| **T1-ESIGN** | `esign/**` · `routes/diligence.ts` · `routes/crm.ts` · `crm/**` + 2 tests | 173 |
+| **T1-REPORTS** | `routes/analytics.ts` · `audit/**` · `routes/audit.ts` + 2 tests | 145 |
+
+*Weight* is the count of `edition` mentions in the owned files — a proxy for how many predicates the
+session must widen. The spread (145–278) is deliberate: **T1-CONFIG and T1-DECKS are the long poles**
+and should start first if sessions are staggered.
+
+### The two things every T1 prompt must carry, in these words
+
+**1. The proxy tables are where this will silently fail.** 33 of the 69 tables are scoped only
+through a parent (`scores` → `decks`, `signatures` → `agreements` → `signups` → `decks`). §5b counted
+**69 `FROM <table>` sites in `src/server/` and only 26 carrying a `JOIN`** — `email_outbox` 3/0,
+`esign_outbox` 2/0, `signatures` 1/0, `evaluations` 24/7, `scores` 13/8. **Forty-three reads of
+tenant-owned data with nothing in the statement naming the owner.** Adding `tenant_id` to `decks`
+does nothing for a query that reads `scores` without joining it.
+
+**2. Aggregates are the dangerous shape, not the lists.** A list that leaks shows another customer's
+startup names and somebody notices. A `COUNT(*)` or an `AVG(score)` that leaks returns a perfectly
+ordinary-looking number. `routes/analytics.ts` has 77 `edition` mentions and is the largest
+concentration of this shape in the codebase; T1-REPORTS' low weight is misleading for exactly that
+reason.
+
+### Migration ceiling — a stated decision, not a session's discretion
+
+`main` ends at `0075`; `ALLOTMENT_CEILING` is **76** (`test/worker/migrations-w1b.test.ts:40`), and
+`0076` is already reserved by `plan_roles_incubator.md` for Wave R+1's V3-SF answer. §5g's
+recommendation: **raise to 110 as T0's first commit**, allotting `0081`–`0106` (26 slots) with
+`0107`–`0110` as declared headroom. Eleven of the 28 tables need a genuine rebuild (§5e); the other
+17 take a plain `ADD COLUMN`.
+
+### The gate, per session
+
+Unchanged from every prior wave, plus one addition: **`npm run test:e2e` is forbidden until
+integration.** Eight sessions cannot share the ephemeral port range (§12.9), and a T1 session's e2e
+run would poison every sibling's. Each session runs typecheck, lint, `npm test`, build, and
+`npm run roles` on a clear box, and reports its numbers. The e2e suite runs ONCE, at integration.
