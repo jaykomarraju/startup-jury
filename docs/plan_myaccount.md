@@ -289,3 +289,85 @@ first because it is unblocked and needs no schema; the My Account wave is blocke
 answers anyway** (GST on USD billing, and whether the annual cart really replaces per-seat
 pricing). Starting S-CAT before those answers is how `0073_seat_pricing_v3.sql` came to be
 superseded 48 hours after it shipped.
+
+---
+
+## 9. The client's answers — 24-Sep-2026. These supersede the fallbacks above.
+
+**Q1 / the currency — answered by implication, and left to us.** *"If the payment gateway
+automatically converts the local currency to dollar and further converts to INR, we don't need that
+intervening screen in the settings. I leave it to you."* Read with Q2, the intent is clear: **price
+in USD as the prototype does, and let the gateway handle presentation currency.** No currency
+selector. Our `PublishedPrice.currency` already models this (`plans.ts:98-120`), so the catalogue
+is seeded in USD and nothing in the UI offers a choice.
+
+**Q2 / GST — KEEP IT, on USD.** *"Let's keep the GST aspect as it is. In the first run, we are
+expecting Indian users mostly. Meanwhile I will cross-check with our CA too."*
+
+This reverses the fallback, and it is the one answer to revisit. `plans.ts:200` fixes
+`BASE_CURRENCY = "INR"` with the comment *"GST is the INR-billing tax"*, `0073:143` carries the
+footnote *"International pricing shown exclusive of local taxes"*, and
+`e2e/account-purchase.spec.ts:145` is titled *"…(USD, no GST)"*. All three encode the opposite
+rule and were written deliberately. **Build what he asked for — 18% GST on the USD total — but make
+it a SETTING, not a constant**, because "I will cross-check with our CA" is an answer that can
+change, and a tax rule hard-coded across a catalogue is expensive to reverse. The three artefacts
+above get updated, not deleted, so the reasoning survives.
+
+**Q3 / per-seat pricing — NOT retired. The ladder, in his words:**
+
+> 3-deck free trial → paid trials of either 25 or 50 credit packs (valid for a quarter) → if
+> individual, an annual plan (1 premium seat with 125 credits) with a choice to add more credits as
+> per credit packs available → if the individual upgrades to Organization, one of two plans, Basic
+> (5 seats, 1500 decks) or Basic Plus (2000 decks), with more decks or seats addable per packs.
+> *"This has been done to provide more flexibility in line with self-serve concept."*
+
+That is exactly the re-shared prototype's flow, and it settles the shape: **seats survive as a
+CONCEPT** (1 premium seat; 5 seats; add more), while the 3×3 grid of tier × quarter/half-year/year
+does not. So `0073`'s nine `seat_*_{3,6,12}` SKUs are superseded by the ladder rather than by a
+decision to stop selling seats — keep the columns, keep `seatPricesFromBook`, retire the SKUs.
+
+**Q4 / the gateway — STRIPE, not Razorpay.** *"No. it's just indicative. I will open the account on
+Stripe and share details."* The `RZP…` transaction id in the prototype is a mock.
+
+**Consequences:** the `ADAPTERS` seam stays empty until the account exists, and nothing behind the
+payment screen is real until then — but the screens themselves are unblocked, and Stripe rather
+than Razorpay changes what we build later (Payment Intents and a webhook, not Razorpay Checkout).
+**Do not begin an adapter before the account, the keys and the enabled payment methods arrive.**
+
+**The FAQ copy — his to fix, and he will.** *"I will change that and also add a few related to
+Evaluation and configuration FAQs and clips. Let's add them in the last before release."* So the
+six wrong answers stay verbatim for now, and the FAQ set is re-shared before release. `faqs.ts` is
+generated from the spec by `docs/prototype/tools/extract-help-clips.py`, so a re-share is a re-run
+plus a clip upload, not hand-editing.
+
+**The re-share cost — acknowledged.** *"Sorry for that… That's because of our pricing dilemmas. Now
+it's done for sure."* Taken at face value; the ladder above is the settled model.
+
+---
+
+## 10. What his answer to Q1 actually opened: MULTI-TENANCY
+
+> *"It's going to be multi-tenant, so the role of AISJ Admin and a dashboard is required. By
+> default, whatever tickets raised will go to Client Admin. Whatever Client Admin raises would
+> reach AISJ admin."* — and, on price configuration, *"this has to be in AISJ Admin control, NOT
+> the client admin."*
+
+This is not the small platform-owner gate §12.1 scoped. **It is a foundational change, and no plan
+in this repo covers it.** Measured, not assumed:
+
+| | |
+|---|---|
+| `migrations/0001_init.sql:1` | *"Single-tenant: one implicit organization"* — the schema says so itself |
+| organisations / tenants table | **none** |
+| tables in the schema | **70**, none carrying a tenant key |
+| `org_settings` | keyed by **`edition`**, not by organisation (`0001_init.sql:19`) |
+
+So every table, every query and every authorisation check currently assumes one workspace. Adding a
+real AISJ Admin above it means a tenant key on the data, tenant scoping on every read, a second
+principal type outside the customer's role set, and a dashboard that spans customers — plus the
+four items it unblocks (trial approval to **info@startupjury.ai**, ticket escalation, price config,
+payment).
+
+**This must be scoped before anything is built.** It is larger than the My Account wave and it sits
+underneath it: who owns a price book, who a ticket escalates to, and who may approve a trial are
+all tenancy questions. Scoping it is the next action, not building it.
