@@ -19,6 +19,16 @@ import { enforceWorkerCsp, watchCspViolations } from "./csp-enforce";
 // header assertions in csp.spec.ts cannot demonstrate on their own.
 //
 // Nothing here asserts a credit balance: other specs top it up and spend it.
+//
+// R2-UPEVAL — the walkthrough's principal, the incubator program associate, is
+// now one of V3-UP's roles (plan_roles_incubator §2 row `11 · V3-UP`), so the
+// wizard's forward button reads "Evaluate & Go to Dashboard →" for them and the
+// results card offers "Send to Evaluate". Both are asserted in place rather than
+// in a separate test, because the point is that the FLOW did not change with the
+// label: the same walk still reaches review, upload, the results table and Query.
+// The admin's own V3 label and the program manager's unchanged one are pinned in
+// test/client/upload.test.tsx; here the browser proves the PA's new link is not a
+// 403, via the "every link leads somewhere they may go" sweep.
 
 const SAMPLE_DECK = fileURLToPath(new URL("../docs/demo-assets/gridbloom-sample-deck.pdf", import.meta.url));
 const NOT_AVAILABLE = "Not available for your role";
@@ -59,7 +69,10 @@ test("a PA uploads a deck, reviews it, sends it to Query — and is never shown 
   await page.getByLabel("Choose a pitch deck").setInputFiles(SAMPLE_DECK);
   await page.getByLabel("Startup name").fill(name);
   await expect(page.getByTestId("up-cost-bar")).toHaveText(/Cost for this deck\s*1 credit/);
-  await page.getByRole("button", { name: "Go to dashboard →" }).click();
+  // R2-UPEVAL: V3-UP reached the program associate, so the forward button reads
+  // "Evaluate & Go to Dashboard →" for them now. The flow behind it is unchanged
+  // — this test proves that by walking the same steps under the new label.
+  await page.getByRole("button", { name: "Evaluate & Go to Dashboard →" }).click();
 
   // 2 · Review uploaded decks — tick, see the cost in credits, approve.
   await expect(page.getByRole("heading", { name: "Review uploaded decks" })).toBeVisible();
@@ -88,6 +101,13 @@ test("a PA uploads a deck, reviews it, sends it to Query — and is never shown 
     "Status",
   ]);
   await expect(table.getByRole("row", { name: new RegExp(name) })).toContainText("Awaiting AI");
+
+  // V3-UP's other half for this role: `Send to Evaluate` on the results card.
+  // Collect the card's links INTO the sweep below — that is what turns "the link
+  // is drawn" into "the link leads somewhere a PA may actually go".
+  await expect(page.getByRole("link", { name: "Send to Evaluate →" })).toBeVisible();
+  for (const href of await bodyLinks(page)) links.add(href);
+  expect([...links]).toContain("/app/evaluate");
 
   // 4 · back to review: flag a parameter and send the founder query.
   await page.getByRole("button", { name: "← Back to review" }).click();
@@ -229,7 +249,7 @@ test("a ZIP of decks is expanded in the browser into the review list, costed in 
   page.on("request", (r) => {
     if (r.method() === "POST" && r.url().includes("/api/decks/")) uploads.push(r.url());
   });
-  await page.getByRole("button", { name: "Go to dashboard →" }).click();
+  await page.getByRole("button", { name: "Evaluate & Go to Dashboard →" }).click(); // V3-UP label
   await expect(page.getByText("2 decks staged")).toBeVisible();
   await expect(page.getByTestId("up-deck-row")).toHaveCount(2);
   await expect(page.getByTestId("up-deck-row").first()).toContainText("14 slides", { timeout: 20_000 });

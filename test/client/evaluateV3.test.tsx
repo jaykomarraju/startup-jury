@@ -18,6 +18,7 @@ import {
 } from "../../src/client/api";
 import { scoringSettings } from "../../src/client/routes/admin/scoringApi";
 import type { Edition, Role } from "../../src/shared/roles";
+import { PROGRAM_MANAGER_PENDING_Q_P, V3_UP_ROLES } from "../../src/client/routes/upload/v3Up";
 
 /**
  * V3 item 10 — Evaluate, rebuilt from `AISJ_SuperuserV3` `panel-evaluate`.
@@ -28,10 +29,24 @@ import type { Edition, Role } from "../../src/shared/roles";
  * here is copied from the decoded prototype markup, not imported from the
  * component, so a rename fails the test.
  *
- * Only the superuser prototype was reshared. The negative control below is
- * therefore load-bearing: admin, program manager, program associate and jury
- * must still render the v15 surface exactly, and the VC edition has its own
- * `VcEvaluatePage` and never reaches this one.
+ * R2-UPEVAL widened WHO gets that surface, per plan_roles_incubator §2 row
+ * `11 · V3-UP`: the incubator superuser, ADMIN and PROGRAM ASSOCIATE. Nothing
+ * server-side moved for either — `RESCORE_ROLES` (`server/routes/decks.ts:1268`)
+ * already carried both, which is why the AI Evaluate test below asserts the call
+ * really goes out for a program associate and not merely that the button draws.
+ *
+ * The negative control is still load-bearing, and now for two distinct reasons:
+ *
+ *   • the PROGRAM MANAGER is an open client question, not a gap. `AISJ_IC_PM_V5`
+ *     draws its own multi-select for this screen — a bottom action bar with
+ *     "Evaluate selected decks" — and V3 draws a toolbar button. Q-P asks which.
+ *     Until it is answered the PM keeps v15.
+ *   • the JURY must never get it, and this file is where that is provable.
+ *     `App.tsx` routes the jury-exclusive `jassigned` screen through this same
+ *     component, so admitting `"jury"` would silently rebuild the screen a juror
+ *     scores on. The last test mounts that exact route to say so.
+ *
+ * The VC edition has its own `VcEvaluatePage` and never reaches this one.
  */
 
 vi.mock("../../src/client/api", async (importOriginal) => ({
@@ -68,7 +83,13 @@ function principal(role: Role, edition: Edition): AuthUser {
   return { id: `u_${role}`, name: "Rajesh Kumar", initials: "RK", role, edition };
 }
 
-function mount(role: Role, edition: Edition = "incubator") {
+/**
+ * `entry` exists for the jury's own screen. `App.tsx` routes BOTH `evaluate` and
+ * the jury-exclusive `jassigned` through `EvaluatePage`, so the route is part of
+ * what the last test has to state — a v15 assertion made only at `/app/evaluate`
+ * would not notice a juror's Assigned screen being rebuilt.
+ */
+function mount(role: Role, edition: Edition = "incubator", entry = "/app/evaluate") {
   vi.mocked(listDecks).mockResolvedValue({ decks: DECKS } as never);
   vi.mocked(listParameters).mockResolvedValue({ parameters: PARAMETERS, anchors: [] });
   vi.mocked(listRecommendations).mockResolvedValue({ recommendations: {}, evaluated: [] });
@@ -80,10 +101,11 @@ function mount(role: Role, edition: Edition = "incubator") {
   });
   return render(
     withAuth(
-      <MemoryRouter initialEntries={["/app/evaluate"]}>
+      <MemoryRouter initialEntries={[entry]}>
         <Routes>
-          <Route path="/app/evaluate" element={<EvaluatePage />} />
+          {/* A static segment outranks the dynamic one, so Assign still wins. */}
           <Route path="/app/assign" element={<h1>Assign screen</h1>} />
+          <Route path="/app/:navId" element={<EvaluatePage />} />
         </Routes>
       </MemoryRouter>,
       principal(role, edition),
@@ -112,9 +134,13 @@ beforeEach(() => {
   vi.mocked(scoringSettings).mockResolvedValue({ ...DEFAULT_SCORING_SETTINGS });
 });
 
-describe("V3 item 10 — the superuser's Evaluate toolbar and column 1", () => {
-  it("carries the AI Evaluate button, the new sub-line and the select-all counter", async () => {
-    mount("superuser");
+describe("V3 item 10 — the Evaluate toolbar and column 1, for every admitted role", () => {
+  it.each<[string, Role]>([
+    ["the incubator superuser", "superuser"],
+    ["an admin", "admin"],
+    ["a program associate", "program_associate"],
+  ])("%s carries the AI Evaluate button, the new sub-line and the select-all counter", async (_label, role) => {
+    mount(role);
     await deckList();
 
     expect(screen.getByRole("button", { name: "AI Evaluate" })).toBeInTheDocument();
@@ -193,6 +219,27 @@ describe("V3 item 10 — the superuser's Evaluate toolbar and column 1", () => {
     expect(vi.mocked(rescoreDeck)).toHaveBeenCalledWith("d_insureflow");
   });
 
+  /**
+   * The widening's one real risk was the server, not the markup: the button
+   * calls `POST /decks/:id/rescore`. `RESCORE_ROLES` already admits the program
+   * associate, so this asserts the batch actually goes out for them and lands on
+   * Assign — a screen they also already have (`nav.ts:107`), so the navigate is
+   * not a 403 either.
+   */
+  it("a program associate's AI Evaluate really re-scores, and lands on Assign", async () => {
+    mount("program_associate");
+    await deckList();
+
+    fireEvent.click(screen.getByLabelText("Select TaxPilot"));
+    await waitFor(() => expect(screen.getByTestId("ev-col1-count")).toHaveTextContent("1 selected"));
+    fireEvent.click(screen.getByRole("button", { name: "AI Evaluate" }));
+
+    await waitFor(() => expect(vi.mocked(rescoreDeck)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(rescoreDeck)).toHaveBeenCalledWith("d_taxpilot");
+    expect(await screen.findByText("1 deck evaluated — sent to Assign")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Assign screen" })).toBeInTheDocument();
+  });
+
   it("says what it skipped rather than counting a blocked re-run as evaluated", async () => {
     mount("superuser");
     await deckList();
@@ -206,16 +253,9 @@ describe("V3 item 10 — the superuser's Evaluate toolbar and column 1", () => {
   });
 });
 
-describe("the negative control — every role the client did NOT rescope", () => {
-  it.each<[string, Role]>([
-    ["an admin", "admin"],
-    ["a program manager", "program_manager"],
-    ["a program associate", "program_associate"],
-    ["a jury member", "jury"],
-  ])("%s still renders the v15 surface, byte for byte", async (_label, role) => {
-    mount(role);
-    await deckList();
-
+describe("the negative control — the two roles that must NOT have it", () => {
+  /** Everything v15 draws here and v3 replaces, asserted in one place. */
+  function expectV15Surface() {
     expect(screen.getByText("Click a deck to open its evaluation report · set its status alongside")).toBeInTheDocument();
     expect(screen.getByTestId("ev-decks-label")).toHaveTextContent("2 decks · click to open report");
 
@@ -223,5 +263,42 @@ describe("the negative control — every role the client did NOT rescope", () =>
     expect(screen.queryByLabelText("Select all decks")).toBeNull();
     expect(screen.queryByTestId("ev-col1-count")).toBeNull();
     expect(screen.queryByLabelText("Select TaxPilot")).toBeNull();
+  }
+
+  it("the gate admits exactly three roles, and says why the PM is not one of them", () => {
+    expect([...V3_UP_ROLES]).toEqual(["superuser", "admin", "program_associate"]);
+    // Q-P, unanswered: the PM's own prototype draws a bottom action bar where V3
+    // draws a toolbar button. Flipping this ships V3's design to them.
+    expect(PROGRAM_MANAGER_PENDING_Q_P).toBe(true);
+  });
+
+  it("a program manager keeps the v15 surface while Q-P is open", async () => {
+    mount("program_manager");
+    await deckList();
+    expectV15Surface();
+  });
+
+  it("a jury member keeps it at /app/evaluate", async () => {
+    mount("jury");
+    await deckList();
+    expectV15Surface();
+  });
+
+  /**
+   * The trap, made explicit. `App.tsx` points the jury-exclusive `jassigned`
+   * screen at this same component, so a juror added to `V3_UP_ROLES` would not
+   * gain a new screen — they would lose the one they score on, rebuilt around a
+   * multi-select and an "AI Evaluate" button they hold no permission for. The
+   * two assertions below are the pair: the workbench entry point is still there,
+   * and none of v3's chrome is.
+   */
+  it("and on their OWN screen, /app/jassigned, which is the one that matters", async () => {
+    mount("jury", "incubator", "/app/jassigned");
+    const list = await deckList();
+    expectV15Surface();
+
+    // Still a juror's screen: the row opens the report, and nothing selects it.
+    expect(within(list).getByRole("button", { name: /TaxPilot/ })).toBeInTheDocument();
+    expect(within(list).queryByRole("checkbox")).toBeNull();
   });
 });

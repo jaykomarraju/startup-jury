@@ -60,8 +60,9 @@ export interface WizardProps {
   onReview: () => void;
   /**
    * V3 item 8 renames the forward button "Evaluate & Go to Dashboard →" for the
-   * incubator superuser. Optional, so every other role — and the VC edition,
-   * which was not rescoped — keeps "Go to dashboard →" unchanged.
+   * roles in `V3_UP_ROLES` — the incubator superuser, admin and program
+   * associate. Optional, so the program manager (pending Q-P), the jury, the VC
+   * edition (not rescoped) and the founder keep "Go to dashboard →" unchanged.
    */
   forwardLabel?: string;
 }

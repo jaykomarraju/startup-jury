@@ -32,7 +32,9 @@ export function ResultsScreen({
    * V3 item 10's entry point (Q51). `upSendToEvaluate()` lives on the
    * prototype's post-upload results card, next to Edit and Archive, and is the
    * only call to `showPanel('evaluate')` in the whole v3 file. Optional and off
-   * by default, so the VC edition and every other incubator role are unchanged.
+   * by default, so the VC edition, the founder portal and the incubator roles
+   * outside `V3_UP_ROLES` are unchanged. `/app/evaluate` is in the nav of every
+   * role that gets this link, so it never offers a 403 (`nav.ts:106`).
    */
   showSendToEvaluate?: boolean;
 }) {
