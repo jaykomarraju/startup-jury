@@ -233,17 +233,29 @@ export function TeamRolesSection() {
  * incubator super user, so the seat bar and **Buy additional seats** land here.
  *
  * ── Why this gate, and not none ──────────────────────────────────────────────
- * Shown to exactly the audience that LOST the control: `incubator` + `superuser`
- * — the same predicate the deletion uses, so the two cannot drift apart. Every
- * other role and the whole VC edition still reach the flow through their own
- * step 4, which §13 requires to render exactly as it does today; giving them a
- * second entry to the same server route would be a change nobody asked for, and
- * `e2e/seats.spec.ts` (VC admin) and `e2e/team-roles.spec.ts` are the two specs
- * that would notice. §4 Q84 wants the move for everybody and calls it small:
- * widening this is deleting the gate, once the wizard's step 4 goes with it.
+ * Shown to exactly the audience that LOST the control — the same predicate the
+ * wizard's deletion uses, so the two cannot drift apart. Every role still
+ * holding a step 4 reaches the flow there, and a second entry to the same
+ * server route would be a change nobody asked for.
+ *
+ * R3-SETUP — item 6 widens the deletion to the incubator ADMIN, who is a `full`
+ * seat and so loses the seat bar and **Buy additional seats** exactly as the
+ * super user did. The gate therefore widens WITH it, in lockstep and by the
+ * same one predicate (plan §2 ʷ). This closes a live inconsistency rather than
+ * opening a door: the admin could already buy seats from My account
+ * (`AccountOverlay.tsx:317`) and `/api/seats` has always admitted them
+ * (`server/routes/seats.ts:60`, `requireTask("addmembers","admin")`) — only
+ * this screen disagreed.
+ *
+ * The incubator PROGRAMME MANAGER loses a step 4 too and is deliberately NOT
+ * here: their seat is `cohorts`, so `TeamStep`'s `manages` was already false and
+ * they never had a seat bar to lose — and they cannot reach the Admin console at
+ * all (`nav.ts:174`, `roles: ["admin"]`), so adding them would be a gate that
+ * can never fire. The whole VC edition keeps its step 4 and stays out;
+ * `e2e/seats.spec.ts` (VC admin) is the spec that would notice if it did not.
  *
  * The card fetches nothing for anyone else — `getSeats` is behind the same
- * predicate, so the admin's console makes no extra request.
+ * predicate, so a console it is not drawn in makes no extra request.
  *
  * `onPurchased` re-reads the roster: a purchase raises `billing_subscriptions.
  * seats`, which is what the rows' capacity refusals are measured against.
@@ -257,7 +269,7 @@ function SeatsCard({
   role: Role | undefined;
   onPurchased: () => void;
 }) {
-  const shown = edition === "incubator" && role === "superuser";
+  const shown = edition === "incubator" && (role === "superuser" || role === "admin");
   const [view, setView] = useState<SeatsView | null>(null);
   const [buying, setBuying] = useState<SeatTier | null>(null);
 

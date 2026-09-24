@@ -30,6 +30,24 @@
 // which forwards to `POST /api/users` and then sets `plan_tier` — ordinary
 // `users` rows that Team & roles has always listed, with the same invite
 // lifecycle and the same plan pill (§4 Q81, answered by measurement).
+//
+// ── R3-SETUP · who still reaches this file, and who no longer does ─────────
+// Item 6 of the four-role extension deletes the Set up wizard's step 4 for the
+// incubator ADMIN and PROGRAMME MANAGER as well as the super user. Counting the
+// incubator's five roles against `nav.ts:172` and `seatFor`, that leaves:
+//   · program_associate — `readonly`, so they keep step 4 and land in the
+//     `!manages` branch below. THE ONLY incubator role that still opens this.
+//   · jury — no `setup` nav at all.
+//   · superuser / admin / program_manager — no step 4.
+// So the `manages` half of this component is now **unreachable in the incubator
+// edition**, on top of `nominateOnly`, which has been unreachable since item 7.
+// Both are KEPT, and for the same two reasons: the VC edition was never
+// rescoped and its admin and super user still walk all four steps through this
+// exact code, and item 6 is a recorded deviation from the prototypes that the
+// client can reverse. Nothing here is edition-dead — only incubator-dead.
+//
+// Do NOT delete the incubator paths as "cleanup" inside a later restyle: that
+// is a removal wearing a widening's clothes. It is logged as a Wave R+1 item.
 
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";

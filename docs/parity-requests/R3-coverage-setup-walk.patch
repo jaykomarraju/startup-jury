@@ -1,0 +1,29 @@
+diff --git a/e2e/coverage.spec.ts b/e2e/coverage.spec.ts
+index 1ebf1d8..059acab 100644
+--- a/e2e/coverage.spec.ts
++++ b/e2e/coverage.spec.ts
+@@ -286,8 +286,23 @@ test("the upload screen explains the founder details the AI will extract", async
+ 
+ // ── Set up wizard: the last two steps no spec had reached ────────────────────
+ 
++/**
++ * R3-SETUP · item 6 — the PRINCIPAL moved, and nothing else did.
++ *
++ * This walk needs a role that still HAS all four steps. Item 6 deletes Org type
++ * and Team for the incubator super user, admin and programme manager, so as
++ * `INC_ADMIN` the first click below now advances OUT of Configure into Select
++ * and the walk fails at line 300 — measured on `parity/R3-SETUP`, not assumed.
++ * The incubator's only remaining four-step role is none: the program associate
++ * has three and their step 4 is the read-only half of `TeamStep`, which has no
++ * seat bar, so it cannot carry these assertions either.
++ *
++ * `VC_ADMIN` can: the VC edition was never rescoped, its admin is a `full` seat,
++ * and `e2e/setup-wizard.spec.ts`'s own negative controls depend on that staying
++ * true. Every assertion below is unchanged — only who walks it.
++ */
+ test("the Set up wizard walks through Select and Team to the dashboard", async ({ page }) => {
+-  await login(page, INC_ADMIN);
++  await login(page, VC_ADMIN);
+   await page.goto("/app/setup");
+ 
+   await expect(page.getByRole("heading", { name: "Set up your workspace" })).toBeVisible();

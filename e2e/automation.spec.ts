@@ -20,7 +20,10 @@ async function login(page: Page, email: string) {
 test("admin sets a per-program shortlist minimum in the Set up wizard", async ({ page }) => {
   await login(page, "nisha.kapoor@demo.startupjury.ai"); // inc_admin
   await page.goto("/app/setup");
-  await page.getByRole("button", { name: "Continue" }).click();
+  // R3-SETUP · item 6 — the admin's wizard opens on Configure; the Org-type step
+  // this used to click past is deleted for them. Gate on the step's OWN content
+  // before typing, never on the heading, which every step shares.
+  await expect(page.getByLabel("Program name")).toBeVisible();
 
   // A fresh program of our own, so we never move a seeded program's floor under
   // the specs running in parallel.

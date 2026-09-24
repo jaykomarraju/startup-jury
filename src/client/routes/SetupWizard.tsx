@@ -24,12 +24,6 @@
 // client's instruction wins over the file; §12 records it so the next parity
 // capture does not put the two steps back.
 //
-// Gated to `incubator` + `superuser`, per §13's constraint that every other
-// role renders exactly as it does today and the VC edition was not rescoped.
-// `AISJ_ICAdmin_V6` and the VC files still draw all four steps (§4 Q85), and
-// three e2e specs walk them: `programs`/`automation` as the incubator admin and
-// `seats` as the VC admin. Widening the gate is one predicate — §12 has it.
-//
 // Nothing the two deleted steps owned is stranded (§13's two-part requirement):
 //   · `branding.orgName` — the wizard was its ONLY writer and it has four
 //     readers (`AccountPage` "Workspace", the invite email, the founder
@@ -42,6 +36,35 @@
 //   · `branding.orgType` is written here and read by NOTHING (grepped across
 //     src/): the Org type step's choice was already inert. Team & roles states
 //     the workspace type instead, from the edition, and has since W4-A.
+//
+// ── R3-SETUP · the four-role extension, item 6 ──────────────────────────────
+// The gate was `incubator` + `superuser`. The client's row for this item names
+// *Superuser / Prog. manager / Admin*, so it now carries all three
+// (`PROGRAMME_ONLY_ROLES`), and only those three: the program associate keeps
+// their three-step read-only wizard and the jury has no `setup` nav at all
+// (plan §2 ʰ). The VC edition is still untouched — it was never rescoped, and
+// `e2e/seats.spec.ts` walks all four steps as the VC admin.
+//
+// What the widening costs, and where each cost is paid:
+//   · the ADMIN is a `full` seat, so they lose the Team step and with it the
+//     seat bar and Buy additional seats — the same stranding item 7 had to fix
+//     for the super user. `SeatsCard` in Admin console → Team & roles now
+//     admits them too (plan §2 ʷ); `/api/seats` already did
+//     (`server/routes/seats.ts:60`, `requireTask("addmembers","admin")`), so
+//     this closes a live inconsistency rather than opening a door.
+//   · the PROGRAMME MANAGER is a `cohorts` seat, so they never had Org type,
+//     the roster, the add-member form or Buy seats (`TeamStep`'s `manages` is
+//     already false for them). Deleting their step 4 strands nothing.
+//   · `branding.orgName` keeps a writer either way: the admin reaches Admin
+//     console → Branding, where item 7 moved the field. `orgType` loses its
+//     last incubator writer and that is inert — see the bullet above.
+// Two e2e specs walked the admin through Org type and are re-pointed with this
+// change (`programs`, `automation`); a third, `e2e/coverage.spec.ts`, is not
+// this session's file — see `docs/parity-requests/R3-coverage-setup-walk.patch`.
+//
+// **Still a deliberate deviation from the prototypes**, now for three roles
+// rather than one, and recorded in §12 / Q-A so the next parity capture does
+// not put the two steps back and re-file them as a defect.
 //
 // Session 4 — role-scoped seats. admin/superuser get full editing. A program
 // MANAGER can manage cohorts for the programs they LEAD (owner-scoped; sectors +
@@ -93,15 +116,43 @@ const STEPS_SUPERUSER = ["Org type", "Configure", "Select", "Super user"] as con
 const STEPS_PROGRAMME = ["Configure", "Select"] as const;
 
 /**
+ * R3-SETUP — item 6 of the four-role extension, which widens item 7's narrowing
+ * from the super user to the two roles the client's own row names alongside
+ * them: *Superuser / Prog. manager / Admin*.
+ *
+ * The two roles NOT here are deliberate, not an oversight (plan §2 ʰ):
+ *   · `program_associate` — a `readonly` seat, so they already see three steps.
+ *     Narrowing them further would delete Configure and with it the only screen
+ *     that carries `StandardSeatBanner`, the sole place the product tells them
+ *     their seat is view-only. Their prototype has no Set up item at all.
+ *   · `jury` — no `setup` nav (`nav.ts:172`), so the predicate can never be
+ *     evaluated for them.
+ * The VC edition is untouched: it was never rescoped, and `AISJ_ICAdmin_V6` and
+ * every VC file still draw all four steps, so this remains a recorded deviation
+ * from the prototypes rather than a match to them (§12, Q-A).
+ */
+const PROGRAMME_ONLY_ROLES: ReadonlySet<Role> = new Set<Role>([
+  "superuser",
+  "admin",
+  "program_manager",
+]);
+
+/**
  * The steps a seat walks: Org type is an Admin / Super User step only.
  *
  * `first` indexes the FULL four-step numbering that `step` is held in, so the
  * two narrowings compose without compounding: `programmeOnly` returns `first: 1`
  * outright rather than slicing, because slicing an already-sliced list is
  * exactly how "non-admin roles already see three steps" would double-apply and
- * cost a `readonly` seat its Configure step. A super user is always a `full`
- * seat (`seatFor`), so the branch below is unreachable for them either way —
- * this just makes it unreachable by construction rather than by luck.
+ * cost a `readonly` seat its Configure step.
+ *
+ * R3-SETUP — that hazard stopped being hypothetical. While `programmeOnly` meant
+ * the super user alone it was always a `full` seat (`seatFor`), so the early
+ * return was belt-and-braces; item 6 adds the PROGRAM MANAGER, whose seat is
+ * `cohorts` — the list they would be sliced from is ALREADY sliced. The early
+ * return is what stops their wizard opening on Select with nothing configured,
+ * so it is load-bearing now rather than merely tidy: do not re-express it as a
+ * second `slice`.
  */
 function stepsFor(
   seat: Seat,
@@ -154,14 +205,18 @@ export function SetupWizard() {
    * here; it stays because the ADMIN and VC wizards still render step 4, and
    * `TeamStep` decides its own layout from the same two facts.
    */
-  const programmeOnly = edition === "incubator" && user?.role === "superuser";
+  const programmeOnly = edition === "incubator" && !!user && PROGRAMME_ONLY_ROLES.has(user.role);
 
-  // The same predicate twice, and deliberately: `nominateOnly` only ever
-  // relabelled step 4 for the incubator super user, and that is exactly the
-  // principal who no longer HAS a step 4 — so `STEPS_SUPERUSER` is unreachable
-  // today and is kept, like `TeamStep`'s matching branch, against a reversal of
-  // item 7 (§12.5). Passing it keeps the two in step if one is reversed.
-  const { labels: stepLabels, first: firstStep } = stepsFor(seat, programmeOnly, programmeOnly);
+  // NO LONGER the same predicate twice, and that is the point. `nominateOnly`
+  // only ever relabelled step 4 "Super user", and only for the incubator super
+  // user; `stepsFor`'s early return shadows it, so `STEPS_SUPERUSER` is
+  // unreachable today and is kept, like `TeamStep`'s matching branch, against a
+  // reversal of item 7 (§12.5). It must stay NARROW while `programmeOnly`
+  // widens: on a reversal an admin's or a programme manager's restored step 4
+  // is the roster, not the nomination, so passing the wider predicate here
+  // would relabel a step neither of them ever had.
+  const nominateOnly = edition === "incubator" && user?.role === "superuser";
+  const { labels: stepLabels, first: firstStep } = stepsFor(seat, nominateOnly, programmeOnly);
   const [step, setStep] = useState(firstStep);
   const [buying, setBuying] = useState(false);
   const [data, setData] = useState<ProgramsResponse | null>(null);

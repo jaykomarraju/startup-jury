@@ -17,10 +17,9 @@ test("admin adds a program via the Set up wizard; it appears in the toolbar filt
 
   await expect(page.getByRole("heading", { name: "Set up your workspace" })).toBeVisible();
 
-  // Step 1 (Org type) → Continue advances to Configure.
-  await page.getByRole("button", { name: "Continue" }).click();
-
-  // Step 2 (Configure): add a program.
+  // R3-SETUP · item 6 — the admin's wizard OPENS on Configure. There is no Org
+  // type step to click past any more, and the click that used to advance INTO
+  // Configure would now advance out of it, into Select.
   await expect(page.getByText("The umbrella over everything")).toBeVisible();
   await page.getByLabel("Program name").fill("Wizard QA Program");
   await page.getByRole("button", { name: "Add program" }).click();
