@@ -241,7 +241,10 @@ describe("a stage that declares none of it", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("the incubator stage screens, from their real configs", () => {
-  it("Jury Pipeline — the prototype's nine headers, and its footer sentence", async () => {
+  // The BASE config, rendered with no AuthContext, so no `roleVariants` entry
+  // applies. Since R4-JP that shape is the JURY's alone — the three staff roles
+  // get `JURY_PIPELINE_V3`, asserted in the V3 block at the bottom of this file.
+  it("Jury Pipeline — the base config's nine headers (the jury's shape), and its footer sentence", async () => {
     mockApi([
       deck({ id: "d1", name: "GreenRoute", statusId: "shortlisted" }),
       deck({ id: "d2", name: "AgroFresh", statusId: "jury_evaluation", status: "Jury Evaluation" }),
@@ -406,18 +409,31 @@ describe("the W5-A consumers", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * V3 item 2 — Jury Pipeline, SUPERUSER ONLY.
+ * V3 item 2 — Jury Pipeline, the three STAFF roles.
  *
  * `AISJ_SuperuserV3` `panel-jurypipeline` deletes `<th>Status</th>`, collapses
  * `jpRender`'s juror pills to Evaluated / Pending, and drops the Action select
- * from five options to two. Only the superuser prototype was reshared, so the
- * last test here is the negative control: admin, program manager and jury must
- * still draw the v15 screen, Status column and legend included.
+ * from five options to two.
+ *
+ * R4-JP widened it from the superuser to the admin and the program manager
+ * (`docs/plan_roles_incubator.md` §2 row `11 · V3-JP`, footnote ʳ): both reach
+ * the slug and both drew the same v15 shape, so the repeat the client reported
+ * — the row Status pill restating the per-juror `jp-jstat` pills — was on their
+ * screens identically. Each shape test therefore runs for all three.
+ *
+ * The JURY is the negative control, and it is a deliberate one (§2 ˢ, §5 item
+ * 7): `AISJ_IC_Jury_V4` declares BOTH a Status and an Action column and a
+ * four-option select, and their table has no per-juror pill column, so the
+ * repeat does not exist there and the column is one they need. The last test
+ * asserts they still get the v15 screen whole.
  *
  * Every assertion is gated on a POPULATED row, never on the toolbar title.
  */
-describe("V3 · Jury Pipeline is redrawn for the superuser and for nobody else", () => {
-  /** A deck under jury evaluation: superuser may shortlist or reject it. */
+describe("V3 · Jury Pipeline is redrawn for the three staff roles, and not for the jury", () => {
+  /** The roles `roleVariants` now carries — superuser since V3-JP, the other two since R4-JP. */
+  const STAFF = ["superuser", "admin", "program_manager"] as const;
+
+  /** A deck under jury evaluation: staff may shortlist or reject it. */
   const underJury = (over: Partial<DeckView> = {}) =>
     deck({
       id: "d-jury",
@@ -471,27 +487,30 @@ describe("V3 · Jury Pipeline is redrawn for the superuser and for nobody else",
       .getAllByRole("option")
       .map((o) => o.textContent);
 
-  it("drops the Status column — the prototype's eight headers, Status absent", async () => {
-    mockApi([underJury(), assigned()]);
-    renderAs("superuser");
-    await screen.findByRole("row", { name: /InsureFlow/ });
+  it.each(STAFF)(
+    "%s drops the Status column — the prototype's eight headers, Status absent",
+    async (role) => {
+      mockApi([underJury(), assigned()]);
+      renderAs(role);
+      await screen.findByRole("row", { name: /InsureFlow/ });
 
-    expect(headers(screen.getByRole("table"))).toEqual([
-      "Startup",
-      "Jury members & status",
-      "AI score",
-      "Jury score",
-      "Avg. score",
-      "Addl. Parameter scores",
-      "Assigned date",
-      "Action",
-    ]);
-    expect(screen.queryByRole("columnheader", { name: "Status" })).not.toBeInTheDocument();
-  });
+      expect(headers(screen.getByRole("table"))).toEqual([
+        "Startup",
+        "Jury members & status",
+        "AI score",
+        "Jury score",
+        "Avg. score",
+        "Addl. Parameter scores",
+        "Assigned date",
+        "Action",
+      ]);
+      expect(screen.queryByRole("columnheader", { name: "Status" })).not.toBeInTheDocument();
+    },
+  );
 
-  it("the juror pill reads Evaluated / Pending, not Submitted", async () => {
+  it.each(STAFF)("%s — the juror pill reads Evaluated / Pending, not Submitted", async (role) => {
     mockApi([underJury(), assigned()]);
-    renderAs("superuser");
+    renderAs(role);
     await screen.findByRole("row", { name: /InsureFlow/ });
 
     expect(within(screen.getByRole("row", { name: /InsureFlow/ })).getByText("Evaluated")).toBeInTheDocument();
@@ -499,31 +518,34 @@ describe("V3 · Jury Pipeline is redrawn for the superuser and for nobody else",
     expect(screen.queryByText("Submitted")).not.toBeInTheDocument();
   });
 
-  it("the Action select offers exactly two options, and none of the three v15 deleted", async () => {
-    mockApi([underJury(), assigned()]);
-    renderAs("superuser");
-    await screen.findByRole("row", { name: /InsureFlow/ });
+  it.each(STAFF)(
+    "%s — the Action select offers exactly two options, and none of the three v15 deleted",
+    async (role) => {
+      mockApi([underJury(), assigned()]);
+      renderAs(role);
+      await screen.findByRole("row", { name: /InsureFlow/ });
 
-    // `jpToIntroCalls` → the `shortlist` transition, which is what puts a deck
-    // on the Intro calls screen (`INCUBATOR_CALLS_CONFIG.introcalls`).
-    expect(optionsOf(screen.getByRole("row", { name: /InsureFlow/ }))).toEqual([
-      "Action ▾",
-      "Send to intro calls",
-    ]);
-    // `addToAssign` + `showPanel('assign')`, offered from an ASSIGNABLE_STAGES stage.
-    expect(optionsOf(screen.getByRole("row", { name: /TaxPilot/ }))).toEqual([
-      "Action ▾",
-      "Reassign / add jury",
-    ]);
+      // `jpToIntroCalls` → the `shortlist` transition, which is what puts a deck
+      // on the Intro calls screen (`INCUBATOR_CALLS_CONFIG.introcalls`).
+      expect(optionsOf(screen.getByRole("row", { name: /InsureFlow/ }))).toEqual([
+        "Action ▾",
+        "Send to intro calls",
+      ]);
+      // `addToAssign` + `showPanel('assign')`, offered from an ASSIGNABLE_STAGES stage.
+      expect(optionsOf(screen.getByRole("row", { name: /TaxPilot/ }))).toEqual([
+        "Action ▾",
+        "Reassign / add jury",
+      ]);
 
-    // The three v15 options v3 deletes, plus the transition label the prototype
-    // never had — none of them anywhere on the screen.
-    for (const gone of ["View deck", "Shortlist", "Reject", "Begin jury evaluation"]) {
-      expect(screen.queryByRole("option", { name: gone })).not.toBeInTheDocument();
-    }
-  });
+      // The three v15 options v3 deletes, plus the transition label the prototype
+      // never had — none of them anywhere on the screen.
+      for (const gone of ["View deck", "Shortlist", "Reject", "Begin jury evaluation"]) {
+        expect(screen.queryByRole("option", { name: gone })).not.toBeInTheDocument();
+      }
+    },
+  );
 
-  it("Send to intro calls posts `shortlist`, and the cell becomes the flow tag", async () => {
+  it.each(STAFF)("%s — Send to intro calls posts `shortlist`, and the cell becomes the flow tag", async (role) => {
     const live = [underJury()];
     const posted: { url: string; body: unknown }[] = [];
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -539,7 +561,7 @@ describe("V3 · Jury Pipeline is redrawn for the superuser and for nobody else",
       return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
 
-    renderAs("superuser");
+    renderAs(role);
     const row = await screen.findByRole("row", { name: /InsureFlow/ });
     fireEvent.change(within(row).getByRole("combobox"), { target: { value: "shortlist" } });
 
@@ -549,9 +571,9 @@ describe("V3 · Jury Pipeline is redrawn for the superuser and for nobody else",
     expect(within(screen.getByRole("row", { name: /InsureFlow/ })).queryByRole("combobox")).toBeNull();
   });
 
-  it("Reassign / add jury navigates to Assign and moves nothing", async () => {
+  it.each(STAFF)("%s — Reassign / add jury navigates to Assign and moves nothing", async (role) => {
     const calls = mockApi([assigned()]);
-    renderAs("superuser");
+    renderAs(role);
     const row = await screen.findByRole("row", { name: /TaxPilot/ });
     fireEvent.change(within(row).getByRole("combobox"), { target: { value: "__reassign" } });
 
@@ -561,56 +583,66 @@ describe("V3 · Jury Pipeline is redrawn for the superuser and for nobody else",
     expect(calls.filter((c) => c.method === "POST")).toEqual([]);
   });
 
-  it("a rejected deck still reads as decided, and the footer keeps its sentence while the legend goes", async () => {
-    mockApi([
-      underJury(),
-      deck({ id: "d-sl", name: "GreenRoute", statusId: "shortlisted", status: "Shortlisted", actions: [] }),
-      deck({ id: "d-rj", name: "CreditBridge", statusId: "rejected", status: "Rejected", actions: [] }),
-    ]);
-    renderAs("superuser");
-    await screen.findByRole("row", { name: /CreditBridge/ });
-
-    expect(within(screen.getByRole("row", { name: /GreenRoute/ })).getByText("Sent to intro calls")).toBeInTheDocument();
-    expect(within(screen.getByRole("row", { name: /CreditBridge/ })).getByText("Rejected")).toBeInTheDocument();
-    // `jpFoot` is byte-identical in v3 — it counts rows in the stage, which the
-    // deleted column never provided.
-    expect(screen.getByTestId("stage-footer-stat")).toHaveTextContent(
-      "3 decks · 1 shortlisted · 1 rejected · 1 in progress",
-    );
-    // …but the colour key for a pill that no longer exists does not survive.
-    expect(screen.queryByTestId("stage-legend")).not.toBeInTheDocument();
-  });
-
-  // ── The negative control ──────────────────────────────────────────────────
-  it.each(["admin", "program_manager", "jury"] as const)(
-    "%s still draws the v15 screen — nine headers, Status, and the legend",
+  it.each(STAFF)(
+    "%s — a rejected deck still reads as decided, and the footer keeps its sentence while the legend goes",
     async (role) => {
-      mockApi([underJury(), assigned()]);
+      mockApi([
+        underJury(),
+        deck({ id: "d-sl", name: "GreenRoute", statusId: "shortlisted", status: "Shortlisted", actions: [] }),
+        deck({ id: "d-rj", name: "CreditBridge", statusId: "rejected", status: "Rejected", actions: [] }),
+      ]);
       renderAs(role);
-      await screen.findByRole("row", { name: /InsureFlow/ });
+      await screen.findByRole("row", { name: /CreditBridge/ });
 
-      expect(headers(screen.getByRole("table"))).toEqual([
-        "Startup",
-        "Jury members & status",
-        "AI score",
-        "Jury score",
-        "Avg. score",
-        "Addl. Parameter scores",
-        "Assigned date",
-        "Status",
-        "Action",
-      ]);
-      expect(within(screen.getByTestId("stage-legend")).getAllByText(/./).map((n) => n.textContent)).toEqual([
-        "Assigned",
-        "Shortlisted",
-        "Rejected",
-        "Pending",
-      ]);
-      // The v15 transitions, as buttons — not the two-option select.
-      expect(screen.getByRole("button", { name: "Shortlist" })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
-      expect(within(screen.getByRole("row", { name: /InsureFlow/ })).getByText("Submitted")).toBeInTheDocument();
-      expect(screen.queryByRole("option", { name: "Send to intro calls" })).not.toBeInTheDocument();
+      expect(within(screen.getByRole("row", { name: /GreenRoute/ })).getByText("Sent to intro calls")).toBeInTheDocument();
+      expect(within(screen.getByRole("row", { name: /CreditBridge/ })).getByText("Rejected")).toBeInTheDocument();
+      // `jpFoot` is byte-identical in v3 — it counts rows in the stage, which the
+      // deleted column never provided.
+      expect(screen.getByTestId("stage-footer-stat")).toHaveTextContent(
+        "3 decks · 1 shortlisted · 1 rejected · 1 in progress",
+      );
+      // …but the colour key for a pill that no longer exists does not survive.
+      expect(screen.queryByTestId("stage-legend")).not.toBeInTheDocument();
     },
   );
+
+  // ── The negative control ──────────────────────────────────────────────────
+  //
+  // Not "the role we ran out of time for" — the role whose own prototype says
+  // no. `AISJ_IC_Jury_V4`'s `panel-jurypipeline` declares twelve `<th>`,
+  // Status and Action among them, and `jpRender` emits View deck · Submit ·
+  // Save draft · Re-assign. §5 item 7: do not extend V3-JP to the jury.
+  it("the jury still draws the v15 screen — nine headers, Status, and the legend", async () => {
+    mockApi([underJury(), assigned()]);
+    renderAs("jury");
+    await screen.findByRole("row", { name: /InsureFlow/ });
+
+    expect(headers(screen.getByRole("table"))).toEqual([
+      "Startup",
+      "Jury members & status",
+      "AI score",
+      "Jury score",
+      "Avg. score",
+      "Addl. Parameter scores",
+      "Assigned date",
+      "Status",
+      "Action",
+    ]);
+    expect(within(screen.getByTestId("stage-legend")).getAllByText(/./).map((n) => n.textContent)).toEqual([
+      "Assigned",
+      "Shortlisted",
+      "Rejected",
+      "Pending",
+    ]);
+    // The v15 transitions, as buttons — not the two-option select.
+    expect(screen.getByRole("button", { name: "Shortlist" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+    expect(within(screen.getByRole("row", { name: /InsureFlow/ })).getByText("Submitted")).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Send to intro calls" })).not.toBeInTheDocument();
+  });
+
+  // The program associate has no `jurypipeline` nav at all (`nav.ts`,
+  // `roles: ["admin","program_manager","jury"]`), so there is no PA row to
+  // assert here — footnote ʳ marks the cell n/a, and their missing screen is a
+  // pre-existing permission gap listed in §5 item 10, not this session's.
 });
