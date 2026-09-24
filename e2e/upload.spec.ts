@@ -148,11 +148,20 @@ test("a PA uploads a deck, reviews it, sends it to Query — and is never shown 
     await expect(page.getByText(NOT_AVAILABLE), `${href} is not available to a PA`).toHaveCount(0);
   }
 
-  // 5 · the deck is in All decks, Pending AI, with readable slides.
+  // 5 · the deck is on the Dashboard, not yet AI-evaluated, with readable slides.
+  //
+  // Wave R (R1-DASH) widened the V3 Dashboard to the program associate, so this
+  // walk now reads the V3 status VOCABULARY: a deck with no verdict is "Not AI
+  // Evaluated" (`V3_STATUS_LABELS.noteval`), where the pre-V3 screen said
+  // "Pending AI". Asserting the old word here did not just fail — it resolved to
+  // the Actions menu's own disabled `<option>` ("Send to Assign — not available
+  // at Pending AI"), which is `hidden` inside a closed select, so the failure
+  // read as a visibility bug rather than a vocabulary change. Target the status
+  // cell by its testid so the row's other text can never stand in for it.
   await page.goto("/app/alldecks");
   const deckRow = page.getByRole("row", { name: new RegExp(name) });
   await expect(deckRow).toBeVisible();
-  await expect(deckRow.getByText("Pending AI")).toBeVisible();
+  await expect(deckRow.getByTestId("v3-status")).toHaveText("Not AI Evaluated");
 
   // The report drawer renders DeckPdfViewer against the R2 object just stored.
   // W7-A (F0325): the startup NAME is the report link, not the whole row.

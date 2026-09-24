@@ -182,9 +182,12 @@ const EXPECTED: Record<string, Screen> = {
   },
   "incubator/superuser/evaluate": { title: "Evaluate", tables: [] }, // route-only since V3-NAV — see above
   "incubator/superuser/assign": { title: "Assign", tables: [] },
-  // V3 item 2 — `AISJ_SuperuserV3` deletes `<th>Status</th>`. Superuser ONLY:
-  // the admin, program_manager and jury rows below still carry it, and that is
-  // the control proving the un-reshared prototypes did not move.
+  // V3 item 2 — `AISJ_SuperuserV3` deletes `<th>Status</th>`. R4-JP widened
+  // that to the admin and the program_manager (`docs/plan_roles_incubator.md`
+  // §2 row `11 · V3-JP`, footnote ʳ), so their rows below drop STATUS with it.
+  // The JURY row keeps it, and is now the control: `AISJ_IC_Jury_V4` declares
+  // BOTH a Status and an Action column, so the repeat the client reported does
+  // not exist on their screen (§2 ˢ, §5 item 7).
   "incubator/superuser/jurypipeline": {
     title: "Jury Pipeline",
     tables: [["STARTUP", "JURY MEMBERS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "ACTION"]],
@@ -264,9 +267,14 @@ const EXPECTED: Record<string, Screen> = {
   },
 
   // ── incubator/admin · 25 screens ──
+  // R1-DASH — the V3 Dashboard was widened from the superuser to the three
+  // other incubator STAFF roles (plan_roles_incubator §2 items 1/2/3/4a/5/10a),
+  // so these three rows are now the superuser's row: the same title and the same
+  // collapsed shape. The v15 seven-column set is NOT kept in the union — no role
+  // can draw it any more, and a union row that cannot happen is a lie.
   "incubator/admin/alldecks": {
-    title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "SECTOR", "STATUS"]],
+    title: "Dashboard",
+    tables: [["STARTUP NAME", "FOUNDER", "PHONE", "EMAIL", "CITY", "AI SCORE", "STATUS", "ACTIONS"]],
   },
   "incubator/admin/upload": { title: "Upload your first pitchdecks", tables: [] },
   "incubator/admin/query": {
@@ -277,7 +285,7 @@ const EXPECTED: Record<string, Screen> = {
   "incubator/admin/assign": { title: "Assign", tables: [] },
   "incubator/admin/jurypipeline": {
     title: "Jury Pipeline",
-    tables: [["STARTUP", "JURY MEMBERS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "JURY MEMBERS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "ACTION"]],
   },
   "incubator/admin/pmpipeline": {
     title: "Prog manager pipeline",
@@ -319,9 +327,23 @@ const EXPECTED: Record<string, Screen> = {
   "incubator/admin/myparams": { title: "My Parameters — Role configuration", tables: [] },
   "incubator/admin/setup": { title: "Set up your workspace", tables: [] },
   "incubator/admin/account": { title: "Create your account", tables: [] },
+  // P0-2 (`docs/plan_roles_incubator.md` §5, decided Q-U (a)) — the console's
+  // default section is `fw` (`DEFAULT_ADMIN_SECTION`), and the two `Score
+  // visibility matrix` cards now render there for the ADMIN as well as the
+  // superuser. They always could write this matrix — `PUT
+  // /api/config/scoring-framework` is `requireTask("adminconsole", "admin")` —
+  // so this row closes a console that did not show a permission system it
+  // accepted writes to. Header sets are byte-identical to the superuser's row
+  // above, because it is the same two cards. The VC rows are NOT touched: no VC
+  // console draws either matrix, and the server now refuses a matrix write from
+  // one.
   "incubator/admin/admin": {
     title: "Admin console",
-    tables: [["MEMBER", "ROLE", "ORGANIZATIONAL TITLE", "TYPE", "STATUS", "ACTION"]],
+    tables: [
+      ["MEMBER", "ROLE", "ORGANIZATIONAL TITLE", "TYPE", "STATUS", "ACTION"],
+      ["ROLE", "SUPER USER", "PROGRAM MGR", "PROGRAM ASSOC", "JURY MEMBER"],
+      ["ROLE", "MNG PARTNER", "IC", "PARTNER", "INV. ASSOC", "ANALYST"],
+    ],
   },
   "incubator/admin/billing": { title: "Choose your seat", tables: [] },
   "incubator/admin/contactadmin": { title: "Contact Admin", tables: [] },
@@ -335,9 +357,14 @@ const EXPECTED: Record<string, Screen> = {
   },
 
   // ── incubator/program_manager · 19 screens ──
+  // R1-DASH — the V3 Dashboard was widened from the superuser to the three
+  // other incubator STAFF roles (plan_roles_incubator §2 items 1/2/3/4a/5/10a),
+  // so these three rows are now the superuser's row: the same title and the same
+  // collapsed shape. The v15 seven-column set is NOT kept in the union — no role
+  // can draw it any more, and a union row that cannot happen is a lie.
   "incubator/program_manager/alldecks": {
-    title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "SECTOR", "STATUS"]],
+    title: "Dashboard",
+    tables: [["STARTUP NAME", "FOUNDER", "PHONE", "EMAIL", "CITY", "AI SCORE", "STATUS", "ACTIONS"]],
   },
   "incubator/program_manager/upload": { title: "Upload your first pitchdecks", tables: [] },
   "incubator/program_manager/query": {
@@ -348,7 +375,7 @@ const EXPECTED: Record<string, Screen> = {
   "incubator/program_manager/assign": { title: "Assign", tables: [] },
   "incubator/program_manager/jurypipeline": {
     title: "Jury Pipeline",
-    tables: [["STARTUP", "JURY MEMBERS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "JURY MEMBERS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "ACTION"]],
   },
   "incubator/program_manager/pmpipeline": {
     title: "Prog manager pipeline",
@@ -399,9 +426,14 @@ const EXPECTED: Record<string, Screen> = {
   },
 
   // ── incubator/program_associate · 19 screens ──
+  // R1-DASH — the V3 Dashboard was widened from the superuser to the three
+  // other incubator STAFF roles (plan_roles_incubator §2 items 1/2/3/4a/5/10a),
+  // so these three rows are now the superuser's row: the same title and the same
+  // collapsed shape. The v15 seven-column set is NOT kept in the union — no role
+  // can draw it any more, and a union row that cannot happen is a lie.
   "incubator/program_associate/alldecks": {
-    title: "All decks",
-    tables: [["STARTUP", "FOUNDER NAME", "EMAIL ID", "PHONE NUMBER", "CITY", "SECTOR", "STATUS"]],
+    title: "Dashboard",
+    tables: [["STARTUP NAME", "FOUNDER", "PHONE", "EMAIL", "CITY", "AI SCORE", "STATUS", "ACTIONS"]],
   },
   "incubator/program_associate/upload": { title: "Upload your first pitchdecks", tables: [] },
   "incubator/program_associate/query": {

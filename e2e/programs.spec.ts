@@ -49,9 +49,12 @@ test("dashboard Program filter scopes the decks list to a program", async ({ pag
   await page.getByRole("listbox", { name: "Programs" }).getByRole("option", { name: "Climate Cohort" }).click();
 
   // Selecting a seeded program updates the screen's context. W7-A: the
-  // prototype's `updateTitle()` puts it in the TITLE ("All decks — Climate
-  // Cohort"), not in the subtitle the old assertion read, and the button label
-  // takes the programme's name.
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("All decks — Climate Cohort");
+  // prototype's `updateTitle()` puts it in the TITLE, not in the subtitle the
+  // old assertion read, and the button label takes the programme's name.
+  //
+  // R1-DASH — this walk signs in as the incubator ADMIN, who now gets the V3
+  // Dashboard, so the base title is "Dashboard". `updateTitle()` still appends
+  // the context exactly as before; only `homeTitle` moved.
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Dashboard — Climate Cohort");
   await expect(programFilter).toHaveText(/Climate Cohort/);
 });
