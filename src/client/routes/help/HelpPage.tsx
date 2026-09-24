@@ -22,9 +22,10 @@
  * the home/results/no-match views. It does — those three are one render with a
  * swapped results region, and only `answer`/`all` replace the whole body.
  */
+import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Button, Card } from "../../components";
+import { Button } from "../../components";
 import { HELP_CLIPS, HELP_FAQS, HELP_POPULAR_COUNT, helpSections, type HelpFaq } from "./faqs";
 import { closestMatch, topMatches } from "./search";
 
@@ -224,10 +225,9 @@ export function HelpPage() {
     const clip = HELP_CLIPS[faq.clipId];
     return (
       <HelpFrame>
-        <Card>
           <button
             type="button"
-            className="text-xs text-fg-muted hover:text-fg"
+            className="self-start text-left text-xs text-fg-muted hover:text-fg"
             onClick={() => setView({ mode: "search", query: view.originQuery })}
           >
             ← {view.originQuery ? "Back to results" : "Back"}
@@ -238,7 +238,6 @@ export function HelpPage() {
           </p>
           {clip && <ClipPlayer clipId={faq.clipId} durationSec={clip.durationSec} />}
           <FeedbackRow faqId={faq.id} />
-        </Card>
       </HelpFrame>
     );
   }
@@ -247,10 +246,9 @@ export function HelpPage() {
   if (view.mode === "all") {
     return (
       <HelpFrame>
-        <Card>
           <button
             type="button"
-            className="text-xs text-fg-muted hover:text-fg"
+            className="self-start text-left text-xs text-fg-muted hover:text-fg"
             onClick={() => setView({ mode: "search", query: "" })}
           >
             ← Back
@@ -267,7 +265,6 @@ export function HelpPage() {
               </div>
             ))}
           </div>
-        </Card>
       </HelpFrame>
     );
   }
@@ -278,16 +275,23 @@ export function HelpPage() {
 
   return (
     <HelpFrame>
-      <Card>
-        <input
-          className="sj-input"
-          type="search"
-          aria-label="Search the FAQs"
-          placeholder="Ask a question…"
-          autoComplete="off"
-          value={view.query}
-          onChange={(e) => setView({ mode: "search", query: e.target.value })}
-        />
+        {/* `.jb-search-wrap` — the icon sits INSIDE the field on the right and
+            is `pointer-events:none`, so it never steals the click. */}
+        <div className="relative">
+          <input
+            className="sj-input pr-10"
+            type="search"
+            aria-label="Search the FAQs"
+            placeholder="Ask a question…"
+            autoComplete="off"
+            value={view.query}
+            onChange={(e) => setView({ mode: "search", query: e.target.value })}
+          />
+          <Search
+            aria-hidden="true"
+            className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+          />
+        </div>
 
         {!searching && (
           <div data-testid="help-popular">
@@ -324,7 +328,6 @@ export function HelpPage() {
             <NoMatchFooter onBrowseAll={() => setView({ mode: "all" })} />
           </div>
         )}
-      </Card>
 
       {!searching && (
         <Button variant="secondary" onClick={() => setView({ mode: "all" })}>
@@ -335,17 +338,38 @@ export function HelpPage() {
   );
 }
 
-/** Shared page chrome, so every view keeps the same heading and width. */
+/**
+ * Shared chrome. **This is the spec's PANEL, not a page layout** — the client
+ * asked for the design to match, in our palette rather than theirs.
+ *
+ * `#jb-panel` is a 360 px column with its own header bar (`.jb-header`: the
+ * brand on the left, "FAQ search" on the right) and a scrolling `.jb-body`
+ * under it. The first cut of this screen threw that away: a page title, a
+ * subtitle the spec does not have, and a `max-w-2xl` card, which reads as a
+ * different product. The panel is reproduced here at its own width, so the
+ * composition — narrow column, header bar, body — is the spec's.
+ *
+ * The `<h1>` STAYS. `e2e/parity.spec.ts` reads the first `<h1>` on the screen
+ * and pins it to "Help" for five roles, so removing it to chase the widget's
+ * chrome would redden five parity rows for a heading the spec's stand-in page
+ * never had to carry. It sits above the panel, not inside it, exactly as that
+ * stand-in page carries its own title above the widget.
+ */
 function HelpFrame({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-5 p-5">
-      <div>
-        <h1 className="text-xl font-semibold text-fg">Help</h1>
-        <p className="mt-0.5 text-sm text-fg-muted">
-          Search the FAQs, or browse them by topic. Most answers come with a short clip.
-        </p>
+    <div className="flex flex-col gap-4 p-5">
+      <h1 className="text-xl font-semibold text-fg">Help</h1>
+      {/* `#jb-panel{width:360px; border-radius:14px; border:1px solid …;
+          box-shadow:0 10px 34px rgba(0,0,0,.16); overflow:hidden}` */}
+      <div className="w-full max-w-[380px] overflow-hidden rounded-[14px] border border-line bg-surface shadow-lg">
+        {/* `.jb-header{padding:14px 16px; display:flex; justify-content:space-between}` */}
+        <div className="flex items-center justify-between bg-fg px-4 py-3.5">
+          <span className="text-sm font-bold text-accent">ai.STARTUPJURY</span>
+          <span className="text-[11px] text-surface-2">FAQ search</span>
+        </div>
+        {/* `.jb-body{padding:16px; overflow-y:auto}` */}
+        <div className="flex flex-col items-stretch gap-3 p-4">{children}</div>
       </div>
-      <div className="flex max-w-2xl flex-col items-start gap-3">{children}</div>
     </div>
   );
 }

@@ -6,7 +6,7 @@ import { DashboardPage, juryBucket } from "../../src/client/routes/DashboardPage
 import { EvaluationDrawer } from "../../src/client/components/EvaluationDrawer";
 import type { DeckView } from "../../src/client/types";
 import type { Role } from "../../src/shared/roles";
-import { canAccessNav, isInSidebar, navItemById } from "../../src/shared/nav";
+import { canAccessNav, isInSidebar, navIcon, navItemById, navLabel } from "../../src/shared/nav";
 import * as api from "../../src/client/api";
 
 /**
@@ -47,10 +47,11 @@ vi.mock("../../src/client/routes/SignupWorkspace", async (importOriginal) => {
   return { ...actual, listSignups: vi.fn().mockResolvedValue({ signups: [] }) };
 });
 
-const SU_DETAILS = ["Startup", "Founder name", "Email ID", "Phone number", "City", "Sector", "Status"];
-const SU_EVALUATED = ["Startup", "AI score", "Parameter scores"];
-const SU_ASSIGNED = ["Startup", "Status", "AI score", "Parameter scores", "Assigned to", "Assigned date", "Due date"];
-const SU_SHORTLISTED = ["Startup", "AI score", "Jury score", "Avg. score", "Addl. Parameter scores"];
+// The v15 incubator header sets (`SU_DETAILS` / `SU_EVALUATED` / `SU_ASSIGNED`
+// / `SU_SHORTLISTED`) were deleted with the screen that drew them — see the
+// orphaned-screen note above the first describe. They are still pinned as pure
+// data in `test/unit/deckStats.test.ts`, which is what a Wave R+1 cleanup of
+// `STAT_ORDER.incubator` has to read.
 const JURY_OPEN = ["Startup", "Status", "AI score", "Assigned by", "Assigned date", "Due date"];
 const JURY_SUBMITTED = ["Startup", "AI Score", "My Score", "Av. Score", "Submitted to", "Submitted date", "By Due date"];
 
@@ -162,13 +163,15 @@ function principal(role: Role, id: string): AuthUser {
 }
 
 /**
- * V3-DASH — the default role here is the ADMIN, not the superuser.
+ * The default role here is the ADMIN — who, since R1-DASH, sees the V3
+ * Dashboard exactly as the superuser does.
  *
- * `AISJ_SuperuserV3.HTM` reshaped this screen into a Dashboard for the
- * SUPERUSER ONLY; the admin, program-manager, program-associate and jury
- * prototypes were not reshared, so everything below this line is the assertion
- * that their screen did not move. The superuser's new one has its own block at
- * the end of the file.
+ * `AISJ_SuperuserV3.HTM` reshaped this screen into a Dashboard; R1-DASH widened
+ * it from the superuser to the three other incubator STAFF roles on the
+ * client's written instruction (plan_roles_incubator §2 items 1/2/3/4a/5, §6
+ * Q-A). The JURY did not move — `isJury` is tested before `isV3Dash`, and their
+ * screen already matches their own prototype. That split is the negative
+ * control, and it has its own block at the end of the file.
  */
 function mount(role: Role = "admin", id = "u_admin") {
   return render(
@@ -241,79 +244,51 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("All decks — staff table", () => {
-  it("renders the founder-details header set by default, with the intake status vocabulary", async () => {
-    mount();
-    // Gate on a populated row, never on the heading the loading state also draws.
-    await screen.findByRole("button", { name: "FinStack" });
-    expect(headers()).toEqual(SU_DETAILS);
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("All decks");
-    expect(screen.getByText("5 submissions · Updated just now")).toBeInTheDocument();
-
-    // Status means intake completeness here, not the pipeline stage (F0236/F0241).
-    const payRow = screen.getByRole("button", { name: "PayRoute" }).closest("tr")!;
-    expect(within(payRow.lastElementChild as HTMLElement).getByText("Incomplete")).toBeInTheDocument();
-    expect(within(payRow).getAllByText("not captured")).toHaveLength(2);
-    const finRow = screen.getByRole("button", { name: "FinStack" }).closest("tr")!;
-    expect(within(finRow.lastElementChild as HTMLElement).getByText("Complete")).toBeInTheDocument();
-    expect(within(finRow).queryByText("not captured")).toBeNull();
-    // The name is the report link, titled as the prototype titles it.
-    expect(screen.getByRole("button", { name: "FinStack" })).toHaveAttribute("title", "Open deck & evaluation report");
-  });
-
-  it("uses the prototype's stat-box copy", async () => {
-    mount();
-    await screen.findByRole("button", { name: "FinStack" });
-    expect(
-      screen.getAllByRole("button", { pressed: false }).concat(screen.getAllByRole("button", { pressed: true }))
-        .map((b) => b.querySelector(".u-label")?.textContent)
-        .filter(Boolean),
-    ).toEqual(expect.arrayContaining(["Uploaded", "Pending", "Incomplete", "AI Evaluated", "Assigned", "Shortlisted"]));
-    expect(tile("Uploaded")).toHaveTextContent("since yesterday");
-    expect(tile("Incomplete")).toHaveTextContent("Missing slides");
-  });
-
-  it("re-shapes the table per stat box and narrows the rows (F0192)", async () => {
-    mount();
-    await screen.findByRole("button", { name: "FinStack" });
-
-    fireEvent.click(tile("AI Evaluated"));
-    expect(headers()).toEqual(SU_EVALUATED);
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("AI Evaluated");
-    expect(screen.queryByRole("button", { name: "PayRoute" })).toBeNull();
-    expect(screen.getByText("3 submissions · Updated just now")).toBeInTheDocument();
-    // The sparkline column loads each row's breakdown.
-    await waitFor(() => expect(api.getDeck).toHaveBeenCalledWith("d_fin"));
-
-    fireEvent.click(tile("Assigned"));
-    expect(headers()).toEqual(SU_ASSIGNED);
-    const fin = screen.getByRole("button", { name: "FinStack" }).closest("tr")!;
-    expect(within(fin).getByText("Assigned")).toBeInTheDocument();
-    expect(within(fin).getByText("Rajesh K.")).toBeInTheDocument();
-    expect(within(fin).getByText("2 Jun 2026")).toBeInTheDocument();
-    const green = screen.getByRole("button", { name: "GreenRoute" }).closest("tr")!;
-    expect(within(green).getByText("Shortlisted")).toBeInTheDocument();
-
-    fireEvent.click(tile("Shortlisted"));
-    expect(headers()).toEqual(SU_SHORTLISTED);
-    expect(screen.getAllByRole("button", { name: /^View scores/ })).toHaveLength(1);
-    const row = screen.getByRole("button", { name: "GreenRoute" }).closest("tr")!;
-    expect(within(row).getByText("8.1")).toBeInTheDocument(); // jury
-    expect(within(row).getByText("8.5")).toBeInTheDocument(); // decision score
-  });
-
-  it("the parameter popover lists only the composite parameters", async () => {
-    mount();
-    await screen.findByRole("button", { name: "FinStack" });
-    fireEvent.click(tile("AI Evaluated"));
-    const spark = await screen.findByRole("button", { name: "Parameter scores — FinStack" });
-    fireEvent.click(spark);
-    const pop = await screen.findByRole("dialog", { name: "AI parameter scores — FinStack" });
-    await within(pop).findByText("Traction & Validation");
-    expect(within(pop).getByText(/AI scores across all 2 parameters/)).toBeInTheDocument();
-    expect(within(pop).queryByText("Program fit")).toBeNull();
-  });
-
+/**
+ * ── THE ORPHANED SCREEN (plan_roles_incubator §4) ──────────────────────────
+ *
+ * This describe used to hold TEN tests over the v15 incubator build, all under
+ * `mount()`'s default admin and all mounted `edition: "incubator"`. R1-DASH
+ * moved the admin, programme manager and programme associate onto the V3
+ * Dashboard; the jury has its own tiles and shapes. So **no incubator role is
+ * left on the v15 screen**, and `STAT_ORDER.incubator`, `matchesStat
+ * ("incubator", …)` and the four shapes they drive (`details`, `evaluated`,
+ * `assigned`, `shortlisted`) are unreachable in production.
+ *
+ * They could not be re-pointed at another role, because there is no other role.
+ * VC does not inherit them either — VC staff have their own `VC_SHAPES`. So the
+ * four that asserted the v15 SHAPE were deleted rather than left passing
+ * against dead code, and this is the record of where each assertion went:
+ *
+ *   • "renders the founder-details header set by default, with the intake
+ *     status vocabulary" — `SU_DETAILS` + Complete/Incomplete. Superseded by
+ *     "collapses to two table shapes, with the v3 status vocabulary and the row
+ *     tags" below, which pins `V3_DEFAULT` and the four V3 Status words for the
+ *     same roles. The v15 header sets themselves stay pinned as pure data in
+ *     `test/unit/deckStats.test.ts`.
+ *   • "uses the prototype's stat-box copy" — the v15 six and their COMPUTED
+ *     sub-labels ("since yesterday"). Superseded by "is titled Dashboard and
+ *     draws the v3 six, in order, with the static sub-labels", which asserts the
+ *     computed ones are gone.
+ *   • "re-shapes the table per stat box and narrows the rows (F0192)" — the
+ *     four v15 shapes. Superseded by the two-shape assertion below.
+ *   • "the parameter popover lists only the composite parameters" — the V3
+ *     table has no sparkline column at all (asserted below). The rule it tested,
+ *     that a weight-0 role parameter is not in the composite, is still asserted
+ *     on a LIVE path: the report overlay's `queryByText("Program fit")` is null
+ *     (F0196/F0235 below), and the VC screen still draws the sparkline
+ *     (`allDecksVc.test.tsx`).
+ *
+ * The three that survive re-pointed (below) tested the TOOLBAR and the empty
+ * state, which are common to both builds. The three that needed no change at
+ * all — the empty workspace and the two threshold-rail tests — are untouched.
+ *
+ * `STAT_ORDER.incubator` is deliberately LEFT in `deckStats.ts`: deleting it
+ * inside a restyle would make this change unreviewable, and §6 Q-A is not yet
+ * answered in writing, so the wave must stay revertible by one predicate.
+ * Removing it is a Wave R+1 cleanup with its own review.
+ */
+describe("All decks — the incubator staff screen", () => {
   it("the Program menu filters the request and titles the screen (F0238)", async () => {
     mount();
     await screen.findByRole("button", { name: "FinStack" });
@@ -329,8 +304,13 @@ describe("All decks — staff table", () => {
       expect(api.listDecks).toHaveBeenLastCalledWith(expect.objectContaining({ programId: "p_climate" })),
     );
     await screen.findByRole("button", { name: "FinStack" });
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("All decks — Climate Cohort");
+    // R1-DASH — the base title is `homeTitle`, which is now "Dashboard" for this
+    // role too. The prototype's `updateTitle()` still appends the context.
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Dashboard — Climate Cohort");
     expect(screen.getByRole("button", { name: "Program filter" })).toHaveTextContent("Climate Cohort");
+    // …and `adRenderTable` leads the sub-line with that same context, in place
+    // of "Recent activity". This is the V3 sub-line on a non-superuser screen.
+    expect(screen.getByText("Climate Cohort · 5 decks · Updated just now")).toBeInTheDocument();
   });
 
   it("the Cohort menu works without a program and marks the current cohort (F0240)", async () => {
@@ -355,7 +335,7 @@ describe("All decks — staff table", () => {
       ),
     );
     await screen.findByRole("button", { name: "FinStack" });
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("All decks — Climate Cohort, Cohort 6");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Dashboard — Climate Cohort, Cohort 6");
   });
 
   it("empty state: a workspace with no decks", async () => {
@@ -370,9 +350,10 @@ describe("All decks — staff table", () => {
     mount();
     await screen.findByRole("button", { name: "PayRoute" });
     fireEvent.click(tile("Shortlisted"));
-    expect(headers()).toEqual(SU_SHORTLISTED);
+    // The V3 Shortlisted shape — the one box that does NOT share the default.
+    expect(headers()).toEqual(V3_SHORTLISTED);
     expect(screen.getByText("No decks in this view for the selected filters.")).toBeInTheDocument();
-    expect(screen.getByText("0 submissions · Updated just now")).toBeInTheDocument();
+    expect(screen.getByText("Shortlisted · 0 decks · Updated just now")).toBeInTheDocument();
   });
 
   it("the rail carries the three sections, and only admins may edit the thresholds (F0237)", async () => {
@@ -891,42 +872,109 @@ describe("V3 — the superuser Dashboard", () => {
   });
 });
 
-describe("V3 — the roles whose prototype was NOT reshared keep their screen", () => {
+describe("V3 — the widening reaches all four STAFF roles, and stops at the jury", () => {
   beforeEach(() => {
     vi.mocked(api.listDecks).mockResolvedValue({ decks: V3_DECKS });
   });
 
-  // Only `AISJ_SuperuserV3.HTM` was reshared. If any of these three drifts onto
-  // the Dashboard, this fails — which is the guarantee the wave is run under.
-  for (const role of ["admin", "program_manager", "program_associate"] as const) {
-    it(`${role} still sees All decks, the v15 six and the founder-details table`, async () => {
+  /**
+   * This block used to assert the OPPOSITE — that the admin, PM and PA stayed
+   * on "All decks" — because only `AISJ_SuperuserV3.HTM` had been reshared.
+   * R1-DASH inverts it on the client's written instruction (§6 Q-A): the three
+   * roles are widened, so the assertion that proves the widening landed is the
+   * same one, read the other way.
+   *
+   * Inverting a negative control is the moment it can quietly stop asserting
+   * anything, so the boundary is pinned on BOTH sides and BOTH were measured:
+   *
+   *   • revert `isV3Dash` to `role === "superuser"` → the three staff cases
+   *     fail, superuser and jury still pass. (6 failures, all expected.)
+   *   • add `"jury"` to `isV3Dash` → the jury case FAILS, together with
+   *     "shows five first-person tiles…" in the My Pipeline block. This
+   *     CORRECTS plan §5 item 1, which says the jury would be dead code
+   *     because `isJury` shadows it: `isJury` shadows the three TABLE sites,
+   *     not `homeTitle` or the `v3Lead` sub-line, so a juror added to the flag
+   *     is retitled "Dashboard" over their own unchanged tables.
+   */
+  for (const role of ["superuser", "admin", "program_manager", "program_associate"] as const) {
+    it(`${role} gets the Dashboard: the v3 seven, two shapes and the row Actions menu`, async () => {
       mount(role, `u_${role}`);
       await screen.findByRole("button", { name: "FinStack" });
 
-      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("All decks");
-      expect(screen.getByRole("heading", { level: 1 })).not.toHaveTextContent("Dashboard");
+      // Item 1 — the screen's own name, and the seven tiles in prototype order.
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Dashboard");
       expect(v3Tiles().map((t) => t.label)).toEqual([
         "Uploaded",
-        "Pending",
-        "Incomplete",
         "AI Evaluated",
+        "Not AI Evaluated",
+        "Incomplete",
+        "Archived",
         "Assigned",
         "Shortlisted",
       ]);
-      expect(headers()).toEqual(SU_DETAILS);
-      // The v15 denominator: all seven decks, the archived one included.
+      // The v15 six are gone with their computed sub-labels.
+      expect(tile("Uploaded")).toHaveTextContent("All decks in the pipeline");
+      expect(screen.queryByText(/since yesterday/)).toBeNull();
+      // Item 4a — archive is a STATE: the archived deck stays in Uploaded (7).
       expect(v3Tiles()[0].value).toBe("7");
-      expect(screen.getByRole("button", { name: "DormantAI" })).toBeInTheDocument();
-      // Their sub-labels are still computed, not the v3 prose.
-      expect(tile("Uploaded")).toHaveTextContent("since yesterday");
-      expect(screen.queryByText("All decks in the pipeline")).toBeNull();
-      // And no row-action select appeared on their table.
-      expect(screen.queryByRole("combobox", { name: /^Actions for/ })).toBeNull();
+      const dormant = screen.getByRole("button", { name: "DormantAI" }).closest("tr")!;
+      expect(within(dormant).getByText("Archived")).toBeInTheDocument();
+
+      // Item 2 — the collapsed shape and the four Status words' vocabulary.
+      expect(headers()).toEqual(V3_DEFAULT);
+      const wealth = screen.getByRole("button", { name: "WealthOS" }).closest("tr")!;
+      expect(within(wealth).getByText("Not AI Evaluated")).toBeInTheDocument();
+
+      // Items 3 and 5 — every row carries the Actions menu, with Send to Assign
+      // and Send to Query in it. Both destinations are reachable for all four:
+      // `assign`/`query` are `["admin","program_manager","program_associate"]`
+      // plus the superuser bypass, which is exactly this list.
+      const menus = screen.getAllByRole("combobox", { name: /^Actions for/ });
+      expect(menus.length).toBe(V3_DECKS.length);
+      const options = within(menus[0]).getAllByRole("option").map((o) => o.textContent ?? "");
+      expect(options.some((o) => o.startsWith("Send to Assign"))).toBe(true);
+      expect(options.some((o) => o.startsWith("Send to Query"))).toBe(true);
+      expect(canAccessNav("incubator", role, "assign")).toBe(true);
+      expect(canAccessNav("incubator", role, "query")).toBe(true);
+
+      // Item 10a — the sidebar is renamed WITH the screen, so the label and the
+      // H1 cannot disagree (§6 Q-B).
+      const alldecks = navItemById("incubator", "alldecks")!;
+      expect(navLabel(role, alldecks)).toBe("Dashboard");
+      expect(navIcon(role, alldecks)).toBe("LayoutDashboard");
     });
   }
 
-  // ═══ S1-DASH items 2, 4, 5 — the row menu's two real destinations ═══════
-  //
+  it("the JURY is not widened — five first-person tiles, their own shape, no Actions menu", async () => {
+    mount("jury", "u_jury");
+    // The juror's scope is the decks allocated to them; `V3_DECKS` has none, so
+    // assert on the screen's own chrome rather than on a row.
+    //
+    // Their H1 is still `homeTitle`'s "All decks" — the jury's sidebar override
+    // has never reached the heading, and R1-DASH does not change that. It is the
+    // pre-existing mismatch §6 Q-B names for the staff roles, left alone here
+    // because the jury's screen is not this session's to move.
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("All decks");
+    expect(screen.queryByText("Dashboard")).toBeNull();
+    // Five, not seven — `juryTiles(mine)`, from their own prototype's `mpRender`.
+    expect(v3Tiles()).toHaveLength(5);
+    expect(v3Tiles().map((t) => t.label)).not.toContain("Not AI Evaluated");
+    // No V3 row menu, and no route to the two destinations it would offer.
+    expect(screen.queryByRole("combobox", { name: /^Actions for/ })).toBeNull();
+    expect(canAccessNav("incubator", "jury", "assign")).toBe(false);
+    expect(canAccessNav("incubator", "jury", "query")).toBe(false);
+    // Their sidebar keeps its own name and the stack glyph.
+    const alldecks = navItemById("incubator", "alldecks")!;
+    expect(navLabel("jury", alldecks)).toBe("My Pipeline");
+    expect(navIcon("jury", alldecks)).toBe("Layers");
+  });
+});
+
+describe("V3 — the row menu's two real destinations (S1-DASH items 2, 4, 5)", () => {
+  beforeEach(() => {
+    vi.mocked(api.listDecks).mockResolvedValue({ decks: V3_DECKS });
+  });
+
   // "Send to Assign" is guarded NAVIGATION, not a transition: the prototype's
   // own `addToAssign` pushes the row onto `asDecks` with `assigned:false`, so
   // it puts the deck on the Assign LIST and does not pick an evaluator. Our

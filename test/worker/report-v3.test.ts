@@ -127,8 +127,19 @@ async function setBlind(on: boolean): Promise<void> {
     .run();
 }
 
-/** A deck this juror has NOT submitted an evaluation for, which the AI HAS scored. */
-const UNSUBMITTED = "inc_deck_solarc";
+/**
+ * A deck this juror has NOT submitted an evaluation for, which the AI HAS scored.
+ *
+ * R6-SCOPE moved this off `inc_deck_solarc`. Both decks carry all 13 core AI
+ * scores and the same `inc_problem_market_clarity` rationale this file pins, so
+ * every assertion below is unchanged — but SolarCircuit is assigned to nobody,
+ * and `GET /api/decks/:id/report` returns the deck view (founder name, email and
+ * phone included), so it is now a 404 for a juror (P0-1,
+ * `docs/plan_roles_incubator.md` §5). EduLift is `assigned_to = 'inc_jury'` and
+ * unsubmitted, which is what this file was always reaching for: blind scoring is
+ * about a deck the juror is ABOUT TO score, not one they cannot open.
+ */
+const UNSUBMITTED = "inc_deck_edulift";
 
 afterEach(async () => {
   await setBlind(false);

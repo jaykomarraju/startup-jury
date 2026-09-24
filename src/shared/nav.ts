@@ -81,21 +81,49 @@ const INCUBATOR_NAV: NavItem[] = [
   // Workflows
   {
     // V3 item 18 — the reshared superuser prototype renames this "Dashboard"
-    // (`si-alldecks`, icon `ti-layout-dashboard`). SUPERUSER ONLY: the admin,
-    // program-manager, program-associate and jury prototypes were not reshared
-    // and still say "All decks" with `ti-stack`, so this is an override, not a
-    // new `label`/`icon`. Changing those would open four fresh parity gaps.
+    // (`si-alldecks`, icon `ti-layout-dashboard`).
+    //
+    // R1-DASH · item 10a — the OTHER HALF of the `isV3Dash` widening, and not
+    // optional. `DashboardPage`'s `homeTitle` now renders "Dashboard" for the
+    // admin, programme manager and programme associate too; without these three
+    // entries their sidebar would say "All decks" over an H1 saying "Dashboard"
+    // — worse than either consistent answer (plan §6 Q-B).
+    //
+    // `label`/`icon` stay "All decks"/`Layers` rather than becoming the new
+    // default, because the JURY keeps the v15 screen and its own "My Pipeline"
+    // override: the stack glyph is still right for them, and for every VC role.
+    // This is still an override, not a rename.
     id: "alldecks",
     label: "All decks",
     icon: "Layers",
     section: "Workflows",
     roles: ["admin", "program_manager", "program_associate", "jury"],
-    labelOverrides: { jury: "My Pipeline", superuser: "Dashboard" },
-    iconOverrides: { superuser: "LayoutDashboard" },
+    labelOverrides: {
+      jury: "My Pipeline",
+      superuser: "Dashboard",
+      admin: "Dashboard",
+      program_manager: "Dashboard",
+      program_associate: "Dashboard",
+    },
+    iconOverrides: {
+      superuser: "LayoutDashboard",
+      admin: "LayoutDashboard",
+      program_manager: "LayoutDashboard",
+      program_associate: "LayoutDashboard",
+    },
   },
   // Evaluation
-  // V3 item 8 — "Upload & Evaluate", superuser only (see `alldecks` above).
-  { id: "upload", label: "Upload", icon: "Upload", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"], task: "upload", labelOverrides: { superuser: "Upload & Evaluate" } },
+  // V3 item 8 — "Upload & Evaluate". R1-DASH makes this line on R2-UPEVAL's
+  // behalf, because `nav.ts` has one owner this wave (plan §4): it is one line,
+  // carries no behaviour, and R2 is the session that rebuilds the SCREEN.
+  //
+  // admin + program_associate only — those are V3-UP's two EXTEND cells
+  // (plan §2, row 11 · V3-UP). The PROGRAMME MANAGER is deliberately absent:
+  // their own prototype draws a different multi-select Evaluate (a bottom
+  // action bar, not V3's toolbar "AI Evaluate" button), so which screen they
+  // get is open as Q-P. Naming their sidebar after a screen the client has not
+  // chosen yet is the one thing this line must not do.
+  { id: "upload", label: "Upload", icon: "Upload", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"], task: "upload", labelOverrides: { superuser: "Upload & Evaluate", admin: "Upload & Evaluate", program_associate: "Upload & Evaluate" } },
   // V3 item 9 — "Query after Evaluate" is satisfied by the deletion below, not
   // by a move: with the standalone Evaluate item gone, Query already sits
   // directly after Upload & Evaluate.

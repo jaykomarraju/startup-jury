@@ -13,6 +13,7 @@ import { test, expect, type Page } from "@playwright/test";
 const ADMIN = "nisha.kapoor@demo.startupjury.ai"; // incubator admin
 const JURY = "rajesh.kumar@demo.startupjury.ai"; // incubator jury
 const SUPER = "priya.sharma@demo.startupjury.ai"; // incubator superuser
+const PM = "raj.kumar@demo.startupjury.ai"; // incubator program manager — no console
 
 /**
  * Sign in, dropping any existing session first: the blind-scoring walk has to
@@ -228,10 +229,21 @@ test("Area weights polices the 100 % total and delegates per parameter", async (
  * The two `Score visibility matrix` cards the v3 superuser prototype adds to
  * `s-fw` — and the role boundary around them.
  *
+ * **P0-2** (`docs/plan_roles_incubator.md` §5): the cards were drawn for the
+ * superuser alone while `PUT /api/config/scoring-framework` accepted the grid
+ * from any console admin, so an admin could move a permission system through an
+ * API whose console did not show it to them. Decided Q-U (a) — widen, because
+ * the admin already administers the strictly more powerful Task permissions
+ * grid through the same task — and the rule now lives ONCE, on the server, as
+ * `canEditVisibility`; the console renders on the `visibilityEditable` flag it
+ * ships. Both roles are walked below, in the real browser.
+ *
  * Read-only: the suite runs `fullyParallel` against one local D1, and this
  * matrix governs what every other spec's evaluator can see, so saving a cell
  * here would leak into their runs (plan §8 Q17). The save path is covered by
- * `test/worker/score-visibility-v3.test.ts`, against the payload.
+ * `test/worker/score-visibility-v3.test.ts` and, for the gate itself,
+ * `test/worker/score-visibility-gate.test.ts` — both against the payload. The
+ * one refusal asserted here is safe precisely because it writes nothing.
  */
 test("the superuser's Scoring framework carries both visibility matrices", async ({ page }) => {
   await login(page, SUPER);
@@ -256,15 +268,59 @@ test("the superuser's Scoring framework carries both visibility matrices", async
   ).toBeVisible();
 });
 
-test("the incubator admin — whose prototype was not reshared — sees no matrix", async ({ page }) => {
-  // `admin/s-fw.html` is byte-identical (md5 c3b534ba…) across every prototype
-  // that was NOT reshared. The admin keeps the single toggle the superuser's
-  // v3 screen supersedes.
+test("P0-2 — the incubator admin sees the grid they could already change", async ({ page }) => {
   await login(page, ADMIN);
   await page.goto("/app/admin?section=fw");
 
   await expect(page.getByRole("heading", { level: 2, name: "Scoring framework" })).toBeVisible();
-  await expect(page.getByText("Visibility for Incubator")).toHaveCount(0);
-  await expect(page.getByText("Visibility for VC")).toHaveCount(0);
+  await expect(page.getByText("Visibility for Incubator")).toBeVisible();
+  await expect(page.getByText("Visibility for VC")).toBeVisible();
+  await expect(
+    page.getByRole("switch", { name: "Program Associate can see Program Mgr scores" }),
+  ).toBeEnabled();
+
+  // Q-U (b) is NOT taken this wave — `admin` is a row and column of neither
+  // matrix, and adding it moves migration 0072's persisted shape. The screen
+  // says so, because an unexplained hole in a permission grid is how "a role is
+  // missing" gets filed.
+  await expect(page.getByText(/Your own role, Admin, is not a row or column here/)).toBeVisible();
+
+  // The admin's console keeps the toggle the v3 superuser screen supersedes —
+  // this session widened who sees the matrices, nothing else about the section.
   await expect(page.getByRole("switch", { name: "Jury can see each other's scores" })).toBeVisible();
+});
+
+test("P0-2 — the console and the route agree, measured on the same session", async ({ page }) => {
+  // The pairing, end to end: what the browser is told and what the API does
+  // have to be the same answer, or the screen is lying about what it can do.
+  // Asserted in BOTH directions and without writing a cell — the admin's row is
+  // proven by the flag the console renders on, the PM's by a refusal that
+  // stores nothing (the exhaustive per-role table, including the admin's
+  // successful write, is the worker test).
+  await login(page, ADMIN);
+  const adminView = (await (await page.request.get("/api/config/scoring")).json()) as {
+    visibilityEditable?: boolean;
+  };
+  expect(adminView.visibilityEditable).toBe(true);
+
+  await login(page, PM);
+  const pmView = (await (await page.request.get("/api/config/scoring")).json()) as {
+    scoring: Record<string, unknown>;
+    visibilityEditable?: boolean;
+  };
+  expect(pmView.visibilityEditable).toBe(false);
+
+  const refused = await page.request.put("/api/config/scoring-framework", {
+    data: {
+      ...pmView.scoring,
+      visibility: { incubator: { program_associate: { program_manager: true } } },
+    },
+  });
+  expect(refused.status()).toBe(403);
+
+  // …and there is no console for them to have attempted it from: the PM's
+  // refusal is the same answer at both ends, which is the property P0-2 broke.
+  await page.goto("/app/admin?section=fw");
+  await expect(page.getByText("Not available for your role")).toBeVisible();
+  await expect(page.getByText("Visibility for Incubator")).toHaveCount(0);
 });

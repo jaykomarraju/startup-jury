@@ -478,6 +478,11 @@ describe("deck list exposes per-role actions + status id", () => {
   it("includes statusId and the caller's allowed actions", async () => {
     const id = "list_actions";
     await seedDeck(id, "jury_evaluation");
+    // R6-SCOPE — assign it to this juror. The listing is scoped to a jury
+    // member's own decks now (P0-1), so an unassigned deck never reaches them
+    // and the assertion below would be about an absent row rather than about
+    // `statusId` and `actions`, which is what this test is for.
+    await env.DB.prepare("UPDATE decks SET assigned_to = 'inc_jury' WHERE id = ?").bind(id).run();
     const jury = await login(JURY);
     const body = (await (await get("/api/decks", jury)).json()) as {
       decks: Array<{ id: string; statusId: string; actions: Array<{ action: string }> }>;

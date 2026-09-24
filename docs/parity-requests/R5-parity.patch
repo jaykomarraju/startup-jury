@@ -1,0 +1,29 @@
+diff --git a/e2e/parity.spec.ts b/e2e/parity.spec.ts
+index 7737df6..0db8384 100644
+--- a/e2e/parity.spec.ts
++++ b/e2e/parity.spec.ts
+@@ -319,9 +319,23 @@ const EXPECTED: Record<string, Screen> = {
+   "incubator/admin/myparams": { title: "My Parameters — Role configuration", tables: [] },
+   "incubator/admin/setup": { title: "Set up your workspace", tables: [] },
+   "incubator/admin/account": { title: "Create your account", tables: [] },
++  // P0-2 (`docs/plan_roles_incubator.md` §5, decided Q-U (a)) — the console's
++  // default section is `fw` (`DEFAULT_ADMIN_SECTION`), and the two `Score
++  // visibility matrix` cards now render there for the ADMIN as well as the
++  // superuser. They always could write this matrix — `PUT
++  // /api/config/scoring-framework` is `requireTask("adminconsole", "admin")` —
++  // so this row closes a console that did not show a permission system it
++  // accepted writes to. Header sets are byte-identical to the superuser's row
++  // above, because it is the same two cards. The VC rows are NOT touched: no VC
++  // console draws either matrix, and the server now refuses a matrix write from
++  // one.
+   "incubator/admin/admin": {
+     title: "Admin console",
+-    tables: [["MEMBER", "ROLE", "ORGANIZATIONAL TITLE", "TYPE", "STATUS", "ACTION"]],
++    tables: [
++      ["MEMBER", "ROLE", "ORGANIZATIONAL TITLE", "TYPE", "STATUS", "ACTION"],
++      ["ROLE", "SUPER USER", "PROGRAM MGR", "PROGRAM ASSOC", "JURY MEMBER"],
++      ["ROLE", "MNG PARTNER", "IC", "PARTNER", "INV. ASSOC", "ANALYST"],
++    ],
+   },
+   "incubator/admin/billing": { title: "Choose your seat", tables: [] },
+   "incubator/admin/contactadmin": { title: "Contact Admin", tables: [] },

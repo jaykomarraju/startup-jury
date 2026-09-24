@@ -362,14 +362,31 @@ export function icMemberStats(decks: IcStatDeck[], ballots: Record<string, MyBal
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// V3-DASH — the incubator SUPERUSER dashboard (`AISJ_SuperuserV3.HTM`)
+// V3-DASH — the incubator STAFF dashboard (`AISJ_SuperuserV3.HTM`)
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // The reshared superuser prototype replaces the six boxes above with a
-// different six, and only for the superuser: the admin, program-manager,
-// program-associate and jury prototypes were NOT reshared, so `STAT_ORDER`
-// and `build()` keep drawing their screens exactly as they do today. Nothing
-// in this block is reachable from any other role or edition.
+// different set. **R1-DASH widened it from the superuser to the admin,
+// programme manager and programme associate** on the client's written
+// instruction (`docs/plan_roles_incubator.md` §2 item 1, §6 Q-A) — those three
+// prototypes were NOT reshared, so this is a recorded deviation from them, not
+// a gap closed.
+//
+// The JURY is not in that set and must not be added. `DashboardPage`'s `isJury`
+// shadows `isV3Dash` at the three TABLE sites but NOT at `homeTitle` or the
+// sub-line, so adding them is not the no-op the plan calls it — it retitles
+// their screen "Dashboard" over tables that do not change (measured; see the
+// note on the predicate itself). Their five-tile screen is already built
+// verbatim from their own prototype, so there is nothing to widen either way.
+//
+// ── `STAT_ORDER.incubator` IS NOW ORPHANED ────────────────────────────────
+// The admin, PM and PA were its whole live audience — the superuser left at
+// V3-DASH and the jury never used it. `build(STAT_ORDER.incubator)`
+// and `matchesStat("incubator", …)` still compile, are still unit-tested, and
+// are still correct — but nothing in the running product calls them any more
+// (VC staff have their own `STAT_ORDER.vc`, the jury has `juryTiles`). Left in
+// place so the widening stays revertible by one predicate while Q-A is
+// unanswered in writing; deleting it is a Wave R+1 cleanup with its own review.
 //
 // Source, verbatim (`_scripts.js` `adUpdateStats` / `adRenderTable`, and
 // `panel-alldecks.html`'s six `.stat-card`s):

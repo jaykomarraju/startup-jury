@@ -23,7 +23,7 @@ import {
   type CompositeFormula,
   type ScoreScale,
 } from "../../../shared/types";
-import type { Edition, Role } from "../../../shared/roles";
+import { ROLE_LABELS, type Edition, type Role } from "../../../shared/roles";
 import {
   VISIBILITY_COLUMN_LABELS,
   VISIBILITY_ROLES,
@@ -379,14 +379,19 @@ function VisibilityMatrixCard({
 
 export function ScoringFrameworkSection() {
   const { user } = useAuth();
-  // V3 item 13 — the matrices are INCUBATOR SUPERUSER only. `admin/s-fw.html`
-  // is byte-identical (md5 c3b534ba…) in every prototype that was not reshared
-  // — the incubator admin, PM and PA, and BOTH VC consoles — so those roles
-  // must keep rendering exactly the section they render today. Only
-  // `AISJ_SuperuserV3` carries the two `Score visibility matrix` cards.
-  const showMatrices = user?.role === "superuser" && user.edition === "incubator";
   const [settings, setSettings] = useState<ScoringSettings | null>(null);
   const [visibility, setVisibility] = useState<VisibilityByEdition | null>(null);
+  // P0-2 (`docs/plan_roles_incubator.md` §5) — who sees the two matrices is the
+  // SERVER's answer, read off `GET /api/config/scoring`, never a role test made
+  // here. This line used to be `role === "superuser" && edition === "incubator"`
+  // while `PUT /api/config/scoring-framework` accepted the grid from any
+  // console admin: an admin could move a permission system through an API whose
+  // console did not show it to them. The fix is not a second role test in
+  // agreement with the first — two predicates drift, and this one had — it is
+  // ONE predicate, `canEditVisibility` in `server/routes/config.ts`, which the
+  // same request's gate uses. Rendering on the server's flag makes "the console
+  // draws it" and "the route accepts it" the same sentence by construction.
+  const [visibilityEditable, setVisibilityEditable] = useState(false);
   // V4-WEIGHT — the real decks the AI-weight strip previews against, and the
   // split currently STORED. `settings.aiWeightPct` moves with the select; this
   // is the number every other screen is showing until Save changes is pressed,
@@ -418,6 +423,7 @@ export function ScoringFrameworkSection() {
         setBest(r.thresholdBest);
         setPoor(r.thresholdMediocre);
         setEditable(r.editable);
+        setVisibilityEditable(r.visibilityEditable === true);
       })
       .catch(() => setLoadError(true));
   }, []);
@@ -514,6 +520,13 @@ export function ScoringFrameworkSection() {
   }
 
   const ro = !editable;
+  // P0-2 / Q-U (b) — a viewer whose role the matrices do not draw. Computed
+  // from `VISIBILITY_ROLES` rather than spelled `=== "admin"`, so the day the
+  // fifth row lands the note disappears on its own.
+  const viewerRole = user?.role;
+  const viewerOutsideMatrix =
+    !!viewerRole && !VISIBILITY_ROLES.incubator.includes(viewerRole);
+  const viewerLabel = viewerRole ? (ROLE_LABELS.incubator[viewerRole] ?? viewerRole) : "";
 
   return (
     <SectionShell>
@@ -780,7 +793,7 @@ export function ScoringFrameworkSection() {
       </Card>
 
       {/* ── V3 item 13 · the two score visibility matrices ───────────────── */}
-      {showMatrices && visibility && (
+      {visibilityEditable && visibility && (
         <>
           <VisibilityMatrixCard
             edition="incubator"
@@ -820,6 +833,22 @@ export function ScoringFrameworkSection() {
             onToggle={(viewer, target, next) => toggleVisibility("vc", viewer, target, next)}
             disabled={ro}
           />
+          {viewerOutsideMatrix && (
+            // P0-2, the half it deliberately does NOT close (Q-U (b)). `admin`
+            // is a row and column of neither matrix — `scoreVisibility.ts:78`
+            // records that the prototype does not draw it — so an administrator
+            // opening this screen finds a grid without their own role in it.
+            // That absence is exactly the shape of the row the client filed
+            // against the sign-in page ("two roles are missing"), so it is
+            // stated on the screen rather than left to be discovered. Adding
+            // the fifth row and column moves migration 0072's persisted shape
+            // and the report filters; it is its own wave, not a footnote here.
+            <p className="text-[12px] text-fg-muted">
+              Your own role, {viewerLabel}, is not a row or column here — these grids carry the
+              four evaluating roles the matrix was drawn for. An administrator sees every
+              evaluator&apos;s scores on every report regardless of what is set above.
+            </p>
+          )}
         </>
       )}
 

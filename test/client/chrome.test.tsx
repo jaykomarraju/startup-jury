@@ -211,7 +211,10 @@ describe("Sidebar chrome", () => {
     renderSidebar("/app/evaluate");
 
     // Evaluation is expanded again because that is where the user now is…
-    expect(screen.getByRole("link", { name: /Evaluate/ })).toBeInTheDocument();
+    // Exact, not /Evaluate/: since R1-DASH the admin's Upload item is labelled
+    // "Upload & Evaluate" (nav item 8), and it sits in this same section — so a
+    // substring match finds two links and this stops being about the active one.
+    expect(screen.getByRole("link", { name: "Evaluate" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Evaluation/ })).toHaveAttribute(
       "aria-expanded",
       "true",

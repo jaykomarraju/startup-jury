@@ -73,7 +73,10 @@ describe("nav manifest", () => {
   it("applies per-role label overrides (jury sees personalized labels)", () => {
     const item = navItemById("incubator", "alldecks")!;
     expect(navLabel("jury", item)).toBe("My Pipeline");
-    expect(navLabel("admin", item)).toBe("All decks");
+    // R1-DASH — the incubator STAFF roles now read "Dashboard" (item 10a); the
+    // base label survives for the jury and for every VC role.
+    expect(navLabel("admin", item)).toBe("Dashboard");
+    expect(navLabel("analyst", navItemById("vc", "alldecks")!)).toBe("All decks");
     expect(navLabel("jury", navItemById("incubator", "jurypipeline")!)).toBe("Evaluated");
     expect(navLabel("ic_member", navItemById("vc", "curation")!)).toBe("Invest ready");
   });
@@ -233,27 +236,47 @@ describe("nav manifest", () => {
     ]);
   });
 
-  it("renames All decks and Upload for the superuser ONLY (items 8, 18)", () => {
+  it("renames All decks for every incubator STAFF role, and Upload for V3-UP's two (items 8, 18, 10a)", () => {
     const alldecks = navItemById("incubator", "alldecks")!;
     const upload = navItemById("incubator", "upload")!;
 
-    expect(navLabel("superuser", alldecks)).toBe("Dashboard");
-    expect(navIcon("superuser", alldecks)).toBe("LayoutDashboard");
-    expect(navLabel("superuser", upload)).toBe("Upload & Evaluate");
-
-    // The four non-reshared roles keep the old label AND the old icon.
-    for (const role of ["admin", "program_manager", "program_associate"] as Role[]) {
-      expect(navLabel(role, alldecks)).toBe("All decks");
-      expect(navIcon(role, alldecks)).toBe("Layers");
-      expect(navLabel(role, upload)).toBe("Upload");
+    // ── Item 10a · the other half of `isV3Dash` ─────────────────────────────
+    // R1-DASH widens the V3 Dashboard to the admin, programme manager and
+    // programme associate, so their sidebar has to be renamed WITH it: the
+    // screen's own `homeTitle` renders "Dashboard" for all four now, and a
+    // sidebar reading "All decks" over that H1 is the outcome §6 Q-B rules out.
+    for (const role of ["superuser", "admin", "program_manager", "program_associate"] as Role[]) {
+      expect(navLabel(role, alldecks), role).toBe("Dashboard");
+      expect(navIcon(role, alldecks), role).toBe("LayoutDashboard");
     }
-    expect(navLabel("jury", alldecks)).toBe("My Pipeline"); // its own override, untouched
-    expect(navIcon("jury", alldecks)).toBe("Layers");
 
-    // The VC edition was not rescoped at all.
-    expect(navLabel("superuser", navItemById("vc", "alldecks")!)).toBe("All decks");
-    expect(navIcon("superuser", navItemById("vc", "alldecks")!)).toBe("Layers");
-    expect(navLabel("superuser", navItemById("vc", "upload")!)).toBe("Upload");
+    // ── The jury is the control, and it is the whole control ────────────────
+    // They keep the v15 screen (plan §5 item 1 — `isJury` shadows `isV3Dash`,
+    // so widening to them would be dead code AND would delete a screen that
+    // already matches their prototype). Their sidebar must say so.
+    expect(navLabel("jury", alldecks)).toBe("My Pipeline");
+    expect(navIcon("jury", alldecks)).toBe("Layers");
+    // The base label/icon are still the base — this is an override, not a rename.
+    expect(alldecks.label).toBe("All decks");
+    expect(alldecks.icon).toBe("Layers");
+
+    // ── Item 8 · Upload & Evaluate ─────────────────────────────────────────
+    // R1 makes this line on R2-UPEVAL's behalf (`nav.ts` has one owner this
+    // wave), for V3-UP's two EXTEND roles only.
+    for (const role of ["superuser", "admin", "program_associate"] as Role[]) {
+      expect(navLabel(role, upload), role).toBe("Upload & Evaluate");
+    }
+    // The programme manager is NOT renamed: their own prototype draws a
+    // different multi-select Evaluate, so which screen they get is open as Q-P.
+    // This assertion flips when the client answers it — not before.
+    expect(navLabel("program_manager", upload)).toBe("Upload");
+
+    // The VC edition was not rescoped at all, by either item.
+    for (const role of ["superuser", "admin", "partner", "analyst"] as Role[]) {
+      expect(navLabel(role, navItemById("vc", "alldecks")!), role).toBe("All decks");
+      expect(navIcon(role, navItemById("vc", "alldecks")!), role).toBe("Layers");
+      expect(navLabel(role, navItemById("vc", "upload")!), role).toBe("Upload");
+    }
   });
 
   it("hides Evaluate from the superuser sidebar but KEEPS the route (item 10)", () => {
@@ -290,11 +313,20 @@ describe("nav manifest", () => {
     }
   });
 
-  it("leaves every non-reshared sidebar byte-identical to main", () => {
+  it("moves ONLY the two labels R1-DASH renames; every other sidebar entry is byte-identical to main", () => {
     // Pinned from `main` (commit 6785fb5) — `id:label` in draw order.
+    //
+    // R1-DASH edits exactly four cells of this table and nothing else:
+    //   admin             · alldecks → Dashboard · upload → Upload & Evaluate
+    //   program_manager   · alldecks → Dashboard            (upload: Q-P)
+    //   program_associate · alldecks → Dashboard · upload → Upload & Evaluate
+    //   jury              · UNTOUCHED — it keeps the v15 screen
+    // Every other entry, and every role's item COUNT, is `main`'s. That is the
+    // guarantee the wave runs under: a widening must not quietly re-scope a
+    // sidebar, and a diff on this table is the whole statement of what moved.
     const PINNED: Record<string, string[]> = {
       admin: [
-        "alldecks:All decks", "upload:Upload", "query:Query", "evaluate:Evaluate",
+        "alldecks:Dashboard", "upload:Upload & Evaluate", "query:Query", "evaluate:Evaluate",
         "assign:Assign", "jurypipeline:Jury Pipeline", "pmpipeline:Prog manager pipeline",
         "introcalls:Intro calls", "incuration:Sign up Pipeline", "curation:Onboard ready",
         "archive:Archive", "cohortsummary:Cohort summary", "evaluatorscores:Evaluator scores",
@@ -304,7 +336,7 @@ describe("nav manifest", () => {
         "help:Help", "support:Tickets", "issues:Issue log",
       ],
       program_manager: [
-        "alldecks:All decks", "upload:Upload", "query:Query", "evaluate:Evaluate",
+        "alldecks:Dashboard", "upload:Upload", "query:Query", "evaluate:Evaluate",
         "assign:Assign", "jurypipeline:Jury Pipeline", "pmpipeline:Prog manager pipeline",
         "introcalls:Intro calls", "incuration:Sign up Pipeline", "curation:Onboard ready",
         "archive:Archive", "cohortsummary:Cohort summary", "evaluatorscores:Evaluator scores",
@@ -313,7 +345,7 @@ describe("nav manifest", () => {
         "contactteam:Contact team", "help:Help", "issues:Issue log",
       ],
       program_associate: [
-        "alldecks:All decks", "upload:Upload", "query:Query", "evaluate:Evaluate",
+        "alldecks:Dashboard", "upload:Upload & Evaluate", "query:Query", "evaluate:Evaluate",
         "assign:Assign", "introcalls:Intro calls", "incuration:Sign up Pipeline",
         "curation:Onboard ready", "archive:Archive", "cohortsummary:Cohort summary",
         "evaluatorscores:Evaluator scores", "scoredrift:Score drift", "funnel:Pipeline funnel",

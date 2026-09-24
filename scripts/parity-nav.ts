@@ -175,6 +175,17 @@ const EXPECTED_GAPS: ReadonlyMap<string, string> = new Map([
     "DELIBERATE — §8 again: the analyst's read-only scoping is what the 'My Intro calls' label says. The prototype's generic label understates it.",
     "vc/analyst · label introcalls",
   ),
+  ...gap(
+    "DELIBERATE, and it is a RECORDED DEVIATION rather than a gap closed (R1-DASH, `docs/plan_roles_incubator.md` §2 item 10a, §6 Q-A/Q-B). The V3 Dashboard was widened from the superuser to the three other incubator staff roles on the client's WRITTEN instruction, which is later than these three prototypes and which the client has said supersedes them. Their `_sidebar.html` files still say \"All decks\", so this check is right that the app and the prototype disagree — the app is deliberately ahead. The sidebar had to move with the screen: `DashboardPage`'s `homeTitle` renders \"Dashboard\" for these roles now, and a sidebar reading \"All decks\" over that H1 is the outcome Q-B rules out. **If the client answers Q-A against the deviation, delete these four rows and the `alldecks` overrides together.** The JURY is deliberately absent from this list: they keep \"My Pipeline\" and the v15 screen.",
+    "incubator/admin · label alldecks",
+    "incubator/program_manager · label alldecks",
+    "incubator/program_associate · label alldecks",
+  ),
+  ...gap(
+    "DELIBERATE (R1-DASH, §2 row 11 · V3-UP) — the same recorded deviation for nav item 8, for V3-UP's two EXTEND roles. R2-UPEVAL rebuilds the SCREEN; R1 makes the label line because `nav.ts` has one owner this wave. The PROGRAMME MANAGER is deliberately NOT here: their own prototype draws a different multi-select Evaluate, so which screen they get is open as §6 Q-P, and the sidebar must not name a screen the client has not chosen. Add `incubator/program_manager · label upload` only when Q-P is answered for V3.",
+    "incubator/admin · label upload",
+    "incubator/program_associate · label upload",
+  ),
 
   // ── role-gap: candidate REAL gaps ─────────────────────────────────────────
   ...gap(

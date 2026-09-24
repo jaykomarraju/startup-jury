@@ -785,6 +785,46 @@ async function loadWeightPreview(db: D1Database, edition: Edition) {
   };
 }
 
+/**
+ * May the signed-in member change the **score-visibility matrix**?
+ *
+ * P0-2 (`docs/plan_roles_incubator.md` §5). The console drew the two grids for
+ * the incubator superuser only (`admin/ScoringFramework.tsx`) while this route
+ * accepted them from any console admin, in either edition — so an admin could
+ * grant a program associate sight of program-manager scores through an API
+ * whose console does not show them the grid, and a VC admin could move a matrix
+ * no VC console draws at all. That is the repo's recurring role-boundary defect
+ * in its WRITE form: the gate and the screen disagreeing about who may act.
+ *
+ * Decided Q-U (a) — **the admin keeps the capability and gains the grid**, not
+ * the other way round. The role list below was written `"admin"` deliberately,
+ * and the same role already administers the strictly more powerful Task
+ * permissions grid through the same `requireTask("adminconsole", "admin")`
+ * (`routes/permissions.ts`); taking a narrower permission system away from the
+ * role that holds the wider one would be an inconsistency, not a hardening.
+ * Q-U (b) is untouched: `admin` is a row/column in NEITHER matrix, which moves
+ * migration 0072's persisted shape and belongs to Wave R+1 (§5 item 8 — Wave R
+ * takes no migration). The console says so on the screen.
+ *
+ * The EDITION half stays exactly as the prototype set it — only
+ * `AISJ_SuperuserV3` draws the cards, so only an incubator console may write
+ * them. Both matrices are writable from there, because that one screen carries
+ * both cards; the question is therefore about the VIEWER's edition, never the
+ * cell's.
+ *
+ * This predicate is the only one. `GET /scoring` ships its answer as
+ * `visibilityEditable` and the console renders the grids on that flag alone, so
+ * the screen cannot drift from the route again — there is one rule and the
+ * server owns it. It mirrors the PUT's gate exactly, permission cell included:
+ * an administrator whose `adminconsole` cell has been closed is not shown a
+ * grid their save would be refused for.
+ */
+async function canEditVisibility(c: Context<AppEnv>): Promise<boolean> {
+  const { role, edition } = c.var.user;
+  if (edition !== "incubator" || !isConfigAdmin(role)) return false;
+  return await c.var.perms.can("adminconsole");
+}
+
 /** GET /api/config/scoring — the org's scoring framework (any authed staff). */
 config.get("/scoring", async (c) => {
   const { edition, role } = c.var.user;
@@ -814,10 +854,11 @@ config.get("/scoring", async (c) => {
   // change (`editable: isConfigAdmin(role)` below), so nobody else has a use
   // for it.
   const canPreview = isConfigAdmin(role);
-  const [incubator, vc, weightPreview] = await Promise.all([
+  const [incubator, vc, weightPreview, visibilityEditable] = await Promise.all([
     loadScoreVisibility(c.env.DB, "incubator"),
     loadScoreVisibility(c.env.DB, "vc"),
     canPreview ? loadWeightPreview(c.env.DB, edition) : Promise.resolve(null),
+    canEditVisibility(c),
   ]);
   return c.json({
     scoring: settings,
@@ -829,6 +870,11 @@ config.get("/scoring", async (c) => {
     thresholdBest: s?.threshold_best ?? 7,
     thresholdMediocre: s?.threshold_mediocre ?? 5,
     editable: isConfigAdmin(role),
+    // P0-2 — who may move the two `Score visibility matrix` cards, decided by
+    // the server that enforces it. The console draws the grids on this and
+    // nothing else, so "the API accepts it" and "the console shows it" are the
+    // same sentence rather than two that drifted apart.
+    visibilityEditable,
   });
 });
 
@@ -904,6 +950,18 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
   const { edition, id: userId } = c.var.user;
   const before = await loadScoringSettings(c.env.DB, edition);
   const body = await readBody<ScoringFrameworkBody>(c);
+
+  // P0-2 — the matrix half of this save carries its own gate, checked FIRST so
+  // an unauthorised grid write is refused before anything is validated, let
+  // alone written. The test is what the body would actually STORE, not whether
+  // it carries a `visibility` key: the console posts `visibility: {}` on every
+  // save it makes, and a body whose only cells name roles the matrix does not
+  // draw (`admin`, `founder`) still writes nothing and is still dropped
+  // silently — exactly as before — rather than turned into a 403 nobody caused.
+  const visibilityStmts = visibilityWrites(c, userId, body.visibility);
+  if (visibilityStmts.length > 0 && !(await canEditVisibility(c))) {
+    return c.json({ error: "forbidden" }, 403);
+  }
 
   const flag = (v: unknown, fallback: boolean): boolean =>
     typeof v === "boolean" ? v : fallback;
@@ -986,8 +1044,8 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
   if (recompute) stmts.push(bumpCriteriaVersion(c, edition));
   // V3 item 13 — the matrices ride the section's single Save (F0168): `s-fw`
   // has no save control of its own, so they commit in the SAME batch as the
-  // toggles above them.
-  stmts.push(...visibilityWrites(c, userId, body.visibility));
+  // toggles above them. Built above, where the gate that admits them is.
+  stmts.push(...visibilityStmts);
   await c.env.DB.batch(stmts);
 
   await auditScoringFramework(c, before, after);

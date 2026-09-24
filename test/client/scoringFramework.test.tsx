@@ -14,6 +14,7 @@ import {
   getScoringFramework,
   saveScoringFramework,
   setConfigPermitted,
+  type ScoringFrameworkView,
 } from "../../src/client/routes/admin/scoringApi";
 import { updateThresholds } from "../../src/client/api";
 import type { Edition, Role } from "../../src/shared/roles";
@@ -109,15 +110,29 @@ const ADDITIONAL = [
   },
 ];
 
-beforeEach(() => {
-  vi.mocked(getScoringFramework).mockResolvedValue({
+/**
+ * What `GET /api/config/scoring` answers for this mount.
+ *
+ * P0-2 — `visibilityEditable` is the SERVER's verdict on who may move the two
+ * matrices, and after this session it is the ONLY thing the console consults.
+ * Every mount states it, so no test can pass by accident on a role the
+ * component is no longer allowed to have an opinion about.
+ */
+function serveFramework(over: Partial<ScoringFrameworkView> = {}): ScoringFrameworkView {
+  return {
     scoring: { ...DEFAULT_SCORING_SETTINGS },
     visibility: structuredClone(DEFAULT_VISIBILITY),
     thresholdBest: 7,
     thresholdMediocre: 5,
     editable: true,
+    visibilityEditable: false,
     weightPreview: { decks: [...WEIGHT_PREVIEW_DECKS], pinnedDecks: 3 },
-  });
+    ...over,
+  };
+}
+
+beforeEach(() => {
+  vi.mocked(getScoringFramework).mockResolvedValue(serveFramework());
   vi.mocked(saveScoringFramework).mockResolvedValue({
     ok: true,
     scoring: { ...DEFAULT_SCORING_SETTINGS },
@@ -268,14 +283,9 @@ describe("Scoring framework section", () => {
   });
 
   it("says nothing is blendable rather than drawing an empty strip", async () => {
-    vi.mocked(getScoringFramework).mockResolvedValue({
-      scoring: { ...DEFAULT_SCORING_SETTINGS },
-      visibility: structuredClone(DEFAULT_VISIBILITY),
-      thresholdBest: 7,
-      thresholdMediocre: 5,
-      editable: true,
-      weightPreview: { decks: [], pinnedDecks: 0 },
-    });
+    vi.mocked(getScoringFramework).mockResolvedValue(
+      serveFramework({ weightPreview: { decks: [], pinnedDecks: 0 } }),
+    );
     mountSection(<ScoringFrameworkSection />);
     const strip = await screen.findByTestId("ai-weight-preview");
     expect(strip).toHaveTextContent(/No deck in this workspace has both an AI score and a jury score/);
@@ -317,13 +327,7 @@ describe("Scoring framework section", () => {
   });
 
   it("is read-only for a role that may see it but not change it", async () => {
-    vi.mocked(getScoringFramework).mockResolvedValue({
-      scoring: { ...DEFAULT_SCORING_SETTINGS },
-      visibility: structuredClone(DEFAULT_VISIBILITY),
-      thresholdBest: 7,
-      thresholdMediocre: 5,
-      editable: false,
-    });
+    vi.mocked(getScoringFramework).mockResolvedValue(serveFramework({ editable: false }));
     const { saved } = mountSection(<ScoringFrameworkSection />, "jury");
     expect(await screen.findByText(/only an administrator can change/i)).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "AI pre-scoring enabled" })).toBeDisabled();
@@ -349,15 +353,29 @@ describe("Scoring framework section", () => {
  * from the component, so a rename in the component fails the test instead of
  * silently renaming the assertion with it.
  *
- * These cards are INCUBATOR SUPERUSER only: `admin/s-fw.html` is byte-identical
- * (md5 c3b534ba…) in every prototype that was not reshared — the incubator
- * admin, PM and PA, and both VC consoles — so those roles must keep rendering
- * exactly the section they render today. The last test here is that control.
+ * **P0-2 (`docs/plan_roles_incubator.md` §5).** These cards were drawn for the
+ * incubator superuser by a role test made HERE, while
+ * `PUT /api/config/scoring-framework` accepted the grid from any console admin
+ * — so an admin could grant a program associate sight of program-manager
+ * scores through an API whose console did not show them the grid. Decided
+ * Q-U (a): the admin keeps the capability and gains the grid, and the rule
+ * moves to the server that enforces it (`config.ts` → `canEditVisibility`,
+ * shipped as `visibilityEditable`).
+ *
+ * That makes the client's own contract narrow and testable: **the console draws
+ * the grids when the server says this member may edit them, and never
+ * otherwise.** The negative control runs both ways below — a role that used to
+ * be refused here renders the grid when the server allows it, and the role that
+ * used to be hard-coded in does NOT render it when the server refuses. Neither
+ * assertion can pass if the component keeps a role opinion of its own. The
+ * matching proof on the write path — that the same predicate decides the 403 —
+ * is `test/worker/score-visibility-gate.test.ts`, against the payload.
  */
 describe("Score visibility matrices (V3 item 13)", () => {
   const SU: [Role, Edition] = ["superuser", "incubator"];
 
   async function mountAsSuperuser() {
+    vi.mocked(getScoringFramework).mockResolvedValue(serveFramework({ visibilityEditable: true }));
     const r = mountSection(<ScoringFrameworkSection />, ...SU);
     await screen.findByText("Visibility for Incubator");
     return r;
@@ -413,14 +431,12 @@ describe("Score visibility matrices (V3 item 13)", () => {
     const served = structuredClone(DEFAULT_VISIBILITY);
     served.incubator.jury!.jury = true;
     served.incubator.superuser!.jury = false;
-    vi.mocked(getScoringFramework).mockResolvedValue({
-      scoring: { ...DEFAULT_SCORING_SETTINGS },
-      visibility: served,
-      thresholdBest: 7,
-      thresholdMediocre: 5,
-      editable: true,
-    });
-    await mountAsSuperuser();
+    vi.mocked(getScoringFramework).mockResolvedValue(
+      serveFramework({ visibility: served, visibilityEditable: true }),
+    );
+    const { view } = mountSection(<ScoringFrameworkSection />, ...SU);
+    await screen.findByText("Visibility for Incubator");
+    expect(view.container).toBeTruthy();
     expect(screen.getByRole("switch", { name: "Jury Member can see Jury Member scores" })).toHaveAttribute(
       "aria-checked",
       "true",
@@ -468,33 +484,100 @@ describe("Score visibility matrices (V3 item 13)", () => {
   });
 
   it("is read-only for a superuser the server says may not edit", async () => {
-    vi.mocked(getScoringFramework).mockResolvedValue({
-      scoring: { ...DEFAULT_SCORING_SETTINGS },
-      visibility: structuredClone(DEFAULT_VISIBILITY),
-      thresholdBest: 7,
-      thresholdMediocre: 5,
-      editable: false,
-    });
-    await mountAsSuperuser();
+    // `editable` and `visibilityEditable` are different questions: a member the
+    // permission grid has locked out of the section still sees the state the
+    // report route enforces, greyed out, rather than a blank where a permission
+    // system used to be.
+    vi.mocked(getScoringFramework).mockResolvedValue(
+      serveFramework({ editable: false, visibilityEditable: true }),
+    );
+    mountSection(<ScoringFrameworkSection />, ...SU);
+    await screen.findByText("Visibility for Incubator");
     expect(screen.getByRole("switch", { name: "Jury Member can see Jury Member scores" })).toBeDisabled();
   });
 
-  it("the roles whose prototype was NOT reshared see the section exactly as today", async () => {
-    // `admin/s-fw.html` is byte-identical across the incubator admin, PM and PA
-    // and both VC consoles. None of them gains a matrix; all of them keep the
-    // "Jury can see each other's scores" toggle the v3 superuser screen drops.
+  it("the incubator ADMIN now gets the grid — P0-2, in the direction the server already took", async () => {
+    // The defect: this role could already move the matrix through
+    // `PUT /api/config/scoring-framework` and could not see it. It is the one
+    // role whose capability and screen disagreed, so it is the one row of this
+    // table that changes.
+    vi.mocked(getScoringFramework).mockResolvedValue(serveFramework({ visibilityEditable: true }));
+    mountSection(<ScoringFrameworkSection />, "admin", "incubator");
+    await screen.findByText("Visibility for Incubator");
+    expect(screen.getByText("Visibility for VC")).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Jury Member can see Jury Member scores" }),
+    ).toBeEnabled();
+  });
+
+  it("tells the admin their own role is in neither grid, rather than letting them find out", async () => {
+    // Q-U (b) is deliberately NOT taken this wave: `admin` is a row and column
+    // of neither matrix (`scoreVisibility.ts:78`) and adding it moves migration
+    // 0072's persisted shape. An unexplained absence in a permission grid is
+    // how "a role is missing" gets filed, so the screen says it.
+    vi.mocked(getScoringFramework).mockResolvedValue(serveFramework({ visibilityEditable: true }));
+    mountSection(<ScoringFrameworkSection />, "admin", "incubator");
+    await screen.findByText("Visibility for Incubator");
+    expect(screen.getByText(/Your own role, Admin, is not a row or column here/)).toBeInTheDocument();
+
+    // …and it is NOT said to a superuser, who is the first row of both grids.
+    screen.getByText("Visibility for VC");
+    expect(VISIBILITY_ROLES.incubator).toContain("superuser");
+  });
+
+  // ── The negative control, both directions ─────────────────────────────────
+  //
+  // The component must have NO role opinion of its own left. Proving that takes
+  // two mounts that contradict each other: the server's answer wins in both, so
+  // neither can pass while a `role === …` test survives in the component.
+
+  it("NEGATIVE ← the server refuses: a SUPERUSER gets no grid, however privileged", async () => {
+    // The role the old client-side predicate hard-coded IN. If the component
+    // still carried it, this mount would draw the matrices anyway — which is
+    // exactly the failure that let the screen and the route drift apart.
+    vi.mocked(getScoringFramework).mockResolvedValue(serveFramework({ visibilityEditable: false }));
+    mountSection(<ScoringFrameworkSection />, ...SU);
+    await screen.findByText("AI engine behaviour");
+    expect(screen.queryByText("Visibility for Incubator")).not.toBeInTheDocument();
+    expect(screen.queryByText("Visibility for VC")).not.toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("NEGATIVE → the server allows: a PROGRAM ASSOCIATE gets the grid, however unprivileged", async () => {
+    // The mirror image. No role reaches this state through the shipped server
+    // predicate — `PUT` is `requireTask("adminconsole", "admin")`, so a PA is
+    // refused there and `visibilityEditable` is false for them — and that is
+    // the point: if the server's rule ever moves, the console moves WITH it
+    // instead of having to be found and edited a second time.
+    vi.mocked(getScoringFramework).mockResolvedValue(serveFramework({ visibilityEditable: true }));
+    mountSection(<ScoringFrameworkSection />, "program_associate", "incubator");
+    await screen.findByText("Visibility for Incubator");
+    expect(screen.getAllByRole("table")).toHaveLength(2);
+  });
+
+  it("the roles the server refuses see the section exactly as today", async () => {
+    // Everyone the shipped predicate says no to — every role but the incubator
+    // superuser and admin, plus BOTH VC consoles, whose `admin/s-fw.html` is
+    // byte-identical (md5 c3b534ba…) and draws no matrix at all. They keep the
+    // single "Jury can see each other's scores" toggle the v3 screen supersedes.
     for (const [role, edition] of [
-      ["admin", "incubator"],
       ["program_manager", "incubator"],
+      ["program_associate", "incubator"],
       ["jury", "incubator"],
       ["superuser", "vc"],
       ["admin", "vc"],
     ] as Array<[Role, Edition]>) {
+      vi.mocked(getScoringFramework).mockResolvedValue(
+        serveFramework({ visibilityEditable: false }),
+      );
       const { view } = mountSection(<ScoringFrameworkSection />, role, edition);
       await screen.findByText("AI engine behaviour");
       expect(screen.queryByText("Visibility for Incubator")).not.toBeInTheDocument();
       expect(screen.queryByText("Visibility for VC")).not.toBeInTheDocument();
       expect(screen.queryByRole("table")).not.toBeInTheDocument();
+      // The note about a role outside the grid belongs to the grid — no grid,
+      // no note.
+      expect(screen.queryByText(/is not a row or column here/)).not.toBeInTheDocument();
       expect(
         screen.getByRole("switch", { name: "Jury can see each other's scores" }),
       ).toBeInTheDocument();

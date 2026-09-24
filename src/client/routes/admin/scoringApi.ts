@@ -53,6 +53,13 @@ export interface ScoringFrameworkView {
   thresholdMediocre: number;
   /** False for a staff role that may read the framework but not change it. */
   editable: boolean;
+  /**
+   * P0-2 — whether this member may change the two `Score visibility matrix`
+   * cards. The SERVER decides (`config.ts` → `canEditVisibility`) and the
+   * console draws the grids on this alone, so the screen can never again show
+   * a different set of people than the route accepts a write from.
+   */
+  visibilityEditable?: boolean;
   weightPreview?: WeightPreview;
 }
 

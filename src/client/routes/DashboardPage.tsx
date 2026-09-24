@@ -656,9 +656,23 @@ function ParamPopover({
 /**
  * All decks (Workflows → All decks) — `panel-alldecks.html` and its renderers.
  *
- * Staff roles: the toolbar (Export · Program · Cohort, plus the issue-2 search
- * and tag filter), six stat boxes that re-shape the table, and a right rail of
- * Pipeline progress · Cohort rating thresholds · Activity log.
+ * Incubator STAFF (superuser · admin · program manager · program associate):
+ * since R1-DASH this is `AISJ_SuperuserV3`'s **Dashboard** — the V3 seven tiles,
+ * two table shapes, the four Status words and the row Actions menu. The toolbar
+ * (Export · Program · Cohort, plus the issue-2 search and tag filter) and the
+ * right rail (Pipeline progress · Cohort rating thresholds · Activity log) are
+ * common to both builds and are unchanged.
+ *
+ * ── The orphaned screen (plan §4) ─────────────────────────────────────────
+ * The admin, PM and PA were the whole live audience for the v15 incubator build
+ * — the superuser left at V3-DASH, and the jury has its own tiles and shapes —
+ * so `STAT_ORDER.incubator`,
+ * `matchesStat("incubator", …)` and the four shapes they drive (`details`,
+ * `evaluated`, `assigned`, `shortlisted`) are now unreachable in production.
+ * VC does NOT inherit them: VC staff have their own `VC_SHAPES`. The code is
+ * LEFT here deliberately — deleting it inside a restyle would make this change
+ * unreviewable, and Q-A is not yet answered in writing, so the wave must stay
+ * revertible by one line. Removal is a Wave R+1 cleanup.
  *
  * Jury (incubator): the "My Pipeline" build — five first-person stat boxes, the
  * two `mpRender()` tables over the decks allocated to the viewer, and a rail
@@ -688,14 +702,46 @@ export function DashboardPage() {
   // W9-A (F0434) — the IC member's All decks is "Awaiting my vote".
   const isIc = edition === "vc" && user?.role === "ic_member";
   const isVcStaff = edition === "vc" && !isIc;
-  // V3 — `AISJ_SuperuserV3` reshaped this screen into a Dashboard, for the
-  // SUPERUSER ONLY. The admin, program-manager, program-associate and jury
-  // prototypes were not reshared, so every other role keeps the screen it has.
-  const isV3Dash = edition === "incubator" && user?.role === "superuser";
+  // V3 — `AISJ_SuperuserV3` reshaped this screen into a Dashboard. R1-DASH
+  // widens it from the superuser to the three other incubator STAFF roles, on
+  // the client's written instruction (plan_roles_incubator §2 items 1/2/3/4a/5,
+  // §6 Q-A). It is a deliberate deviation from their own three prototypes,
+  // which were not reshared and still draw the v15 six tiles.
+  //
+  // ── ONE predicate, six items ────────────────────────────────────────────
+  // Items 2 (the four Status words), 3 (Send to Assign / Send to Query), 4a
+  // (Archive as a tag) and 5 ("Contact Details Edited") have no gate of their
+  // own: `v3StatusKey`/`matchesV3Stat`/`v3DeckStats` and `deckListRoute` are
+  // pure and role-free, the server already serves `aiComplete`, `queried`,
+  // `lastActivityAt` and `contactEditedAt` to every role, and `EDIT_DECK_ROLES`
+  // already contains all three roles. So this line ships all six.
+  //
+  // ── JURY IS NOT ON THIS LIST, and it is NOT merely dead code ────────────
+  // The plan (§5 item 1, footnote ᵃ) says adding `"jury"` here would change
+  // nothing, because `isJury` is tested first at all three decision sites. That
+  // is true of those three — `tiles`, `rows` and `shape` — and it is NOT true of
+  // the screen. MEASURED, by adding `"jury"` and running the suite: the juror's
+  // H1 becomes "Dashboard" and their sub-line becomes "Recent activity · 1 deck
+  // · Updated just now", because `homeTitle` and the `v3Lead` prefix below read
+  // `isV3Dash` with no `isJury` guard in front of them. Two jury tests fail.
+  //
+  // So the instruction stands, and for a stronger reason than the one given:
+  // it would half-convert their screen — V3 chrome over `mpRender()`'s tables.
+  // They should not get the whole thing either. Their five-tile, two-shape
+  // screen is built verbatim from their own prototype's `mpRender()`, so V3
+  // would DELETE a screen that already matches; the row Actions menu especially,
+  // since the jury holds no Dashboard-row pipeline transitions at all.
+  const isV3Dash =
+    edition === "incubator" &&
+    (user?.role === "superuser" ||
+      user?.role === "admin" ||
+      user?.role === "program_manager" ||
+      user?.role === "program_associate");
   // S1-DASH item 4 — Send to Assign is guarded navigation, so the row menu
-  // needs the router. (The Dashboard's v3 shape is superuser-only, so the
-  // destination is always reachable; `canAccessNav` decides the sidebar, not
-  // this.)
+  // needs the router. (`assign` and `query` are `["admin","program_manager",
+  // "program_associate"]` plus the superuser bypass — exactly the four roles
+  // above — so the destination is still always reachable; `canAccessNav`
+  // decides the sidebar, not this.)
   const navigate = useNavigate();
   const defaultView: ViewKey = isJury ? "assigned" : isIc ? "myvote" : edition === "vc" ? "uploaded" : "all";
   const [ctx, setCtx] = useActiveContext(edition);
