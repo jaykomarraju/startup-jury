@@ -303,9 +303,56 @@ pricing.get("/published", denyMentor, async (c) => {
   return c.json(published);
 });
 
-// Everything below edits the catalogue: admin + superuser, AND the console's own
-// task permission.
-pricing.use("*", requireTask("adminconsole", "admin"));
+/**
+ * Everything below reads or edits the CATALOGUE ITSELF — the draft, the version
+ * history, who published what, and the publish/rollback controls.
+ *
+ * ── Why this is not a role check ─────────────────────────────────────────────
+ * It was `requireTask("adminconsole", "admin")` alone, and that is a CUSTOMER
+ * permission. The result, verified in production on 24-Sep before this landed:
+ * `GET /api/pricing` returned 200 with all 24 plans, the draft and the version
+ * history to `nisha.kapoor@…`, an incubator ADMIN. The whole router carries
+ * **zero** scope predicates — `grep -c edition` over this file returns 0 — so
+ * the same principal could `PUT /draft`, then `POST /publish`, and
+ * `UPDATE pricing_versions SET status='superseded' WHERE status='published'`
+ * replaces the live catalogue **for every customer of the product**.
+ *
+ * `migrations/0033_price_configuration.sql:6-7` already describes this surface
+ * as "a PLATFORM-OWNER surface … one catalogue serves the whole product", and
+ * the client said it plainly on 24-Sep: "this has to be in AISJ Admin control,
+ * NOT the client admin." The code's own comment and the client agreed; only the
+ * gate did not.
+ *
+ * `GET /published` is deliberately ABOVE this line and stays where it was: every
+ * price-reading screen calls it, and reading the live catalogue is not editing
+ * it.
+ *
+ * The real AISJ Admin principal arrives with multi-tenancy
+ * (`docs/plan_myaccount.md` §10). Until then the owner is a deployment fact,
+ * not a row, and an empty var means NOBODY may edit — fail closed.
+ */
+async function isPlatformOwner(c: Context<AppEnv>): Promise<boolean> {
+  const allowed = (c.env.PLATFORM_OWNER_EMAILS ?? "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  // Empty list = nobody. Fail CLOSED: a deployment that forgets to set this
+  // must not hand the catalogue to whoever asks first.
+  if (allowed.length === 0) return false;
+  // `SessionUser` carries no email (`types.ts:71-83`), so resolve it from the
+  // id the session DOES carry rather than widening the session shape — which
+  // every route reads and `roles.spec` pins.
+  const row = await c.env.DB.prepare("SELECT email FROM users WHERE id = ?")
+    .bind(c.var.user.id)
+    .first<{ email: string | null }>();
+  const email = row?.email?.trim().toLowerCase();
+  return !!email && allowed.includes(email);
+}
+
+pricing.use("*", requireTask("adminconsole", "admin"), async (c, next) => {
+  if (!(await isPlatformOwner(c))) return c.json({ error: "forbidden" }, 403);
+  await next();
+});
 
 // ── GET /api/pricing — the editor's whole payload ────────────────────────────
 

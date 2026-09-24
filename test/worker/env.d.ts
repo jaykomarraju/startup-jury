@@ -21,6 +21,7 @@ declare namespace Cloudflare {
     // audit-only path — which is exactly what the outbox assertions exercise.
     EMAIL?: import("../../src/server/email/outbox").EmailSender;
     EMAIL_FROM?: string;
+    PLATFORM_OWNER_EMAILS?: string;
     EMAIL_FROM_NAME?: string;
     EMAIL_REPLY_TO?: string;
     APP_BASE_URL?: string;

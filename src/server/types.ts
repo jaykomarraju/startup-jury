@@ -48,6 +48,24 @@ export interface Env {
   EMAIL_REPLY_TO?: string;
   /** Public origin used to build tokenized founder links in outbound email. */
   APP_BASE_URL?: string;
+  /**
+   * The ai.STARTUPJURY operators who own the PRICE CATALOGUE — a comma-separated
+   * list of email addresses, matched case-insensitively against the session.
+   *
+   * A deployment-level var rather than a role, because the role it wants does
+   * not exist yet: the schema is single-tenant (`0001_init.sql:1`) and
+   * `roles.ts` tops out at `superuser` INSIDE the customer's workspace. The
+   * client confirmed on 24-Sep that AISJ Admin is coming and that pricing
+   * "has to be in AISJ Admin control, NOT the client admin"; this is the
+   * interim that stops a customer editing the vendor's catalogue in the
+   * meantime, and it is replaced by the real principal when tenancy lands.
+   *
+   * EMPTY is the safe default: nobody may edit the catalogue, and the published
+   * catalogue stays readable. A misconfigured deployment therefore fails
+   * CLOSED, which is the correct direction for a surface that prices the whole
+   * product.
+   */
+  PLATFORM_OWNER_EMAILS?: string;
 }
 
 /** The authenticated principal stored in the session and exposed on the context. */

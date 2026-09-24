@@ -19,6 +19,13 @@ export default defineConfig({
           // distinctly from ANTHROPIC_API_KEY so the app binding stays unset.
           LIVE_ANTHROPIC: process.env.LIVE_ANTHROPIC ?? "",
           LIVE_ANTHROPIC_KEY: process.env.ANTHROPIC_API_KEY ?? "",
+          // The price catalogue is a PLATFORM-OWNER surface and the router now
+          // fails closed without this (`routes/pricing.ts`). The seeded
+          // incubator superuser stands in for the AISJ Admin principal that
+          // arrives with multi-tenancy, so the existing pricing suites keep
+          // exercising the editor. `pricing-owner.test.ts` pins the gate
+          // itself, including that an empty value locks everyone out.
+          PLATFORM_OWNER_EMAILS: "nisha.kapoor@demo.startupjury.ai",
         },
       },
     }),

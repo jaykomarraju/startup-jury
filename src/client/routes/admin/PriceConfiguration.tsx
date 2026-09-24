@@ -267,7 +267,15 @@ export function PriceConfigurationSection() {
   const load = useCallback(async (force = false) => {
     const res = await fetch("/api/pricing");
     if (!res.ok) {
-      setError("The price configuration could not be loaded.");
+      // 403 is not a failure, it is the answer: the catalogue is ai.STARTUPJURY's,
+      // one document serving every customer, and since 24-Sep only a platform
+      // owner may edit it. Saying "could not be loaded" would read as a bug and
+      // send somebody hunting for one.
+      setError(
+        res.status === 403
+          ? "Price configuration is managed by ai.STARTUPJURY. Your published prices are shown throughout the app; contact ai.STARTUPJURY to change them."
+          : "The price configuration could not be loaded.",
+      );
       return;
     }
     const body = (await res.json()) as EditorPayload;
@@ -421,7 +429,15 @@ export function PriceConfigurationSection() {
     return (
       <div className="flex flex-col gap-4">
         <Heading />
-        <p className="text-[12.5px] text-fg-muted">Loading…</p>
+        {/* The load can END here rather than merely not having finished — a 403
+            for a principal who is not the platform owner leaves `payload` null
+            for good. Showing "Loading…" then is a spinner that never resolves,
+            which reads as a hung screen rather than an answer. */}
+        {error ? (
+          <p className="text-[12.5px] text-fg-muted">{error}</p>
+        ) : (
+          <p className="text-[12.5px] text-fg-muted">Loading…</p>
+        )}
       </div>
     );
   }

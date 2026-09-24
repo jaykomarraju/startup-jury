@@ -630,12 +630,29 @@ const PROBES: Probe[] = [
   // new. The write probe carries a GST rate of 999 %, so an admin gets a 400 —
   // it exercises the gate without publishing anything, and the harness's "a
   // write probe must never succeed" rule still holds.
+  // 24-Sep — the EDITOR is a PLATFORM-OWNER surface and no customer role reaches
+  // it, so `allow` is empty. That is the capability the code now declares:
+  // `requireTask("adminconsole","admin")` AND an identity in
+  // `PLATFORM_OWNER_EMAILS`, which no seeded user holds because the var ships
+  // empty (fail closed). `migrations/0033:6-7` always described it this way —
+  // "one catalogue serves the whole product" — and the client confirmed it:
+  // "this has to be in AISJ Admin control, NOT the client admin."
+  //
+  // An empty `allow` is not the harness admitting defeat; it is the assertion
+  // that EVERY role is refused, and it goes red the moment a role regains the
+  // editor. The real AISJ Admin principal arrives with multi-tenancy
+  // (`docs/plan_multitenancy.md`) and gets its own row then.
+  // `strict` — no superuser bypass either. The customer's superuser is the top
+  // of THEIR workspace, not of the product, and the catalogue is the product's.
   { id: "pricing.read", label: "GET /api/pricing (the price editor)", kind: "read", method: "GET", path: "/api/pricing",
-    allow: ["admin"] },
+    allow: [], strict: true },
   { id: "pricing.published", label: "GET /api/pricing/published (the live catalogue)", kind: "read", method: "GET", path: "/api/pricing/published",
     allow: ["admin", "program_manager", "program_associate", "jury", "founder", "partner", "ic_member", "associate", "analyst"] },
+  // Same surface, same gate — and this is the one that mattered: a customer
+  // admin could PUT the draft and then POST /publish, replacing the live
+  // catalogue for every customer of the product.
   { id: "pricing.draft", label: "PUT /api/pricing/draft (edit prices)", kind: "write", method: "PUT", path: "/api/pricing/draft", body: { tax: { gstRatePct: 999 } },
-    allow: ["admin"] },
+    allow: [], strict: true },
 
   // ── W5-A · Sign-up configuration (`/api/signup-config`) ───────────────────
   // §9's standing ask, again: a new router that skips this list stops being

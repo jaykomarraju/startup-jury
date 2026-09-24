@@ -104,7 +104,24 @@
     // Verified From address. EMPTY = no delivery attempted (audit-only outbox).
     "EMAIL_FROM": "",
     "EMAIL_FROM_NAME": "ai.STARTUPJURY",
-    "EMAIL_REPLY_TO": ""
+    "EMAIL_REPLY_TO": "",
+    // The ai.STARTUPJURY operators who own the PRICE CATALOGUE — comma-separated
+    // emails, matched case-insensitively. EMPTY = nobody may edit it, which is
+    // the safe default and the state this ships in.
+    //
+    // WHY IT EXISTS: the catalogue is one document serving every customer
+    // (`migrations/0033_price_configuration.sql:6-7` calls it "a PLATFORM-OWNER
+    // surface"), and until 24-Sep any customer admin could edit and PUBLISH it
+    // — verified in production. The client: "this has to be in AISJ Admin
+    // control, NOT the client admin." The AISJ Admin ROLE does not exist yet;
+    // the schema is single-tenant (`0001_init.sql:1`). So the owner is a
+    // deployment fact until multi-tenancy lands (`docs/plan_myaccount.md` §10),
+    // at which point this var is replaced by the real principal.
+    //
+    // TO ENABLE: put the operator's address here and redeploy. It must be a
+    // real user in `users` with the console permission — the gate is admin AND
+    // owner, never owner alone.
+    "PLATFORM_OWNER_EMAILS": ""
   },
   "triggers": {
     // "0 8 * * *"    — daily evaluator-reminder sweep (runReminders).
