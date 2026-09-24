@@ -37,6 +37,7 @@ import { ResultsScreen } from "./upload/ResultsScreen";
 import { ReviewScreen, isUploadable } from "./upload/ReviewScreen";
 import { Wizard, type ChoiceOption, type CohortGroup } from "./upload/Wizard";
 import { countPdfPages } from "./upload/stagedPdf";
+import { isV3Up } from "./upload/v3Up";
 import { expandZip, isZipFile } from "./upload/zip";
 import type { IntakeContextDraft, SingleDetails, StagedDeck, UploadMethod } from "./upload/types";
 
@@ -72,20 +73,28 @@ const POLL_LIMIT = 150;
  * A founder reaches this route as `founder-upload` and gets `FounderUpload`,
  * which shares none of the staff surfaces (F0302).
  *
- * V3 item 8 — INCUBATOR SUPERUSER ONLY, and deliberately partial. The v3 panel
- * diff is two hunks: the wizard's forward button becomes "Evaluate & Go to
- * Dashboard →", and `#up-results` is deleted outright. The second half is not
- * buildable as written (Q51): v3 keeps — and rewrites — every line of the
- * results table's JS (`renderUpResults`, `renderResultsHead/Body`,
- * `upSendToEvaluate`, `upEditRows`, `upArchiveRows`) plus ~40 lines of new CSS
- * (`.up-inline-results`, `.up-rt-*`, `.up-stmenu`, `.up-st-sel`, `.up-edit-in`)
- * for a card whose MARKUP is in neither file, and `renderUpResults([0,3,5,7])`
- * runs at load into a swallowed catch. Deleting our review step on that would
- * spend credits with no cost preview, so until Q5/Q51 is answered the label
- * changes and the flow does not.
+ * V3 item 8 — deliberately partial. The v3 panel diff is two hunks: the wizard's
+ * forward button becomes "Evaluate & Go to Dashboard →", and `#up-results` is
+ * deleted outright. The second half is not buildable as written (Q51): v3 keeps
+ * — and rewrites — every line of the results table's JS (`renderUpResults`,
+ * `renderResultsHead/Body`, `upSendToEvaluate`, `upEditRows`, `upArchiveRows`)
+ * plus ~40 lines of new CSS (`.up-inline-results`, `.up-rt-*`, `.up-stmenu`,
+ * `.up-st-sel`, `.up-edit-in`) for a card whose MARKUP is in neither file, and
+ * `renderUpResults([0,3,5,7])` runs at load into a swallowed catch. Deleting our
+ * review step on that would spend credits with no cost preview, so until Q5/Q51
+ * is answered the label changes and the flow does not.
  *
  * These files are SHARED WITH THE VC EDITION, which was not rescoped, and with
- * the founder portal — so every v3 surface here is behind `v3Superuser`.
+ * the founder portal — so every v3 surface here is behind `isV3Up`.
+ *
+ * R2-UPEVAL widened that gate past the superuser: plan_roles_incubator §2 row
+ * `11 · V3-UP` extends the lane to the incubator ADMIN and PROGRAM ASSOCIATE,
+ * withholds it from the JURY (who have no `upload` nav at all), and leaves the
+ * PROGRAM MANAGER on the unchanged label pending the client's answer to Q-P.
+ * The roles, and that open question, live in `upload/v3Up.ts` — one edit ships
+ * the PM if the client picks V3's design. No server change was needed for
+ * either role: `DEFAULT_ROLE_PERMISSIONS.incubator.upload` already carries
+ * both, and so does `RESCORE_ROLES` behind the Evaluate half.
  */
 export function UploadPage() {
   const { user } = useAuth();
@@ -104,8 +113,8 @@ function StaffUpload() {
   const canOpenConsole = canAccessNav(edition, role, "admin", can);
   const canQuery = canAccessNav(edition, role, "query", can);
   const canEdit = canAccessNav(edition, role, "upload", can);
-  /** Only the superuser prototype was reshared; see the header. */
-  const v3Superuser = edition === "incubator" && role === "superuser";
+  /** V3-UP's admitted set — `upload/v3Up.ts` owns it, and records Q-P. */
+  const v3Up = isV3Up(edition, role);
 
   // ── Workspace data ────────────────────────────────────────────────────────
   const [programs, setPrograms] = useState<ProgramsResponse | null>(null);
@@ -482,7 +491,7 @@ function StaffUpload() {
         uploaded={uploaded}
         workspaceSector={recorded.length ? recorded.join(", ") : null}
         onBack={() => setView("review")}
-        showSendToEvaluate={v3Superuser}
+        showSendToEvaluate={v3Up}
       />
     );
   }
@@ -511,7 +520,7 @@ function StaffUpload() {
       notice={notice}
       onViewDetails={() => setView("results")}
       onReview={goToReview}
-      forwardLabel={v3Superuser ? "Evaluate & Go to Dashboard →" : undefined}
+      forwardLabel={v3Up ? "Evaluate & Go to Dashboard →" : undefined}
     />
   );
 }

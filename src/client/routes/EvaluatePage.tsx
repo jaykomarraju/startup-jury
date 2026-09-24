@@ -34,6 +34,7 @@ import { canAccessNav } from "../../shared/nav";
 import { roleLabel } from "../../shared/roles";
 import { exportDecks } from "../exportCsv";
 import { scoringSettings } from "./admin/scoringApi";
+import { isV3Up } from "./upload/v3Up";
 
 /**
  * Evaluate (Evaluation → Evaluate; the jury's "Assigned").
@@ -59,14 +60,21 @@ import { scoringSettings } from "./admin/scoringApi";
  * The status select is the evaluator's RECOMMENDATION (0057), not a stage move;
  * see that migration's header for why.
  *
- * V3 (item 10) reshaped the toolbar and column 1 for the INCUBATOR SUPERUSER
- * only — `AISJ_SuperuserV3` `panel-evaluate` is +533 bytes over v15 and every
- * one of them is here: an `AI Evaluate` toolbar button (`ev-ai-btn`), a
- * select-all checkbox with an `N selected` counter in column 1's head
- * (`ev-chk-all` / `ev-col1-count`), a per-row checkbox, and a new sub-line.
- * Nothing else in the panel changed, so nothing else here does: admin, program
- * manager, program associate and jury still ship the v15 design, and so does
- * every VC role (VC has its own `VcEvaluatePage`).
+ * V3 (item 10) reshaped the toolbar and column 1 — `AISJ_SuperuserV3`
+ * `panel-evaluate` is +533 bytes over v15 and every one of them is here: an
+ * `AI Evaluate` toolbar button (`ev-ai-btn`), a select-all checkbox with an
+ * `N selected` counter in column 1's head (`ev-chk-all` / `ev-col1-count`), a
+ * per-row checkbox, and a new sub-line. Nothing else in the panel changed, so
+ * nothing else here does.
+ *
+ * R2-UPEVAL widened WHO gets that shape, per plan_roles_incubator §2 row
+ * `11 · V3-UP`: the incubator superuser, ADMIN and PROGRAM ASSOCIATE. The
+ * PROGRAM MANAGER is held back — their own prototype draws a different
+ * multi-select (a bottom action bar, not a toolbar button) and Q-P asks the
+ * client which to build — and the JURY is excluded outright, because this same
+ * component serves their `jassigned` screen. Both facts, and the one-line flip
+ * that answers Q-P, live in `upload/v3Up.ts`. Every VC role keeps v15 too; VC
+ * has its own `VcEvaluatePage` and never reaches this one.
  *
  * The prototype's `evAiEvaluate()` is `d.evaluated = true` on an in-memory
  * array. The repo's one AI-evaluation trigger is `POST /decks/:id/rescore`,
@@ -115,20 +123,19 @@ const BAND_TONE: Record<string, string> = {
 
 type Detail = { kind: "additional"; index: number } | { kind: "core"; key: string } | null;
 
-/**
- * V3 reshaped this screen for the incubator SUPERUSER alone. Every other role
- * — and the VC edition, which was not rescoped — keeps the v15 surface.
- */
-function isV3Evaluate(edition: string | undefined, role: string | undefined): boolean {
-  return edition === "incubator" && role === "superuser";
-}
-
 export function EvaluatePage() {
   const { user } = useAuth();
   const can = usePermissions();
   const { showToast } = useToast();
   const navigate = useNavigate();
-  const v3 = isV3Evaluate(user?.edition, user?.role);
+  /**
+   * V3-UP's admitted set, from `upload/v3Up.ts` — the same gate the Upload half
+   * reads, because the client scoped them as one lane. It excludes `jury`,
+   * which matters MORE here than on Upload: `App.tsx:117` routes the
+   * jury-exclusive `jassigned` screen through this component too, so admitting
+   * them would rebuild the juror's own Assigned screen.
+   */
+  const v3 = isV3Up(user?.edition, user?.role);
   /** V3 column 1's checkboxes. Ids, not indices — the list re-filters. */
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [aiBusy, setAiBusy] = useState(false);

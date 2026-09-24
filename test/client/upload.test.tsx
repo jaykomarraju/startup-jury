@@ -6,6 +6,7 @@ import { ResultsScreen, RESULTS_COLUMNS } from "../../src/client/routes/upload/R
 import { AuthContext, type AuthUser } from "../../src/client/auth/AuthProvider";
 import type { StagedDeck } from "../../src/client/routes/upload/types";
 import { catalogueFixture } from "../unit/fixtures/accountCatalogue";
+import { PROGRAM_MANAGER_PENDING_Q_P, V3_UP_ROLES, isV3Up } from "../../src/client/routes/upload/v3Up";
 
 /**
  * W7-B — the Upload screen.
@@ -26,6 +27,16 @@ vi.mock("../../src/client/routes/upload/stagedPdf", () => ({
 }));
 
 const MONEY = /₹|\$\s?\d|per[- ]deck|\/\s*deck|rupee/i;
+
+/**
+ * The wizard's forward button under EITHER label. V3-UP renames it "Evaluate &
+ * Go to Dashboard →" for the roles in `V3_UP_ROLES`, and three of the tests
+ * below drive it as a PA — who now has that label. Those tests are about what
+ * the button LEADS TO, so they must not also pin its wording; the wording
+ * itself is pinned per role in the V3 describe. Anchored at both ends, so it
+ * matches the two real labels and nothing else.
+ */
+const FORWARD = /^(?:Evaluate & )?Go to [Dd]ashboard →$/;
 
 let trialDecks = 3;
 let balance = 42;
@@ -66,6 +77,12 @@ beforeEach(() => {
         return json(200, { ...book, trial: { ...book.trial, decks: trialDecks } });
       }
       if (url === "/api/billing") return json(200, { purchased: 84 });
+      // The one POST any test here drives to completion. Only the V3 describe's
+      // "Send to Evaluate" test needs it: the results view exists solely after a
+      // real upload, and that is the view the link lives on. The tests that
+      // assert nothing was uploaded assert on the CALLS, so a reachable route
+      // does not weaken them.
+      if (url === "/api/decks/upload") return json(200, { deckId: "deck_uploaded", evaluated: true });
       if (url === "/api/parameters") return json(200, { parameters: [{ key: "traction", name: "Traction & Validation", weight: 10 }] });
       return json(404, { error: "not_found" });
     }),
@@ -165,7 +182,7 @@ describe("the wizard", () => {
 describe("Review uploaded decks", () => {
   it("says so when nothing is staged", async () => {
     mount(PA());
-    fireEvent.click(await screen.findByRole("button", { name: "Go to dashboard →" }));
+    fireEvent.click(await screen.findByRole("button", { name: FORWARD }));
     expect(screen.getByRole("heading", { name: "Review uploaded decks" })).toBeInTheDocument();
     expect(screen.getByText("0 decks staged")).toBeInTheDocument();
     expect(screen.getByTestId("up-review-empty")).toHaveTextContent("No decks staged yet");
@@ -178,7 +195,7 @@ describe("Review uploaded decks", () => {
     const deck = new File([new Uint8Array([37, 80, 68, 70])], "PayRoute.pdf", { type: "application/pdf" });
     fireEvent.change(screen.getByLabelText("Choose a pitch deck"), { target: { files: [deck] } });
     fireEvent.change(screen.getByLabelText("Startup name"), { target: { value: "PayRoute" } });
-    fireEvent.click(screen.getByRole("button", { name: "Go to dashboard →" }));
+    fireEvent.click(screen.getByRole("button", { name: FORWARD }));
 
     expect(screen.getByText("1 deck staged")).toBeInTheDocument();
     const row = screen.getByTestId("up-deck-row");
@@ -210,7 +227,7 @@ describe("Review uploaded decks", () => {
     await waitFor(() => expect(screen.getByText("Credits balance — 0 remaining")).toBeInTheDocument());
     const deck = new File([new Uint8Array([37, 80, 68, 70])], "A.pdf", { type: "application/pdf" });
     fireEvent.change(screen.getByLabelText("Choose a pitch deck"), { target: { files: [deck] } });
-    fireEvent.click(screen.getByRole("button", { name: "Go to dashboard →" }));
+    fireEvent.click(screen.getByRole("button", { name: FORWARD }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Select A" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Not enough credits");
     expect(screen.getByRole("alert")).toHaveTextContent("Ask an administrator to add credits");
@@ -307,16 +324,42 @@ describe("Uploaded decks — AI-extracted details", () => {
 describe("V3 item 8 — Upload & Evaluate, the half the export supports", () => {
   const SU = () => principal("superuser", ["upload", "query", "adminconsole"]);
 
-  it("renames the wizard's forward button for the incubator superuser only", async () => {
-    mount(SU());
+  /**
+   * R2-UPEVAL widened the gate from `role === "superuser"` to `V3_UP_ROLES`.
+   * This is the pin on the set itself, so a widening cannot happen quietly in
+   * one of the two screens that read it.
+   */
+  it("admits exactly the superuser, the admin and the program associate — and records Q-P", () => {
+    expect([...V3_UP_ROLES]).toEqual(["superuser", "admin", "program_associate"]);
+
+    // The program manager is WITHHELD, not forgotten: their own prototype draws
+    // a different multi-select (a bottom action bar) and Q-P asks the client
+    // which to build. Answering it "V3's" flips this constant.
+    expect(PROGRAM_MANAGER_PENDING_Q_P).toBe(true);
+    expect(isV3Up("incubator", "program_manager")).toBe(false);
+
+    // The jury is excluded on purpose, and it is the load-bearing exclusion:
+    // `App.tsx` routes their `jassigned` screen through EvaluatePage too, so
+    // admitting them here would rebuild the screen a juror actually scores on.
+    expect(isV3Up("incubator", "jury")).toBe(false);
+
+    // The VC edition was not rescoped, whatever the role.
+    expect(isV3Up("vc", "superuser")).toBe(false);
+    expect(isV3Up("vc", "admin")).toBe(false);
+  });
+
+  it.each([
+    ["the incubator superuser", SU],
+    ["an admin", ADMIN],
+    ["a Program Associate", PA],
+  ])("renames the wizard's forward button for %s", async (_label, who) => {
+    mount(who());
     expect(await screen.findByRole("button", { name: "Evaluate & Go to Dashboard →" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Go to dashboard →" })).toBeNull();
   });
 
   it.each([
-    ["a Program Manager", PM],
-    ["a Program Associate", PA],
-    ["an admin", ADMIN],
+    ["a Program Manager — pending Q-P", PM],
     ["a VC partner", () => principal("partner", ["upload"], "vc")],
     ["a VC superuser — the VC edition was not rescoped", () => principal("superuser", ["upload"], "vc")],
   ])("leaves %s on the unchanged label", async (_label, who) => {
@@ -371,10 +414,57 @@ describe("V3 item 8 — Upload & Evaluate, the half the export supports", () => 
     expect(screen.queryByRole("link", { name: "Send to Evaluate →" })).toBeNull();
   });
 
+  /**
+   * The results card's `Send to Evaluate` is tested twice on purpose. Above, as a
+   * PROP, because that is the prototype's own markup. Here, through the real
+   * screen, because a prop test cannot see `UploadPage` passing `false` where it
+   * meant `v3Up` — and that wiring is the whole of this session's change. These
+   * are the only tests in the file that drive an upload to completion, which is
+   * what `POST /api/decks/upload` is mocked for.
+   */
+  async function uploadOneDeckAndOpenResults() {
+    await waitFor(() => expect(screen.getByText("Credits balance — 42 remaining")).toBeInTheDocument());
+    const deck = new File([new Uint8Array([37, 80, 68, 70])], "PayRoute.pdf", { type: "application/pdf" });
+    fireEvent.change(screen.getByLabelText("Choose a pitch deck"), { target: { files: [deck] } });
+    fireEvent.change(screen.getByLabelText("Startup name"), { target: { value: "PayRoute" } });
+    fireEvent.click(screen.getByRole("button", { name: FORWARD }));
+    fireEvent.click(within(screen.getByTestId("up-deck-row")).getByRole("checkbox", { name: "Select PayRoute" }));
+    fireEvent.click(screen.getByRole("button", { name: "Upload selected decks" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View uploaded details →" }));
+    expect(await screen.findByRole("heading", { name: "Uploaded decks — AI-extracted details" })).toBeInTheDocument();
+  }
+
+  it.each([
+    ["an admin", ADMIN],
+    ["a Program Associate", PA],
+  ])("wires Send to Evaluate through to %s, not just to the superuser", async (_label, who) => {
+    mount(who());
+    await uploadOneDeckAndOpenResults();
+    expect(screen.getByRole("link", { name: "Send to Evaluate →" })).toHaveAttribute("href", "/app/evaluate");
+  });
+
+  it("withholds it from a Program Manager while Q-P is open", async () => {
+    mount(PM());
+    await uploadOneDeckAndOpenResults();
+    expect(screen.queryByRole("link", { name: "Send to Evaluate →" })).toBeNull();
+    // The screen still works — only the v3 entry point is absent.
+    expect(screen.getByRole("link", { name: "✓ Done" })).toHaveAttribute("href", "/app/alldecks");
+  });
+
   it("keeps the review step and its cost preview — credits are never spent unpreviewed (Q51)", async () => {
     mount(SU());
     fireEvent.click(await screen.findByRole("button", { name: "Evaluate & Go to Dashboard →" }));
     expect(await screen.findByRole("heading", { name: "Review uploaded decks" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["an admin", ADMIN],
+    ["a Program Associate", PA],
+  ])("keeps it for %s too — the label changed, the flow did not", async (_label, who) => {
+    mount(who());
+    fireEvent.click(await screen.findByRole("button", { name: "Evaluate & Go to Dashboard →" }));
+    expect(await screen.findByRole("heading", { name: "Review uploaded decks" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upload selected decks" })).toBeInTheDocument();
   });
 });
 
