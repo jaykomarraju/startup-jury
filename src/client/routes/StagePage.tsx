@@ -1594,7 +1594,7 @@ const SIGNUP_LEGEND: LegendItem[] = [
 const docsOf = (row: StageRow) => row.signup?.documentsStatus ?? row.deck.documentsStatus ?? "pending";
 const payOf = (row: StageRow) => row.deck.paymentStatus ?? "pending";
 
-// ── V3 item 2 · Jury Pipeline, SUPERUSER ONLY ───────────────────────────────
+// ── V3 item 2 · Jury Pipeline, STAFF ONLY (superuser · admin · PM) ──────────
 //
 // `AISJ_SuperuserV3` `panel-jurypipeline`. The entire markup diff against
 // `AISJ_IC_SuserV15` is one line — `-<th>Status</th>` — because the repeat the
@@ -1604,9 +1604,23 @@ const payOf = (row: StageRow) => row.deck.paymentStatus ?? "pending";
 // CSS in v3) and the Action select drops from five options to two, after which
 // the cell becomes a `.jp-flowtag` (also new CSS in v3).
 //
-// Only the superuser prototype was reshared, so the base config below stays on
-// the v15 design for admin, program manager and jury, and all of this lives in
-// `roleVariants.superuser`.
+// R4-JP widened it from the superuser to the admin and the program manager
+// (`docs/plan_roles_incubator.md` §2, row `11 · V3-JP`, footnote ʳ). The
+// repeat the client reported is identical on their screens: both reach the
+// slug (`nav.ts` `jurypipeline`, `roles: ["admin","program_manager","jury"]`)
+// and both drew the same nine-column v15 shape, Status pill included.
+//
+// The JURY is deliberately NOT widened (§2 footnote ˢ, and §5 item 7).
+// `AISJ_IC_Jury_V4`'s `panel-jurypipeline` declares BOTH a Status and an
+// Action column (12 `<th>`) and `jpRender` emits a four-option Action select —
+// View deck · Submit · Save draft · Re-assign — none of them one of V3's two.
+// Their table has no per-juror pill column, so the repeat does not exist on
+// their screen and deleting the column would take away one they need. They
+// keep the base config below, which is what the negative control asserts.
+//
+// One variant object is shared by the three staff keys rather than copied:
+// `StagePage` applies exactly ONE variant per role with no composition, so a
+// future jury-specific variant has to be a separate object anyway.
 
 /** v3 `jpRender`: `submitted` → Evaluated, every other juror state → Pending. */
 function JuryMembersCell({ row }: { row: StageRow }) {
@@ -1699,6 +1713,31 @@ function JuryPipelineActionCell({ row, ctx }: { row: StageRow; ctx: StageContext
   );
 }
 
+/**
+ * The v3 `panel-jurypipeline` delta, shared by the three staff roles that reach
+ * the screen. Status is gone (the repeat the client reported), the Jury members
+ * cell is v3's binary pill and the Action cell is v3's two-option select.
+ *
+ * The legend's only job is to decode the Status pill (`LegendItem.statuses`
+ * tints it). With the column gone it decodes nothing on screen, so it goes with
+ * it — the Filter menu, which comes off the un-overridden `toolbar`, keeps all
+ * four stage words. §4 Q41.
+ */
+const JURY_PIPELINE_V3: Partial<Omit<StageConfig, "roleVariants">> = {
+  columns: [
+    "startup",
+    col("evaluators", "Jury members & status", (row) => <JuryMembersCell row={row} />),
+    "ai",
+    "jury",
+    "avg",
+    "addl",
+    "assignedDate",
+    col("action", "Action", (row, ctx) => <JuryPipelineActionCell row={row} ctx={ctx} />),
+  ],
+  legend: undefined,
+  emptyDescription: "Assigned decks appear here until they are sent to intro calls.",
+};
+
 /** Config for each incubator stage nav slug rendered by StagePage. */
 export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
   // Issue 25 — Startup · Jury members & status · AI · Jury · Avg · Addl.
@@ -1722,26 +1761,13 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
       `${count(rows, (r) => r.deck.statusId === "assigned" || r.deck.statusId === "jury_evaluation")} in progress`,
     emptyTitle: "No decks in jury evaluation",
     emptyDescription: "Assigned decks appear here for Score / Shortlist / Reject.",
-    // V3 item 2, superuser only — the v15 shape above is what admin, program
-    // manager and jury keep, because their prototypes were not reshared.
+    // V3 item 2 — the v15 shape above is what the JURY keeps, and only the
+    // jury: their own `AISJ_IC_Jury_V4` prototype declares both Status and
+    // Action, so the repeat the client reported does not exist there (§2 ˢ).
     roleVariants: {
-      superuser: {
-        columns: [
-          "startup",
-          col("evaluators", "Jury members & status", (row) => <JuryMembersCell row={row} />),
-          "ai",
-          "jury",
-          "avg",
-          "addl",
-          "assignedDate",
-          col("action", "Action", (row, ctx) => <JuryPipelineActionCell row={row} ctx={ctx} />),
-        ],
-        // The legend's only job is to decode the Status pill (`LegendItem.statuses`
-        // tints it). With the column gone it decodes nothing on screen, so it
-        // goes with it — the Filter menu keeps all four stage words. §4 Q41.
-        legend: undefined,
-        emptyDescription: "Assigned decks appear here until they are sent to intro calls.",
-      },
+      superuser: JURY_PIPELINE_V3,
+      admin: JURY_PIPELINE_V3,
+      program_manager: JURY_PIPELINE_V3,
     },
   },
   // Issue 26 — "as per image9", which is the prototype's `panel-forsignup`

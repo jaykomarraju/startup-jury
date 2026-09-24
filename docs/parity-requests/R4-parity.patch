@@ -1,0 +1,38 @@
+diff --git a/e2e/parity.spec.ts b/e2e/parity.spec.ts
+index 7737df6..bfb791f 100644
+--- a/e2e/parity.spec.ts
++++ b/e2e/parity.spec.ts
+@@ -182,9 +182,12 @@ const EXPECTED: Record<string, Screen> = {
+   },
+   "incubator/superuser/evaluate": { title: "Evaluate", tables: [] }, // route-only since V3-NAV — see above
+   "incubator/superuser/assign": { title: "Assign", tables: [] },
+-  // V3 item 2 — `AISJ_SuperuserV3` deletes `<th>Status</th>`. Superuser ONLY:
+-  // the admin, program_manager and jury rows below still carry it, and that is
+-  // the control proving the un-reshared prototypes did not move.
++  // V3 item 2 — `AISJ_SuperuserV3` deletes `<th>Status</th>`. R4-JP widened
++  // that to the admin and the program_manager (`docs/plan_roles_incubator.md`
++  // §2 row `11 · V3-JP`, footnote ʳ), so their rows below drop STATUS with it.
++  // The JURY row keeps it, and is now the control: `AISJ_IC_Jury_V4` declares
++  // BOTH a Status and an Action column, so the repeat the client reported does
++  // not exist on their screen (§2 ˢ, §5 item 7).
+   "incubator/superuser/jurypipeline": {
+     title: "Jury Pipeline",
+     tables: [["STARTUP", "JURY MEMBERS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "ACTION"]],
+@@ -277,7 +280,7 @@ const EXPECTED: Record<string, Screen> = {
+   "incubator/admin/assign": { title: "Assign", tables: [] },
+   "incubator/admin/jurypipeline": {
+     title: "Jury Pipeline",
+-    tables: [["STARTUP", "JURY MEMBERS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
++    tables: [["STARTUP", "JURY MEMBERS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "ACTION"]],
+   },
+   "incubator/admin/pmpipeline": {
+     title: "Prog manager pipeline",
+@@ -348,7 +351,7 @@ const EXPECTED: Record<string, Screen> = {
+   "incubator/program_manager/assign": { title: "Assign", tables: [] },
+   "incubator/program_manager/jurypipeline": {
+     title: "Jury Pipeline",
+-    tables: [["STARTUP", "JURY MEMBERS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
++    tables: [["STARTUP", "JURY MEMBERS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "ACTION"]],
+   },
+   "incubator/program_manager/pmpipeline": {
+     title: "Prog manager pipeline",
