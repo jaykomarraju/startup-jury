@@ -260,9 +260,17 @@ export function EvaluatePage() {
     () =>
       (decks ?? []).filter((d) => {
         const inStage = d.statusId === "assigned" || d.statusId === "jury_evaluation";
-        // A jury member only scores decks assigned to them (server enforces this
-        // too); staff (PM/admin) may score any in-stage deck.
-        return inStage && (user?.role !== "jury" || d.assignedTo === user.id);
+        // A jury member only scores decks assigned to them (the server enforces
+        // this too); staff (PM/admin) may score any in-stage deck.
+        //
+        // `assigneeIds`, NOT `assignedTo`. A deck carries one FIRST assignee and
+        // a full roster since migration 0058, and R7-JURY replaced this exact
+        // predicate in `DashboardPage.tsx` for that reason — then left this copy
+        // behind, one file away. On `assignedTo` alone a juror added as a SECOND
+        // evaluator cannot see or open the deck they were asked to score, and
+        // the footer counts a queue they are not in.
+        const mine = d.assigneeIds ?? (d.assignedTo ? [d.assignedTo] : []);
+        return inStage && (user?.role !== "jury" || (!!user && mine.includes(user.id)));
       }),
     [decks, user],
   );

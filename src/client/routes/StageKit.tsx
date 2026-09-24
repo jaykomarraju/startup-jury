@@ -549,7 +549,12 @@ export function dayDelta(dueAt?: string | null, submittedAt?: string | null): nu
   const sub = Date.parse(submittedAt);
   if (Number.isNaN(due) || Number.isNaN(sub)) return null;
   const day = 86_400_000;
-  return Math.round(sub / day) - Math.round(due / day);
+  // FLOOR, not round. `Math.round` snaps each instant to the NEAREST UTC
+  // midnight, which is not a calendar day — a deadline at 13:00 rounds forward
+  // to the next day while a submission at 11:00 the following day rounds back
+  // to it, so 22 hours late prints "On time". Flooring takes the calendar day
+  // each instant falls in, which is what the paragraph above promises.
+  return Math.floor(sub / day) - Math.floor(due / day);
 }
 
 /** `jpDelta`'s chip — green early or on time, red late, a dash for neither. */

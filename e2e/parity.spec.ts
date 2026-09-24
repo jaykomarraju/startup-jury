@@ -492,10 +492,20 @@ const EXPECTED: Record<string, Screen> = {
     // W7-A — the jury build's "My Pipeline" (`mpRender()`), not the staff table.
     tables: [["STARTUP", "STATUS", "AI SCORE", "ASSIGNED BY", "ASSIGNED DATE", "DUE DATE"]],
   },
-  "incubator/jury/jassigned": { title: "Evaluate", tables: [] },
+  // R7-JURY — `panel-jassigned`, "Assigned to me": the six-column allocation
+  // table replaced the v15 three-panel Evaluate launcher on the jury's slug.
+  "incubator/jury/jassigned": {
+    title: "Assigned to me",
+    tables: [["STARTUP", "AI SCORE", "PARAMETER SCORES", "ASSIGNED DATE", "DUE DATE", "ASSIGNED BY"]],
+  },
+  // R7-JURY — `panel-jurypipeline`, "Evaluated": the jury prototype's TWELVE
+  // `<th>`, which are not the staff nine. "Jury members & status" and "Jury
+  // score" are absent from the jury's table — their per-evaluator number is
+  // "My score" and their deck-level one is "Avg. score" — and five columns the
+  // staff screen never drew are present.
   "incubator/jury/jurypipeline": {
-    title: "Jury Pipeline",
-    tables: [["STARTUP", "JURY MEMBERS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS", "ACTION"]],
+    title: "Evaluated",
+    tables: [["STARTUP", "AI SCORE", "PARAMETERS SCORE", "ADDL. PARAMETERS SCORE", "MY SCORE", "AVG. SCORE", "ASSIGNED DATE", "DUE DATE", "SUBMITTED DATE", "+/- DAYS", "STATUS", "ACTION"]],
   },
   "incubator/jury/introcalls": {
     title: "My Intro calls",

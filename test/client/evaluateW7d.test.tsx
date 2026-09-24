@@ -336,6 +336,20 @@ const DECKS: DeckView[] = [
   { id: "inc_deck_taxpilot", name: "TaxPilot", sector: "B2B SaaS", stage: "Seed", city: "Chennai", statusId: "assigned", assignedTo: "u_jury", aiScore: 6.9, missingFields: ["founderPhone"] },
   { id: "inc_deck_insureflow", name: "InsureFlow", sector: "Insurtech", stage: "Seed", city: "Bengaluru", statusId: "jury_evaluation", assignedTo: "u_jury", aiScore: 8.6 },
   { id: "inc_deck_other", name: "NotMine", sector: "Fintech", statusId: "assigned", assignedTo: "someone_else", aiScore: 5 },
+  // R7 integration — a SECOND assignee. `assignedTo` is the FIRST evaluator;
+  // `assigneeIds` is the roster, and has been since migration 0058. This deck
+  // is invisible to `u_jury` under `assignedTo === user.id`, which is the
+  // predicate R7-JURY replaced in `DashboardPage.tsx` and left behind in
+  // `EvaluatePage.tsx`. Both R7 verifiers found it independently.
+  {
+    id: "inc_deck_second",
+    name: "SecondSeat",
+    sector: "Climatetech",
+    statusId: "assigned",
+    assignedTo: "someone_else",
+    assigneeIds: ["someone_else", "u_jury"],
+    aiScore: 7.4,
+  },
   { id: "inc_deck_done", name: "Shortlisted Co", statusId: "shortlisted", assignedTo: "u_jury" },
 ];
 
@@ -413,7 +427,7 @@ describe("Evaluate — the prototype's toolbar, columns and status vocabulary", 
     expect(screen.getByRole("button", { name: "Filter" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Export" })).toBeInTheDocument();
 
-    expect(screen.getByTestId("ev-decks-label")).toHaveTextContent("2 decks · click to open report");
+    expect(screen.getByTestId("ev-decks-label")).toHaveTextContent("3 decks · click to open report");
     expect(screen.getByText("Evaluation parameters")).toBeInTheDocument();
     expect(screen.getByText("Click Review to see the full prompt")).toBeInTheDocument();
     expect(screen.getByText("My additional parameters (Jury Member)")).toBeInTheDocument();
@@ -423,6 +437,8 @@ describe("Evaluate — the prototype's toolbar, columns and status vocabulary", 
     // another role's additional parameter is not either.
     expect(within(list).queryByText("NotMine")).not.toBeInTheDocument();
     expect(within(list).queryByText("Shortlisted Co")).not.toBeInTheDocument();
+    // …but a deck this juror is the SECOND evaluator on IS theirs to score.
+    expect(within(list).getByText("SecondSeat")).toBeInTheDocument();
     expect(screen.queryByText("TRL stage")).not.toBeInTheDocument();
 
     // Badges: AI, flags, Evaluated.
@@ -655,7 +671,7 @@ describe("R7-JURY · the jury's Assigned screen is panel-jassigned", () => {
     ]);
     // `jaDecks.length + ' decks assigned to you'` — the juror's own two, not
     // the four in the fixture.
-    expect(screen.getByTestId("ja-foot")).toHaveTextContent("2 decks assigned to you");
+    expect(screen.getByTestId("ja-foot")).toHaveTextContent("3 decks assigned to you");
     // The v15 launcher is gone from this slug.
     expect(screen.queryByRole("list", { name: "Decks to evaluate" })).toBeNull();
   });
@@ -716,7 +732,7 @@ describe("R7-JURY · the jury's Assigned screen is panel-jassigned", () => {
     // Everything that does NOT come from the failed read is unaffected.
     expect(cellsOf(/TaxPilot/)[0]).toHaveTextContent("TaxPilot");
     expect(cellsOf(/TaxPilot/)[1]).toHaveTextContent("6.9");
-    expect(screen.getByTestId("ja-foot")).toHaveTextContent("2 decks assigned to you");
+    expect(screen.getByTestId("ja-foot")).toHaveTextContent("3 decks assigned to you");
     // …and the three cells that do, read as dashes rather than blanking.
     expect(cellsOf(/TaxPilot/)[3]).toHaveTextContent("—");
     expect(cellsOf(/TaxPilot/)[4]).toHaveTextContent("—");
