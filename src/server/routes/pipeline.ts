@@ -52,6 +52,10 @@ import {
   isAssignedEvaluator,
   upsertAssignment,
 } from "../decks/assignments";
+// F-FOUL — rows 8 and 12: nothing asked whether a deck HAS a file before it was
+// assigned or scored. The precondition, and why it is column+head() here and
+// column-only on the bulk path, live in that module.
+import { DECK_FILE_ACTIONS, checkDeckFile, deckFileRefusal } from "../decks/deckFile";
 import { capacityFor } from "../../shared/assignment";
 
 const pipeline = new Hono<AppEnv>();
@@ -351,8 +355,24 @@ pipeline.post("/decks/:id/transition", async (c) => {
     return c.json({ error: result.error }, code);
   }
 
-  // The action is permitted — now apply the shortlist floor: the programme's
-  // own where it has one, otherwise the org-wide Scoring-framework threshold.
+  // The action is permitted by role and stage — now the data preconditions.
+  //
+  // The deck-file one is keyed off the ACTION, not the route: this dispatcher is
+  // generic, so guarding `POST /decks/:id/assign` alone would leave
+  // `{"action":"assign_jury"}` posted here as an open door to the same write.
+  // Deliberately NOT in the transition engine: `performAction(edition, from,
+  // action, role)` never receives a deck row, and giving it one means changing
+  // that signature at seven call sites and making a pure function async and
+  // DB-aware. The shortlist floor below already set this precedent.
+  if (DECK_FILE_ACTIONS.has(action)) {
+    const file = await checkDeckFile(c.env, deck.id);
+    if (file !== "present") {
+      return c.json(deckFileRefusal(file, deck.name, "assigned for evaluation"), 409);
+    }
+  }
+
+  // The shortlist floor: the programme's own where it has one, otherwise the
+  // org-wide Scoring-framework threshold.
   if (SHORTLIST_ACTIONS.has(action)) {
     const guard = await checkShortlistFloor(c, deck.id, deck.edition);
     if (guard?.blocked) {
@@ -413,6 +433,14 @@ pipeline.post(
       const code = result.error === "forbidden" ? 403 : 409;
       return c.json({ error: result.error }, code);
     }
+
+    // F-FOUL — a juror cannot evaluate what they cannot open. One deck, so this
+    // path pays for the object check as well as the column.
+    const file = await checkDeckFile(c.env, deck.id);
+    if (file !== "present") {
+      return c.json(deckFileRefusal(file, deck.name, "assigned for evaluation"), 409);
+    }
+
     const to = result.to!;
     const ts = new Date().toISOString();
     await c.env.DB.batch([
@@ -471,6 +499,16 @@ pipeline.post(
     // has advanced to a partner call / diligence / IC or been archived.
     if (deck.edition === "vc" && !VC_SCORING_STAGES.includes(deck.status)) {
       return c.json({ error: "not_in_scoring_stage" }, 409);
+    }
+    // F-FOUL, and the more urgent half of it. An assignment is reversible; a
+    // submitted evaluation is a record — 13 parameter scores, a weighted total
+    // and a verdict, signed by a named evaluator, over a deck nobody could read.
+    // Checked here, before the body is parsed, so no work is done on a deck that
+    // cannot be scored. The AI path has refused this since ai/evaluate.ts was
+    // written; this route never asked.
+    const file = await checkDeckFile(c.env, deck.id);
+    if (file !== "present") {
+      return c.json(deckFileRefusal(file, deck.name, "scored"), 409);
     }
 
     const body = await readBody<{ scores: ScoreInput[]; remarks: string }>(c);

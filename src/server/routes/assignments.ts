@@ -24,6 +24,8 @@ import { denyMentor, requireAuth, requireRole, requireTask } from "../auth/middl
 import { loadScoringSettings } from "../config/scoringSettings";
 import { buildAssignmentEmail, sendEmail } from "../email/outbox";
 import { ASSIGNEE_PAIRS_SQL, clearAssignments, upsertAssignment } from "../decks/assignments";
+// F-FOUL — rows 8 and 12. Column-only here, and the reason is in the module.
+import { decksWithoutFileKey } from "../decks/deckFile";
 
 export const assignments = new Hono<AppEnv>();
 assignments.use("*", requireAuth, denyMentor);
@@ -183,9 +185,25 @@ assignments.post(
     // Keep the assigner's selection order: the first member becomes the first assignee.
     const ordered = assigneeIds.map((id) => members.find((m) => m.id === id)!);
 
-    const refused: { id: string; name: string; status: string }[] = [];
+    // F-FOUL — rows 8 and 12: a deck with no stored PDF must not reach an
+    // evaluator. This path already had the refusal channel built (`refused` →
+    // 409 `not_assignable` with per-deck names); what it lacked was this
+    // question. Each refusal carries its own `reason` so the message names the
+    // right cause — a fileless deck is not "wrong stage".
+    //
+    // COLUMN CHECK ONLY, and that is deliberate: one confirmation admits up to
+    // MAX_DECKS (100) decks, and an R2 `head()` per row would make a hundred
+    // sequential round trips out of one refusal check. The single-deck assign
+    // and evaluate paths pay for the object check, where the cost is one call.
+    const fileless = await decksWithoutFileKey(db, deckIds);
+
+    const refused: { id: string; name: string; status: string; reason: "stage" | "no_pdf" }[] = [];
     let forbidden = false;
     for (const d of decks) {
+      if (fileless.has(d.id)) {
+        refused.push({ id: d.id, name: d.name, status: d.status, reason: "no_pdf" });
+        continue;
+      }
       if (d.status === "assigned") {
         // Adding evaluators to a deck already out for evaluation — the prototype
         // keeps assigned decks selectable (`renderAsDecks`, TaxPilot). Whoever may
@@ -197,15 +215,23 @@ assignments.post(
       const r = performAction(edition, d.status, "assign_jury", user.role);
       if (r.ok) continue;
       if (r.error === "forbidden") forbidden = true;
-      else refused.push({ id: d.id, name: d.name, status: d.status });
+      else refused.push({ id: d.id, name: d.name, status: d.status, reason: "stage" });
     }
     if (forbidden) return c.json({ error: "forbidden" }, 403);
     if (refused.length) {
+      const noPdf = refused.filter((d) => d.reason === "no_pdf");
+      const wrongStage = refused.filter((d) => d.reason === "stage");
+      const sentences = [
+        noPdf.length &&
+          `${noPdf.map((d) => d.name).join(", ")} ${noPdf.length === 1 ? "has" : "have"} no uploaded deck.`,
+        wrongStage.length &&
+          `${wrongStage.map((d) => d.name).join(", ")} cannot be assigned from ${wrongStage.length === 1 ? "its" : "their"} current stage.`,
+      ].filter((x): x is string => Boolean(x));
       return c.json(
         {
           error: "not_assignable",
           decks: refused,
-          message: `${refused.map((d) => d.name).join(", ")} cannot be assigned from ${refused.length === 1 ? "its" : "their"} current stage.`,
+          message: sentences.join(" "),
         },
         409,
       );

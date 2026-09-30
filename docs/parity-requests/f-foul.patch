@@ -1,0 +1,28 @@
+diff --git a/e2e/evaluate-workbench.spec.ts b/e2e/evaluate-workbench.spec.ts
+index ccf1f4a..51437e4 100644
+--- a/e2e/evaluate-workbench.spec.ts
++++ b/e2e/evaluate-workbench.spec.ts
+@@ -36,9 +36,21 @@ test("incubator juror works a deck in the evaluator workbench", async ({ page })
+   // Per-parameter AI breakdown (score rationale) is visible on the scorecard.
+   await expect(page.getByText("No climate or sustainability angle presented.")).toBeVisible();
+ 
+-  // In-app deck viewer (graceful "no PDF" for the seed fixture).
++  // In-app deck viewer. This asserted the graceful "no PDF" path until F-FOUL:
++  // every seeded deck was fileless, so the workbench's own empty state was the
++  // only thing this fixture could show. `0081_seed_deck_files.sql` plus
++  // `npm run seed:deck-assets` (wired into `e2e:serve`) give the 30 seeded decks
++  // that carry evaluation data a real PDF, so TaxPilot now has one — which is
++  // the point, since a juror was previously able to score a deck nobody could
++  // open. The empty state itself is still covered, against the fixtures that
++  // keep it: `inc_deck_pitchloop` and the three `incomplete` decks.
++  //
++  // "Open PDF" rather than a rendered slide: it is present in both the `ready`
++  // and `error` viewer states, so this does not turn a pdf.js rendering hiccup
++  // in CI into a failure about deck files.
+   await expect(page.getByText("Pitch deck")).toBeVisible();
+-  await expect(page.getByText("No PDF stored for this deck")).toBeVisible();
++  await expect(page.getByText("No PDF stored for this deck")).toHaveCount(0);
++  await expect(page.getByRole("link", { name: /Open PDF/ })).toBeVisible();
+ 
+   // Deck X-of-N queue progress.
+   await expect(page.getByText(/Deck \d+ of \d+/)).toBeVisible();
