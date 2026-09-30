@@ -46,6 +46,11 @@ async function seedDeck(id: string, status = "ai_evaluated", name = id): Promise
   )
     .bind(id, name, status, `decks/${id}.pdf`)
     .run();
+  // F-FOUL — the guard on assign and evaluate checks the OBJECT, not just the
+  // column, because 0081's own seed would satisfy a column-only check. A fixture
+  // that names a key with nothing behind it is the exact state the client
+  // reported, so it has to stop being the shape our tests are written in.
+  await env.DECKS.put(`decks/${id}.pdf`, new Uint8Array([37, 80, 68, 70])); // "%PDF"
 }
 
 async function statusOf(id: string): Promise<string | undefined> {

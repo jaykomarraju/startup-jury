@@ -18,7 +18,9 @@
     "parity:nav": "esbuild scripts/parity-nav.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/parity-nav.mjs --log-level=warning && node node_modules/.cache/parity-nav.mjs",
     "parity:tokens": "esbuild scripts/parity-tokens.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/parity-tokens.mjs --log-level=warning && node node_modules/.cache/parity-tokens.mjs",
     "db:migrate:local": "wrangler d1 migrations apply startup-jury-db --local",
-    "e2e:serve": "rm -rf .wrangler/state && npm run db:migrate:local && vite --port ${E2E_PORT:-5173} --strictPort",
+    "seed:deck-assets": "node scripts/seed-deck-assets.mjs",
+    "seed:deck-assets:remote": "node scripts/seed-deck-assets.mjs --remote",
+    "e2e:serve": "rm -rf .wrangler/state && npm run db:migrate:local && npm run seed:deck-assets && vite --port ${E2E_PORT:-5173} --strictPort",
     "cf-typegen": "wrangler types"
   },
   "dependencies": {

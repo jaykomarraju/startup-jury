@@ -267,9 +267,12 @@ describe("producers", () => {
     await setDefault("incubator", "evaluator_scores_submitted", "email", true);
     await setDefault("incubator", "all_evaluations_complete", "email", true);
     await env.DB.prepare(
-      "INSERT INTO decks (id, edition, name, status, assigned_to, complete, uploaded_by) " +
-        "VALUES ('ntf_scored', 'incubator', 'ScoreAlert', 'assigned', 'inc_jury', 1, 'inc_pa')",
+      "INSERT INTO decks (id, edition, name, status, assigned_to, r2_key, complete, uploaded_by) " +
+        "VALUES ('ntf_scored', 'incubator', 'ScoreAlert', 'assigned', 'inc_jury', 'decks/ntf_scored.pdf', 1, 'inc_pa')",
     ).run();
+    // F-FOUL — scored below via POST /decks/:id/evaluate, which now requires a
+    // stored PDF (the `ntf_ai` fixture above already had one).
+    await env.DECKS.put("decks/ntf_scored.pdf", new Uint8Array([37, 80, 68, 70])); // "%PDF"
 
     const submittedBefore = await alertsTo("evaluator_scores_submitted", INC_PM);
     const completeBefore = await alertsTo("all_evaluations_complete", INC_PM);

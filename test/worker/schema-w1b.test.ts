@@ -417,6 +417,16 @@ describe("credit_ledger", () => {
     await env.DB.prepare(
       "INSERT INTO credit_ledger (id, edition, delta, reason, deck_id) VALUES ('x4', 'vc', -1, 'deck_evaluated', 'vc_deck_wealthos')",
     ).run();
+    // F-FOUL — clear the version history first. `deck_versions.deck_id` is
+    // `REFERENCES decks (id)` with NO `ON DELETE` clause (0016_automation.sql),
+    // so a deck that has ever had a file cannot be deleted. That was already
+    // true of every deck the product creates — `storeDeck` writes a
+    // `deck_versions` row in the same batch as the deck — and this test passed
+    // only because the SEEDED decks uniquely had no file and therefore no
+    // version row. 0081 gives them one, which makes the fixture behave like a
+    // real deck. The subject here is `credit_ledger.deck_id ON DELETE SET NULL`,
+    // so the version rows are cleared rather than the assertion weakened.
+    await env.DB.prepare("DELETE FROM deck_versions WHERE deck_id = 'vc_deck_wealthos'").run();
     await env.DB.prepare("DELETE FROM decks WHERE id = 'vc_deck_wealthos'").run();
     const row = await env.DB.prepare("SELECT deck_id FROM credit_ledger WHERE id = 'x4'")
       .first<{ deck_id: string | null }>();

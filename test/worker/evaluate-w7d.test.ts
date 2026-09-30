@@ -155,11 +155,15 @@ async function seedDeck(
   opts: { status: string; assignedTo?: string | null; aiScore?: number | null; edition?: string },
 ) {
   await env.DB.prepare(
-    "INSERT INTO decks (id, edition, name, status, assigned_to, ai_score, uploaded_by, founder, founder_email, founder_phone, city, sector, complete) " +
-      "VALUES (?, ?, 'W7D Co', ?, ?, ?, 'inc_founder', 'Ada', 'ada@w7d.example', '+91 98450 11111', 'Pune', 'B2B SaaS', 1)",
+    "INSERT INTO decks (id, edition, name, status, assigned_to, ai_score, r2_key, uploaded_by, founder, founder_email, founder_phone, city, sector, complete) " +
+      "VALUES (?, ?, 'W7D Co', ?, ?, ?, ?, 'inc_founder', 'Ada', 'ada@w7d.example', '+91 98450 11111', 'Pune', 'B2B SaaS', 1)",
   )
-    .bind(id, opts.edition ?? "incubator", opts.status, opts.assignedTo ?? null, opts.aiScore ?? null)
+    .bind(id, opts.edition ?? "incubator", opts.status, opts.assignedTo ?? null, opts.aiScore ?? null, `decks/${id}.pdf`)
     .run();
+  // F-FOUL — these fixtures are scored through POST /decks/:id/evaluate, which
+  // now refuses a deck with no stored PDF. A deck carrying 13 parameter scores
+  // and no file is the state the client called a Foul; the fixture had it too.
+  await env.DECKS.put(`decks/${id}.pdf`, new Uint8Array([37, 80, 68, 70])); // "%PDF"
 }
 
 describe("PUT /api/decks/:id/recommendation + GET /api/recommendations", () => {

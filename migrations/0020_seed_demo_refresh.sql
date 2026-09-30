@@ -601,9 +601,18 @@ UPDATE decks
 -- (`sweepStuckEvaluations` filters on `ai_failed_at IS NULL`) — the fixture
 -- cannot be re-driven behind your back, and it does not consume a credit.
 --
--- NB it has no `r2_key`. "Re-run AI" on this deck will re-reserve a credit and
--- then fail again with a missing-PDF error, which is honest but not a good demo
--- beat — the runbook says to demo the recovery on a freshly uploaded deck.
+-- IT HAS NO `r2_key`, AND AS OF 0081 THAT MAKES IT AN EXCEPTION RATHER THAN THE
+-- RULE. Every seeded deck used to be fileless, which is what the client reported
+-- in Sep-2026 as a Foul; `0081_seed_deck_files.sql` gives the 30 that carry
+-- evaluation data a real key and a real object, and leaves exactly four without
+-- one — the three `incomplete` decks, whose thinness is the point, and this one.
+-- Do not "fix" it: its whole purpose is to have nothing to read, and 0081's own
+-- guard test asserts that its `r2_key` is still NULL.
+--
+-- The consequence is unchanged: "Re-run AI" on this deck will re-reserve a
+-- credit and then fail again with a missing-PDF error, which is honest but not a
+-- good demo beat — the runbook says to demo the recovery on a freshly uploaded
+-- deck.
 INSERT INTO decks
   (id, edition, name, sector, stage, city, status, ai_score, signal, uploaded_by,
    complete, program_id, cohort_id, founder, founder_email, founder_phone,

@@ -40,6 +40,9 @@ async function seedVcDeck(id: string, status = "analyst_scoring"): Promise<void>
   )
     .bind(id, status, `decks/${id}.pdf`)
     .run();
+  // F-FOUL — a VC deal is scored through POST /decks/:id/evaluate, which now
+  // requires the object and not just the key.
+  await env.DECKS.put(`decks/${id}.pdf`, new Uint8Array([37, 80, 68, 70])); // "%PDF"
 }
 
 async function statusOf(id: string): Promise<string> {
