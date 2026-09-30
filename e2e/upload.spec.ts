@@ -46,7 +46,7 @@ async function bodyLinks(page: Page): Promise<string[]> {
   return page.locator("main a[href^='/app/']").evaluateAll((as) => as.map((a) => a.getAttribute("href") ?? ""));
 }
 
-test("a PA uploads a deck, reviews it, sends it to Query — and is never shown a control they cannot use", async ({
+test("a PA uploads a deck, reviews it, reaches Query — and is never shown a control they cannot use", async ({
   page,
   request,
 }) => {
@@ -109,37 +109,37 @@ test("a PA uploads a deck, reviews it, sends it to Query — and is never shown 
   for (const href of await bodyLinks(page)) links.add(href);
   expect([...links]).toContain("/app/evaluate");
 
-  // 4 · back to review: flag a parameter and send the founder query.
+  // 4 · back to review — and the browser-level proof of feedback row 2.
+  //
+  // S2-UPLOAD deleted the per-row "Mark incomplete" button ("not required since
+  // we have automated this part"). This walk used to CLICK it to open
+  // "Parameters needing response", and that is the only reason the panel opened
+  // here: `isFlaggable` now fires solely for a deck the AI itself landed at
+  // `incomplete`, and this dev server has no ANTHROPIC_API_KEY, so no deck of
+  // this spec's ever leaves `pending_ai`. The panel is therefore UNREACHABLE in
+  // this environment by design, not by regression — asserted below so a future
+  // session does not read its absence as a bug.
+  //
+  // The flag → Send to Query → real query seam moved to
+  // test/client/upload.test.tsx ("raises the founder query end to end"), which
+  // can hand the screen an AI verdict that this server cannot produce;
+  // `POST /api/decks/:id/queries` itself is covered in test/worker/pipeline.test.ts
+  // (both the incubator and the VC arm) and the letter's wording in
+  // test/unit/uploadReview.test.ts. What only a browser can still prove — that
+  // /app/query is a screen this PA may actually open — is kept, by walking
+  // there directly instead of through the panel's "View in Query →".
   await page.getByRole("button", { name: "← Back to review" }).click();
   await row.click();
   await expect(page.getByText(/AI evaluation is queued and will retry/i)).toBeVisible();
   await expect(page.getByText(/AI key missing or rejected/i)).toBeVisible();
-  await row.getByRole("button", { name: "Mark incomplete" }).click();
-  const panel = page.getByTestId("up-flag-panel");
-  await expect(panel.getByText("Parameters needing response")).toBeVisible();
-  await panel.getByRole("checkbox", { name: "Flag Traction & Validation" }).check();
-  await panel.getByRole("group", { name: "Traction & Validation signal" }).getByRole("button", { name: "Absent" }).click();
-  await panel.getByRole("button", { name: "Send to Query" }).click();
-  await expect(panel.getByText("✓ Sent to Query")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Mark incomplete/i })).toHaveCount(0);
+  await expect(page.getByTestId("up-flag-panel")).toHaveCount(0);
   for (const href of await bodyLinks(page)) links.add(href);
 
-  // The query really exists, and says what was flagged.
-  const deckId = await page.evaluate(async (deckName) => {
-    const r = await fetch("/api/decks");
-    const { decks } = (await r.json()) as { decks: { id: string; name: string }[] };
-    return decks.find((d) => d.name === deckName)?.id ?? null;
-  }, name);
-  expect(deckId).not.toBeNull();
-  const queries = await page.evaluate(
-    async (id) => (await (await fetch(`/api/decks/${id}/queries`)).json()) as { queries: { questions: string }[] },
-    deckId,
-  );
-  expect(queries.queries).toHaveLength(1);
-  expect(queries.queries[0].questions).toContain("• Traction & Validation (absent)");
-
-  await panel.getByRole("link", { name: "View in Query →" }).click();
-  await page.waitForURL(/\/app\/query$/);
+  await page.goto("/app/query");
+  await expect(page.locator("h1").first()).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText(NOT_AVAILABLE)).toHaveCount(0);
+  links.add("/app/query");
 
   // Every link the Upload screens offered this PA leads somewhere they may go.
   for (const href of links) {
@@ -151,17 +151,21 @@ test("a PA uploads a deck, reviews it, sends it to Query — and is never shown 
   // 5 · the deck is on the Dashboard, not yet AI-evaluated, with readable slides.
   //
   // Wave R (R1-DASH) widened the V3 Dashboard to the program associate, so this
-  // walk now reads the V3 status VOCABULARY: a deck with no verdict is "Not AI
-  // Evaluated" (`V3_STATUS_LABELS.noteval`), where the pre-V3 screen said
-  // "Pending AI". Asserting the old word here did not just fail — it resolved to
-  // the Actions menu's own disabled `<option>` ("Send to Assign — not available
-  // at Pending AI"), which is `hidden` inside a closed select, so the failure
-  // read as a visibility bug rather than a vocabulary change. Target the status
-  // cell by its testid so the row's other text can never stand in for it.
+  // walk reads the Dashboard's status VOCABULARY rather than the pre-V3 screen's
+  // "Pending AI". Asserting a word that is not in the vocabulary did not just
+  // fail — it resolved to the Actions menu's own disabled `<option>`, which is
+  // `hidden` inside a closed select, so the failure read as a visibility bug
+  // rather than a vocabulary change. Target the status cell by its testid so the
+  // row's other text can never stand in for it.
+  //
+  // S2-DASH (2026-09-30) replaces the vocabulary with the client's 24-Sep
+  // thirteen statuses. "Not AI Evaluated" is the word his row 6 DELETES, and C3
+  // is the answer: it is a populated stat box as well as a word, so the box stays
+  // and its rows read "Awaiting AI evaluation" (`SCREENING_STATUS_LABELS`).
   await page.goto("/app/alldecks");
   const deckRow = page.getByRole("row", { name: new RegExp(name) });
   await expect(deckRow).toBeVisible();
-  await expect(deckRow.getByTestId("v3-status")).toHaveText("Not AI Evaluated");
+  await expect(deckRow.getByTestId("v3-status")).toHaveText("Awaiting AI evaluation");
 
   // The report drawer renders DeckPdfViewer against the R2 object just stored.
   // W7-A (F0325): the startup NAME is the report link, not the whole row.

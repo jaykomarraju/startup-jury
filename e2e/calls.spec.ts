@@ -140,7 +140,15 @@ test("the VC Query screen lists founder queries and sends one", async ({ page })
   await expect(page.getByRole("columnheader", { name: "Parameters needing response" })).toBeVisible();
 
   // Issue 16 — ticking a startup carries it to the Email query tab.
-  await page.getByRole("checkbox").nth(1).check();
+  //
+  // `.first()`, not `.nth(1)`. This read `nth(1)` because `nth(0)` was the
+  // SELECT-ALL box in the header row; the client's spec had it removed
+  // ("not relevant since each deck will have distinguished missing items"),
+  // S2-CHROME did so, and every checkbox index below it shifted by one. With
+  // one VC deck on the list there is no `nth(1)` at all, so this timed out
+  // rather than failing on anything to do with queries.
+  await expect(page.getByRole("checkbox").first()).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("checkbox").first().check();
   await page.getByRole("tab", { name: /Email query/ }).click();
   const body = page.getByRole("textbox", { name: "Body" });
   await expect(body).not.toBeEmpty();

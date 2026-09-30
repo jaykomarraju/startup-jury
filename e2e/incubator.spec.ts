@@ -77,7 +77,15 @@ test("staff query an incomplete deck; it records a sent query", async ({ page })
   // Aug-2026 issues 15–18 — two tabs; tick the startups, then send from the
   // Email query tab.
   await expect(page.getByRole("heading", { name: "Founder queries" })).toBeVisible();
-  // PayRoute seeds at incomplete.
+  // PayRoute seeds at incomplete — but S2-SERVER's row 3 means that is no
+  // longer enough to put it on this screen. Query membership is a RECORDED
+  // action now: the client asked that routing happen only when an operator
+  // clicks, because a deck with incomplete contact details cannot be emailed
+  // for want of contact details. So send it first, then reload the list.
+  const send = await page.request.post("/api/decks/inc_deck_payroute/send-to-query");
+  expect(send.ok(), await send.text()).toBeTruthy();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Founder queries" })).toBeVisible();
   await page.getByRole("checkbox", { name: "Select PayRoute" }).check();
   await page.getByRole("tab", { name: /Email query/ }).click();
 

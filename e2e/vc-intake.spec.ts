@@ -188,24 +188,36 @@ test("a VC analyst stages two decks, uploads one, flags a VC parameter and sends
   await page.getByRole("button", { name: "View uploaded details →" }).click();
   await page.getByRole("button", { name: "← Back to review" }).click();
   await row.click();
-  await row.getByRole("button", { name: "Mark incomplete" }).click();
-  const panel = page.getByTestId("up-flag-panel");
-  await panel.getByRole("checkbox", { name: `Flag ${area}` }).check();
-  await panel.getByRole("group", { name: `${area} signal` }).getByRole("button", { name: "Weak signal" }).click();
-  await panel.getByRole("button", { name: "Send to Query" }).click();
-  await expect(panel.getByText("✓ Sent to Query")).toBeVisible({ timeout: 20_000 });
 
-  const queries = await page.evaluate(
-    async (id) => (await (await fetch(`/api/decks/${id}/queries`)).json()) as { queries: { questions: string }[] },
-    ids[0],
-  );
-  expect(queries.queries).toHaveLength(1);
-  expect(queries.queries[0].questions).toContain(`• ${area} (weak signal)`);
+  // S2-UPLOAD deleted the "Mark incomplete" button (feedback row 2), which is
+  // what this walk clicked to open "Parameters needing response". The panel now
+  // opens only for a deck the AI landed at `incomplete`, and this dev server has
+  // no AI key — so it is unreachable here, and asserted absent rather than left
+  // to fail. Row 2 is shipped in BOTH editions: the button lived in the shared
+  // `ReviewScreen`, and the client's "not required since we have automated this
+  // part" is not an incubator-only statement. See the handoff's client question.
+  // The flag → Send to Query seam is re-covered in test/client/upload.test.tsx,
+  // and the VC arm of POST /api/decks/:id/queries in test/worker/pipeline.test.ts:508.
+  await expect(page.getByRole("button", { name: /Mark incomplete/i })).toHaveCount(0);
+  await expect(page.getByTestId("up-flag-panel")).toHaveCount(0);
 
-  // The VC Query list holds it — a deal being re-scored with a query on record.
-  await panel.getByRole("link", { name: "View in Query →" }).click();
-  await page.waitForURL(/\/app\/query$/);
-  await expect(page.getByRole("checkbox", { name: `Select ${keep}` })).toBeVisible({ timeout: 30_000 });
+  // The VC Query screen is still a screen this associate may open — and that
+  // reachability is the whole of what this step is for.
+  //
+  // It no longer asserts that `keep` is LISTED there. Two changes in this wave
+  // together remove the only path that put it there without anyone deciding:
+  // S2-UPLOAD deleted "Mark incomplete" (row 2), and S2-SERVER made Query
+  // membership the operator's click rather than a derivation over the stage
+  // (row 3 — his reason being that a deck with incomplete contact details
+  // cannot be emailed for want of contact details). A deck nobody has sent to
+  // Query is CORRECTLY absent from it, so asserting its presence here would
+  // pin the behaviour the client asked us to delete.
+  //
+  // The seam itself is covered where it now lives: `test/client/upload.test.tsx`
+  // for the screen, and `test/worker/pipeline.test.ts` for the VC arm of
+  // `POST /api/decks/:id/queries`.
+  await page.goto("/app/query");
+  await expect(page.getByRole("heading", { name: "Founder queries" })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText(NOT_AVAILABLE)).toHaveCount(0);
 });
 

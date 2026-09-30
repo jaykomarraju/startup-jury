@@ -114,6 +114,65 @@ test("superuser: the Dashboard's two shapes, archived as a STATE, and the report
     await expect.poll(() => headers(page)).toEqual(V3_DEFAULT);
   }
 
+  // ── S2-DASH — the STATUS column sorts, and the cell is ONE string ─────────
+  //
+  // New construction: there was no column-sort primitive anywhere in the client
+  // before this (`aria-sort`, `SortableHeader`, `onSort`, `sortDir` all returned
+  // zero hits under `src/client/`), so this is the walk that proves the header
+  // is really a control and not a styled `<th>`. Data-independent: it reads
+  // `aria-sort` through the three-state cycle rather than any row's order, so a
+  // concurrent spec cannot move it.
+  await tile(page, "Uploaded").click();
+  await expect.poll(() => headers(page)).toEqual(V3_DEFAULT);
+  const statusHeader = page.locator("table[data-shape] thead th", { hasText: /^Status$/ });
+  await expect(statusHeader).toHaveAttribute("aria-sort", "none");
+  await statusHeader.getByRole("button").click();
+  await expect(statusHeader).toHaveAttribute("aria-sort", "ascending");
+  await statusHeader.getByRole("button").click();
+  await expect(statusHeader).toHaveAttribute("aria-sort", "descending");
+  // A third click returns the prototype's activity order, so it is somewhere the
+  // operator can get back to rather than a state they can only leave.
+  await statusHeader.getByRole("button").click();
+  await expect(statusHeader).toHaveAttribute("aria-sort", "none");
+
+  // The Status CELL is one element now, not a pill plus up to four additive
+  // chips — his "Incomplete contact details, Edited" is a single composed value,
+  // and a composite of five elements has no order to sort by.
+  const anyStatus = page.locator("table[data-shape] tbody [data-testid='v3-status']").first();
+  await expect(anyStatus.locator("span")).toHaveCount(1);
+  // …and its word is in HIS vocabulary. Data-independent: whatever the seed
+  // holds, every row's status is one of these sixteen.
+  const SCREENING_WORDS = [
+    "Awaiting AI evaluation",
+    "Both incomplete",
+    "Incomplete decks",
+    "Incomplete decks, Edited",
+    "Incomplete contact details",
+    "Incomplete contact details, Edited",
+    "Contact details edited",
+    "Below threshold",
+    "Below threshold, Edited",
+    "Rejected",
+    "Complete",
+    "Complete, Edited",
+    "No response",
+    "Incomplete, Queried",
+    "AI Evaluated, Assigned",
+    "Archived",
+  ];
+  const words = await page.locator("table[data-shape] tbody [data-testid='v3-status']").allInnerTexts();
+  for (const w of words) {
+    expect(SCREENING_WORDS, `"${w}" is not in the client's 24-Sep vocabulary`).toContain(w.trim());
+  }
+
+  // The Shortlisted shape has NO Status column, so "sortable on all stat boxes"
+  // cannot be literal — there is nothing there to sort. Stated here so the next
+  // parity capture reads it as intended rather than filing it as a gap.
+  await tile(page, "Shortlisted").click();
+  await expect.poll(() => headers(page)).toEqual(V3_SHORTLISTED);
+  await expect(page.locator("table[data-shape] thead th", { hasText: /^Status$/ })).toHaveCount(0);
+  await tile(page, "Uploaded").click();
+
   // The report overlay still opens from the name, with the prototype's sections.
   await tile(page, "AI Evaluated").click();
   await expect.poll(() => headers(page)).toEqual(V3_DEFAULT);

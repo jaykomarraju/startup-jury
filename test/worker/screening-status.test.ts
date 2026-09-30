@@ -542,8 +542,16 @@ describe("Send to Query records the send, as a pending clarification", () => {
     });
     expect(res.status).toBe(200);
     const rows = (await queries("sc_stq_send")).results;
-    expect(rows).toHaveLength(2);
-    expect(rows.some((r) => r.questions === "Please send your phone number.")).toBe(true);
+    // ONE row, not two. This asserted two at integration, and two was the
+    // defect: `send-to-query` records an EMPTY `pending` clarification to put
+    // the deck on the list, and composing the letter is the second half of that
+    // same act, so it must FILL that row rather than insert beside it. Leaving
+    // both behind gives the founder a query nobody can answer, a second line on
+    // the Query screen, a `query_count` of 2 that `deckListRoute` reads, and a
+    // permanently-unanswered row the no-response sweep would archive the deck
+    // for. `e2e/query.spec.ts:176` asserts one row per founder and caught it.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].questions).toBe("Please send your phone number.");
   });
 
   it("is role-gated, and 404s an unknown deck", async () => {

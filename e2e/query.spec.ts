@@ -56,11 +56,23 @@ async function flaggedDeck(page: Page, label: string, missing: "founderPhone" | 
   // Clear one required detail — PATCH re-derives `missing_fields`…
   const patch = await page.request.patch(`/api/decks/${deckId}`, { data: { [missing]: "" } });
   expect(patch.ok(), await patch.text()).toBeTruthy();
-  // …and pull the deck into Manual Review, which the Query screen lists.
+  // …and pull the deck into Manual Review.
   const review = await page.request.post(`/api/decks/${deckId}/transition`, {
     data: { action: "send_to_review" },
   });
   expect(review.ok(), await review.text()).toBeTruthy();
+
+  // S2-SERVER — and SEND it to Query, which is now a recorded action. This used
+  // to be implicit: `manual_review` was one of `FLAG_STAGES`, so the Query
+  // screen listed the deck with nobody having decided anything. The client's
+  // feedback row 3 deletes that derivation — his reason being that a deck with
+  // incomplete contact details cannot be emailed, for want of contact details —
+  // so membership now needs the operator's click. This route is the click, and
+  // it mails nothing: it records a PENDING clarification, exactly as the
+  // prototype's own `upSendToQuery` does, and the compose-and-send below is
+  // unchanged.
+  const send = await page.request.post(`/api/decks/${deckId}/send-to-query`);
+  expect(send.ok(), await send.text()).toBeTruthy();
 
   return { deckId, name, email, area: missing === "city" ? "City" : "Phone" };
 }

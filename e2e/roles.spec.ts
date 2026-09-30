@@ -19,8 +19,11 @@ const INC_JURY = "rajesh.kumar@demo.startupjury.ai";
 
 test("admin creates a user in the Admin console and gets a temp password", async ({ page }) => {
   await login(page, INC_ADMIN);
-  // W1-C: the Admin console is now the prototype's sixteen-section overlay and
-  // opens on Scoring framework. The user roster is its Team & roles section.
+  // W1-C: the Admin console is now the prototype's full-screen overlay and opens
+  // on Scoring framework. It ships eleven of the prototype's sixteen sections —
+  // `pc` removed 24-Sep, the Sign-up group hidden the same day (row 11) — but
+  // `tm` is in neither set, so nothing here moved. The user roster is its
+  // Team & roles section.
   await page.goto("/app/admin?section=tm");
   await expect(page.getByRole("heading", { name: "Admin console" })).toBeVisible();
   await expect(page.getByTestId("admin-section-title")).toHaveText("Team & roles");

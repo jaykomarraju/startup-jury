@@ -113,10 +113,72 @@ test.beforeAll(async ({ baseURL }) => {
     expect(res.status(), `${action}: ${await res.text()}`).toBe(200);
   }
   expect(await status()).toBe("intro");
+
+  // The programme's document checklist — "Bank account details" MANDATORY.
+  //
+  // This used to be a side effect of the admin's console journey below, which
+  // S2-ADMIN skipped on 30-Sep because feedback row 11 hides the Sign-up group
+  // and its `?section=sudocs` deep link now resolves elsewhere. Skipping the
+  // configurator silently un-configured the two tests that depend on it: the
+  // `doc-badge-awaiting` assertions at :181 and :210 read a checklist nobody
+  // had set, and "Bank account details" was simply not required.
+  //
+  // So the CONFIGURATION moves here, to the fixture, where it belongs — the
+  // dependent tests are about the sign-up workspace, not about how the
+  // checklist got written. The console journey stays skipped and returns with
+  // the group.
+  //
+  // `GST / tax registration` is pinned false for the reason the console test
+  // records: another spec toggles that org-wide row mid-run, and two FILES
+  // share one dev-server D1 across workers, so leaving it inherited makes this
+  // assertion depend on a row this spec does not own.
+  const current = (await (
+    await su.get(`/api/signup-config/documents?programId=${PROGRAM.id}`)
+  ).json()) as {
+    inherited: boolean;
+    items: { id: string; name: string; note: string | null; mandatory: boolean }[];
+  };
+  const saved = await su.put("/api/signup-config/documents", {
+    data: {
+      programId: PROGRAM.id,
+      cohortId: null,
+      applyTo: "new",
+      items: current.items.map((i) => ({
+        // `undefined` when INHERITED. A programme with no list of its own is
+        // shown the org-wide default's items carrying the DEFAULT's ids, and
+        // sending those back is refused as another scope's rows —
+        // `unknown_document`, 400. Omitting the id is what makes the server
+        // create the programme's own. Filed in plan §9 with its one-line fix.
+        id: current.inherited ? undefined : i.id,
+        name: i.name,
+        note: i.note,
+        mandatory:
+          i.name === "Bank account details"
+            ? true
+            : i.name === "GST / tax registration"
+              ? false
+              : i.mandatory,
+      })),
+    },
+  });
+  expect(saved.status(), await saved.text()).toBe(200);
+
   await su.dispose();
 });
 
-test("admin — the programme's checklist asks for four documents, and its template is mapped", async ({ page }) => {
+// SKIPPED 30-Sep-2026 · feedback row 11 (S2-ADMIN). This is the one test in this
+// file that configures the sign-up from inside the Admin console, and both
+// screens it opens — `?section=sudocs` and `?section=suagr` — are in the Sign-up
+// group, hidden until the next release. The deep links now resolve to Scoring
+// framework, so the first `admin-section-title` assertion would fail.
+//
+// Skipped rather than rewritten against the API alone: what it walks IS the
+// admin's console journey, and it comes back with the group. The configuration
+// this test writes is exercised by the pipeline half of this file through
+// `/api/signup-config/documents` directly, and the two screens keep
+// `test/client/signupConfig.test.tsx` and `test/client/agreements.test.tsx`.
+// Un-skip alongside `e2e/signup-config.spec.ts` and `e2e/agreements.spec.ts`.
+test.skip("admin — the programme's checklist asks for four documents, and its template is mapped", async ({ page }) => {
   test.setTimeout(120_000);
   await login(page, ADMIN);
   await page.goto("/app/admin?section=sudocs");

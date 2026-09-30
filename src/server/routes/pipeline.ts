@@ -776,11 +776,35 @@ pipeline.post(
     }
 
     const ts = new Date().toISOString();
-    const queryId = `qry_${crypto.randomUUID()}`;
+
+    // RESOLVE the placeholder if there is one, rather than inserting beside it.
+    //
+    // `POST /decks/:id/send-to-query` (S2-SERVER, feedback row 3) records an
+    // EMPTY `pending` row to put the deck on the Query list — membership is the
+    // operator's click now, not a derivation. Composing the letter is the
+    // second half of that same act, so it must fill that row in. Always
+    // inserting leaves the placeholder behind for good: an empty query nobody
+    // can answer, a second line on the Query screen, a `query_count` of 2 that
+    // `deckListRoute` reads, and a permanently-unanswered row that the
+    // no-response sweep would eventually archive the deck for.
+    //
+    // Found by `e2e/query.spec.ts:176`, which asserts one row per founder and
+    // received two.
+    const placeholder = await c.env.DB.prepare(
+      "SELECT id FROM queries WHERE deck_id = ? AND founder_response IS NULL AND questions = '' " +
+        "ORDER BY created_at ASC LIMIT 1",
+    )
+      .bind(deck.id)
+      .first<{ id: string }>();
+    const queryId = placeholder?.id ?? `qry_${crypto.randomUUID()}`;
     const stmts: D1PreparedStatement[] = [
-      c.env.DB.prepare(
-        "INSERT INTO queries (id, deck_id, questions, email_status, created_at) VALUES (?, ?, ?, 'sent', ?)",
-      ).bind(queryId, deck.id, questions, ts),
+      placeholder
+        ? c.env.DB.prepare(
+            "UPDATE queries SET questions = ?, email_status = 'sent', created_at = ? WHERE id = ?",
+          ).bind(questions, ts, queryId)
+        : c.env.DB.prepare(
+            "INSERT INTO queries (id, deck_id, questions, email_status, created_at) VALUES (?, ?, ?, 'sent', ?)",
+          ).bind(queryId, deck.id, questions, ts),
     ];
     // Raising a query on a deck still in manual review marks it Incomplete
     // (Manual Review → Incomplete → Query founder in the flow diagram).
