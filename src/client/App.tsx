@@ -77,9 +77,13 @@ function NavRoute() {
   if (navId === "myparams") return <MyParamsPage />;
   if (navId === "setup") return <SetupWizard />;
 
-  // Admin console (W1-C) — the prototype's full-screen sixteen-section overlay,
-  // not an in-shell page. My account and Buy credits (Session 4) are
-  // edition-agnostic; the nav guard already gates admin/superuser vs all roles.
+  // Admin console (W1-C) — the prototype's full-screen overlay, not an in-shell
+  // page. It ships ELEVEN of the prototype's sixteen sections: `pc` Price
+  // configuration was removed on 24-Sep and the whole Sign-up group (four
+  // sections) is hidden until the next release — see `admin/sections.ts`. Both
+  // sets of screens still exist and their routes are untouched. My account and
+  // Buy credits (Session 4) are edition-agnostic; the nav guard already gates
+  // admin/superuser vs all roles.
   if (navId === "admin") return <AdminConsole />;
   if (navId === "account") return <AccountPage />;
   if (navId === "billing") return <BuyCreditsPage />;

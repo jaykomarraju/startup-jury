@@ -4,9 +4,11 @@ import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom";
 import { AdminConsole } from "../../src/client/routes/admin/AdminConsole";
 import {
   ADMIN_SECTION_GROUPS,
+  HIDDEN_ADMIN_GROUPS,
   adminGroupsFor,
   adminSections,
   adminSectionsFor,
+  allAdminSections,
   canOpenAdminConsole,
   canSeeAdminGroup,
   pendingInviteCount,
@@ -27,13 +29,24 @@ vi.mock("../../src/client/api", async (importOriginal) => ({
 /**
  * The customer console's sections, in rail order.
  *
- * FIFTEEN, not the prototype's sixteen. "Price configuration" was removed on
- * 24-Sep-2026 at the client's instruction — *"why would a user set their
- * price"* — because the catalogue is one document serving every customer, not
- * a per-workspace setting. `AISJ_ICAdmin_V6`'s console map still carries
- * `pc:'Price configuration'`, so this list deliberately DIVERGES from the
- * prototype and the next parity capture will try to restore it; the reasoning
- * is at the foot of `src/client/routes/admin/sections.ts`.
+ * ELEVEN, not the prototype's sixteen, after two instructions on 24-Sep-2026.
+ *
+ * — "Price configuration" was REMOVED — *"why would a user set their price"* —
+ *   because the catalogue is one document serving every customer, not a
+ *   per-workspace setting.
+ *
+ * — The whole **Sign-up group** was HIDDEN — *"we want to introduce this in the
+ *   next release"* (feedback row 11). That is four sections, not one: the
+ *   prototype's "Sign-up" is a rail GROUP heading, so "Required documents",
+ *   "Agreements library", "Authorised signatories" and the edition's fourth
+ *   ("Seat capacity" / "Fund Deployment") all leave the rail together.
+ *
+ * `AISJ_ICAdmin_V6`'s console map still carries all sixteen, so this list
+ * deliberately DIVERGES from the prototype and the next parity capture will try
+ * to restore them; the reasoning is in `src/client/routes/admin/sections.ts`.
+ * The five screens themselves are all still built, mounted and route-backed —
+ * `allAdminSections()` is the list of what exists, and the registry-coverage
+ * test below walks it.
  */
 const INCUBATOR_LABELS = [
   "Scoring framework",
@@ -43,14 +56,18 @@ const INCUBATOR_LABELS = [
   "Team & roles",
   "CRM sync",
   "Credits & billing",
-  "Required documents",
-  "Agreements library",
-  "Authorised signatories",
-  "Seat capacity",
   "Notifications",
   "Audit log",
   "User access",
   "Branding",
+];
+
+/** The four labels row 11 takes out of the rail, in the incubator edition. */
+const HIDDEN_LABELS = [
+  "Required documents",
+  "Agreements library",
+  "Authorised signatories",
+  "Seat capacity",
 ];
 
 function user(edition: Edition, role: Role): AuthUser {
@@ -87,7 +104,7 @@ function renderConsole(
   );
 }
 
-// The console mounts a fifteen-item rail, lucide's icon set and two fetches per
+// The console mounts an eleven-item rail, lucide's icon set and two fetches per
 // render, and several of these tests mount it more than once. On a machine
 // running the wave's other sessions in parallel that comfortably exceeds the
 // 5 s default, so the whole file gets the same accommodation `e2e/parity.spec.ts`
@@ -107,13 +124,13 @@ beforeEach(() => {
 // ── The registry ─────────────────────────────────────────────────────────────
 
 describe("admin console section registry", () => {
-  it("declares fifteen sections in four groups per edition", () => {
+  it("declares eleven sections in three groups per edition", () => {
     for (const edition of ["incubator", "vc"] as Edition[]) {
       const sections = adminSections(edition);
-      expect(sections).toHaveLength(15);
+      expect(sections).toHaveLength(11);
       expect([...new Set(sections.map((s) => s.group))]).toEqual(ADMIN_SECTION_GROUPS);
       // Ids are unique and each section names its owning session and contents.
-      expect(new Set(sections.map((s) => s.id)).size).toBe(15);
+      expect(new Set(sections.map((s) => s.id)).size).toBe(11);
       for (const s of sections) {
         expect(s.placeholder.owner).toMatch(/^W\d/);
         expect(s.placeholder.contents.length).toBeGreaterThan(0);
@@ -123,7 +140,9 @@ describe("admin console section registry", () => {
 
   it("carries the prototype's exact section ids and labels", () => {
     // Transcribed from admin/_scripts.js:20-22 — `secs` (rail order) and `lbls`
-    // (the label the title bar shows). The VC build differs in one entry.
+    // (the label the title bar shows), less `pc` and less the Sign-up group.
+    // Both editions now ship the SAME eleven: the one entry the two builds
+    // disagreed about, `secs[11]`, was the Sign-up group's fourth section.
     const SECS = [
       ["fw", "Scoring framework"],
       ["wt", "Area weights"],
@@ -132,24 +151,32 @@ describe("admin console section registry", () => {
       ["tm", "Team & roles"],
       ["crm", "CRM sync"],
       ["bl", "Credits & billing"],
-      ["sudocs", "Required documents"],
-      ["suagr", "Agreements library"],
-      ["susign", "Authorised signatories"],
-      ["suseat", "Seat capacity"],
       ["nt", "Notifications"],
       ["al", "Audit log"],
       ["uc", "User access"],
       ["br", "Branding"],
     ];
     expect(adminSections("incubator").map((s) => [s.id, s.label])).toEqual(SECS);
-    expect(adminSections("vc").map((s) => [s.id, s.label])).toEqual(
-      SECS.map((row) => (row[0] === "suseat" ? ["sufund", "Fund Deployment"] : row)),
-    );
+    expect(adminSections("vc").map((s) => [s.id, s.label])).toEqual(SECS);
   });
 
-  it("swaps Seat capacity for Fund Deployment in the VC edition", () => {
-    const inc = adminSections("incubator").map((s) => s.id);
-    const vc = adminSections("vc").map((s) => s.id);
+  // REWRITTEN for row 11, not renumbered: the edition swap had no subject left
+  // in the shipped rail. `suseat` / `sufund` was the ONLY difference between the
+  // incubator and VC consoles, and it sat in the group that is now hidden — so
+  // the two editions' rails became identical, which is the first half below.
+  // The swap itself is not gone, it is unshipped, so the second half asserts it
+  // in the registry that survives. If this test were deleted instead, un-hiding
+  // the group next release would restore four sections with no coverage that the
+  // fourth is edition-resolved at all.
+  it("ships one rail for both editions, and keeps the edition swap in the hidden registry", () => {
+    expect(adminSections("vc").map((s) => s.id)).toEqual(adminSections("incubator").map((s) => s.id));
+    for (const id of ["suseat", "sufund"]) {
+      expect(adminSections("incubator").map((s) => s.id)).not.toContain(id);
+      expect(adminSections("vc").map((s) => s.id)).not.toContain(id);
+    }
+
+    const inc = allAdminSections("incubator").map((s) => s.id);
+    const vc = allAdminSections("vc").map((s) => s.id);
     expect(inc).toContain("suseat");
     expect(inc).not.toContain("sufund");
     expect(vc).toContain("sufund");
@@ -159,30 +186,96 @@ describe("admin console section registry", () => {
     expect(inc.filter((id) => id !== "suseat")).toEqual(vc.filter((id) => id !== "sufund"));
   });
 
+  // The whole point of row 11 being "hidden" and not "removed": he wants it back
+  // next release. This is the test that fails if a later session tidies the four
+  // section objects away, and it is the one to read before un-hiding.
+  it("hides the Sign-up group without deleting it", () => {
+    expect(HIDDEN_ADMIN_GROUPS).toEqual(["Sign-up"]);
+    expect(ADMIN_SECTION_GROUPS).not.toContain("Sign-up");
+
+    for (const edition of ["incubator", "vc"] as Edition[]) {
+      const all = allAdminSections(edition);
+      // Fifteen exist, eleven ship, and the four that do not are the group's.
+      expect(all).toHaveLength(15);
+      const hidden = all.filter((s) => s.group === "Sign-up");
+      expect(hidden).toHaveLength(4);
+      expect(adminSections(edition)).toHaveLength(11);
+      expect(adminSections(edition).map((s) => s.id)).toEqual(
+        all.filter((s) => s.group !== "Sign-up").map((s) => s.id),
+      );
+      // Each hidden section still has a body mounted at its id — removing a
+      // rail entry is not unmounting a screen, and it is not unguarding a route.
+      for (const section of hidden) {
+        expect(SECTION_COMPONENTS).toHaveProperty(section.id);
+        expect(section.label).toBeTruthy();
+        expect(section.placeholder.contents.length).toBeGreaterThan(0);
+      }
+    }
+    expect(allAdminSections("incubator").filter((s) => s.group === "Sign-up").map((s) => s.id)).toEqual([
+      "sudocs",
+      "suagr",
+      "susign",
+      "suseat",
+    ]);
+  });
+
   it("opens on Scoring framework and falls back for an unknown or hidden section", () => {
     expect(resolveAdminSection("incubator", "admin", null).id).toBe("fw");
     expect(resolveAdminSection("incubator", "admin", "nope").id).toBe("fw");
     expect(resolveAdminSection("incubator", "admin", "al").id).toBe("al");
-    // A role that cannot see the Sign-up group never lands inside it.
-    expect(resolveAdminSection("incubator", "program_manager", "sudocs").id).toBe("fw");
+    // Nobody lands inside the hidden Sign-up group — and the role that matters
+    // here is the ADMIN, for whom `?section=sudocs` resolved until 24-Sep.
+    // Somebody's bookmark must reach Scoring framework, not a blank pane.
+    for (const role of ["admin", "superuser", "program_manager"] as Role[]) {
+      for (const id of ["sudocs", "suagr", "susign", "suseat"]) {
+        expect(resolveAdminSection("incubator", role, id).id).toBe("fw");
+      }
+      expect(resolveAdminSection("vc", role, "sufund").id).toBe("fw");
+    }
   });
 
-  it("restricts the Sign-up group to admin and superuser", () => {
+  // REWRITTEN for row 11, not renumbered. This test used to prove the group was
+  // admin-only, an assertion that goes vacuous once the group is hidden from
+  // everyone: `canSeeAdminGroup(role, "Sign-up")` is now false for all eleven
+  // roles, superuser included. So it inverts — it proves the group reaches NO
+  // role, and that the admin-only rule survives underneath for the day it is
+  // un-hidden (`ADMIN_ONLY_GROUPS` still names it).
+  it("withholds the Sign-up group from every role, superuser included", () => {
+    const ALL_ROLES: Role[] = [
+      "superuser",
+      "admin",
+      "program_manager",
+      "program_associate",
+      "jury",
+      "partner",
+      "ic_member",
+      "associate",
+      "analyst",
+    ];
+    for (const role of ALL_ROLES) {
+      expect(canSeeAdminGroup(role, "Sign-up")).toBe(false);
+      for (const edition of ["incubator", "vc"] as Edition[]) {
+        expect(adminGroupsFor(edition, role)).toEqual(["Evaluation", "Organisation", "System"]);
+        expect(adminSectionsFor(edition, role).map((s) => s.group)).not.toContain("Sign-up");
+        for (const id of ["sudocs", "suagr", "susign", "suseat", "sufund"]) {
+          expect(adminSectionsFor(edition, role).map((s) => s.id)).not.toContain(id);
+        }
+      }
+    }
+
+    // Reachability itself is unchanged — hiding a group is not a permission
+    // change, and the console still opens for exactly two roles.
     for (const role of ["admin", "superuser"] as Role[]) {
       expect(canOpenAdminConsole(role)).toBe(true);
-      expect(canSeeAdminGroup(role, "Sign-up")).toBe(true);
       expect(adminGroupsFor("incubator", role)).toEqual(ADMIN_SECTION_GROUPS);
-      expect(adminSectionsFor("incubator", role)).toHaveLength(15);
+      expect(adminSectionsFor("incubator", role)).toHaveLength(11);
     }
     for (const role of ["program_manager", "program_associate", "jury"] as Role[]) {
       expect(canOpenAdminConsole(role)).toBe(false);
-      expect(canSeeAdminGroup(role, "Sign-up")).toBe(false);
-      expect(adminGroupsFor("incubator", role)).toEqual(["Evaluation", "Organisation", "System"]);
-      expect(adminSectionsFor("incubator", role).map((s) => s.group)).not.toContain("Sign-up");
-    }
-    for (const role of ["partner", "ic_member", "associate", "analyst"] as Role[]) {
-      expect(canSeeAdminGroup(role, "Sign-up")).toBe(false);
-      expect(adminSectionsFor("vc", role).map((s) => s.id)).not.toContain("sufund");
+      // And the SAME eleven: what the group's hiding does NOT do is change how
+      // many sections a non-admin would see, because a non-admin never saw the
+      // group. That is why `e2e/admin-console.spec.ts` still asserts 11 there.
+      expect(adminSectionsFor("incubator", role)).toHaveLength(11);
     }
   });
 
@@ -206,7 +299,7 @@ describe("admin console section registry", () => {
 // ── The shell ────────────────────────────────────────────────────────────────
 
 describe("AdminConsole shell", () => {
-  it("renders the overlay header, the four rail groups and all fifteen sections", () => {
+  it("renders the overlay header, the three rail groups and all eleven sections", () => {
     renderConsole(user("incubator", "admin"));
 
     const overlay = screen.getByRole("dialog", { name: "Admin console" });
@@ -217,7 +310,7 @@ describe("AdminConsole shell", () => {
     for (const group of ADMIN_SECTION_GROUPS) {
       expect(within(rail()).getByText(group)).toBeInTheDocument();
     }
-    // One query, not fifteen: the rail's buttons in order are the fifteen
+    // One query, not eleven: the rail's buttons in order are the eleven
     // sections and nothing else.
     const railLabels = within(rail())
       .getAllByRole("button")
@@ -225,24 +318,55 @@ describe("AdminConsole shell", () => {
     expect(railLabels).toEqual(INCUBATOR_LABELS);
   });
 
-  it("shows Fund Deployment instead of Seat capacity for the VC edition", () => {
+  // REWRITTEN for row 11, not renumbered: this asserted the edition swap, whose
+  // subject (`suseat` / `sufund`) is the hidden group's fourth section. Neither
+  // half of the swap is in either rail now, so what is left worth asserting is
+  // that the VC rail is the incubator rail — the two consoles differed in that
+  // one entry and nothing else.
+  it("draws the same rail in both editions, with neither half of the edition swap", () => {
     renderConsole(user("vc", "admin"));
-    expect(within(rail()).getByRole("button", { name: /Fund Deployment/ })).toBeInTheDocument();
+    expect(within(rail()).queryByRole("button", { name: /Fund Deployment/ })).toBeNull();
     expect(within(rail()).queryByRole("button", { name: /Seat capacity/ })).toBeNull();
+    expect(
+      within(rail())
+        .getAllByRole("button")
+        .map((b) => (b.textContent ?? "").trim()),
+    ).toEqual(INCUBATOR_LABELS);
   });
 
-  it("hides the whole Sign-up group from a role that is not admin or superuser", () => {
-    // The nav guard already stops these roles at /app/admin; this asserts the
-    // console itself does not hand them the group if reachability ever widens.
-    renderConsole(user("incubator", "program_manager"));
+  // REWRITTEN for row 11, not renumbered: "from a role that is not admin or
+  // superuser" is now every role, so the strongest version of this test drives
+  // the console as the ADMIN — the one principal who DID see the group, and the
+  // only one whose rail moved on 24-Sep.
+  it("hides the whole Sign-up group from the admin, group heading and all four sections", () => {
+    renderConsole(user("incubator", "admin"));
     expect(within(rail()).queryByText("Sign-up")).toBeNull();
-    for (const label of ["Required documents", "Agreements library", "Authorised signatories", "Seat capacity"]) {
+    for (const label of HIDDEN_LABELS) {
       expect(within(rail()).queryByRole("button", { name: new RegExp(label) })).toBeNull();
     }
     // The other three groups are untouched.
     expect(within(rail()).getByText("Evaluation")).toBeInTheDocument();
     expect(within(rail()).getByText("Organisation")).toBeInTheDocument();
     expect(within(rail()).getByText("System")).toBeInTheDocument();
+  });
+
+  it("sends an admin's bookmarked Sign-up deep link to Scoring framework", () => {
+    // The link resolved for an admin until 24-Sep. A blank pane is the failure
+    // this guards — the same thing `?section=pc` guards after its removal.
+    renderConsole(user("incubator", "admin"), "/app/admin?section=susign");
+    expect(screen.getByTestId("admin-section-title")).toHaveTextContent("Scoring framework");
+    expect(screen.queryByText("Authorised signatories")).toBeNull();
+  });
+
+  it("still withholds the group from a role that is not admin or superuser", () => {
+    // The nav guard already stops these roles at /app/admin; this asserts the
+    // console itself does not hand them the group if reachability ever widens
+    // (F0038) — which has to keep holding once the group is un-hidden.
+    renderConsole(user("incubator", "program_manager"));
+    expect(within(rail()).queryByText("Sign-up")).toBeNull();
+    for (const label of HIDDEN_LABELS) {
+      expect(within(rail()).queryByRole("button", { name: new RegExp(label) })).toBeNull();
+    }
   });
 
   it("opens on Scoring framework and switches section through ?section=", () => {
@@ -270,9 +394,14 @@ describe("AdminConsole shell", () => {
   // than delete the property, Wave 5 integration split it in two: the milestone
   // is now asserted directly, and the placeholder component is still covered by
   // driving it with a section rather than by waiting for one to be missing.
+  //
+  // Row 11 moved this from `adminSections` to `allAdminSections`: the milestone
+  // is that every section HAS a body, and filtering the hidden group out first
+  // would let the four Sign-up screens be unmounted without a single test
+  // noticing — exactly the drift "hidden, not deleted" is meant to stop.
   it("has a body for every section — the console is complete", () => {
     for (const edition of ["incubator", "vc"] as const) {
-      const unbuilt = adminSections(edition)
+      const unbuilt = allAdminSections(edition)
         .filter((s) => !SECTION_COMPONENTS[s.id])
         .map((s) => `${s.id} (${s.placeholder.owner})`);
       expect(unbuilt, `${edition}: sections still on the placeholder`).toEqual([]);
@@ -283,7 +412,7 @@ describe("AdminConsole shell", () => {
     // Rendered on its own against real section metadata: mounting the whole
     // console only re-proves the routing the test above already covers, and no
     // section is unbuilt any more to route to.
-    for (const section of adminSections("incubator")) {
+    for (const section of allAdminSections("incubator")) {
       const view = render(<SectionPlaceholder section={section} />);
       expect(screen.getByRole("heading", { level: 2, name: section.heading })).toBeInTheDocument();
       expect(screen.getAllByText(section.placeholder.owner).length).toBeGreaterThan(0);

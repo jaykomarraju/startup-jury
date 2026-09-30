@@ -52,15 +52,21 @@ import {
 
 /**
  * The Admin console — a full-screen overlay with a 46 px header, a 210 px olive
- * section rail of four groups and sixteen sections, and a section title bar
+ * section rail of three groups and eleven sections, and a section title bar
  * carrying the program/cohort context chip and the global Save changes button.
+ *
+ * Three and eleven, not the prototype's four and sixteen: `pc` Price
+ * configuration was removed on 24-Sep and the Sign-up group — its heading and
+ * all four of its sections — was hidden the same day for the next release
+ * (feedback row 11). Both screens survive; `sections.ts` holds the reasoning and
+ * `allAdminSections()` still returns the fifteen that exist.
  *
  * The prototype builds this as a separate document injected into an iframe by
  * `openAdmin()` (`_scripts.js:2618-2642`): a modal surface at the top of the
  * z-order with its own olive chrome, a body scroll lock and Escape-to-close.
  * The repo previously rendered a single flat user-CRUD page in the app shell
  * instead — a different navigation model with fifteen sections missing. This
- * restores the console's shape; Waves 2–5 fill the sections.
+ * restores the console's shape; Waves 2–5 filled the sections.
  *
  * ── Colour ──────────────────────────────────────────────────────────────────
  * The console document carries its OWN palette: `--olive:#4A6644`, materially
