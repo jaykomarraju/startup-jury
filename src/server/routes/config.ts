@@ -889,6 +889,8 @@ interface ScoringFrameworkBody {
   compositeFormula: string;
   aiWeightPct: number;
   shortlistThreshold: number;
+  /** 0082 — the AI screening gate. See the validation below for why it is separate. */
+  aiGateThreshold: number;
   showThreeScoreView: boolean;
   showScoreDrift: boolean;
   includeAiEvidence: boolean;
@@ -974,6 +976,16 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
   if (!Number.isFinite(shortlistThreshold) || shortlistThreshold < 0 || shortlistThreshold > 10) {
     return c.json({ error: "invalid_shortlist_threshold" }, 400);
   }
+  // 0082 — the AI SCREENING gate, validated separately from the shortlist floor
+  // above it and refused with its own error code. They are two numbers on one
+  // 0–10 scale that answer different questions ("does this deck stay in the
+  // funnel?" vs "does this deck clear the bar?"), and a shared code would send
+  // an admin who mistyped one to look at the other. The range mirrors the
+  // column's own CHECK, so the route and the database agree.
+  const aiGateThreshold = Number(body.aiGateThreshold ?? before.aiGateThreshold);
+  if (!Number.isFinite(aiGateThreshold) || aiGateThreshold < 0 || aiGateThreshold > 10) {
+    return c.json({ error: "invalid_ai_gate_threshold" }, 400);
+  }
   const scoreScale = body.scoreScale ?? before.scoreScale;
   if (!(SCORE_SCALES as readonly string[]).includes(scoreScale)) {
     return c.json({ error: "invalid_score_scale" }, 400);
@@ -1000,6 +1012,7 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
     compositeFormula: compositeFormula as ScoringSettings["compositeFormula"],
     aiWeightPct,
     shortlistThreshold,
+    aiGateThreshold,
     showThreeScoreView: flag(body.showThreeScoreView, before.showThreeScoreView),
     showScoreDrift: flag(body.showScoreDrift, before.showScoreDrift),
     includeAiEvidence: flag(body.includeAiEvidence, before.includeAiEvidence),
@@ -1019,7 +1032,7 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
       "UPDATE org_scoring_settings SET ai_pre_scoring_enabled = ?, auto_clarification = ?, " +
         "show_ai_score_to_jury = ?, require_override_rationale = ?, override_rationale_delta = ?, " +
         "jury_sees_peer_scores = ?, score_scale = ?, composite_formula = ?, ai_weight_pct = ?, " +
-        "shortlist_threshold = ?, show_three_score_view = ?, show_score_drift = ?, " +
+        "shortlist_threshold = ?, ai_gate_threshold = ?, show_three_score_view = ?, show_score_drift = ?, " +
         "include_ai_evidence = ?, intro_call_ai_prompts = ?, updated_at = datetime('now'), " +
         "updated_by = ? WHERE edition = ?",
     ).bind(
@@ -1033,6 +1046,7 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
       after.compositeFormula,
       after.aiWeightPct,
       after.shortlistThreshold,
+      after.aiGateThreshold,
       after.showThreeScoreView ? 1 : 0,
       after.showScoreDrift ? 1 : 0,
       after.includeAiEvidence ? 1 : 0,

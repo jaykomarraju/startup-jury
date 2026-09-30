@@ -68,7 +68,13 @@ export const incubatorPipeline: PipelineConfig = {
       label: "Founder responded",
       roles: ["founder", "program_associate", "admin", "superuser"],
     },
-    // AI gate (score > 5 enforced in the evaluation service, not here).
+    // The AI screening gate is applied in the evaluation service, not here
+    // (`server/ai/evaluate.ts`, against `org_scoring_settings.ai_gate_threshold`
+    // — at or above the org's number, migration 0082). What reaches this stage
+    // since the screening wave is EVERY evaluated deck, cleared or not: a
+    // sub-gate deck used to be moved straight to `rejected` by the evaluator,
+    // and now waits here with its low score. See `reject_ai_gate` below.
+    //
     // The PM (decision maker) can assign jury; the associate (executor) does the
     // day-to-day assignment.
     {
@@ -78,6 +84,16 @@ export const incubatorPipeline: PipelineConfig = {
       label: "Assign jury",
       roles: ["program_manager", "program_associate", "admin", "superuser"],
     },
+    // "Reject (below AI gate)" — and the label is only now TRUE of the decks it
+    // is offered on. This transition has always started at `ai_evaluated`, and
+    // `ai/evaluate.ts` used to send every sub-gate deck straight to `rejected`,
+    // so the only decks that could ever reach this button were decks that had
+    // PASSED the gate. It was an accurate description of nothing.
+    //
+    // Now it is the client's own Reject: his "Below threshold" row (`D ∧ C ∧ ¬R`)
+    // draws exactly one active action, and this is it, on a deck that is still
+    // here to act on. His "Rejected" row then offers Archive, which the
+    // `rejected -> archived` entry below already serves.
     {
       from: "ai_evaluated",
       to: "rejected",

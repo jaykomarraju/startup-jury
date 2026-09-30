@@ -105,7 +105,15 @@ describe("evaluateDeck (mocked Anthropic)", () => {
     expect(evt).toMatchObject({ from_stage: "pending_ai", to_stage: "ai_evaluated", action: "ai_evaluated" });
   });
 
-  it("rejects a deck at or below the gate", async () => {
+  // S2-SERVER (screening wave) — this was "rejects a deck at or below the gate"
+  // and asserted `status === "rejected"`. A sub-gate INCUBATOR deck is no longer
+  // moved by the evaluator: it lands at `ai_evaluated` carrying its low score
+  // and waits, which is what makes the client's "Below threshold" status
+  // reachable and what finally makes `reject_ai_gate`'s label true of the decks
+  // it is offered on. The verdict is still recorded — `gatePassed` is false and
+  // the `evaluations` row reads `below_gate` — so nothing forgets that the gate
+  // was not cleared; rejecting is now a decision somebody makes.
+  it("leaves a sub-gate deck waiting at the gate instead of rejecting it", async () => {
     const id = "test_fail";
     await seedDeck(id);
     const keys = await incParamKeys();
@@ -121,7 +129,14 @@ describe("evaluateDeck (mocked Anthropic)", () => {
       }),
     });
     expect(result.gatePassed).toBe(false);
-    expect(result.status).toBe("rejected");
+    expect(result.status).toBe("ai_evaluated");
+    // The reason is on the evaluation row, which is where it was already.
+    const verdict = await env.DB.prepare(
+      "SELECT verdict FROM evaluations WHERE deck_id = ? AND evaluator_id IS NULL",
+    )
+      .bind(id)
+      .first<{ verdict: string }>();
+    expect(verdict!.verdict).toBe("below_gate");
   });
 
   it("re-evaluation is idempotent (no duplicate score rows)", async () => {

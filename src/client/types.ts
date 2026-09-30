@@ -128,6 +128,22 @@ export interface DeckView {
    * the `edit_contact` pipeline event. Absent means never.
    */
   contactEditedAt?: string;
+  /**
+   * Screening row 7 — when **Send to Assign** was clicked, from the
+   * `send_to_assign` pipeline-event marker. The one authority for the
+   * `AI Evaluated, Assigned` sink, and deliberately NOT the `assigned` stage
+   * (which can be reached with `assignedTo` still empty — the client's own
+   * row 12 Foul). Absent means the click has not happened.
+   */
+  sendToAssignAt?: string;
+  /**
+   * The client's open item — the newest clarification letter's timestamp, and
+   * whether the founder answered it. `queried` above is a boolean over the
+   * whole history and throws away exactly what the five-working-day
+   * "no response" rule needs (`isQueryUnanswered`, `shared/deckStats.ts`).
+   */
+  lastQueryAt?: string;
+  lastQueryAnswered?: boolean;
   /** Transitions the current user may perform from this deck's stage. */
   actions?: DeckAction[];
 }

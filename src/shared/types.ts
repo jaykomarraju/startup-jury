@@ -247,6 +247,8 @@ export interface OrgScoringSettingsRow {
   composite_formula: CompositeFormula;
   ai_weight_pct: number;
   shortlist_threshold: number;
+  /** Migration 0082 — the AI SCREENING gate, not the shortlist floor above it. */
+  ai_gate_threshold: number;
   show_three_score_view: number;
   show_score_drift: number;
   include_ai_evidence: number;
