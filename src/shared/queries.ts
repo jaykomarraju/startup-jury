@@ -46,7 +46,8 @@ export interface ResponseArea {
 }
 
 export interface AreaSource {
-  missingFields?: IntakeField[];
+  /** `readonly` so callers holding a `readonly` list (deckStats.ts) can pass it. */
+  missingFields?: readonly IntakeField[];
   missingSections?: string[];
   weakAreas?: string[];
 }
@@ -430,7 +431,7 @@ export interface DeckCompleteness {
   /** `decks.complete` — the AI's own "I could read and score this deck". */
   complete?: boolean;
   /** `decks.missing_fields` — required intake columns nobody supplied. */
-  missingFields?: IntakeField[];
+  missingFields?: readonly IntakeField[];
 }
 
 /**
@@ -466,6 +467,78 @@ export const ASSIGNABLE_STAGES: Record<Edition, readonly string[]> = {
 /** Which of the two screens a deck belongs on — at most one, by construction. */
 export type DeckListRoute = "assign" | "query" | null;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ROW 3 — Query membership stops being a derivation (S0-VOCAB, 2026-09-30)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The client's 24-Sep feedback row 3: decks with **incomplete decks or
+// incomplete contact details must not reach the Query screen automatically** —
+// only when Send to Query is clicked. That reverses V4-ROUTE's Query half (the
+// block above) while leaving its Assign half exactly as it is.
+//
+// **His stated reason is a live defect, not a preference.**
+// `POST /api/decks/:id/queries` emails a deck that has no contact details —
+// `src/server/routes/pipeline.ts:770-771`:
+//
+//     const toEmail = deck.founder_email ?? uploader?.email ?? "founder@portal.local";
+//
+// — and then mints a resubmit token and sends both to that placeholder address.
+// `deckListRoute` is what puts such a deck on the Query list with no click, and
+// the Dashboard arms the button from the same function. Fixing the send is
+// F-FOUL's and S2-SERVER's; stopping the automatic arming is this function's.
+//
+// ── What changes, precisely ────────────────────────────────────────────────
+//   · `ASSIGNABLE_STAGES ∧ ¬isDeckComplete` no longer returns "query". It
+//     returns null: the deck is off Assign, and it reaches Query when an
+//     operator sends it there.
+//   · `FLAG_STAGES` (`incomplete`, `manual_review`) no longer auto-lists. Stage
+//     `incomplete` IS the AI's "this deck is incomplete" verdict, so listing on
+//     it is precisely the derivation row 3 deletes.
+//   · `areasNeedingResponse(deck) > 0` no longer auto-lists.
+//   · The ASSIGN ARM IS UNTOUCHED, and so is the rule that keeps a deck with
+//     query history listed while it is still in intake or review (F0214).
+//
+// ── Why this lands as a flag and not as a deletion ────────────────────────
+// The plan (`docs/plan_screening.md` §6.1) gives row 3's two halves to
+// S2-SERVER (`routes/decks.ts`'s `?list=` post-filter) and S2-DASH
+// (`DashboardPage.tsx`'s enablement), and gives S0-VOCAB only the shared
+// function. Three test files pin the OLD derivation and none of them belong to
+// this session — `test/worker/route-partition.test.ts` (which is V4-ROUTE's
+// negative control and belongs to no session in this wave),
+// `test/worker/ai-complete.test.ts:153` and the Query/Assign client mocks. So
+// both readings live here, the new one is fully specified and pinned in
+// `test/unit/queries.test.ts`, and turning it on is the ONE-LINE flip below —
+// owned by the session that also owns the tests that move with it. This is the
+// same mechanism `ASSIGNED_TILE_RETAINED_PENDING_Q7` used in `deckStats.ts`,
+// and that constant's own history is the argument for it: a decided question
+// parked on a named constant got answered and flipped in one line.
+//
+// **The reading is not open. Only the flip is.** See the handoff note for the
+// measured list of tests that move.
+
+/**
+ * Is Query membership still DERIVED from incompleteness?
+ *
+ * `true` is today's behaviour and the shipped default. **S2-SERVER sets
+ * `incubator` to `false`** in the same change that makes `?list=query` mean
+ * "queried", and re-owns the test files listed above. Individual callers can
+ * override it per call with `opts.deriveQuery`.
+ *
+ * **Per edition, and that is the point of the shape** — every other list rule
+ * in this file is already keyed on edition (`QUERYABLE_STAGES`,
+ * `AWAITING_REVIEW_STAGES`, `ASSIGNABLE_STAGES`). His screening spec is the
+ * INCUBATOR's: his §5 matrix, his §4 diagram and his stat boxes are all the
+ * incubator superuser Dashboard, `ASSIGNABLE_STAGES.vc` is already empty, and
+ * VC's auto-listing rules came from the VC prototype (F0274 — an unflagged deal
+ * in analyst scoring is not listed; F0341 — five working days). Flipping both
+ * editions on one boolean would delete those without him having asked. Whether
+ * row 3 reaches the VC Query screen is a question in the handoff note.
+ */
+export const QUERY_MEMBERSHIP_IS_DERIVED_PENDING_ROW3: Record<Edition, boolean> = {
+  incubator: true,
+  vc: true,
+};
+
 /**
  * The one authority for items 6 and 7.
  *
@@ -480,23 +553,57 @@ export type DeckListRoute = "assign" | "query" | null;
  * `queried` is `decks.query_count > 0`, i.e. `DeckView.queried`: the decision
  * needs only whether the deck has been queried, never when or by whom, which
  * is what lets the server evaluate it on the row it already selects.
+ *
+ * **Row 3 (2026-09-30) removes the Query arm's derivation** — see the block
+ * above. `opts.deriveQuery` selects the reading; the Assign arm is the same
+ * under both, and under BOTH readings the two lists still partition, which is
+ * what the return type is for.
  */
 export function deckListRoute(
   deck: AreaSource & DeckCompleteness & { statusId?: string },
   edition: Edition,
-  opts: { queried: boolean },
+  opts: { queried: boolean; deriveQuery?: boolean },
 ): DeckListRoute {
   const stage = deck.statusId ?? "";
-  // The evaluated population — the client's "stat box of Evaluated".
+  const derive = opts.deriveQuery ?? QUERY_MEMBERSHIP_IS_DERIVED_PENDING_ROW3[edition];
+
+  // ── The ASSIGN arm. Identical under both readings. ───────────────────────
+  // The client's "stat box of Evaluated": a deck marked complete belongs on
+  // Assign, and one that is not marked complete is off it. What row 3 takes
+  // away is only the CONCLUSION that being off Assign puts it on Query.
   if (ASSIGNABLE_STAGES[edition].includes(stage)) {
-    return isDeckComplete(deck) ? "assign" : "query";
+    if (isDeckComplete(deck)) return "assign";
+    // The pre-row-3 conclusion, retained behind the flag: off Assign therefore
+    // on Query. This is the arm the client's row 3 names first.
+    if (derive) return "query";
   }
-  const queryable = QUERYABLE_STAGES[edition].includes(stage);
-  if (opts.queried) {
-    return queryable || AWAITING_REVIEW_STAGES[edition].includes(stage) ? "query" : null;
-  }
-  if (!queryable) return null;
+
+  // ── The QUERY arm. ───────────────────────────────────────────────────────
+  // Sent to Query, and still inside the stage window that keeps it listed.
+  if (opts.queried) return isQueryStageWindow(deck, edition) ? "query" : null;
+  // Row 3: nothing else reaches the Query screen. A deck that is incomplete and
+  // has not been sent is on neither list — and it is not lost, because the
+  // uploaded status screen draws EVERY deck, always ("all decks, including
+  // archived, stay on the uploaded status screen", his own display rule).
+  if (!derive) return null;
+
+  // ── The rest of the pre-row-3 derivation. ────────────────────────────────
+  if (!QUERYABLE_STAGES[edition].includes(stage)) return null;
   return FLAG_STAGES.includes(stage) || areasNeedingResponse(deck).length > 0 ? "query" : null;
+}
+
+/**
+ * The stage window a QUERIED deck stays listed in: still being screened, or
+ * waiting for review to pick the founder's answer back up.
+ *
+ * Unchanged by row 3 and named only so both arms above can share it. It is what
+ * keeps F0214 true — an answered query stays listed as Responded with the
+ * founder's answer one click away, instead of vanishing the moment they reply —
+ * and what drops a deal that has moved past screening.
+ */
+function isQueryStageWindow(deck: { statusId?: string }, edition: Edition): boolean {
+  const stage = deck.statusId ?? "";
+  return QUERYABLE_STAGES[edition].includes(stage) || AWAITING_REVIEW_STAGES[edition].includes(stage);
 }
 
 /**
@@ -515,13 +622,17 @@ export function deckListRoute(
  *    in analyst scoring with nothing flagged is not "AI-flagged" (F0274).
  *  • V4-ROUTE — **and an evaluated deck that is marked incomplete**, which is
  *    the other half of the invariant: it is off Assign, so it has to be here.
+ *    **This is the bullet row 3 deletes** — under the new reading such a deck is
+ *    on neither list until Send to Query is clicked. See
+ *    `QUERY_MEMBERSHIP_IS_DERIVED_PENDING_ROW3`.
  */
 export function isQueryListed(
   deck: AreaSource & DeckCompleteness & { statusId?: string },
   queries: QueryRecord[],
   edition: Edition,
+  opts: { deriveQuery?: boolean } = {},
 ): boolean {
-  return deckListRoute(deck, edition, { queried: queries.length > 0 }) === "query";
+  return deckListRoute(deck, edition, { queried: queries.length > 0, ...opts }) === "query";
 }
 
 /** The list's column set, in order, as the prototype's `.qtbl` heads it. */
