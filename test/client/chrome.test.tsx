@@ -10,6 +10,8 @@ import {
   TOAST_DURATION_MS,
   Sidebar,
 } from "../../src/client/components";
+import { MoveToDashboardBar } from "../../src/client/components/AppShell";
+import type { Edition, Role } from "../../src/shared/roles";
 
 /**
  * W1-A — the chrome primitives the prototype builds every screen out of:
@@ -242,5 +244,70 @@ describe("Sidebar chrome", () => {
     fireEvent.click(reports);
     expect(reports).toHaveAttribute("aria-expanded", "false");
     expect(JSON.parse(localStorage.getItem("sj.sidebar.collapsed")!)).toContain("Reports");
+  });
+});
+
+// ── "Move to Dashboard" ──────────────────────────────────────────────────────
+
+/**
+ * S2-CHROME · 24-Sep feedback row 10 — the one control the client asks for on
+ * EVERY sidebar screen, and the only "universal" in his document: *"Move to
+ * Dashboard unaffected by any status"*. It reads no deck, so there is no status
+ * for it to be affected BY — the tests below pin that shape rather than a
+ * status matrix. Where it lives, and why it is not inside each screen's `.tbr`
+ * strip, is in the comment block above <MoveToDashboardBar>.
+ */
+function renderBar(path: string, edition: Edition, role: Role) {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <MoveToDashboardBar edition={edition} role={role} />
+    </MemoryRouter>,
+  );
+}
+
+describe("Move to Dashboard (feedback row 10)", () => {
+  it("is on every screen the role can reach, and is a real link to the Dashboard", () => {
+    for (const slug of ["query", "assign", "evaluate", "upload", "archive", "myparams", "help"]) {
+      const { unmount } = renderBar(`/app/${slug}`, "incubator", "admin");
+      const link = screen.getByRole("link", { name: "Move to Dashboard" });
+      expect(link).toHaveAttribute("href", "/app/alldecks");
+      // `.tbb`, so it is the same 11px toolbar action as every other one.
+      expect(link).toHaveClass("tbb");
+      unmount();
+    }
+  });
+
+  it("is hidden on the Dashboard itself, where it would point at the current screen", () => {
+    renderBar("/app/alldecks", "incubator", "admin");
+    expect(screen.queryByRole("link", { name: /Move to/ })).toBeNull();
+  });
+
+  it("names the destination as that role sees it, never a screen their sidebar lacks", () => {
+    // The four staff roles read "Dashboard" (V3 item 18 · R1-DASH)…
+    for (const role of ["superuser", "admin", "program_manager", "program_associate"] as const) {
+      const { unmount } = renderBar("/app/query", "incubator", role);
+      expect(screen.getByRole("link", { name: "Move to Dashboard" })).toBeInTheDocument();
+      unmount();
+    }
+    // …the jury keeps "My Pipeline" (their own screen, prototype-sourced)…
+    const jury = renderBar("/app/jassigned", "incubator", "jury");
+    expect(screen.getByRole("link", { name: "Move to My Pipeline" })).toBeInTheDocument();
+    jury.unmount();
+    // …and the whole VC edition keeps "All decks".
+    for (const role of ["partner", "ic_member", "associate", "analyst"] as const) {
+      const { unmount } = renderBar("/app/evaluate", "vc", role);
+      expect(screen.getByRole("link", { name: "Move to All decks" })).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("is absent in the founder portal, which cannot reach the staff register at all", () => {
+    renderBar("/app/founder-queries", "incubator", "founder");
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("is not rendered on /app itself, which only ever redirects", () => {
+    renderBar("/app", "incubator", "admin");
+    expect(screen.queryByRole("link")).toBeNull();
   });
 });
