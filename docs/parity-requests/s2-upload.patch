@@ -1,0 +1,117 @@
+diff --git a/e2e/upload.spec.ts b/e2e/upload.spec.ts
+index 2dec0ff..fc503e3 100644
+--- a/e2e/upload.spec.ts
++++ b/e2e/upload.spec.ts
+@@ -46,7 +46,7 @@ async function bodyLinks(page: Page): Promise<string[]> {
+   return page.locator("main a[href^='/app/']").evaluateAll((as) => as.map((a) => a.getAttribute("href") ?? ""));
+ }
+ 
+-test("a PA uploads a deck, reviews it, sends it to Query — and is never shown a control they cannot use", async ({
++test("a PA uploads a deck, reviews it, reaches Query — and is never shown a control they cannot use", async ({
+   page,
+   request,
+ }) => {
+@@ -109,37 +109,37 @@ test("a PA uploads a deck, reviews it, sends it to Query — and is never shown
+   for (const href of await bodyLinks(page)) links.add(href);
+   expect([...links]).toContain("/app/evaluate");
+ 
+-  // 4 · back to review: flag a parameter and send the founder query.
++  // 4 · back to review — and the browser-level proof of feedback row 2.
++  //
++  // S2-UPLOAD deleted the per-row "Mark incomplete" button ("not required since
++  // we have automated this part"). This walk used to CLICK it to open
++  // "Parameters needing response", and that is the only reason the panel opened
++  // here: `isFlaggable` now fires solely for a deck the AI itself landed at
++  // `incomplete`, and this dev server has no ANTHROPIC_API_KEY, so no deck of
++  // this spec's ever leaves `pending_ai`. The panel is therefore UNREACHABLE in
++  // this environment by design, not by regression — asserted below so a future
++  // session does not read its absence as a bug.
++  //
++  // The flag → Send to Query → real query seam moved to
++  // test/client/upload.test.tsx ("raises the founder query end to end"), which
++  // can hand the screen an AI verdict that this server cannot produce;
++  // `POST /api/decks/:id/queries` itself is covered in test/worker/pipeline.test.ts
++  // (both the incubator and the VC arm) and the letter's wording in
++  // test/unit/uploadReview.test.ts. What only a browser can still prove — that
++  // /app/query is a screen this PA may actually open — is kept, by walking
++  // there directly instead of through the panel's "View in Query →".
+   await page.getByRole("button", { name: "← Back to review" }).click();
+   await row.click();
+   await expect(page.getByText(/AI evaluation is queued and will retry/i)).toBeVisible();
+   await expect(page.getByText(/AI key missing or rejected/i)).toBeVisible();
+-  await row.getByRole("button", { name: "Mark incomplete" }).click();
+-  const panel = page.getByTestId("up-flag-panel");
+-  await expect(panel.getByText("Parameters needing response")).toBeVisible();
+-  await panel.getByRole("checkbox", { name: "Flag Traction & Validation" }).check();
+-  await panel.getByRole("group", { name: "Traction & Validation signal" }).getByRole("button", { name: "Absent" }).click();
+-  await panel.getByRole("button", { name: "Send to Query" }).click();
+-  await expect(panel.getByText("✓ Sent to Query")).toBeVisible();
++  await expect(page.getByRole("button", { name: /Mark incomplete/i })).toHaveCount(0);
++  await expect(page.getByTestId("up-flag-panel")).toHaveCount(0);
+   for (const href of await bodyLinks(page)) links.add(href);
+ 
+-  // The query really exists, and says what was flagged.
+-  const deckId = await page.evaluate(async (deckName) => {
+-    const r = await fetch("/api/decks");
+-    const { decks } = (await r.json()) as { decks: { id: string; name: string }[] };
+-    return decks.find((d) => d.name === deckName)?.id ?? null;
+-  }, name);
+-  expect(deckId).not.toBeNull();
+-  const queries = await page.evaluate(
+-    async (id) => (await (await fetch(`/api/decks/${id}/queries`)).json()) as { queries: { questions: string }[] },
+-    deckId,
+-  );
+-  expect(queries.queries).toHaveLength(1);
+-  expect(queries.queries[0].questions).toContain("• Traction & Validation (absent)");
+-
+-  await panel.getByRole("link", { name: "View in Query →" }).click();
+-  await page.waitForURL(/\/app\/query$/);
++  await page.goto("/app/query");
++  await expect(page.locator("h1").first()).toBeVisible({ timeout: 30_000 });
+   await expect(page.getByText(NOT_AVAILABLE)).toHaveCount(0);
++  links.add("/app/query");
+ 
+   // Every link the Upload screens offered this PA leads somewhere they may go.
+   for (const href of links) {
+diff --git a/e2e/vc-intake.spec.ts b/e2e/vc-intake.spec.ts
+index 47d5eb9..0cee54e 100644
+--- a/e2e/vc-intake.spec.ts
++++ b/e2e/vc-intake.spec.ts
+@@ -188,23 +188,21 @@ test("a VC analyst stages two decks, uploads one, flags a VC parameter and sends
+   await page.getByRole("button", { name: "View uploaded details →" }).click();
+   await page.getByRole("button", { name: "← Back to review" }).click();
+   await row.click();
+-  await row.getByRole("button", { name: "Mark incomplete" }).click();
+-  const panel = page.getByTestId("up-flag-panel");
+-  await panel.getByRole("checkbox", { name: `Flag ${area}` }).check();
+-  await panel.getByRole("group", { name: `${area} signal` }).getByRole("button", { name: "Weak signal" }).click();
+-  await panel.getByRole("button", { name: "Send to Query" }).click();
+-  await expect(panel.getByText("✓ Sent to Query")).toBeVisible({ timeout: 20_000 });
+-
+-  const queries = await page.evaluate(
+-    async (id) => (await (await fetch(`/api/decks/${id}/queries`)).json()) as { queries: { questions: string }[] },
+-    ids[0],
+-  );
+-  expect(queries.queries).toHaveLength(1);
+-  expect(queries.queries[0].questions).toContain(`• ${area} (weak signal)`);
+ 
+-  // The VC Query list holds it — a deal being re-scored with a query on record.
+-  await panel.getByRole("link", { name: "View in Query →" }).click();
+-  await page.waitForURL(/\/app\/query$/);
++  // S2-UPLOAD deleted the "Mark incomplete" button (feedback row 2), which is
++  // what this walk clicked to open "Parameters needing response". The panel now
++  // opens only for a deck the AI landed at `incomplete`, and this dev server has
++  // no AI key — so it is unreachable here, and asserted absent rather than left
++  // to fail. Row 2 is shipped in BOTH editions: the button lived in the shared
++  // `ReviewScreen`, and the client's "not required since we have automated this
++  // part" is not an incubator-only statement. See the handoff's client question.
++  // The flag → Send to Query seam is re-covered in test/client/upload.test.tsx,
++  // and the VC arm of POST /api/decks/:id/queries in test/worker/pipeline.test.ts:508.
++  await expect(page.getByRole("button", { name: /Mark incomplete/i })).toHaveCount(0);
++  await expect(page.getByTestId("up-flag-panel")).toHaveCount(0);
++
++  // The VC Query screen is still a screen this associate may open.
++  await page.goto("/app/query");
+   await expect(page.getByRole("checkbox", { name: `Select ${keep}` })).toBeVisible({ timeout: 30_000 });
+   await expect(page.getByText(NOT_AVAILABLE)).toHaveCount(0);
+ });

@@ -18,40 +18,56 @@ import type { StagedDeck } from "./types";
  * "Review uploaded decks" (`#up-review`, F0191 / F0221 / F0222 / F0305 / F0316).
  *
  * The confirm-before-spend step. Staged decks live only in the browser: the
- * operator ticks the ones to upload, marks any incomplete (excluded), previews
- * each, and sees what the batch will consume before "Upload selected decks" —
- * the ONLY control here that reaches the upload routes, which reserve the
- * credits where they always have. Nothing on this screen spends.
+ * operator ticks the ones to upload, previews each, and sees what the batch
+ * will consume before "Upload selected decks" — the ONLY control here that
+ * reaches the upload routes, which reserve the credits where they always have.
+ * Nothing on this screen spends.
  *
- * Once a deck is uploaded it stays on the list and follows the AI. A deck that
- * comes back Incomplete, or one the operator marks incomplete, opens
- * "Parameters needing response": flag the areas the founder must clarify, tag
- * each Weak signal / Absent, and Send to Query raises the founder query.
+ * Once a deck is uploaded it stays on the list and follows the AI. A deck the
+ * AI brings back Incomplete opens "Parameters needing response": flag the areas
+ * the founder must clarify, tag each Weak signal / Absent, and Send to Query
+ * raises the founder query.
+ *
+ * S2-UPLOAD (feedback row 2) DELETED the per-row "Mark incomplete" button —
+ * "not required since we have automated this part". It set a browser-only
+ * `markedIncomplete` flag that reached no route; with it gone the field is
+ * deleted from `StagedDeck` outright rather than left permanently false, and
+ * with it the three things it alone drove: the "Marked incomplete" filter, the
+ * `N marked incomplete (excluded)` footer count, and the row's Incomplete
+ * badge. It was never the server's `flag_incomplete` transition (manual_review
+ * -> incomplete, `src/pipeline/incubator.ts:59`), which is untouched and still
+ * fires automatically when a query is raised (`routes/pipeline.ts:788`).
  */
 
-export type ReviewFilter = "all" | "ready" | "incomplete" | "uploaded";
+export type ReviewFilter = "all" | "ready" | "uploaded";
 
 const FILTER_LABELS: Record<ReviewFilter, string> = {
   all: "All decks",
   ready: "Ready to upload",
-  incomplete: "Marked incomplete",
   uploaded: "Uploaded",
 };
 
-/** A staged deck the upload button may send. */
+/**
+ * A staged deck the upload button may send. The staged issues still hold a deck
+ * back; the operator no longer can, which is row 2's point — a deck they would
+ * have marked incomplete is now one they simply leave unticked.
+ */
 export function isUploadable(d: StagedDeck): boolean {
-  return !d.deckId && !d.markedIncomplete && !!d.file && d.issues.length === 0;
+  return !d.deckId && !!d.file && d.issues.length === 0;
 }
 
-/** An uploaded deck whose parameters may be flagged for the founder. */
+/**
+ * An uploaded deck whose parameters may be flagged for the founder. Since row 2
+ * this fires only for a deck the AI ITSELF landed at `incomplete` — the
+ * automation the client is invoking — and for no deck the operator declared.
+ */
 export function isFlaggable(d: StagedDeck): boolean {
   if (!d.deckId) return false;
-  return d.markedIncomplete || (d.deck ? intakeStatusOf(d.deck) === "incomplete" : false);
+  return d.deck ? intakeStatusOf(d.deck) === "incomplete" : false;
 }
 
 function matchesFilter(d: StagedDeck, f: ReviewFilter): boolean {
   if (f === "ready") return isUploadable(d);
-  if (f === "incomplete") return d.markedIncomplete;
   if (f === "uploaded") return !!d.deckId;
   return true;
 }
@@ -62,7 +78,6 @@ export interface ReviewScreenProps {
   onSelect: (key: string) => void;
   onToggle: (key: string) => void;
   onToggleAll: () => void;
-  onMarkIncomplete: (key: string) => void;
   onBack: () => void;
   onUpload: () => void;
   busy: boolean;
@@ -89,7 +104,6 @@ export function ReviewScreen(props: ReviewScreenProps) {
   const selectable = staged.filter(isUploadable);
   const allChecked = selectable.length > 0 && selectable.every((d) => d.checked);
   const selected = selectable.filter((d) => d.checked).length;
-  const excluded = staged.filter((d) => !d.deckId && d.markedIncomplete).length;
   const active = staged.find((d) => d.key === activeKey) ?? null;
 
   return (
@@ -97,7 +111,7 @@ export function ReviewScreen(props: ReviewScreenProps) {
       <div className="tb">
         <div className="min-w-0">
           <h1 className="tbt">Review uploaded decks</h1>
-          <div className="tbs">Select decks to confirm upload · mark any incomplete · then click Upload</div>
+          <div className="tbs">Select decks to confirm upload · preview each · then click Upload</div>
         </div>
         <div className="tbr relative">
           <button type="button" className="tbb" onClick={props.onBack}>
@@ -192,7 +206,7 @@ export function ReviewScreen(props: ReviewScreenProps) {
               <strong className="text-olive-dk">
                 {selected} deck{selected === 1 ? "" : "s"}
               </strong>{" "}
-              ready to upload · {excluded} marked incomplete (excluded) ·{" "}
+              ready to upload ·{" "}
               <span data-testid="up-cost-preview">
                 Cost <strong className="text-olive-dk">{creditsLabel(preview.credits)}</strong>
                 {preview.balance !== null && (
@@ -270,7 +284,6 @@ function DeckRow({
   active,
   onSelect,
   onToggle,
-  onMarkIncomplete,
 }: { deck: StagedDeck; active: boolean } & ReviewScreenProps) {
   const status = d.deck ? intakeStatusOf(d.deck) : null;
   const flagged = Object.keys(d.flags).length;
@@ -303,57 +316,44 @@ function DeckRow({
           {(d.issues.length > 0 || d.intakeFlag || d.uploadError) && (
             <span className={`${BADGE} bg-warn-lt font-medium text-warn`}>⚠ Review</span>
           )}
-          {d.markedIncomplete && (
+          {d.deckId && status === "complete" && <span className={`${BADGE} bg-green-lt font-medium text-green`}>Complete</span>}
+          {d.deckId && status === "incomplete" && (
             <span className={`${BADGE} bg-warn-lt font-medium text-warn`}>
               Incomplete{flagged ? ` · ${flagged} area${flagged === 1 ? "" : "s"}` : ""}
             </span>
           )}
-          {d.deckId && status === "complete" && <span className={`${BADGE} bg-green-lt font-medium text-green`}>Complete</span>}
-          {d.deckId && status === "incomplete" && !d.markedIncomplete && (
-            <span className={`${BADGE} bg-warn-lt font-medium text-warn`}>Incomplete</span>
-          )}
           {d.sentToQuery && <span className={`${BADGE} bg-green-lt font-medium text-green`}>Sent to Query</span>}
         </div>
       </div>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onMarkIncomplete(d.key);
-        }}
-        className={`shrink-0 whitespace-nowrap rounded-[5px] border px-[9px] py-[3px] text-[10px] transition-colors ${
-          d.markedIncomplete
-            ? "border-warn bg-warn-lt font-medium text-warn"
-            : "border-stone-dk bg-surface text-fg-muted hover:border-warn hover:bg-warn-lt hover:text-warn"
-        }`}
-      >
-        {d.markedIncomplete ? "⚠ Incomplete" : "Mark incomplete"}
-      </button>
     </li>
   );
 }
 
 function Preview({ deck: d, ...props }: { deck: StagedDeck } & ReviewScreenProps) {
   const status = d.deck ? intakeStatusOf(d.deck) : null;
-  const statusText = d.markedIncomplete
-    ? "Incomplete"
-    : d.deckId
-      ? status
-        ? INTAKE_STATUS_LABELS[status]
-        : "Uploaded"
-      : d.issues.length
-        ? "Refused"
-        : "Ready";
-  const warn =
-    d.markedIncomplete && !d.deckId
-      ? "Marked incomplete — this deck will be excluded from upload until corrected."
-      : d.issues.length
-        ? `Review suggested — ${d.issues.map((i) => STAGED_ISSUE_LABELS[i]).join("; ")}.`
-        : d.uploadError
-          ? `Review suggested — ${d.uploadError}`
-          : d.intakeFlag && d.intakeNote
-            ? `Review suggested — ${d.intakeFlag === "duplicate" ? "Possible duplicate" : "Returning company"}: ${d.intakeNote}`
-            : null;
+  const statusText = d.deckId
+    ? status
+      ? INTAKE_STATUS_LABELS[status]
+      : "Uploaded"
+    : d.issues.length
+      ? "Refused"
+      : "Ready";
+  const warn = d.issues.length
+    ? `Review suggested — ${d.issues.map((i) => STAGED_ISSUE_LABELS[i]).join("; ")}.`
+    : d.uploadError
+      ? `Review suggested — ${d.uploadError}`
+      : d.intakeFlag && d.intakeNote
+        ? `Review suggested — ${d.intakeFlag === "duplicate" ? "Possible duplicate" : "Returning company"}: ${d.intakeNote}`
+        : null;
+  /**
+   * The note below the banner explaining why there is no flag panel yet. It was
+   * gated on `markedIncomplete && !deckId` — the operator having declared an
+   * intent they can no longer declare. Re-gated on the signals that survive:
+   * the same three the row's "⚠ Review" badge reads. It answers the question a
+   * warned, not-yet-uploaded deck raises, and stays silent on a clean one
+   * rather than captioning every staged row.
+   */
+  const queryNeedsUpload = !d.deckId && (d.issues.length > 0 || !!d.intakeFlag || !!d.uploadError);
 
   return (
     <div data-testid="up-preview">
@@ -366,7 +366,7 @@ function Preview({ deck: d, ...props }: { deck: StagedDeck } & ReviewScreenProps
           <Meta
             label="Status"
             value={statusText}
-            tone={d.markedIncomplete || status === "incomplete" || d.issues.length ? "amber" : "green"}
+            tone={status === "incomplete" || d.issues.length ? "amber" : "green"}
           />
         </div>
       </div>
@@ -385,7 +385,7 @@ function Preview({ deck: d, ...props }: { deck: StagedDeck } & ReviewScreenProps
       )}
 
       {isFlaggable(d) && props.canQuery && <FlagPanel deck={d} {...props} />}
-      {d.markedIncomplete && !d.deckId && props.canQuery && (
+      {queryNeedsUpload && props.canQuery && (
         <p className="mb-2.5 text-[11px] text-fg-muted">
           Parameters are flagged, and the founder queried, once a deck is uploaded — a query needs the deck on file.
         </p>

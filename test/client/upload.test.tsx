@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/rea
 import { MemoryRouter } from "react-router-dom";
 import { UploadPage } from "../../src/client/routes/UploadPage";
 import { ResultsScreen, RESULTS_COLUMNS } from "../../src/client/routes/upload/ResultsScreen";
+import { ReviewScreen, isFlaggable, isUploadable } from "../../src/client/routes/upload/ReviewScreen";
 import { AuthContext, type AuthUser } from "../../src/client/auth/AuthProvider";
 import type { StagedDeck } from "../../src/client/routes/upload/types";
 import { catalogueFixture } from "../unit/fixtures/accountCatalogue";
@@ -40,6 +41,14 @@ const FORWARD = /^(?:Evaluate & )?Go to [Dd]ashboard →$/;
 
 let trialDecks = 3;
 let balance = 42;
+/**
+ * What `GET /api/decks` answers the review screen's AI poll. Empty by default,
+ * which is what a 404 amounted to before — the poll's own catch swallowed it —
+ * so no existing test changes. The row-2 seam test fills it, because since row
+ * 2 the AI's own verdict is the only thing that opens the flag panel, and this
+ * is the only place a jsdom test can put that verdict.
+ */
+let pollDecks: unknown[] = [];
 
 function json(status: number, body: unknown) {
   return Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
@@ -48,6 +57,7 @@ function json(status: number, body: unknown) {
 beforeEach(() => {
   trialDecks = 3;
   balance = 42;
+  pollDecks = [];
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL) => {
@@ -83,6 +93,8 @@ beforeEach(() => {
       // assert nothing was uploaded assert on the CALLS, so a reachable route
       // does not weaken them.
       if (url === "/api/decks/upload") return json(200, { deckId: "deck_uploaded", evaluated: true });
+      if (url === "/api/decks") return json(200, { decks: pollDecks });
+      if (url === "/api/decks/deck_uploaded/queries") return json(200, { ok: true, queryId: "q_1", emailStatus: "sent" });
       if (url === "/api/parameters") return json(200, { parameters: [{ key: "traction", name: "Traction & Validation", weight: 10 }] });
       return json(404, { error: "not_found" });
     }),
@@ -209,16 +221,226 @@ describe("Review uploaded decks", () => {
     expect(screen.getByTestId("up-cost-preview")).toHaveTextContent("Cost 1 credit · balance 42 → 41");
     expect(screen.getByRole("button", { name: "Upload selected decks" })).toBeEnabled();
 
-    // Marking it incomplete excludes it from the batch.
-    fireEvent.click(within(row).getByRole("button", { name: "Mark incomplete" }));
+    // Unticking takes it back out of the batch — since row 2 removed "Mark
+    // incomplete", unticking is the only way to hold a staged deck back.
+    fireEvent.click(within(row).getByRole("checkbox", { name: "Select PayRoute" }));
     expect(screen.getByTestId("up-sel-label")).toHaveTextContent("0 decks selected");
-    expect(screen.getByText(/this deck will be excluded from upload until corrected/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Upload selected decks" })).toBeDisabled();
 
     // Nothing reached an upload route.
     const calls = (fetch as unknown as { mock: { calls: [RequestInfo][] } }).mock.calls.map(([u]) => String(u));
     expect(calls.some((u) => u.startsWith("/api/decks/"))).toBe(false);
     expect(document.body.textContent).not.toMatch(MONEY);
+  });
+
+  /**
+   * Feedback row 2 — "Mark incomplete" is deleted, "not required since we have
+   * automated this part". Asserted three ways because the button had three
+   * dependents, and a deletion that leaves any of them behind leaves chrome
+   * that can never fire: the control, the filter option whose predicate it was
+   * the only writer of, and the footer count it alone incremented.
+   */
+  it("offers no Mark incomplete control, filter option or excluded count (row 2)", async () => {
+    mount(PA());
+    const deck = new File([new Uint8Array([37, 80, 68, 70])], "PayRoute.pdf", { type: "application/pdf" });
+    fireEvent.change(screen.getByLabelText("Choose a pitch deck"), { target: { files: [deck] } });
+    fireEvent.click(await screen.findByRole("button", { name: FORWARD }));
+
+    const row = screen.getByTestId("up-deck-row");
+    expect(within(row).queryByRole("button", { name: /incomplete/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Mark incomplete/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    expect(screen.getAllByRole("menuitemradio").map((o) => o.textContent)).toEqual([
+      "All decks",
+      "Ready to upload",
+      "Uploaded",
+    ]);
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "All decks" }));
+
+    // A staged deck is uploadable on the file alone now — no hand-set flag.
+    fireEvent.click(within(row).getByRole("checkbox", { name: "Select PayRoute" }));
+    expect(screen.getByTestId("up-bottom-summary")).not.toHaveTextContent(/marked incomplete/i);
+    expect(screen.getByTestId("up-bottom-summary")).toHaveTextContent("1 deck ready to upload");
+  });
+
+  /**
+   * What row 2 leaves behind, at the level that can still reach it. The
+   * "Parameters needing response" panel used to be opened by the deleted
+   * button; the surviving opener is the AI landing the deck at `incomplete`,
+   * which is the automation the client is invoking. Driven as a PROP because
+   * a jsdom upload cannot make the AI return a verdict — and the e2e specs
+   * that covered this path opened the panel with the button, so without this
+   * test the panel's only coverage leaves with it (see the handoff note).
+   */
+  describe("the flag panel after row 2", () => {
+    function reviewProps(deck: Partial<StagedDeck>, onSend = vi.fn()) {
+      const staged: StagedDeck[] = [
+        {
+          key: "k",
+          name: "PayRoute",
+          fileName: "payroute.pdf",
+          size: 1000,
+          file: null,
+          source: "bulk",
+          context: { sector: "FinTech" },
+          slides: 10,
+          issues: [],
+          checked: false,
+          flags: {},
+          sentToQuery: false,
+          ...deck,
+        },
+      ];
+      return {
+        staged,
+        activeKey: "k",
+        onSelect: vi.fn(),
+        onToggle: vi.fn(),
+        onToggleAll: vi.fn(),
+        onBack: vi.fn(),
+        onUpload: vi.fn(),
+        busy: false,
+        preview: { decks: 1, credits: 1, balance: 42, balanceAfter: 41, shortfall: 0, affordable: true },
+        error: null,
+        canBuy: false,
+        parameters: ["Traction & Validation"],
+        canQuery: true,
+        onFlag: vi.fn(),
+        onSignal: vi.fn(),
+        onSend,
+        sending: null,
+        sendError: null,
+        renderDetails: () => null,
+      };
+    }
+
+    it("opens for a deck the AI landed at Incomplete, with nothing clicked first", () => {
+      const onSend = vi.fn();
+      const props = reviewProps(
+        { deckId: "deck_1", deck: { id: "deck_1", name: "PayRoute", statusId: "ai_evaluated", missingFields: ["founderEmail"] } },
+        onSend,
+      );
+      expect(isFlaggable(props.staged[0])).toBe(true);
+      render(
+        <MemoryRouter>
+          <ReviewScreen {...props} />
+        </MemoryRouter>,
+      );
+      const panel = screen.getByTestId("up-flag-panel");
+      expect(within(panel).getByText("Parameters needing response")).toBeInTheDocument();
+      expect(within(panel).getByRole("checkbox", { name: "Flag Traction & Validation" })).toBeInTheDocument();
+      // No flag yet, so no send — the panel's own precondition, unchanged.
+      expect(within(panel).getByText("Flag at least one parameter to send a query.")).toBeInTheDocument();
+      expect(within(panel).queryByRole("button", { name: "Send to Query" })).toBeNull();
+    });
+
+    it("sends the query once an area is flagged", () => {
+      const onSend = vi.fn();
+      const props = reviewProps(
+        {
+          deckId: "deck_1",
+          deck: { id: "deck_1", name: "PayRoute", statusId: "ai_evaluated", missingFields: ["founderEmail"] },
+          flags: { "Traction & Validation": "absent" },
+        },
+        onSend,
+      );
+      render(
+        <MemoryRouter>
+          <ReviewScreen {...props} />
+        </MemoryRouter>,
+      );
+      const panel = screen.getByTestId("up-flag-panel");
+      expect(within(panel).getByText("1 parameter flagged · these appear on the founder clarification form")).toBeInTheDocument();
+      fireEvent.click(within(panel).getByRole("button", { name: "Send to Query" }));
+      expect(onSend).toHaveBeenCalledWith("k");
+      // The row carries the flagged-area count that the deleted button's badge used to.
+      expect(within(screen.getByTestId("up-deck-row")).getByText("Incomplete · 1 area")).toBeInTheDocument();
+    });
+
+    it("stays shut while the AI is still reading, and for a deck it found Complete", () => {
+      for (const deck of [
+        { id: "deck_1", name: "PayRoute", statusId: "pending_ai", missingFields: ["founderEmail" as const] },
+        { id: "deck_1", name: "PayRoute", statusId: "ai_evaluated", missingFields: [] },
+      ]) {
+        const props = reviewProps({ deckId: "deck_1", deck });
+        expect(isFlaggable(props.staged[0])).toBe(false);
+        const { unmount } = render(
+          <MemoryRouter>
+            <ReviewScreen {...props} />
+          </MemoryRouter>,
+        );
+        expect(screen.queryByTestId("up-flag-panel")).toBeNull();
+        unmount();
+      }
+    });
+
+    it("tells the operator why a warned, not-yet-uploaded deck has no panel", () => {
+      const warned = reviewProps({ issues: ["too_large"] });
+      expect(isUploadable(warned.staged[0])).toBe(false);
+      const { unmount } = render(
+        <MemoryRouter>
+          <ReviewScreen {...warned} />
+        </MemoryRouter>,
+      );
+      expect(screen.queryByTestId("up-flag-panel")).toBeNull();
+      expect(screen.getByText(/a query needs the deck on file/)).toBeInTheDocument();
+      unmount();
+
+      // ...and stays silent on a clean staged deck rather than captioning every
+      // row with an answer to a question that deck does not raise.
+      const clean = reviewProps({ file: new File([new Uint8Array([37, 80, 68, 70])], "payroute.pdf") });
+      expect(isUploadable(clean.staged[0])).toBe(true);
+      render(
+        <MemoryRouter>
+          <ReviewScreen {...clean} />
+        </MemoryRouter>,
+      );
+      expect(screen.getByTestId("up-preview")).toBeInTheDocument();
+      expect(screen.queryByText(/a query needs the deck on file/)).toBeNull();
+    });
+
+    /**
+     * The whole seam, through the real screen: upload → the AI comes back
+     * Incomplete → the panel opens with no operator click → Send to Query
+     * reaches `POST /api/decks/:id/queries` with the composed letter. This is
+     * the path `e2e/upload.spec.ts` and `e2e/vc-intake.spec.ts` walked, and
+     * they walked it by clicking "Mark incomplete" — which is why it is
+     * re-covered here rather than left to a patch on specs that cannot reach
+     * it any more (their dev server has no AI key, so no deck of theirs ever
+     * lands at Incomplete).
+     */
+    it("raises the founder query end to end, with no Mark incomplete anywhere in it", async () => {
+      pollDecks = [
+        { id: "deck_uploaded", name: "PayRoute", statusId: "ai_evaluated", missingFields: ["founderEmail"] },
+      ];
+      mount(PA());
+      await waitFor(() => expect(screen.getByText("Credits balance — 42 remaining")).toBeInTheDocument());
+      const file = new File([new Uint8Array([37, 80, 68, 70])], "PayRoute.pdf", { type: "application/pdf" });
+      fireEvent.change(screen.getByLabelText("Choose a pitch deck"), { target: { files: [file] } });
+      fireEvent.change(screen.getByLabelText("Startup name"), { target: { value: "PayRoute" } });
+      fireEvent.click(screen.getByRole("button", { name: FORWARD }));
+      fireEvent.click(within(screen.getByTestId("up-deck-row")).getByRole("checkbox", { name: "Select PayRoute" }));
+      fireEvent.click(screen.getByRole("button", { name: "Upload selected decks" }));
+      fireEvent.click(await screen.findByRole("button", { name: "View uploaded details →" }));
+      fireEvent.click(await screen.findByRole("button", { name: "← Back to review" }));
+
+      // The AI's verdict alone opens it.
+      const panel = await screen.findByTestId("up-flag-panel");
+      expect(screen.queryByRole("button", { name: /Mark incomplete/i })).toBeNull();
+      fireEvent.click(within(panel).getByRole("checkbox", { name: "Flag Traction & Validation" }));
+      const signal = within(panel).getByRole("group", { name: "Traction & Validation signal" });
+      fireEvent.click(within(signal).getByRole("button", { name: "Absent" }));
+      fireEvent.click(within(panel).getByRole("button", { name: "Send to Query" }));
+      await waitFor(() => expect(within(panel).getByText("✓ Sent to Query")).toBeInTheDocument());
+
+      const calls = (fetch as unknown as { mock: { calls: [RequestInfo, RequestInit?][] } }).mock.calls;
+      const posted = calls.find(([u]) => String(u) === "/api/decks/deck_uploaded/queries");
+      expect(posted).toBeDefined();
+      const { questions } = JSON.parse(String(posted?.[1]?.body)) as { questions: string };
+      expect(questions).toContain("PayRoute");
+      expect(questions).toContain("• Traction & Validation (absent)");
+    });
   });
 
   it("blocks a batch the balance cannot cover, and tells a PA who can top up", async () => {
@@ -249,7 +471,6 @@ describe("Uploaded decks — AI-extracted details", () => {
       slides: 10,
       issues: [],
       checked: false,
-      markedIncomplete: false,
       deckId: "deck_1",
       flags: {},
       sentToQuery: false,
@@ -387,7 +608,6 @@ describe("V3 item 8 — Upload & Evaluate, the half the export supports", () => 
               slides: 10,
               issues: [],
               checked: false,
-              markedIncomplete: false,
               deckId: "deck_a",
               flags: {},
               sentToQuery: false,
