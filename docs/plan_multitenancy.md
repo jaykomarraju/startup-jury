@@ -329,6 +329,22 @@ Raise it to the **wave's** ceiling, never to a session's number — the conventi
 
 ## 11. The tenancy wave — session split, verified 2026-09-24
 
+> **SEQUENCING, added 2026-09-30: the SCREENING wave ships BEFORE T0-SCHEMA.**
+> `docs/plan_screening.md` rewrites four files that carry **201 of T1-DECKS' 263 weight**
+> (`routes/decks.ts`, `routes/pipeline.ts`, `routes/assignments.ts`, `ai/evaluate.ts`), plus
+> `scheduled.ts` (T1-PEOPLE) and `config/**` (T1-CONFIG). Tenancy is a mechanical widening whose
+> cost assumes the statements it widens are the statements that will exist; screening does not
+> widen predicates, it deletes and replaces them. Run tenancy first and every widened predicate in
+> the `?list=` path is re-derived by hand a wave later — and the isolation test cannot catch it,
+> because `tenant-scope.test.ts` is specified PER TABLE and a membership model replacing a
+> partition is a statement-level change inside `decks`, a table already on its list. The invariant
+> stays green while the statement that produced the rows is rewritten. Screening first costs
+> tenancy only a prompt regeneration against a newer HEAD, and T1-DECKS' weight goes DOWN.
+>
+> **Open, and not assigned to any session:** twenty files under `src/shared/` carry `edition` and
+> appear in no `owns` block above. `src/shared/permissions.ts` is one of them and §3 calls it a
+> gate. Assign them or state the exclusion and why, before T1 starts.
+
 **Shape: ONE sequential foundation session, then SEVEN in parallel, then integration.** This work
 cannot be run as eight parallel sessions from a standing start, and saying otherwise would waste a
 wave: every T1 session scopes its routes against a key that does not exist until T0 creates it, and

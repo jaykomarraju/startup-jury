@@ -301,6 +301,23 @@ in USD as the prototype does, and let the gateway handle presentation currency.*
 selector. Our `PublishedPrice.currency` already models this (`plans.ts:98-120`), so the catalogue
 is seeded in USD and nothing in the UI offers a choice.
 
+**Q2 / GST — SUPERSEDED 2026-09-30, five days after it was given. Read this first.**
+
+His payment checklist reverses the answer below. Rows 24-25: an LUT filed on the GST portal so
+foreign customers are billed at **0% GST**, and **two price displays** — *"USD for international
+customers, INR plus 18% GST for Indian customers. Don't charge Indian customers in USD."*
+
+That is not "18% GST on the USD total". It is the rule the build already implements.
+`src/shared/plans.ts:200` (`BASE_CURRENCY = "INR"`), `priceBreakdown`'s non-base branch,
+`src/shared/priceBook.ts`, `migrations/0073`'s "International pricing shown exclusive of local
+taxes" footnote and `e2e/account-purchase.spec.ts:145` ("…USD, no GST") are **correct as shipped and
+must not be changed**. The work that remains is not a tax change at all: it is resolving the
+CURRENCY from the buyer's country, with a server-side invariant that a customer in India is never
+priced in USD, plus a mandatory billing name and address at checkout and an export-invoice template.
+**This is a saving against the plan below, not a cost.**
+
+The superseded answer, kept because it explains why the code briefly looked wrong:
+
 **Q2 / GST — KEEP IT, on USD.** *"Let's keep the GST aspect as it is. In the first run, we are
 expecting Indian users mostly. Meanwhile I will cross-check with our CA too."*
 
