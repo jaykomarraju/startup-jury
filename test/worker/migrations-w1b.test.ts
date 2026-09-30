@@ -36,8 +36,36 @@ const BLOCK_SIZE = LAST - FIRST + 1;
  * this line to the WAVE's ceiling, not to any one session's number, and every
  * parallel session in the wave hits it — expect a one-line merge conflict here
  * and take the HIGHEST value.
+ *
+ * ── 2026-09-30 · ONE raise for THREE waves, allotted in advance ──────────────
+ *
+ * Three bodies of work are now planned at once, and the old practice — each
+ * wave raising this line as it starts — would have produced three separate
+ * one-line conflicts hitting every parallel session in each wave. Worse, `0076`
+ * was DOUBLE-CLAIMED: by R8-AW/SF (`plan_roles_incubator.md:122,172`,
+ * conditional, not started) and by My Account's S-CAT
+ * (`plan_myaccount.md:188`). S-CAT's claim is withdrawn here and the whole
+ * table is written down instead, so a session reads its slot rather than
+ * inferring one:
+ *
+ *   0076        R8-AW/SF `score_visibility` (conditional)
+ *   0077–0078   My Account S-CAT
+ *   0079        trial_requests           (platform stage 2)
+ *   0080        tickets.scope            (platform stage 3)
+ *   0081        F-FOUL  — r2_key on the seeded decks
+ *   0082        S2-SERVER — org_scoring_settings.ai_gate_threshold
+ *   0083–0108   tenancy T0 block (26 slots)
+ *   0109–0110   declared headroom
+ *
+ * `0082 < 0083` deliberately: the AI-gate column must land BEFORE tenancy
+ * rebuilds `org_scoring_settings`.
+ *
+ * Contiguity is NOT asserted above `LAST` (see `:66-71`) — only uniqueness and
+ * `max <= ALLOTMENT_CEILING` — and the directory already has gaps after 0044,
+ * 0049, 0053, 0058, 0060, 0063 and 0065. A wave needs unique slots under the
+ * ceiling, nothing more.
  */
-const ALLOTMENT_CEILING = 76;
+const ALLOTMENT_CEILING = 110;
 
 const MIGRATIONS = env.TEST_MIGRATIONS;
 

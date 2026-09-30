@@ -185,7 +185,7 @@ e2e/upload.spec.ts
 - `PricePlanRow` (`priceBook.ts:127-171`) has `badge`, `tagline`, `features`, `units`, `period`, `periodMonths`, `tier`, `seats`, `amounts` — **no compare-at field**. Six credit packs and two enterprise bundles each carry a `save` (`saving_pct` at `0033:57` is a percentage, not an amount).
 - The catalogue must be reseeded and republished, repeating `0073`'s tail pattern (`UPDATE pricing_versions SET status='superseded'` + a frozen document), which moves `test/worker/pricing.test.ts`.
 
-**State this verbatim in the plan file:** *this work takes `0076` and requires `ALLOTMENT_CEILING` (`test/worker/migrations-w1b.test.ts:40`) to be raised — to `0078` if the Wave R+1 `score_visibility` slot is to survive alongside it.*
+**State this verbatim in the plan file:** *this work takes `0077`–`0078` (reallotted 2026-09-30; `0076` was double-claimed with R8-AW/SF — see `test/worker/migrations-w1b.test.ts`) and requires `ALLOTMENT_CEILING` (`test/worker/migrations-w1b.test.ts:40`) to be raised — to `0078` if the Wave R+1 `score_visibility` slot is to survive alongside it.*
 
 ### Sequencing
 `S-CAT → S-FLOW`, `S-SUPER` in parallel with both, `S-INT` last. Migrate before deploying (`0038` breaks on real data); the gate is ~4.5 min on an idle box — do not attribute its failures to flakiness.
