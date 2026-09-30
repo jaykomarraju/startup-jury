@@ -1,0 +1,51 @@
+-- 0082 — S2-SERVER: the AI screening gate becomes a setting.
+--
+-- Sep-2026 client feedback, his "Deck Screening Logic" flow diagram. His third
+-- check is "Rating >= threshold?", and until now that question had NO DATA
+-- SOURCE: the gate was `const GATE = 5` in `src/server/ai/evaluate.ts`, a
+-- hardcoded number no organisation could move, and `reject_ai_gate`
+-- (`src/pipeline/incubator.ts`) was labelled "Reject (below AI gate)" while
+-- comparing nothing at all.
+--
+-- ── WHICH THRESHOLD, because the product has THREE and he named none ────────
+-- `routes/decks.ts:95-100` already records one past confusion between two of
+-- them, so this migration names the distinction rather than leaving a fourth
+-- reader to work it out:
+--
+--   · ai_gate_threshold  (HERE)          — the SCREENING gate. Does this deck
+--     stay in the funnel at all? Applied once, at evaluation, against the AI's
+--     own weighted total. Default 5.0, which is the constant it replaces.
+--   · shortlist_threshold (0026:40)      — the SHORTLIST floor, default 7.0.
+--     Applied much later, to the blended decision score, when a juror or the PM
+--     shortlists. A deck can clear the gate and never clear this.
+--   · threshold_best / threshold_mediocre (0001_init.sql:24-25) — the COHORT
+--     RATING BANDS. A reporting bucket on `org_settings`; they gate nothing.
+--
+-- ── WHY IT LANDS ON org_scoring_settings, AND WHY AT 0082 ───────────────────
+-- It belongs beside `shortlist_threshold` because it is the same KIND of thing
+-- — an org-wide number the admin console's Scoring framework section owns — and
+-- because both are canonical 0–10 positions converted at the display boundary
+-- (W7-D, `shared/scoring.ts`'s `toDisplayScale`). Anywhere else and the console
+-- would read its scoring numbers from two tables.
+--
+-- The NUMBER 0082 is not free choice. `org_scoring_settings` is keyed on
+-- `edition` and is rebuild #1 of `plan_multitenancy.md` §5e: that wave's
+-- `CREATE TABLE org_scoring_settings_new (...)` enumerates its columns
+-- explicitly, and it was authored from a branch where this column does not
+-- exist. Landing at 0082 — below the tenancy block's 0083 — is what puts the
+-- column in front of the rebuild that has to copy it. See the allotment table
+-- in `test/worker/migrations-w1b.test.ts`.
+--
+-- DEFAULT 5.0 reproduces today's behaviour exactly, so no existing org's decks
+-- change verdict on this migration alone. What DOES change a verdict is the one
+-- character in `computeResult` that ships with it: the comparison was
+-- `total > GATE` and his words are "at or above", so a deck scoring exactly 5.0
+-- is now Complete where it used to be Rejected. That is C13 in
+-- `docs/plan_screening.md` §2, and Q11 to the client.
+--
+-- The CHECK matches `shortlist_threshold`'s own, so an out-of-range value is
+-- refused by the database and not only by the route that writes it.
+
+ALTER TABLE org_scoring_settings
+  ADD COLUMN ai_gate_threshold REAL NOT NULL DEFAULT 5.0
+  CHECK (ai_gate_threshold BETWEEN 0 AND 10);

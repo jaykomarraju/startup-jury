@@ -87,7 +87,8 @@ describe.skipIf(!LIVE)("live Anthropic evaluation", () => {
 
     const parsed = parseEvaluation(raw, PARAMS);
     expect(parsed.scores.length).toBe(PARAMS.length);
-    const result = computeResult(parsed, PARAMS, "incubator");
+    // 0082 — the gate is the org's `ai_gate_threshold`; 5 is its default.
+    const result = computeResult(parsed, PARAMS, "incubator", { gate: 5 });
     expect(result.weightedTotal).toBeGreaterThan(0);
     expect(["ai_evaluated", "rejected", "incomplete"]).toContain(result.status);
   }, 60_000);

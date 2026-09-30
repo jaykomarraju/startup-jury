@@ -1,0 +1,51 @@
+diff --git a/e2e/incubator.spec.ts b/e2e/incubator.spec.ts
+index df25f8b..0adab5a 100644
+--- a/e2e/incubator.spec.ts
++++ b/e2e/incubator.spec.ts
+@@ -77,7 +77,15 @@ test("staff query an incomplete deck; it records a sent query", async ({ page })
+   // Aug-2026 issues 15–18 — two tabs; tick the startups, then send from the
+   // Email query tab.
+   await expect(page.getByRole("heading", { name: "Founder queries" })).toBeVisible();
+-  // PayRoute seeds at incomplete.
++  // PayRoute seeds at incomplete — but S2-SERVER's row 3 means that is no
++  // longer enough to put it on this screen. Query membership is a RECORDED
++  // action now: the client asked that routing happen only when an operator
++  // clicks, because a deck with incomplete contact details cannot be emailed
++  // for want of contact details. So send it first, then reload the list.
++  const send = await page.request.post("/api/decks/inc_deck_payroute/send-to-query");
++  expect(send.ok(), await send.text()).toBeTruthy();
++  await page.reload();
++  await expect(page.getByRole("heading", { name: "Founder queries" })).toBeVisible();
+   await page.getByRole("checkbox", { name: "Select PayRoute" }).check();
+   await page.getByRole("tab", { name: /Email query/ }).click();
+ 
+diff --git a/e2e/query.spec.ts b/e2e/query.spec.ts
+index a9b5b0d..9af8701 100644
+--- a/e2e/query.spec.ts
++++ b/e2e/query.spec.ts
+@@ -56,12 +56,24 @@ async function flaggedDeck(page: Page, label: string, missing: "founderPhone" |
+   // Clear one required detail — PATCH re-derives `missing_fields`…
+   const patch = await page.request.patch(`/api/decks/${deckId}`, { data: { [missing]: "" } });
+   expect(patch.ok(), await patch.text()).toBeTruthy();
+-  // …and pull the deck into Manual Review, which the Query screen lists.
++  // …and pull the deck into Manual Review.
+   const review = await page.request.post(`/api/decks/${deckId}/transition`, {
+     data: { action: "send_to_review" },
+   });
+   expect(review.ok(), await review.text()).toBeTruthy();
+ 
++  // S2-SERVER — and SEND it to Query, which is now a recorded action. This used
++  // to be implicit: `manual_review` was one of `FLAG_STAGES`, so the Query
++  // screen listed the deck with nobody having decided anything. The client's
++  // feedback row 3 deletes that derivation — his reason being that a deck with
++  // incomplete contact details cannot be emailed, for want of contact details —
++  // so membership now needs the operator's click. This route is the click, and
++  // it mails nothing: it records a PENDING clarification, exactly as the
++  // prototype's own `upSendToQuery` does, and the compose-and-send below is
++  // unchanged.
++  const send = await page.request.post(`/api/decks/${deckId}/send-to-query`);
++  expect(send.ok(), await send.text()).toBeTruthy();
++
+   return { deckId, name, email, area: missing === "city" ? "City" : "Phone" };
+ }
+ 

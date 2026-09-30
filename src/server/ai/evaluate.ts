@@ -1,5 +1,7 @@
 // AI evaluation: send an R2 pitch-deck PDF to Claude, parse structured
-// extraction + per-parameter scores, apply the `score > 5` gate, and persist.
+// extraction + per-parameter scores, apply the org's AI screening gate
+// (`org_scoring_settings.ai_gate_threshold`, migration 0082 — at or above, not
+// above), and persist.
 // Called directly on single upload and by the Queue consumer for bulk.
 //
 // The Anthropic call is a raw `fetch` (per the Cloudflare-only plan) forced
@@ -24,7 +26,24 @@ import { notifyIncompleteDeck } from "../resubmit";
 import type { Env } from "../types";
 
 const DEFAULT_MODEL = "claude-sonnet-5";
-const GATE = 5; // strictly-greater-than gate from the flow diagram.
+
+/*
+ * THE GATE IS NO LONGER A CONSTANT IN THIS FILE, and its absence is the point.
+ *
+ * It was `const GATE = 5; // strictly-greater-than gate from the flow diagram.`
+ * — a number no organisation could move, and the reason the client's third
+ * screening check ("Rating >= threshold?") had no data source at all. It now
+ * lives on `org_scoring_settings.ai_gate_threshold` (migration 0082, default
+ * 5.0) and reaches `computeResult` as a REQUIRED argument.
+ *
+ * Nothing replaced it here — no `?? 5`, no module default. This product already
+ * has three numbers that could each answer to "the threshold" (the screening
+ * gate, `shortlist_threshold`, and the cohort bands `threshold_best` /
+ * `threshold_mediocre`), `routes/decks.ts:95-100` records a past confusion
+ * between two of them, and a fallback constant sitting beside the setting is
+ * exactly how a fourth would appear. A caller that cannot say what the gate is
+ * does not get to apply one.
+ */
 
 /*
  * Determinism (Session 5, corrected in Session 7). The Jul-24 demo asked for
@@ -59,8 +78,38 @@ const PASS_STAGE: Record<Edition, string> = {
   incubator: "ai_evaluated",
   vc: "analyst_scoring",
 };
+/**
+ * Where a deck that scored UNDER the gate lands.
+ *
+ * ── The incubator no longer moves it, and that is this wave's one behaviour
+ * change with no storage cost. ──────────────────────────────────────────────
+ * It was `rejected`, and that made two of the client's own screening statuses
+ * unreachable: his "Below threshold" row draws a **Reject** button, which only
+ * means something if the deck is still there to reject. Measured on the seed
+ * before this change, no deck at or under 5 was waiting at `ai_evaluated` at
+ * all — the only sub-gate decks were `creditbri` (4.3, already `rejected`) and
+ * `solarc` (3.8, `archived`), both moved out from under the state that was
+ * supposed to describe them.
+ *
+ * So a sub-gate incubator deck now lands at `ai_evaluated` with its low
+ * `ai_score` and WAITS for an operator. The rejection stays available and
+ * becomes a decision somebody makes: `reject_ai_gate`
+ * (`src/pipeline/incubator.ts`) is `ai_evaluated -> rejected`, and it is only
+ * now that its label — "Reject (below AI gate)" — is true of the decks it is
+ * offered on. `verdict = "below_gate"` on the evaluation row is unchanged, so
+ * nothing loses the information that the gate was not cleared; what changes is
+ * that the gate no longer acts on its own.
+ *
+ * **VC is deliberately NOT changed.** The client's screening spec is the
+ * incubator's — his §5 matrix, his §4 diagram and his six stat boxes are all
+ * the incubator superuser Dashboard — and the same per-edition reasoning keeps
+ * `QUERY_MEMBERSHIP_IS_DERIVED_PENDING_ROW3.vc` where it is
+ * (`shared/queries.ts`). Whether a sub-gate VC deal should also wait instead of
+ * being archived is a question for him, not an inference from a document about
+ * the other edition. Recorded in the handoff note.
+ */
 const FAIL_STAGE: Record<Edition, string> = {
-  incubator: "rejected",
+  incubator: "ai_evaluated",
   vc: "archived",
 };
 
@@ -462,12 +511,17 @@ export function parseEvaluation(raw: RawEvaluation, params: ParameterRow[]): Par
   };
 }
 
-/** Weighted total, signal band, gate outcome, and next pipeline stage. */
+/**
+ * Weighted total, signal band, gate outcome, and next pipeline stage.
+ *
+ * `opts.gate` is the org's `ai_gate_threshold` and is **required** — see the
+ * block where `GATE` used to be for why there is no default.
+ */
 export function computeResult(
   parsed: ParsedEvaluation,
   params: ParameterRow[],
   edition: Edition,
-  formula: CompositeFormula = "weighted_average",
+  opts: { gate: number; formula?: CompositeFormula },
 ): { weightedTotal: number; signal: string; gatePassed: boolean; status: string } {
   const scoreByKey = new Map(parsed.scores.map((s) => [s.key, s.value]));
   // Score every rubric parameter over the FULL weight denominator: a parameter
@@ -476,7 +530,7 @@ export function computeResult(
   // org's configured `composite_formula`, not always a weighted average.
   const total = composite(
     params.map((p) => ({ weight: p.weight, value: scoreByKey.get(p.key) ?? 0 })),
-    formula,
+    opts.formula ?? "weighted_average",
   );
 
   // A deck the model flagged, or one it could not score at all, is Incomplete —
@@ -485,7 +539,12 @@ export function computeResult(
     return { weightedTotal: total, signal: "flagged", gatePassed: false, status: "incomplete" };
   }
 
-  const gatePassed = total > GATE;
+  // **`>=`, and the character is the whole of C13.** The client's check (3) is
+  // "Rating >= threshold?" in his own words; this read `total > GATE`, from a
+  // different diagram, so a deck scoring EXACTLY the threshold was Complete
+  // under his spec and Rejected under ours. One seeded deck changes verdict.
+  // Q11 to him, because it is his product and a real deck is affected.
+  const gatePassed = total >= opts.gate;
   return {
     weightedTotal: total,
     signal: signalTag(total),
@@ -938,7 +997,9 @@ export async function evaluateDeck(
     effective,
     params,
     deck.edition,
-    settings.compositeFormula,
+    // 0082 — the org's own screening gate, read from the settings this call
+    // already loaded. Not a constant, and not `shortlistThreshold`.
+    { gate: settings.aiGateThreshold, formula: settings.compositeFormula },
   );
 
   // Soft duplicate / returning-company alert, re-run now that the extraction has

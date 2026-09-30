@@ -18,6 +18,27 @@ import { describe, it, expect, afterEach } from "vitest";
  * (b) a details edit that blanks a required column on an evaluated deck, and
  * (c) `approve_review`, which walks a deck marked incomplete onto `ai_evaluated`
  * without consulting the mark.
+ *
+ * ── S2-SERVER, 2026-09-30 · HALF OF WHAT THIS FILE PINNED IS NOW DELETED ────
+ * The client's feedback row 3 keeps the first of his two sentences and deletes
+ * the second. "Only the ones marked complete have to be sent to Assign" is
+ * unchanged and every Assign assertion below still holds. But "similarly, the
+ * ones marked incomplete have to go to Query" was implemented as a DERIVATION,
+ * and he now wants that routing to happen only when an operator clicks — his
+ * reason being that a deck with incomplete contact details cannot be emailed,
+ * for want of contact details.
+ *
+ * So `?list=query` means **queried** — there is a `queries` row — and a deck
+ * that is incomplete and has not been sent is on NEITHER list. Three tests here
+ * asserted the deleted conclusion and are rewritten rather than adjusted: each
+ * one now pins that the deck leaves Assign, does NOT appear on Query, and is
+ * still in the unfiltered response, which is the invariant that replaced it.
+ * Nothing is lost by being on neither list: the uploaded status screen draws
+ * every deck, always (`matchesV3Stat(d, "all")`).
+ *
+ * The negative control for the OTHER direction is what matters most now, and it
+ * is the last test in the file: VC is unchanged, because his spec is the
+ * incubator's.
  */
 
 const BASE = "https://example.com";
@@ -69,9 +90,17 @@ describe("GET /api/decks?list= — the Assign/Query partition", () => {
     const assign = await list(cookie, "assign");
     const query = await list(cookie, "query");
 
-    // Measured baseline off `main`: 3 assignable, 2 on Query, 15 decks in all.
+    // Measured baseline: 3 assignable and 15 decks in all, both unchanged by
+    // row 3 — the Assign arm is the half of his sentence that survives.
     expect(names(assign)).toEqual(["FinStack", "GreenGrid Energy", "TaxPilot"]);
-    expect(names(query)).toEqual(["NimbusHR", "PayRoute"]);
+    // Query was ["NimbusHR", "PayRoute"] and is now NimbusHR alone. NimbusHR
+    // has a `queries` row; PayRoute has none and was listed purely because its
+    // stage is `incomplete` — which is the derivation row 3 deletes.
+    expect(names(query)).toEqual(["NimbusHR"]);
+    expect(query[0].id).toBe(all.find((d) => d.name === "NimbusHR")!.id);
+    // …and PayRoute is on neither list while still being in the whole table.
+    expect(names(assign)).not.toContain("PayRoute");
+    expect(names(all)).toContain("PayRoute");
 
     const assignIds = new Set(assign.map((d) => d.id));
     expect(query.filter((d) => assignIds.has(d.id))).toEqual([]);
@@ -103,7 +132,7 @@ describe("GET /api/decks?list= — the Assign/Query partition", () => {
     for (const d of all) expect(typeof d.complete).toBe("boolean");
   });
 
-  it("(b) blanking a required detail moves an evaluated deck from Assign to Query", async () => {
+  it("(b) blanking a required detail takes an evaluated deck OFF Assign — and row 3 leaves it on neither list", async () => {
     const cookie = await login(SU);
     const before = { assign: await list(cookie, "assign"), query: await list(cookie, "query") };
     const fin = before.assign.find((d) => d.name === "FinStack")!;
@@ -119,21 +148,29 @@ describe("GET /api/decks?list= — the Assign/Query partition", () => {
     });
     expect(patch.status).toBe(200);
 
-    const after = { assign: await list(cookie, "assign"), query: await list(cookie, "query") };
-    // Before: Assign 3 · Query 2. After: Assign 2 · Query 3 — the deck moved,
-    // it was not duplicated and it was not lost.
+    const after = {
+      assign: await list(cookie, "assign"),
+      query: await list(cookie, "query"),
+      all: await list(cookie),
+    };
+    // Before: Assign 3 · Query 1. After: Assign 2 · Query 1 — the deck LEFT
+    // Assign, which is the half of his sentence that survives, and it did not
+    // arrive on Query, which is row 3.
     expect(before.assign.length).toBe(3);
-    expect(before.query.length).toBe(2);
+    expect(before.query.length).toBe(1);
     expect(after.assign.length).toBe(2);
-    expect(after.query.length).toBe(3);
+    expect(after.query.length).toBe(1);
     expect(names(after.assign)).not.toContain("FinStack");
-    expect(names(after.query)).toContain("FinStack");
-    // Its stage never changed — only the mark did, which is the whole point:
-    // routing follows the mark, not the stage it happens to sit at.
-    const moved = after.query.find((d) => d.id === fin.id)!;
-    expect(moved.statusId).toBe("ai_evaluated");
-    expect(moved.complete).toBe(true);
-    expect(moved.missingFields).toEqual(["founderEmail"]);
+    expect(names(after.query)).not.toContain("FinStack");
+    // And it is NOT LOST, which is the invariant that replaced "it moved". The
+    // operator reaches it on the uploaded status screen — the unfiltered
+    // response — and decides there whether to send it to Query.
+    const stranded = after.all.find((d) => d.id === fin.id)!;
+    // Its stage never changed — only the mark did, which is still the whole
+    // point: routing follows the mark, not the stage it happens to sit at.
+    expect(stranded.statusId).toBe("ai_evaluated");
+    expect(stranded.complete).toBe(true);
+    expect(stranded.missingFields).toEqual(["founderEmail"]);
   });
 
   it("(b) and putting the detail back moves it straight back to Assign", async () => {
@@ -158,7 +195,10 @@ describe("GET /api/decks?list= — the Assign/Query partition", () => {
 
   it("(c) a deck marked incomplete cannot reach Assign through manual review", async () => {
     const cookie = await login(SU);
-    const deck = (await list(cookie, "query")).find((d) => d.name === "PayRoute")!;
+    // Found on the WHOLE table, not on the Query list: under row 3 a deck that
+    // was never sent to Query is not there to be found. The path this test
+    // walks is unchanged and so is the thing it defends.
+    const deck = (await list(cookie)).find((d) => d.name === "PayRoute")!;
 
     // The four transitions are all the superuser's, and all return 200 — this is
     // the reachable path, not a hypothetical one.
@@ -175,9 +215,12 @@ describe("GET /api/decks?list= — the Assign/Query partition", () => {
       .first<{ status: string; complete: number; mf: string | null }>();
     expect(raw).toEqual({ status: "ai_evaluated", complete: 0, mf: "founderPhone" });
 
-    // On `main` this deck was the fourth row of the Assign roster.
+    // On `main`, before V4-ROUTE, this deck was the fourth row of the Assign
+    // roster. It still must not be.
     expect(names(await list(cookie, "assign"))).not.toContain("PayRoute");
-    expect(names(await list(cookie, "query"))).toContain("PayRoute");
+    // Row 3: and it does not silently appear on Query either. Nobody sent it.
+    expect(names(await list(cookie, "query"))).not.toContain("PayRoute");
+    expect(names(await list(cookie))).toContain("PayRoute");
 
     // Put the stage back — this file's decks are shared with its siblings.
     await env.DB.prepare("UPDATE decks SET status = 'incomplete' WHERE id = ?").bind(deck.id).run();

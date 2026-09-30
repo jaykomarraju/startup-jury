@@ -377,7 +377,20 @@ export interface ScoringSettings {
   scoreScale: ScoreScale;
   compositeFormula: CompositeFormula;
   aiWeightPct: number;
+  /** The SHORTLIST floor, applied to the blended decision score. Canonical 0–10. */
   shortlistThreshold: number;
+  /**
+   * The AI **screening gate** (migration 0082) — the client's third check,
+   * "Rating >= threshold?". Applied ONCE, at evaluation, to the AI's own
+   * weighted total, and it decides whether the deck stays in the funnel at all.
+   *
+   * **Not `shortlistThreshold` and not the cohort bands.** It replaced a
+   * hardcoded `GATE = 5` in `server/ai/evaluate.ts`, and that constant was
+   * DELETED with it rather than kept as a fallback: a default sitting beside a
+   * setting is how this product came to have three thresholds in the first
+   * place. Canonical 0–10 like its neighbour, converted at the display boundary.
+   */
+  aiGateThreshold: number;
   // Card 3 · Score transparency & reports
   showThreeScoreView: boolean;
   showScoreDrift: boolean;
@@ -397,6 +410,7 @@ export const DEFAULT_SCORING_SETTINGS: ScoringSettings = {
   compositeFormula: "weighted_average",
   aiWeightPct: 40,
   shortlistThreshold: 7,
+  aiGateThreshold: 5,
   showThreeScoreView: true,
   showScoreDrift: true,
   includeAiEvidence: true,

@@ -119,6 +119,28 @@ const DECK_DERIVED =
   // 21-Sep item 6 — the "Contact Details Edited" chip's source. The most recent
   // contact correction on this deck, written by `PATCH /api/decks/:id`.
   "(SELECT MAX(pe.created_at) FROM pipeline_events pe WHERE pe.deck_id = d.id AND pe.action = 'edit_contact') AS contact_edited_at, " +
+  // Screening row 7 — **the Send-to-Assign marker**, and the ONLY authority for
+  // the `AI Evaluated, Assigned` sink. Same shape as `edit_contact` directly
+  // above: a `pipeline_events` row with `from_stage === to_stage`, so it is a
+  // record of a CLICK and not a transition, and so the `exit_*` columns below
+  // (which select on `to_stage IN ('rejected','archived')`) can never see it.
+  //
+  // Deliberately NOT the `assigned` stage. `POST /decks/:id/transition` will
+  // move a deck to `assigned` with `assigned_to` still NULL, which is precisely
+  // the shape the client filed as his row 12 Foul ("startups without any decks,
+  // assigned to Jury"). His Send-to-Assign row and his row 12 pull in opposite
+  // directions; the marker is what satisfies both — the deck latches and joins
+  // the Assign roster, and `assigned_to` keeps meaning a real evaluator.
+  "(SELECT MAX(pe.created_at) FROM pipeline_events pe WHERE pe.deck_id = d.id AND pe.action = 'send_to_assign') AS send_to_assign_at, " +
+  // The client's own open item ("queried but the founder never responds").
+  // `query_count` above collapses the whole history to a boolean, which throws
+  // away exactly the two things the rule needs: WHEN the last letter went out,
+  // and whether it was answered. `queryStatusOf` (`shared/queries.ts`) already
+  // owns the five-working-day rule; these two columns are what let it run on a
+  // deck row instead of on a fetched query list.
+  "(SELECT qq.created_at FROM queries qq WHERE qq.deck_id = d.id ORDER BY qq.created_at DESC, qq.rowid DESC LIMIT 1) AS last_query_at, " +
+  "(SELECT CASE WHEN qq.founder_response IS NULL OR qq.founder_response = '' THEN 0 ELSE 1 END FROM queries qq " +
+  "   WHERE qq.deck_id = d.id ORDER BY qq.created_at DESC, qq.rowid DESC LIMIT 1) AS last_query_answered, " +
   // W7-E — every evaluator on the deck (migration 0058), first assignee included.
   "(SELECT GROUP_CONCAT(da.evaluator_id, '||') FROM deck_assignments da WHERE da.deck_id = d.id) AS assignee_ids, " +
   // Issue 27/29 — the intro call's schedule + status.
@@ -161,6 +183,9 @@ interface DeckRow {
   updated_at?: string | null;
   last_event_at?: string | null;
   contact_edited_at?: string | null;
+  send_to_assign_at?: string | null;
+  last_query_at?: string | null;
+  last_query_answered?: number | null;
   query_count?: number | null;
   assigned_to?: string | null;
   assigned_to_name?: string | null;
@@ -365,6 +390,13 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: Shortli
     lastActivityAt: latestTimestamp(row.last_event_at, row.updated_at, row.created_at),
     queried: (row.query_count ?? 0) > 0,
     contactEditedAt: row.contact_edited_at ?? undefined,
+    // Screening — the three fields `screeningStatus` (`shared/deckStats.ts`)
+    // needs and no row carried until now. All derived; no column was added.
+    sendToAssignAt: row.send_to_assign_at ?? undefined,
+    lastQueryAt: row.last_query_at ?? undefined,
+    // Only meaningful when there IS a last query, and `isQueryUnanswered` reads
+    // `queried` first, so a deck with no history simply never asks.
+    lastQueryAnswered: (row.last_query_answered ?? 0) > 0,
     assignedTo: row.assigned_to ?? undefined,
     assignedToName: row.assigned_to_name ?? undefined,
     assigneeIds: [...new Set([...(row.assigned_to ? [row.assigned_to] : []), ...splitList(row.assignee_ids)])],
@@ -373,6 +405,14 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: Shortli
     actions: actionsFor(edition, row.status, role),
   };
 }
+
+/**
+ * Editions where **Query membership is a recorded action** (client feedback
+ * row 3), enforced by `GET /api/decks?list=query` above. `undefined` elsewhere
+ * means "take `shared/queries.ts`'s own default", so this table adds a reading
+ * and never hides one.
+ */
+const ROW3_RECORDED_QUERY: Record<Edition, boolean> = { incubator: true, vc: false };
 
 /** `?list=` — the enforced screen list, or the whole table when absent. */
 function parseListParam(raw: string | undefined): Exclude<DeckListRoute, null> | null {
@@ -525,10 +565,56 @@ decks.get("/", async (c) => {
   const scoring = await loadScoringSettings(c.env.DB, edition);
   // The partition runs on the mapped view, so the server and the screens read
   // the same shape through the same function — never two implementations of it.
+  // That property is why `deriveQuery` is passed rather than forked on here:
+  // the answer still comes out of `deckListRoute` and there is still one
+  // implementation of it.
+  //
+  // ── ROW 3 · `?list=query` NOW MEANS "QUERIED" ────────────────────────────
+  // The client asked that a deck reach the Query screen only when an operator
+  // SENDS it there, and his reason is worth keeping where the code is: a deck
+  // with incomplete contact details cannot be emailed, for want of contact
+  // details. The build derived Query membership instead — `ASSIGNABLE_STAGES ∧
+  // ¬isDeckComplete`, plus the flag stages, plus "has areas needing response" —
+  // so a deck the AI marked Incomplete was ON the Query list with nobody having
+  // decided anything, and the Dashboard armed Send to Query from the same
+  // function. That is what made the live defect in `routes/pipeline.ts`
+  // reachable: `POST /decks/:id/queries` falls back to a placeholder address
+  // when the deck has no founder email, so a deck listed for want of an email
+  // could be emailed to `founder@portal.local`. Nothing arms that automatically
+  // any more (the path itself is F-FOUL's to close — handed over in the note).
+  //
+  // The ASSIGN arm is unchanged, and under both readings the two lists still
+  // partition. A deck that is incomplete and has not been sent is now on
+  // NEITHER list, and it is not lost: the uploaded status screen draws every
+  // deck, always — "all decks, including archived, stay on the uploaded status
+  // screen", his own display rule.
+  //
+  // Incubator only, and per edition on purpose (the reasoning is written out on
+  // `QUERY_MEMBERSHIP_IS_DERIVED_PENDING_ROW3` in `shared/queries.ts`): his
+  // screening spec is the incubator's, and VC's own auto-listing rules came
+  // from the VC prototype — F0274, an unflagged deal in analyst scoring is not
+  // listed; F0341, five working days. Flipping both editions would delete those
+  // without his having asked.
+  //
+  // ── WHY THIS IS AN OVERRIDE AND NOT THE SHARED DEFAULT (read before "tidying"
+  // it into `shared/queries.ts`) ───────────────────────────────────────────────
+  // S0-VOCAB shipped the new reading behind that per-edition flag with both arms
+  // still `true`, so that the ONE-LINE flip could land with the tests that move
+  // with it. Measured in this session, flipping the shared default moves **21
+  // tests across three files** — `test/client/queryPage.test.tsx` (14),
+  // `test/client/deckHandoff.test.tsx` (6) and `test/client/allDecks.test.tsx`
+  // (1) — and all three belong to sessions running in parallel with this one
+  // (S2-CHROME and S2-DASH), which are rewriting those same files for the same
+  // client feedback. So the SERVER half of row 3 lands here, where its own
+  // enforcement is, and the shared default flips with the client half. Both
+  // halves still go through `deckListRoute` and there is still exactly one
+  // implementation of the rule — which is the property the paragraph above is
+  // protecting, and it is not the same thing as one call site.
+  const deriveQuery = ROW3_RECORDED_QUERY[edition] ? false : undefined;
   const routed = <V extends Parameters<typeof deckListRoute>[0] & { queried?: boolean }>(views: V[]) =>
     list === null
       ? views
-      : views.filter((v) => deckListRoute(v, edition, { queried: v.queried === true }) === list);
+      : views.filter((v) => deckListRoute(v, edition, { queried: v.queried === true, deriveQuery }) === list);
   if (!withholdsAiScore(scoring, { isEvaluator: isAssignableEvaluator(edition, role), hasSubmitted: false })) {
     return c.json({ decks: routed(rows.map((r) => toDeckView(edition, r, role, scoring))) });
   }
@@ -983,6 +1069,169 @@ interface ReportParamRow {
   informational: number;
   role_scope: string | null;
 }
+
+// ── Send to Query · the recorded click ───────────────────────────────────────
+//
+// Roles that may send a deck to the Query screen — the same list
+// `POST /api/decks/:id/queries` (`routes/pipeline.ts`) gates the compose-and-send
+// with, because this is the same decision one step earlier.
+const SEND_TO_QUERY_ROLES = [
+  "program_associate",
+  "program_manager",
+  "admin",
+  "analyst",
+  "associate",
+  "partner",
+] as const;
+
+/**
+ * POST /api/decks/:id/send-to-query — record that the operator sent this deck
+ * to Query, by raising a **pending** clarification on it.
+ *
+ * ── Why this route exists, and it is row 3's other half ─────────────────────
+ * Row 3 makes Query membership a recorded action. Before it, `deckListRoute`
+ * DERIVED membership from incompleteness, so a deck arrived on the Query screen
+ * with nobody having decided anything, and the Dashboard's "Send to Query" was
+ * pure navigation — `navigate("/app/query")`, writing nothing, on a deck that
+ * was already listed.
+ *
+ * Delete the derivation and leave the button as navigation and the product has a
+ * hole in it: the only thing that writes a `queries` row is the compose-and-send
+ * on the Query screen, and the deck cannot reach that screen until a `queries`
+ * row exists. Send to Query would navigate to a list the deck is not on, and
+ * `?list=query` would be a screen an operator could never populate.
+ *
+ * **The prototype already answers this and the build had lost it.** Its
+ * `upSendToQuery` pushes the deck onto the Query list as `pending` BEFORE any
+ * email goes out — which is why `queryStatusOf` (`shared/queries.ts`) has a
+ * Pending status at all, and why its own comment says a flagged deck nobody has
+ * emailed yet is Pending. So the recorded send is a pending query: the deck
+ * joins the list, the operator composes there, and `POST /decks/:id/queries`
+ * does the sending exactly as it does today.
+ *
+ * **Nothing is emailed by this click, deliberately.** That is what keeps the
+ * defect the client's own row-3 reason names out of reach: `POST
+ * /decks/:id/queries` falls back to a placeholder address when the deck has no
+ * founder email, so a click that both listed AND mailed would reintroduce
+ * exactly the send he is complaining about. Listing is free; mailing needs an
+ * address.
+ *
+ * **No marker event, and that is not an omission.** The `queries` row IS the
+ * record — `DeckView.queried` is `query_count > 0` and the screening sink reads
+ * it — so a `send_to_query` pipeline event would be a second authority for one
+ * fact, which is how the three thresholds happened. `send_to_assign` needs a
+ * marker only because it has no domain row to be recorded in.
+ */
+decks.post("/:id/send-to-query", requireTask("query", ...SEND_TO_QUERY_ROLES), async (c) => {
+  const { edition } = c.var.user;
+  const id = c.req.param("id");
+  const row = await c.env.DB.prepare("SELECT id FROM decks WHERE id = ? AND edition = ?")
+    .bind(id, edition)
+    .first<{ id: string }>();
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  // Idempotent on the thing that matters: if the deck already has a query
+  // nobody has answered, it is already ON the list and a second pending row
+  // would only push the no-response clock back. An ANSWERED history does not
+  // block a fresh send — that is the resubmit loop working.
+  const open = await c.env.DB.prepare(
+    "SELECT id FROM queries WHERE deck_id = ? AND founder_response IS NULL LIMIT 1",
+  )
+    .bind(id)
+    .first<{ id: string }>();
+  if (!open) {
+    await c.env.DB.prepare(
+      "INSERT INTO queries (id, deck_id, questions, email_status, created_at) VALUES (?, ?, '', 'pending', ?)",
+    )
+      .bind(`qry_${crypto.randomUUID()}`, id, new Date().toISOString())
+      .run();
+  }
+
+  const updated = await c.env.DB.prepare(
+    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} WHERE d.id = ? AND d.edition = ?`,
+  )
+    .bind(id, edition)
+    .first<DeckRow>();
+  const scoring = updated ? await loadScoringSettings(c.env.DB, edition) : null;
+  return c.json({
+    ok: true,
+    // `false` when the deck was already on the list, so the screen can say
+    // "already queried" rather than claiming it just did something.
+    raised: !open,
+    deck: updated && scoring ? toDeckView(edition, updated, c.var.user.role, scoring) : null,
+  });
+});
+
+// ── Send to Assign · the recorded click ──────────────────────────────────────
+//
+// Roles that may send a deck to the Assign screen. The same list as the
+// `assign_jury` transition in `src/pipeline/incubator.ts`, because it is the
+// same decision one step earlier: whoever may put a juror on a deck may put the
+// deck in front of the jurors.
+const SEND_TO_ASSIGN_ROLES = ["program_manager", "program_associate", "admin"] as const;
+
+/**
+ * POST /api/decks/:id/send-to-assign — record that the operator sent this deck
+ * to Assign.
+ *
+ * ── Why a marker and not a stage ────────────────────────────────────────────
+ * The client's screening matrix gives "Complete" exactly one active action,
+ * Send to Assign, and his row 7 latches the deck once it fires. Until now that
+ * button was NAVIGATION — the Dashboard called `navigate("/app/assign")` and
+ * wrote nothing down — so there was no record to latch on and no way to tell a
+ * deck that had been sent from one that merely could be.
+ *
+ * The obvious implementation is the `assigned` stage, and it is the wrong one.
+ * `POST /decks/:id/transition` will move a deck to `assigned` with
+ * `assigned_to` still NULL, which is exactly the shape the client filed as his
+ * row 12 Foul — "startups without any decks, assigned to Jury". His
+ * Send-to-Assign row and his row 12 pull in opposite directions, and this is
+ * what satisfies both: the deck joins the Assign roster and latches, while
+ * `assigned_to` keeps meaning a real evaluator and the stage keeps meaning a
+ * real assignment.
+ *
+ * So it is a `pipeline_events` row with `from_stage === to_stage` — the same
+ * non-transition marker shape as `edit_contact` in `PATCH /api/decks/:id`
+ * above, which also documents why it is safe: the `exit_*` derived columns
+ * select on `to_stage IN ('rejected','archived')`, so a marker can never be
+ * mistaken for the way a startup left the pipeline. `last_event_at` does move,
+ * which is right — sending a deck to Assign IS activity on it.
+ *
+ * Idempotent by reading, not by constraint: sending twice writes a second
+ * marker and `send_to_assign_at` is a MAX(), so the latch is unaffected and the
+ * history keeps both clicks. A second click is a fact about what the operator
+ * did, not an error to refuse.
+ */
+decks.post("/:id/send-to-assign", requireTask("assign", ...SEND_TO_ASSIGN_ROLES), async (c) => {
+  const { edition } = c.var.user;
+  const id = c.req.param("id");
+  const row = await c.env.DB.prepare("SELECT status FROM decks WHERE id = ? AND edition = ?")
+    .bind(id, edition)
+    .first<{ status: string | null }>();
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  // `decks.status` is the PIPELINE stage; `decks.stage` is the startup's
+  // FUNDING stage ("Seed", "Pre-seed") and is not this at all. The same trap
+  // the `edit_contact` writer above names.
+  const stage = row.status ?? null;
+  await c.env.DB.prepare(
+    "INSERT INTO pipeline_events (id, deck_id, actor_id, from_stage, to_stage, action, note, created_at) " +
+      "VALUES (?, ?, ?, ?, ?, 'send_to_assign', NULL, ?)",
+  )
+    .bind(`${id}_evt_${crypto.randomUUID()}`, id, c.var.user.id, stage, stage ?? "", new Date().toISOString())
+    .run();
+
+  const updated = await c.env.DB.prepare(
+    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} WHERE d.id = ? AND d.edition = ?`,
+  )
+    .bind(id, edition)
+    .first<DeckRow>();
+  const scoring = updated ? await loadScoringSettings(c.env.DB, edition) : null;
+  return c.json({
+    ok: true,
+    deck: updated && scoring ? toDeckView(edition, updated, c.var.user.role, scoring) : null,
+  });
+});
 
 /**
  * GET /api/decks/:id/report?stage=assign|intro — the evaluation report,

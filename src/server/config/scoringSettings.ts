@@ -24,7 +24,11 @@ import type { Env } from "../types";
 const COLUMNS =
   "edition, ai_pre_scoring_enabled, auto_clarification, show_ai_score_to_jury, " +
   "require_override_rationale, override_rationale_delta, jury_sees_peer_scores, " +
-  "score_scale, composite_formula, ai_weight_pct, shortlist_threshold, " +
+  // 0082 — `ai_gate_threshold` sits beside `shortlist_threshold` deliberately:
+  // they are the two org-wide score POSITIONS, and the console's Scoring
+  // framework section owns both. They gate different things, at different
+  // moments, on different numbers — see 0082's header.
+  "score_scale, composite_formula, ai_weight_pct, shortlist_threshold, ai_gate_threshold, " +
   "show_three_score_view, show_score_drift, include_ai_evidence, intro_call_ai_prompts, " +
   "updated_at, updated_by";
 
@@ -63,6 +67,7 @@ export function toScoringSettings(row: Partial<OrgScoringSettingsRow> | null): S
     compositeFormula: formula(row.composite_formula),
     aiWeightPct: num(row.ai_weight_pct, d.aiWeightPct),
     shortlistThreshold: num(row.shortlist_threshold, d.shortlistThreshold),
+    aiGateThreshold: num(row.ai_gate_threshold, d.aiGateThreshold),
     showThreeScoreView: bool(row.show_three_score_view, d.showThreeScoreView),
     showScoreDrift: bool(row.show_score_drift, d.showScoreDrift),
     includeAiEvidence: bool(row.include_ai_evidence, d.includeAiEvidence),

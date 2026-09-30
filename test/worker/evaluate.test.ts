@@ -159,7 +159,7 @@ describe("additional params are AI-scored but out of the composite", () => {
       WITH_ADDITIONAL,
     );
     // …but the composite is identical to the core-only 8.0 (denominator excludes weight 0).
-    expect(computeResult(parsed, WITH_ADDITIONAL, "incubator").weightedTotal).toBe(8);
+    expect(computeResult(parsed, WITH_ADDITIONAL, "incubator", { gate: 5 }).weightedTotal).toBe(8);
   });
 });
 
@@ -199,7 +199,29 @@ describe("parseEvaluation", () => {
   });
 });
 
-describe("computeResult — the score > 5 gate", () => {
+/**
+ * S2-SERVER (screening wave) — **this block used to be headed "the score > 5
+ * gate" and it asserted two things the client's own flow diagram contradicts.**
+ * Both are changed here on purpose, not adjusted to stay green:
+ *
+ *   · `total > GATE` becomes `total >= gate`. His check (3) is "Rating >=
+ *     threshold?", so a deck scoring EXACTLY the threshold is Complete under
+ *     his spec and was Rejected under ours. The old test named the old
+ *     behaviour in its own title ("strictly greater than gate"); the new one
+ *     names his.
+ *   · a sub-gate INCUBATOR deck is no longer moved to `rejected` by the
+ *     evaluator. It waits at `ai_evaluated` with its low score, which is what
+ *     makes his "Below threshold" status reachable at all and what finally
+ *     makes `reject_ai_gate`'s label true. VC is unchanged — his spec is the
+ *     incubator's.
+ *
+ * And the gate itself is now an ARGUMENT, because it is
+ * `org_scoring_settings.ai_gate_threshold` (migration 0082) and no longer a
+ * constant. `GATE` below is this test's fixture, not the product's default.
+ */
+describe("computeResult — the AI screening gate", () => {
+  const GATE = 5;
+
   function parsedWith(values: Record<string, number>): ReturnType<typeof parseEvaluation> {
     return parseEvaluation(
       { complete: true, scores: Object.entries(values).map(([key, value]) => ({ key, value })) },
@@ -209,44 +231,66 @@ describe("computeResult — the score > 5 gate", () => {
 
   it("advances an incubator deck above the gate to ai_evaluated", () => {
     // weighted: (8*8 + 10*8 + 2*8)/20 = 8.0 → passes
-    const r = computeResult(parsedWith({ problem: 8, traction: 8, team: 8 }), PARAMS, "incubator");
+    const r = computeResult(parsedWith({ problem: 8, traction: 8, team: 8 }), PARAMS, "incubator", { gate: GATE });
     expect(r.weightedTotal).toBe(8);
     expect(r.gatePassed).toBe(true);
     expect(r.status).toBe("ai_evaluated");
     expect(r.signal).toBe("strong");
   });
 
-  it("rejects an incubator deck at or below the gate", () => {
+  it("leaves a sub-gate incubator deck WAITING at ai_evaluated, not rejected", () => {
     // weighted: (8*4 + 10*5 + 2*4)/20 = 4.5 → fails
-    const r = computeResult(parsedWith({ problem: 4, traction: 5, team: 4 }), PARAMS, "incubator");
+    const r = computeResult(parsedWith({ problem: 4, traction: 5, team: 4 }), PARAMS, "incubator", { gate: GATE });
     expect(r.gatePassed).toBe(false);
-    expect(r.status).toBe("rejected");
+    // The verdict is recorded (`gatePassed: false` becomes `below_gate` on the
+    // evaluation row) but the deck is not moved. Rejecting it is now a decision
+    // an operator makes from the client's "Below threshold" status — which is
+    // the state this line exists to keep reachable.
+    expect(r.status).toBe("ai_evaluated");
   });
 
-  it("treats exactly 5 as failing (strictly greater than gate)", () => {
-    const r = computeResult(parsedWith({ problem: 5, traction: 5, team: 5 }), PARAMS, "incubator");
+  it("treats exactly the threshold as PASSING — his words are 'at or above'", () => {
+    const r = computeResult(parsedWith({ problem: 5, traction: 5, team: 5 }), PARAMS, "incubator", { gate: GATE });
     expect(r.weightedTotal).toBe(5);
+    expect(r.gatePassed).toBe(true);
+    expect(r.status).toBe("ai_evaluated");
+  });
+
+  it("is the ORG's number, not a constant — a stricter gate fails the same deck", () => {
+    // The whole point of 0082: the same 5.0 deck, judged by an org that set its
+    // gate to 6. Without this the setting could be ignored and every test above
+    // would still pass.
+    const r = computeResult(parsedWith({ problem: 5, traction: 5, team: 5 }), PARAMS, "incubator", { gate: 6 });
     expect(r.gatePassed).toBe(false);
+    expect(r.status).toBe("ai_evaluated");
+    // …and a lenient org passes a deck the default would have stopped.
+    const lenient = computeResult(parsedWith({ problem: 4, traction: 4, team: 4 }), PARAMS, "incubator", { gate: 4 });
+    expect(lenient.gatePassed).toBe(true);
   });
 
   it("routes a VC pass to analyst_scoring and a fail to archived", () => {
-    expect(computeResult(parsedWith({ problem: 9, traction: 9, team: 9 }), PARAMS, "vc").status).toBe(
-      "analyst_scoring",
-    );
-    expect(computeResult(parsedWith({ problem: 2, traction: 2, team: 2 }), PARAMS, "vc").status).toBe(
-      "archived",
-    );
+    // VC is deliberately NOT changed by the screening wave: the client's spec
+    // is the incubator's, and whether a sub-gate deal should wait instead of
+    // being archived is a question for him.
+    expect(
+      computeResult(parsedWith({ problem: 9, traction: 9, team: 9 }), PARAMS, "vc", { gate: GATE }).status,
+    ).toBe("analyst_scoring");
+    expect(
+      computeResult(parsedWith({ problem: 2, traction: 2, team: 2 }), PARAMS, "vc", { gate: GATE }).status,
+    ).toBe("archived");
   });
 
   it("uses the full rubric weight — an unscored parameter counts as 0, not dropped", () => {
     // Only 2 of 3 params scored strongly; team (weight 2) is missing → 0.
     // Full denominator: (8*9 + 10*9 + 2*0)/20 = 8.1, not (8*9+10*9)/18 = 9.0.
-    const r = computeResult(parsedWith({ problem: 9, traction: 9 }), PARAMS, "incubator");
+    const r = computeResult(parsedWith({ problem: 9, traction: 9 }), PARAMS, "incubator", { gate: GATE });
     expect(r.weightedTotal).toBe(8.1);
   });
 
   it("treats a zero-score response as Incomplete, never a silent rejection", () => {
-    const r = computeResult(parseEvaluation({ complete: true, scores: [] }, PARAMS), PARAMS, "incubator");
+    const r = computeResult(parseEvaluation({ complete: true, scores: [] }, PARAMS), PARAMS, "incubator", {
+      gate: GATE,
+    });
     expect(r.status).toBe("incomplete");
     expect(r.signal).toBe("flagged");
     expect(r.gatePassed).toBe(false);
@@ -257,7 +301,7 @@ describe("computeResult — the score > 5 gate", () => {
       { complete: false, scores: [{ key: "problem", value: 9 }, { key: "traction", value: 9 }] },
       PARAMS,
     );
-    const r = computeResult(parsed, PARAMS, "incubator");
+    const r = computeResult(parsed, PARAMS, "incubator", { gate: GATE });
     expect(r.status).toBe("incomplete");
     expect(r.signal).toBe("flagged");
   });

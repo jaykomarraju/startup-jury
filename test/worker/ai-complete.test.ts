@@ -149,8 +149,16 @@ describe("PATCH re-derives the mark UPWARD ONLY", () => {
     expect(res.status).toBe(200);
 
     expect(await marks("ac_fix")).toMatchObject({ complete: 1, ai_complete: 1, missing_fields: null });
-    // The stage is NOT moved — this repairs the mark, not the pipeline, and
-    // `deckListRoute` reads the mark.
+    // The stage is NOT moved — this repairs the mark, not the pipeline.
+    //
+    // S2-SERVER, 2026-09-30: `deckListRoute` still reads the mark, and the
+    // ASSIGN arm of it is unchanged — a deck whose mark is now 1 is back on the
+    // Assign roster. What the client's row 3 deleted is the other arm, the
+    // CONCLUSION that a deck off Assign is therefore on Query. So the sentence
+    // this comment used to make ("the mark is what routes it") is still true of
+    // Assign and no longer true of Query, where membership is now the recorded
+    // Send-to-Query click. Pinned end to end in `route-partition.test.ts` and
+    // `screening-status.test.ts`.
     expect((await marks("ac_fix"))!.status).toBe("incomplete");
   });
 
@@ -307,6 +315,30 @@ describe("a contact correction is recorded, not just applied", () => {
     expect(body.deck.contactEditedAt).toEqual(expect.any(String));
   });
 
+  /**
+   * ── A TRIGGER MISMATCH, FLAGGED AND NOT GUESSED AT ────────────────────────
+   *
+   * This is the assertion that shows it, so the note belongs on it. His flow
+   * diagram fires **"Contact details edited"** on the operator pressing Edit —
+   * the state is a *system re-check*, and in his tree it follows the CLICK. Our
+   * event is written only when a CONTACT FIELD ACTUALLY CHANGED, from the
+   * `CONTACT_FIELDS` set of exactly his four columns.
+   *
+   * The two differ in one measurable case: **open Edit, save without changing a
+   * contact detail.** He gets "Contact details edited" and its re-check branch;
+   * we get the deck's original status, because nothing was recorded. The test
+   * below pins OUR behaviour on a non-contact field, and the test above pins it
+   * on the fields that did change — both deliberately.
+   *
+   * We are NOT changing it in this session. Recording "the operator opened a
+   * form" is a different kind of fact from "the founder's phone number is now
+   * this", his own edited-branch statuses are all predicates over the CONTACT
+   * (`contactEditedAt ∧ ¬C`, etc.) and would read identically either way for
+   * every edit that changed something — and the case where they differ is the
+   * case where his branch has nothing new to re-check. It is a question for
+   * him, not a preference for us. Carried in the handoff note as a client
+   * question; do not "fix" it to match the diagram without his answer.
+   */
   it("a non-contact edit is not a contact edit", async () => {
     const su = await login(SUPER);
     await seedDeck("ce_other", { founderPhone: "+91 90000 00003", city: "Pune", status: "ai_evaluated" });
