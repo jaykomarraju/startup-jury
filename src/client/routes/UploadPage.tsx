@@ -240,7 +240,6 @@ function StaffUpload() {
       slides: null,
       issues: stagedDeckIssues({ name: draft.name, size: draft.size, type: draft.file?.type }),
       checked: false,
-      markedIncomplete: false,
       flags: {},
       sentToQuery: false,
     };
@@ -455,10 +454,6 @@ function StaffUpload() {
           const selectable = staged.filter(isUploadable);
           const next = selectable.some((d) => !d.checked);
           setStaged((list) => list.map((d) => (isUploadable(d) ? { ...d, checked: next } : d)));
-        }}
-        onMarkIncomplete={(key) => {
-          patch(key, (d) => ({ markedIncomplete: !d.markedIncomplete, checked: false }));
-          setActiveKey(key);
         }}
         onBack={() => setView("wizard")}
         onUpload={uploadSelected}

@@ -25,6 +25,11 @@ export interface SingleDetails {
  * nothing is stored and no credit is consumed — until the operator ticks it and
  * clicks "Upload selected decks"; after that `deckId` is set and `deck` follows
  * the AI as it reads the deck.
+ *
+ * `markedIncomplete` was removed by S2-UPLOAD with the "Mark incomplete" button
+ * it existed for (feedback row 2). It had exactly one writer and no reader
+ * outside this screen, so it is deleted rather than pinned to false; the deck's
+ * real Incomplete verdict comes from the AI, through `intakeStatusOf(deck)`.
  */
 export interface StagedDeck {
   key: string;
@@ -41,7 +46,6 @@ export interface StagedDeck {
   slides: number | null;
   issues: StagedIssue[];
   checked: boolean;
-  markedIncomplete: boolean;
 
   deckId?: string;
   uploadError?: string;
