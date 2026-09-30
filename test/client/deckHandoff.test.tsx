@@ -24,6 +24,32 @@ import { deckListRoute } from "../../src/shared/queries";
  *
  * The Dashboard end of the hand-off (the guard on the option itself) is pinned
  * in `allDecks.test.tsx`; this file is the RECEIVING end of both.
+ *
+ * ── S2-DASH · 2026-09-30 — WHY THE QUERY FIXTURES CARRY `queried` NOW ───────
+ *
+ * The client's 24-Sep row 3: an incomplete deck must not reach the Query screen
+ * automatically, only when Send to Query is clicked. S0-VOCAB implemented that
+ * inside `deckListRoute` and parked it on one line —
+ * `QUERY_MEMBERSHIP_IS_DERIVED_PENDING_ROW3`, which **S2-SERVER flips**. The
+ * mock below routes its fixtures through that same function on purpose (a
+ * fixture cannot hand a screen a deck the real response would withhold), so the
+ * flip would have emptied the Query list and reddened every test in the first
+ * describe at once — six failures, none of them about the hand-off, and S0-VOCAB
+ * measured them and assigned them here.
+ *
+ * So the Query-side fixtures now say what row 3 makes them say: **a deck is on
+ * the Query list because it was SENT there** (`queried`), not because it is
+ * incomplete. That is true under both readings of the flag, so this file no
+ * longer depends on which one is live, and it stopped depending on the wrong
+ * thing rather than being pinned to today's answer.
+ *
+ * One consequence measured while doing it, and handed on rather than fixed here:
+ * `isQueryStageWindow` (`shared/queries.ts`) does not contain `ai_evaluated`, so
+ * a deck sent to Query from the EVALUATED population — the "evaluated, then
+ * stripped of a required detail" case, which is PayRoute below — falls off the
+ * Query list the moment the derivation stops carrying it. Under row 3 that is
+ * the one deck a click cannot keep listed. Flagged in `docs/parity-requests/S2-DASH.md`
+ * for S2-SERVER / S-INT; it is not this file's to change.
  */
 
 vi.mock("../../src/client/auth/useAuth", () => ({
@@ -63,10 +89,16 @@ function deck(over: Partial<DeckView>): DeckView {
   return { id: "d", name: "Deck", status: "AI Evaluated", statusId: "ai_evaluated", ...over };
 }
 
-/** Two assignable, two routed to Query — one per arm of the partition. */
+/** Two assignable, two sent to Query — one per arm of the partition. */
 const FINSTACK = deck({ id: "d_fin", name: "FinStack", sector: "B2B Fintech", stage: "Seed", aiScore: 7.2 });
 const GREENGRID = deck({ id: "d_green", name: "GreenGrid", sector: "Climatetech", stage: "Pre-seed", aiScore: 9.1 });
-/** Evaluated, then stripped of a required detail — plan §4.1 case (b). */
+/**
+ * Evaluated, then stripped of a required detail — plan §4.1 case (b). This is
+ * the ASSIGN side's subject: V4-ROUTE keeps such a deck drawn in the Assign
+ * screen's column 1, greyed and untickable, rather than vanishing it, and that
+ * is what the last test here asserts. It is deliberately NOT queried — under
+ * row 3 it is on neither list until somebody sends it.
+ */
 const PAYROUTE = deck({
   id: "d_pay",
   name: "PayRoute",
@@ -76,6 +108,13 @@ const PAYROUTE = deck({
   complete: true,
   missingFields: ["founderPhone"],
 });
+/**
+ * The two QUERY-side decks, and both of them carry `queried`, which is row 3:
+ * they are on that list because a query was raised on them. Both sit at stage
+ * `incomplete`, inside the window `isQueryStageWindow` keeps a queried deck
+ * listed in, so `deckListRoute` answers "query" under either reading of
+ * `QUERY_MEMBERSHIP_IS_DERIVED_PENDING_ROW3`.
+ */
 const AGRICHAIN = deck({
   id: "d_agri",
   name: "AgriChain",
@@ -84,9 +123,20 @@ const AGRICHAIN = deck({
   founder: "Neha Iyer",
   founderEmail: "neha@agrichain.in",
   missingFields: ["founderPhone"],
+  queried: true,
+});
+const SOLARC = deck({
+  id: "d_solar",
+  name: "SolarCrest",
+  status: "Incomplete",
+  statusId: "incomplete",
+  founder: "Arjun Mehta",
+  founderEmail: "arjun@solarcrest.in",
+  aiComplete: false,
+  queried: true,
 });
 
-const DECKS = [FINSTACK, GREENGRID, PAYROUTE, AGRICHAIN];
+const DECKS = [FINSTACK, GREENGRID, PAYROUTE, AGRICHAIN, SOLARC];
 
 beforeEach(() => {
   // Routed with `deckListRoute` — the same function the server partitions on —
@@ -143,10 +193,10 @@ function mount(page: "assign" | "query", state?: { deckIds: string[] }) {
 
 describe("the Assign → Query hand-off (item 5)", () => {
   it("opens with the handed-over founders selected", async () => {
-    mount("query", { deckIds: ["d_pay", "d_agri"] });
-    await screen.findByRole("checkbox", { name: "Select PayRoute" });
+    mount("query", { deckIds: ["d_solar", "d_agri"] });
+    await screen.findByRole("checkbox", { name: "Select SolarCrest" });
 
-    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Select PayRoute" })).toBeChecked());
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Select SolarCrest" })).toBeChecked());
     expect(screen.getByRole("checkbox", { name: "Select AgriChain" })).toBeChecked();
   });
 
@@ -154,18 +204,18 @@ describe("the Assign → Query hand-off (item 5)", () => {
   // everything unticked, which is what the operator has been seeing.
   it("without it, nothing is selected — which is the defect", async () => {
     mount("query");
-    await screen.findByRole("checkbox", { name: "Select PayRoute" });
-    expect(screen.getByRole("checkbox", { name: "Select PayRoute" })).not.toBeChecked();
+    await screen.findByRole("checkbox", { name: "Select SolarCrest" });
+    expect(screen.getByRole("checkbox", { name: "Select SolarCrest" })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Select AgriChain" })).not.toBeChecked();
   });
 
   // The guard: the hand-off is a suggestion, the server's list is the fact. An
   // id that is not on this screen is dropped rather than conjuring a row.
   it("ignores an id the Query list does not hold", async () => {
-    mount("query", { deckIds: ["d_pay", "d_fin", "nonexistent"] });
-    await screen.findByRole("checkbox", { name: "Select PayRoute" });
+    mount("query", { deckIds: ["d_solar", "d_fin", "nonexistent"] });
+    await screen.findByRole("checkbox", { name: "Select SolarCrest" });
 
-    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Select PayRoute" })).toBeChecked());
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Select SolarCrest" })).toBeChecked());
     // FinStack is assignable, so it is not on this screen at all…
     expect(screen.queryByRole("checkbox", { name: "Select FinStack" })).toBeNull();
     // …and exactly one row ended up selected.
@@ -175,15 +225,15 @@ describe("the Assign → Query hand-off (item 5)", () => {
   // StrictMode mounts every effect twice. A seed that re-runs would undo the
   // operator's first deselection — the trap this codebase has paid for before.
   it("does not re-tick a row the operator has just unticked (StrictMode)", async () => {
-    mount("query", { deckIds: ["d_pay", "d_agri"] });
-    const pay = await screen.findByRole("checkbox", { name: "Select PayRoute" });
-    await waitFor(() => expect(pay).toBeChecked());
+    mount("query", { deckIds: ["d_solar", "d_agri"] });
+    const solar = await screen.findByRole("checkbox", { name: "Select SolarCrest" });
+    await waitFor(() => expect(solar).toBeChecked());
 
-    fireEvent.click(pay);
-    expect(pay).not.toBeChecked();
+    fireEvent.click(solar);
+    expect(solar).not.toBeChecked();
     // Give the effect every chance to fire again.
     await waitFor(() => expect(screen.getByRole("checkbox", { name: "Select AgriChain" })).toBeChecked());
-    expect(pay).not.toBeChecked();
+    expect(solar).not.toBeChecked();
   });
 
   /**
@@ -203,13 +253,13 @@ describe("the Assign → Query hand-off (item 5)", () => {
       delivered: true,
     } as Awaited<ReturnType<typeof recordQuery>>);
 
-    mount("query", { deckIds: ["d_pay", "d_agri"] });
-    const pay = await screen.findByRole("checkbox", { name: "Select PayRoute" });
-    await waitFor(() => expect(pay).toBeChecked());
+    mount("query", { deckIds: ["d_solar", "d_agri"] });
+    const solar = await screen.findByRole("checkbox", { name: "Select SolarCrest" });
+    await waitFor(() => expect(solar).toBeChecked());
 
-    // The operator drops PayRoute and writes to AgriChain alone.
-    fireEvent.click(pay);
-    expect(pay).not.toBeChecked();
+    // The operator drops SolarCrest and writes to AgriChain alone.
+    fireEvent.click(solar);
+    expect(solar).not.toBeChecked();
 
     fireEvent.click(screen.getByRole("tab", { name: /Email query/ }));
     const body = (await screen.findByRole("textbox", { name: "Body" })) as HTMLTextAreaElement;
@@ -230,8 +280,8 @@ describe("the Assign → Query hand-off (item 5)", () => {
     );
 
     fireEvent.click(screen.getByRole("tab", { name: /Founder queries/ }));
-    const payAfter = await screen.findByRole("checkbox", { name: "Select PayRoute" });
-    expect(payAfter).not.toBeChecked();
+    const solarAfter = await screen.findByRole("checkbox", { name: "Select SolarCrest" });
+    expect(solarAfter).not.toBeChecked();
   });
 });
 
@@ -253,20 +303,53 @@ describe("the Dashboard → Assign hand-off (item 4)", () => {
   // The roster is `?list=assign`, and it is the authority. A deck the partition
   // sent to Query cannot be ticked here by arriving with its id in hand — which
   // is the whole of item 4 stated from the receiving side.
+  //
+  // The subject is AgriChain rather than PayRoute since S2-DASH: AgriChain is on
+  // `?list=query` because it was SENT there (`queried`), which is row 3's
+  // reading and is true whichever way
+  // `QUERY_MEMBERSHIP_IS_DERIVED_PENDING_ROW3` is set. See the test below for
+  // what PayRoute now measures instead.
   it("ignores a deck the Assign roster does not hold", async () => {
-    mount("assign", { deckIds: ["d_pay"] });
+    mount("assign", { deckIds: ["d_agri"] });
     await screen.findByRole("checkbox", { name: "Select GreenGrid" });
 
-    // PayRoute IS drawn in column 1 — V4-ROUTE keeps the marked-incomplete
+    // AgriChain IS drawn in column 1 — V4-ROUTE keeps the marked-incomplete
     // decks visible there, greyed and untickable, rather than vanishing them.
     // Arriving with its id in hand must not tick it anyway.
-    const box = screen.getByRole("checkbox", { name: "Select PayRoute" });
+    const box = screen.getByRole("checkbox", { name: "Select AgriChain" });
     expect(box).toBeDisabled();
     expect(box).not.toBeChecked();
     expect(box.closest("li")).toHaveAttribute("data-testid", "assign-incomplete-row");
     // And nothing assignable was ticked in its place.
     for (const row of screen.getAllByTestId("assign-deck-row")) {
       expect(within(row).getByRole("checkbox")).not.toBeChecked();
+    }
+  });
+
+  /**
+   * …and the same invariant for a deck on **neither** list, which is a state row
+   * 3 creates and the old partition could not express.
+   *
+   * PayRoute is evaluated and then stripped of a required detail, and nobody has
+   * sent it anywhere. Before row 3 the derivation put it on `?list=query` with no
+   * click; after it, it is on neither list — off Assign because it is not marked
+   * complete, off Query because nobody raised a query. It is not lost: the
+   * uploaded status screen draws every deck always, which is his own display
+   * rule, and the Dashboard row menu is where it is sent onward.
+   *
+   * **Measured, and handed on rather than fixed here:** this is also what takes
+   * PayRoute out of the Assign screen's greyed column-1 rows, because those come
+   * from `?list=query` (`AssignPage` `incomplete`). V4-ROUTE's "keep the
+   * marked-incomplete decks visible" therefore stops applying to the EVALUATED
+   * arm the moment the flag flips. `AssignPage.tsx` and `assign.test.tsx` belong
+   * to no session in this wave; flagged in `docs/parity-requests/S2-DASH.md`.
+   */
+  it("and a deck on neither list ticks nothing at all", async () => {
+    mount("assign", { deckIds: ["d_pay"] });
+    await screen.findByRole("checkbox", { name: "Select GreenGrid" });
+
+    for (const box of screen.getAllByRole("checkbox")) {
+      expect(box, box.getAttribute("aria-label") ?? "").not.toBeChecked();
     }
   });
 });

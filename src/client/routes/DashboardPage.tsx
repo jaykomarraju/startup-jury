@@ -55,28 +55,29 @@ import {
   type IcVotes,
   type IcVoteValue,
   type PipelineEvent,
+  type ConfigSummary,
 } from "../api";
 import { cohortRating, weightedTotal } from "../../shared/scoring";
 import {
   deckStats,
   icMemberStats,
-  isArchivedDeck,
   latestTimestamp,
   matchesIcStat,
   matchesStat,
   matchesV3Stat,
   pipelineProgress,
+  screeningStatus,
+  screeningStatusRank,
   v3DeckStats,
-  v3StatusKey,
-  V3_STATUS_LABELS,
+  SCREENING_STATUS_LABELS,
   vcFunnelLabel,
   vcReached,
   type DeckStat,
   type IcStatKey,
   type MyBallot,
+  type ScreeningValue,
   type StatKey,
   type V3StatKey,
-  type V3StatusKey,
 } from "../../shared/deckStats";
 // V3-DASH — the Shortlisted table's Sign-up status column reads the REAL
 // sign-up record, the same source the Sign up Pipeline screen reads.
@@ -91,7 +92,7 @@ import { canAccessNav, reachableNav } from "../../shared/nav";
 // existed because "the Status word cannot show the mark". Item 3 gave the
 // Status word the vocabulary to show it — `v3StatusKey` — so the tag is gone
 // and the word carries it.)
-import { ASSIGNABLE_STAGES, deckListRoute } from "../../shared/queries";
+import { deckListRoute, QUERYABLE_STAGES } from "../../shared/queries";
 import type { Edition } from "../../shared/roles";
 import { useActiveContext } from "../activeContext";
 
@@ -115,37 +116,206 @@ function relativeTime(iso: string): string {
 }
 
 /**
- * V3-DASH — the Status column's words. Three come verbatim from
- * `adRenderTable`'s `stMap`: `{aieval:['up-st-ok','AI Evaluated'],
- * noteval:['up-st-amber','Not AI Evaluated'], incomplete:['up-st-inc',
- * 'Incomplete deck']}`.
+ * S2-DASH — the Status column's tones, one per value of the client's 24-Sep
+ * screening vocabulary (`SCREENING_STATUS_LABELS`, sixteen strings).
  *
- * S1-DASH item 3 adds the fourth — **Incomplete contact details** — which the
- * client asked for on 2026-09-21 and the prototype does not have. Both
- * incomplete words are red, as `up-st-inc` is; they are two causes of the same
- * red state, not two severities, and the row's own contact cells already say
- * which fields are blank.
+ * The WORD is `screeningStatus`'s and lives in `src/shared/deckStats.ts`, which
+ * is where the tests read it from; this map is the only part that needs a DOM.
+ * `Record<ScreeningValue, …>` rather than a `Partial`, so a status added to the
+ * union is a compile error here instead of an untoned pill at render time.
  *
- * The tone map only; the WORD is `v3StatusKey`'s, which is shared with the
- * tests and needs no DOM.
+ * The prototype's own three tones are the ones it had (`up-st-ok` green,
+ * `up-st-amber` amber, `up-st-inc` red); the thirteen new values take the tone
+ * of the thing they are a variant of, and the two neutral sinks are grey.
  */
-const V3_STATUS_TONES: Record<V3StatusKey, PillTone> = {
-  aieval: "green",
-  noteval: "amber",
+const V3_STATUS_TONES: Record<ScreeningValue, PillTone> = {
+  // Nothing has failed yet, and nothing has been decided either.
+  awaitingAi: "amber",
+  // The three fresh failures, and their Edited twins: one red state with
+  // several causes, exactly as `up-st-inc` is one class.
+  bothIncomplete: "red",
   incompleteDeck: "red",
+  incompleteDeckEdited: "red",
   incompleteContact: "red",
+  incompleteContactEdited: "red",
+  // The transient re-check: in flight, not a verdict.
+  contactEdited: "amber",
+  belowThreshold: "red",
+  belowThresholdEdited: "red",
+  rejected: "red",
+  complete: "green",
+  completeEdited: "green",
+  // His open item. Red, because it is a deck nobody can act on any more.
+  noResponse: "red",
+  // The three sinks. Queried is in flight with the founder (blue, as the
+  // Queried chip it replaces was); Assigned is allocated (blue, as the Assigned
+  // chip was); Archived is set aside (grey, as its chip was).
+  queried: "blue",
+  assigned: "blue",
+  archived: "grey",
 };
 
 /**
- * The tooltip under an incomplete Status word: what an operator can DO about
- * it. `deckListRoute` has already sent both of these rows to the Query list, so
- * the hint is the routing fact, not a guess.
+ * The tooltip under a Status word: what an operator can DO about it.
+ *
+ * **Rewritten for row 3.** The two hints this replaces each said "it is on
+ * Query, not Assign" — a routing fact that came from `deckListRoute` deriving
+ * Query membership from incompleteness. Row 3 deletes that derivation: an
+ * incomplete deck reaches the Query screen when somebody clicks Send to Query
+ * and not before, so both sentences are now false. What replaces them is the
+ * ACTION the row's own whitelist offers (`V3_ACTIVE_ACTIONS`), which is the
+ * thing the operator actually needs told.
+ *
+ * `Partial`, because most statuses need no gloss beyond their own word.
  */
-const V3_STATUS_HINTS: Partial<Record<V3StatusKey, string>> = {
+const V3_STATUS_HINTS: Partial<Record<ScreeningValue, string>> = {
   incompleteDeck:
-    "The AI could not read or score this deck — it is on Query, not Assign. Re-evaluating it after a re-upload is what clears this.",
+    "The AI could not read or score this deck; the founder's details are complete. Send to Query asks them for a better deck.",
+  incompleteDeckEdited:
+    "The contact details were edited and the deck itself is still unreadable. Send to Query asks the founder for a better one.",
   incompleteContact:
-    "Required founder details are missing — this deck is on Query, not Assign. Filling them in here (Actions ▾ · Edit) clears it.",
+    "Required founder details are missing, so this deck cannot be emailed. Fill them in here (Actions ▾ · Edit).",
+  incompleteContactEdited:
+    "The details were edited and something required is still blank, so this deck still cannot be emailed.",
+  belowThreshold: "Scored below the AI screening gate. Reject, or set it aside.",
+  belowThresholdEdited: "The details were edited; the score is still below the AI screening gate.",
+  contactEdited: "Saving the details, then re-running the three checks.",
+  noResponse:
+    "Queried, and the founder has not answered inside five working days. Archive (no response) is the way out.",
+  queried: "Sent to Query. Nothing else is active on this deck until the founder answers.",
+  assigned: "Sent to Assign. Pick an evaluator on the Assign screen.",
+};
+
+/**
+ * The select's option values for the three things that are NOT pipeline
+ * transitions — two guarded navigations and the inline contact edit. The `__`
+ * prefix keeps them out of the `deck.actions` namespace, which is where every
+ * other option value comes from, and it is the convention the select already
+ * used.
+ */
+const V3_ASSIGN = "__assign";
+const V3_QUERY = "__query";
+const V3_EDIT = "__edit";
+
+/**
+ * A whitelist entry meaning **this status declines to narrow: the permission
+ * layer decides alone.**
+ *
+ * Exactly one status uses it, and it is the one status that is OURS and not
+ * his. `awaitingAi` is C3 — his row 6 deletes "Not AI Evaluated", but it is a
+ * populated stat box as well as a word, so we kept the tile and gave it a pill.
+ * His §4 flow diagram *begins* at "Deck complete?", so it says nothing whatever
+ * about what an operator may do to a deck the AI has not read yet, and there is
+ * nothing to read a whitelist off. Narrowing it anyway would delete real
+ * workflow he never mentioned — `submit_for_ai` on an `uploaded` deck,
+ * `send_to_review` on a `pending_ai` one, `approve_review` on a `manual_review`
+ * one — so for this state the permission layer is left as the only authority,
+ * which is what the screen did before his spec arrived. Flagged in the handoff
+ * with C3 rather than resolved as a preference.
+ */
+const V3_PERMISSION_LAYER_ONLY = "*";
+
+/**
+ * ── THE ELEVEN-ROW WHITELIST (his §5 matrix · C6) ────────────────────────────
+ *
+ * Which actions his spec leaves ACTIVE at each status. Everything else the row
+ * renders is disabled with the status as its remark. This is the ENABLEMENT
+ * layer and it only ever narrows; `deck.actions` stays the PERMISSION layer and
+ * the two are deliberately not collapsed (see `v3ActionCell`).
+ *
+ * `Record<ScreeningValue, …>` rather than a lookup with a default, so a status
+ * added to the union is a **compile error here** instead of a silent
+ * `undefined` that would read as "nothing is active" at render time. Sixteen
+ * keys, checked by the compiler and again by a test.
+ *
+ * ── THE FIVE DEVIATIONS FROM HIS LITERAL TEXT, AND THE REASON FOR EACH ──────
+ * (`docs/plan_screening.md` §2, C4–C8. Each is a client question with the
+ * shipped fallback recorded; none is a preference.)
+ *
+ *  · **Send to Query ACTIVE at `incompleteDeck` (C4 · Q4).** His matrix lists it
+ *    in NEITHER column for that row, yet the row's own *next step* column fires
+ *    it, and his row 5 makes the enabling event impossible (it requires the
+ *    contact details to have been edited, but at this status the contact is
+ *    already complete). His own stated reason for row 3 is that a deck with
+ *    incomplete CONTACT cannot be emailed — here the contact is fine. The
+ *    alternative leaves the state with no exit but Edit-to-nowhere. The largest
+ *    hole in the document; shipped active.
+ *
+ *  · **Archive ACTIVE EVERYWHERE (C5 · Q5).** His matrix disables Archive on
+ *    `Incomplete deck` and enables it on `Both incomplete`, which is a strictly
+ *    worse deck. A worse deck cannot gain a capability. Archive-as-a-state
+ *    (2026-09-23) already assumes any deck can be set aside and stay visible.
+ *
+ *  · **Edit and Archive ACTIVE at `complete` (C8 · Q8).** His row offers only
+ *    Send to Assign, which makes a typo in a complete deck's contact details
+ *    uncorrectable and a complete deck the one thing that cannot be set aside
+ *    while every failing state can. Almost certainly an omission.
+ *
+ *  · **"Disabled: all buttons except Archive" is read as a drafting artefact**
+ *    (C6). At `Below threshold`, `Incomplete decks, Edited` and `Below
+ *    threshold, Edited` that sentence cancels his own *Active* column. The
+ *    whitelist is the specification; per C5 Archive stays enabled.
+ *
+ *  · **`restore` SURVIVES on the two exit states (§2).** His machine has no
+ *    Restore. We shipped one as Aug-2026 issue 31 (`restore` from `rejected`
+ *    and from `archived`, both back to `ai_evaluated`) and his silence is not a
+ *    deletion — a whitelist read literally over the sinks would have deleted the
+ *    only way back out of Archived, which is the one place his own row 7 latch
+ *    has no exit at all.
+ *
+ * ── WHAT THE WHITELIST COSTS, STATED ────────────────────────────────────────
+ * Post-screening transitions the Dashboard row menu used to offer now render
+ * DISABLED: `shortlist`, `reject`, `schedule_intro`, `send_signup`,
+ * `founder_response`, `start_jury_eval`, `submit_for_ai`. That is his matrix
+ * applied, and nothing becomes unreachable in the product — `StagePage` still
+ * offers `deck.actions` in full (minus `assign_jury`) on Jury Pipeline and
+ * Prog-manager pipeline, which is where those decisions are taken. The one
+ * genuinely narrowed path is `founder_response` as a manual override; the real
+ * resubmit loop, `POST /api/queries/:id/respond`, is untouched. Recorded in the
+ * handoff, not decided here.
+ */
+const V3_ACTIVE_ACTIONS: Record<ScreeningValue, readonly string[]> = {
+  // C3 — ours, not his. See `V3_PERMISSION_LAYER_ONLY`.
+  awaitingAi: [V3_PERMISSION_LAYER_ONLY],
+
+  // ── His eleven intermediates, in his §4 flow's order ────────────────────
+  // I3 · ¬D ∧ ¬C
+  bothIncomplete: [V3_EDIT, "archive"],
+  // I2 · ¬D ∧ C — Send to Query per C4, Archive per C5.
+  incompleteDeck: [V3_EDIT, V3_QUERY, "archive"],
+  // I9 · edited, contact now fine, deck still not.
+  incompleteDeckEdited: [V3_QUERY, "archive"],
+  // I1 · D ∧ ¬C — his row 4: BOTH handoffs disabled, because the deck cannot
+  // be emailed and it cannot be assigned either.
+  incompleteContact: [V3_EDIT, "archive"],
+  // I8 · edited, contact still not fine. Archive only, and that is his.
+  incompleteContactEdited: ["archive"],
+  // I7 · the transient re-check. Zero buttons is his own row, and it is the one
+  // status `screeningStatus` never returns — the cell renders it from the
+  // in-flight PATCH instead (`contactRecheck`).
+  contactEdited: [],
+  // I4 / I10 · D ∧ C ∧ ¬R. `reject_ai_gate` is the transition his "Reject" is,
+  // and at these two statuses its label "Reject (below AI gate)" is finally
+  // TRUE — today it is offered only from `ai_evaluated`, i.e. only on decks
+  // that passed the gate (S2-SERVER stops `FAIL_STAGE` moving them out).
+  belowThreshold: ["reject_ai_gate", "archive"],
+  belowThresholdEdited: ["reject_ai_gate", "archive"],
+  // I5 · his Rejected row: Archive, which is what takes it to the sink. Plus
+  // `restore`, per §2.
+  rejected: ["archive", "restore"],
+  // I6 / I11 · D ∧ C ∧ R — the one pair that can be sent to Assign.
+  complete: [V3_ASSIGN, V3_EDIT, "archive"],
+  completeEdited: [V3_ASSIGN, "archive"],
+
+  // ── His open item, and his three sinks (row 7's latch) ──────────────────
+  // C7 — the ONE re-armed action on a latched deck. Row 7 and his own open item
+  // cannot both hold literally; this is the narrowest exception that satisfies
+  // both, and the option renames itself "Archive (no response)".
+  noResponse: ["archive"],
+  queried: [],
+  assigned: [],
+  // Empty but for the way back in. See the `restore` deviation above.
+  archived: ["restore"],
 };
 
 /**
@@ -777,6 +947,26 @@ export function DashboardPage() {
   // Cohort thresholds are org config (admin-editable); default to the spec bands
   // until the summary loads.
   const [thresholds, setThresholds] = useState({ best: 7.0, mediocre: 5.0 });
+  /**
+   * The AI SCREENING GATE — his check (3), `R = aiScore >= gate`.
+   *
+   * **Not** `shortlist_threshold` (7.0) and **not** the cohort bands above it:
+   * C12 names the gate, and `routes/decks.ts:95-100` already records a past
+   * confusion between two of those three. `screeningStatus` takes `gate` as a
+   * REQUIRED parameter with no fallback of its own, deliberately — a constant
+   * beside the setting is how this product came to have three thresholds.
+   *
+   * S2-SERVER promotes the hardcoded `GATE = 5` (`src/server/ai/evaluate.ts`)
+   * to `org_scoring_settings.ai_gate_threshold` (migration `0082`, default 5.0)
+   * and serves it on the config summary. Until that lands the field is absent
+   * from the response AND from `ConfigSummary`, so it is read through a narrow
+   * local widening below and this initial value stands in. **It is one line to
+   * delete once `ConfigSummary.aiGateThreshold` is declared** — and it is the
+   * migration's own default, so no deck's verdict moves when it is.
+   * `src/client/types.ts` / `src/client/api.ts` belong to no session in this
+   * wave; flagged in the handoff.
+   */
+  const [aiGate, setAiGate] = useState(5.0);
   // Only set once the admin types — never seeded from the mount fetch, so a
   // late summary response cannot overwrite an edit in progress.
   const [thresholdDraft, setThresholdDraft] = useState<{ best: string; mediocre: string } | null>(null);
@@ -816,6 +1006,18 @@ export function DashboardPage() {
   const [editDraft, setEditDraft] = useState<Record<string, string>>({});
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
+  /**
+   * S2-DASH · I7 — **the transient zero-button state**, and the only status
+   * `screeningStatus` never returns.
+   *
+   * His "Contact details edited" row is a system re-check with no buttons of its
+   * own, and the re-check is synchronous with `PATCH /api/decks/:id` — so it
+   * lasts for the duration of one request and must not be stored: storing it
+   * would be storing a request. This is `rowBusy` generalised, as the plan says
+   * (§3.2) — `rowBusy` alone cannot express it, because `runRowAction` sets it
+   * too and a transition is not a contact edit.
+   */
+  const [contactRecheck, setContactRecheck] = useState<string | null>(null);
   // V3-DASH — an open inline edit belongs to one row in one view. Leaving it
   // set across a stat-box change strands it: the Shortlisted shape has no
   // editable columns, so the row would draw a bare Save over nothing.
@@ -823,6 +1025,32 @@ export function DashboardPage() {
     setEditing(null);
     setRowError(null);
   }, [view]);
+  /**
+   * ── THE STATUS COLUMN SORT — NEW CONSTRUCTION ────────────────────────────
+   *
+   * There is **no column-sort primitive anywhere in this client**: `aria-sort`,
+   * `SortableHeader`, `onSort`, `sortDir`, `setSort`, `ArrowUpDown` and
+   * `ChevronUp` all return zero hits under `src/client/`. Headers are plain
+   * `<th>` from `ALL_DECKS_COLUMNS[shape]` and `rows` is sorted once,
+   * unconditionally, by activity descending — the prototype's own
+   * `(b.act||0)-(a.act||0)`.
+   *
+   * `null` is that default and stays the default; a click cycles
+   * `null -> ascending -> descending -> null`, so the prototype's order is
+   * reachable again rather than being a state the operator can only leave.
+   * Ascending is `SCREENING_STATUS_ORDER`, which is his §4 flow's own order —
+   * **never the label**, because alphabetically "AI Evaluated, Assigned" sorts
+   * first and "Archived" second, putting the two ends of the pipeline side by
+   * side as if archiving were a kind of assignment.
+   *
+   * **"Sortable on all stat boxes" cannot be literal.** Every box but
+   * Shortlisted shares the `v3Default` shape, and `v3Shortlisted` has no Status
+   * column at all (`["Startup name", "AI score", "Avg. score", "Signup status",
+   * "Actions"]`, from the prototype's own second `thead`). So the sort is
+   * offered on the six boxes that have the column and the preference is simply
+   * not applied on the seventh. Also in the handoff note.
+   */
+  const [statusSort, setStatusSort] = useState<"asc" | "desc" | null>(null);
   const [popover, setPopover] = useState<DeckView | null>(null);
   const [matrixFor, setMatrixFor] = useState<DeckView | null>(null);
 
@@ -878,7 +1106,14 @@ export function DashboardPage() {
       .then((r) => live && setPrograms(r.programs))
       .catch(() => live && setPrograms([]));
     getConfigSummary()
-      .then((c) => live && setThresholds({ best: c.thresholdBest, mediocre: c.thresholdMediocre }))
+      .then((c) => {
+        if (!live) return;
+        setThresholds({ best: c.thresholdBest, mediocre: c.thresholdMediocre });
+        // S2-SERVER's `ai_gate_threshold`. The widening is the whole of the
+        // coupling between the two sessions, and it disappears with the cast.
+        const served = (c as ConfigSummary & { aiGateThreshold?: number }).aiGateThreshold;
+        if (typeof served === "number") setAiGate(served);
+      })
       .catch(() => {});
     listDeckTags()
       .then((r) => live && setAllTags(r.tags))
@@ -1010,13 +1245,30 @@ export function DashboardPage() {
       // `list.sort(function(a,b){ return (b.act||0)-(a.act||0); })` — recent
       // activity first, which is what the "· 2h ago" clock on each row names.
       // A deck with no activity at all sorts last rather than first.
-      return (decks ?? [])
+      const out = (decks ?? [])
         .filter((d) => matchesV3Stat(d, view as V3StatKey))
         .slice()
         .sort((a, b) => activityAt(b) - activityAt(a));
+      // The STATUS sort is layered OVER that, never instead of it: `Array#sort`
+      // is stable (ES2019), so two decks at the same status keep the
+      // prototype's recent-activity order between them. Not applied on
+      // Shortlisted, whose shape has no Status column.
+      if (statusSort && view !== "shortlisted") {
+        // `screeningStatus` and NOT `v3Status`: the sort ranks the DERIVED
+        // status, so a row the operator happens to be saving does not jump
+        // position for the duration of one PATCH and land the click somewhere
+        // else. The transient is a cell, not an order.
+        const dir = statusSort === "asc" ? 1 : -1;
+        out.sort(
+          (a, b) =>
+            dir * (screeningStatusRank(screeningStatus(a, { gate: aiGate })) -
+              screeningStatusRank(screeningStatus(b, { gate: aiGate }))),
+        );
+      }
+      return out;
     }
     return (decks ?? []).filter((d) => matchesStat(edition, d, view as StatKey));
-  }, [isJury, isIc, isV3Dash, mine, atIc, ballots, decks, edition, view]);
+  }, [isJury, isIc, isV3Dash, mine, atIc, ballots, decks, edition, view, statusSort, aiGate]);
 
   const shape: TableShape = isJury
     ? view === "submitted"
@@ -1321,8 +1573,16 @@ export function DashboardPage() {
    *  • **`complete_signup`** is the sign-up bypass: "a sign-up completes on the
    *    countersign, not on a click". Same reason the Shortlisted shape's
    *    Sign-up status cell is read-only (Q33).
+   *  • **`flag_incomplete`** — S2-UPLOAD's row 2, and the one line that keeps it
+   *    from being a relocation instead of a deletion. The client's row 2 removes
+   *    "Mark incomplete" from the Upload review screen because the product
+   *    decides completeness itself; `manual_review -> incomplete` is the same
+   *    capability, and it is live in THIS menu, so deleting the upload button
+   *    alone would leave a `manual_review` deck still offering "Flag incomplete"
+   *    here. Withheld rather than merely disabled: a disabled option still
+   *    prints the name of a capability he asked us to stop offering.
    */
-  const V3_EXCLUDED_ACTIONS = new Set(["assign_jury", "complete_signup"]);
+  const V3_EXCLUDED_ACTIONS = new Set(["assign_jury", "complete_signup", "flag_incomplete"]);
 
   async function runRowAction(deck: DeckView, action: DeckAction) {
     setRowBusy(deck.id);
@@ -1340,6 +1600,12 @@ export function DashboardPage() {
 
   async function saveRowEdit(deck: DeckView) {
     setRowBusy(deck.id);
+    // I7 · his "Contact details edited" — the row shows that word and no active
+    // button while the save and its re-derive are in flight. `PATCH
+    // /api/decks/:id` re-derives both completeness columns upward and writes the
+    // `edit_contact` event, so by the time the reload below returns the row has
+    // moved on to one of the four Edited statuses on its own.
+    setContactRecheck(deck.id);
     setRowError(null);
     try {
       await updateDeckDetails(deck.id, {
@@ -1355,6 +1621,7 @@ export function DashboardPage() {
       setRowError(`Couldn't save ${deck.name}. Try again.`);
     } finally {
       setRowBusy(null);
+      setContactRecheck(null);
     }
   }
 
@@ -1365,86 +1632,108 @@ export function DashboardPage() {
     { name: "city", label: "City", read: (d: DeckView) => d.city },
   ] as const;
 
-  // ── S1-DASH items 2, 4, 5 — the prototype's four options, guarded ────────
+  // ── S2-DASH — the action cell is a WHITELIST (his §5 matrix · C6) ─────────
   //
-  // `adAction(i,val)` offers Send to Assign · Send to Query · Edit · Archive
-  // against in-memory data. Two of the four do not survive contact with the
-  // server, which is why item 2 is a change of KIND rather than a relabel
-  // (plan §12.3):
-  //
-  //   · `archive` is `rejected -> archived` only (src/pipeline/incubator.ts),
-  //     so a one-click Archive from `ai_evaluated` is a 403;
-  //   · "Send to Query" is not a transition at all — the prototype's version
-  //     sets `d.queried=true` and toasts "Query email sent", and here that
-  //     means actually emailing a founder a letter nobody composed.
-  //
-  // Both are BLOCKED on a client answer and render disabled with the reason.
-  // The transitions the server does permit stay in the menu underneath: built
-  // literally, item 2 would delete Reject (below AI gate), Shortlist and
-  // Schedule intro call from the screen, which nobody asked for.
+  // **ONE defect, not eleven.** His 24-Sep matrix reads, per status, "Active
+  // buttons: X, Y. Disabled: everything else" — a per-status WHITELIST. What
+  // shipped on 21-Sep is a BLACKLIST: `deck.actions` minus `V3_EXCLUDED_ACTIONS`
+  // minus `archive`, plus two guarded navigations, so every transition the
+  // server happens to permit from the deck's stage renders ACTIVE. That is the
+  // single reason ten of his eleven rows show "extra active options" against the
+  // build (Reject (below AI gate), Founder responded, Restore, Edit) — not
+  // eleven omissions, one inverted mechanism. `V3_ACTIVE_ACTIONS` above is the
+  // inversion; everything below is the two layers meeting.
 
   /**
-   * Item 4 — may this row be sent to Assign, and if not, why not?
+   * **One source for a row's screening status**, read by both the Status cell
+   * and the action menu.
    *
-   * The predicate is `deckListRoute`, the same function `GET /api/decks?list=`
-   * partitions the two screens with. **Not a second one**: a menu that offers
-   * Assign for a deck the Assign list will not hold is precisely the defect.
+   * Two things could otherwise drift apart: the transient I7 override lives on
+   * `contactRecheck` and the gate lives on `aiGate`, and a cell showing one
+   * status while the menu whitelists another is the shape of defect this
+   * session exists to remove. Today the two cannot visibly disagree — while
+   * `contactRecheck` is set, `editing` is too, so the action cell draws the
+   * Save button and never reaches the whitelist — but that is a coincidence of
+   * two pieces of state, not an invariant, so it is not relied on.
+   */
+  function v3Status(deck: DeckView): ScreeningValue {
+    // I7 · the transient. `screeningStatus` never returns it by design; the
+    // in-flight PATCH is the only thing that knows.
+    if (contactRecheck === deck.id) return "contactEdited";
+    return screeningStatus(deck, { gate: aiGate });
+  }
+
+  /**
+   * The PERMISSION half of Send to Assign: will the Assign roster hold this row?
    *
-   * Send to Assign is guarded NAVIGATION, not a transition. The prototype's own
+   * `deckListRoute` — the same function `GET /api/decks?list=` partitions the
+   * two screens with, and **not a second predicate**: a menu that offers Assign
+   * for a deck the Assign list will not hold is precisely the defect. Send to
+   * Assign is guarded NAVIGATION, not a transition: the prototype's own
    * `addToAssign` pushes the row onto `asDecks` with `assigned:false` — it puts
-   * the deck on the Assign LIST, it does not pick an evaluator — and our Assign
-   * roster already lists every deck the partition routes there. So the click
-   * carries the selection to `/app/assign`; `assign_jury` stays withheld for
-   * the reason below (Q32).
+   * the deck on the Assign LIST, it does not pick an evaluator — so the click
+   * carries the selection to `/app/assign`, and `assign_jury` stays withheld
+   * (Q32). S2-SERVER's `send_to_assign` marker is what RECORDS the click; this
+   * function decides only whether it may be made.
+   *
+   * ── HIS ROW 1, AND WHY THIS FUNCTION LOST A BRANCH ────────────────────────
+   * It used to answer an in-`ASSIGNABLE_STAGES` deck marked incomplete with the
+   * row's own Status word and **no prefix at all** ("Send to Assign — incomplete
+   * contact details"). That is the string his row 1 asks us to prefix, and the
+   * branch is now unreachable: `incompleteContact`, `incompleteDeck` and
+   * `bothIncomplete` do not whitelist Send to Assign (his row 4), so the
+   * whitelist refuses the deck first and prints his own sentence — "as
+   * incomplete contact details". One reason, one place, and the vocabulary is
+   * not duplicated between the two layers.
+   *
+   * What is left is the STAGE arm, and row 1's one-word fix is applied to it:
+   * **"not available at Shortlisted" becomes "as Shortlisted"**, so every
+   * disabled remark on the row now opens with the same word he wrote.
    */
   function v3SendToAssign(deck: DeckView): { ok: boolean; reason: string } {
     const route = deckListRoute(deck, edition, { queried: deck.queried ?? false });
     if (route === "assign") return { ok: true, reason: "" };
-    // In the evaluated population but marked incomplete — the Status word in
-    // this very row already says which of the two causes it is, so reuse it
-    // rather than inventing a second wording for the same fact.
-    if (ASSIGNABLE_STAGES[edition].includes(deck.statusId ?? "")) {
-      return { ok: false, reason: V3_STATUS_LABELS[v3StatusKey(deck)].toLowerCase() };
-    }
-    return { ok: false, reason: `not available at ${deck.status ?? "this stage"}` };
+    return { ok: false, reason: `as ${deck.status ?? "this stage"}` };
   }
 
   /**
-   * Item 5 — the same guard, the other way round, plus the block.
+   * The PERMISSION half of Send to Query: may a clarification be RAISED here?
    *
-   * The guard is live and testable today: a row the partition does not route to
-   * Query cannot be sent there. The ACTION behind it is what waits on the
-   * client — one click here would email the founder (§12). Until that is
-   * answered the option names the Query screen, which is where a clarification
-   * letter is actually composed and reviewed before it is sent.
-   */
-  /**
-   * Item 5 — may this row be sent to Query, and if not, why not?
+   * Guarded navigation for the same reason as its mirror — the client's own row
+   * reads "should GO TO QUERY screen WHEN Send to Query is clicked", exactly as
+   * the Assign row reads "GO TO ASSIGN screen". It is not the prototype's
+   * `d.queried = true` + "Query email sent" toast, which here would mean
+   * emailing a founder a letter nobody composed; the letter is composed on the
+   * Query screen, which reads `state.deckIds`, so the click carries the
+   * selection and the operator sends from there.
    *
-   * The mirror of `v3SendToAssign`, and guarded NAVIGATION for the same reason:
-   * the client's own row reads "should GO TO QUERY screen WHEN Send to Query is
-   * clicked", exactly as the Assign row reads "GO TO ASSIGN screen". It is not
-   * the prototype's `d.queried = true` + "Query email sent" toast, which here
-   * would mean emailing a founder a letter nobody composed. The letter is
-   * composed on the Query screen, which has read `state.deckIds` since this
-   * wave — so the click carries the selection and the operator sends from
-   * there. Shipped disabled at first on a question this sentence had already
-   * answered; corrected 2026-09-23.
+   * ── THIS IS NO LONGER `deckListRoute(...) === "query"`, AND ROW 3 FORCES IT ─
+   * Until 24-Sep the two questions were one, because Query membership was
+   * DERIVED from incompleteness — so "is it on the Query list" also answered
+   * "may it be sent there". Row 3 deletes that derivation
+   * (`QUERY_MEMBERSHIP_IS_DERIVED_PENDING_ROW3`, one line, flipped by
+   * S2-SERVER): an incomplete deck nobody has sent is on NEITHER list. Left as
+   * it was, this guard would go **false at exactly the status his matrix needs
+   * it true on** — "Incomplete decks", whose only exit is Send to Query (C4) —
+   * the moment that flag flips, in another session's file, with nothing here
+   * saying so. Measured before writing this: `deckListRoute` with
+   * `deriveQuery: false` returns `null` for a stage-`incomplete` deck with no
+   * `queries` row, which is every such deck until somebody clicks.
+   *
+   * So it asks the two questions row 3 does NOT move:
+   *   · `QUERYABLE_STAGES` — where the product can raise a clarification at all;
+   *   · `queried` — his row 7 latch, already sent.
+   * The "may it be emailed" half is his row 3's own stated reason ("a deck with
+   * incomplete contact details cannot be emailed") and it belongs to the
+   * WHITELIST, which does not offer Send to Query at `incompleteContact`,
+   * `bothIncomplete` or `incompleteContactEdited`. That is his row 4.
    */
   function v3SendToQuery(deck: DeckView): { ok: boolean; reason: string } {
-    const route = deckListRoute(deck, edition, { queried: deck.queried ?? false });
-    // The GUARD, and it is real: a row the partition does not route to Query
-    // cannot be sent there whatever the menu offers. Same function the server
-    // partitions `GET /api/decks?list=` with, never a second predicate.
-    if (route === "query") return { ok: true, reason: "" };
-    // "Already queried" only where that is the OPERATIVE cause — i.e. the row
-    // would route to Query but for the flag. A deck that is off the list
-    // because it is assigned, and happens to have been queried weeks ago, is
-    // not kept off it BY the query, and saying so would name the wrong reason.
-    if (deck.queried === true && deckListRoute(deck, edition, { queried: false }) === "query") {
-      return { ok: false, reason: "already queried" };
+    if (deck.queried === true) return { ok: false, reason: "already queried" };
+    if (!QUERYABLE_STAGES[edition].includes(deck.statusId ?? "")) {
+      return { ok: false, reason: `as ${deck.status ?? "this stage"}` };
     }
-    return { ok: false, reason: "not on the Query list" };
+    return { ok: true, reason: "" };
   }
 
   /** `<select class="ad-act"><option value="">Actions ▾</option>…` */
@@ -1458,15 +1747,61 @@ export function DashboardPage() {
         </td>
       );
     }
-    // `archive` is drawn by the prototype's own option below, so it is not also
-    // listed here — when the server permits it (from Rejected) that option is
-    // the real transition, and when it does not the option says why.
+
+    // ── The ENABLEMENT layer: his active set for THIS row's status ──────────
+    const status = v3Status(deck);
+    const active = V3_ACTIVE_ACTIONS[status];
+    const narrows = !active.includes(V3_PERMISSION_LAYER_ONLY);
+    const enabled = (key: string) => !narrows || active.includes(key);
+    /** His own remark, verbatim in shape: "as incomplete contact details". */
+    const asStatus = `as ${SCREENING_STATUS_LABELS[status].toLowerCase()}`;
+
+    // ── The PERMISSION layer, untouched: what the SERVER permits this role to
+    // do from this STAGE. `archive` is drawn by the prototype's own option
+    // below, so it is not also listed among the generic transitions.
     const actions = (deck.actions ?? []).filter(
       (a) => !V3_EXCLUDED_ACTIONS.has(a.action) && a.action !== "archive",
     );
     const toAssign = v3SendToAssign(deck);
     const toQuery = v3SendToQuery(deck);
     const archive = (deck.actions ?? []).find((a) => a.action === "archive");
+
+    /**
+     * One option, both layers, and the remark of whichever layer refused.
+     *
+     * The whitelist is asked FIRST and its reason wins, because his matrix's
+     * reason is the one he wrote down: a deck is not offered Send to Assign
+     * because it is `incomplete contact details`, whatever the server would
+     * otherwise have permitted.
+     */
+    function opt(value: string, label: string, permitted: boolean, permissionReason: string) {
+      if (!enabled(value)) return { value, label: `${label} — ${asStatus}`, ok: false };
+      if (!permitted) return { value, label: `${label} — ${permissionReason}`, ok: false };
+      return { value, label, ok: true };
+    }
+
+    const options = [
+      opt(V3_ASSIGN, "Send to Assign", toAssign.ok, toAssign.reason),
+      opt(V3_QUERY, "Send to Query", toQuery.ok, toQuery.reason),
+      // Permitted by construction — the server computed them for this row.
+      ...actions.map((a) => opt(a.action, a.label, true, "")),
+      ...(withEdit ? [opt(V3_EDIT, "Edit", true, "")] : []),
+      opt(
+        "archive",
+        // C7's one re-armed action, and the only thing active on a latched
+        // sink: his open item needs a queried deck whose founder never answered
+        // archived, and `Incomplete, Queried` is latched. Named so the archive
+        // reason is visible before the click, not only in `exit_note` after it.
+        status === "noResponse" ? "Archive (no response)" : (archive?.label ?? "Archive"),
+        Boolean(archive),
+        // The server withheld the transition: either the stage has no `archive`
+        // edge (`onboard_ready`, `archived`) or this role does not hold it —
+        // `archive` is PM / admin / superuser, so a program associate never has
+        // it. One phrase, because the row cannot tell the two apart.
+        "not available to you here",
+      ),
+    ];
+
     return (
       <td className={td}>
         <select
@@ -1478,7 +1813,11 @@ export function DashboardPage() {
             // The select is controlled at "", so it snaps back on its own.
             const value = e.target.value;
             if (!value) return;
-            if (value === "__edit") {
+            // The whitelist is re-checked here for the same reason the two
+            // navigation guards are: a disabled <option> is a presentation
+            // fact, and the rule is not.
+            if (!enabled(value)) return;
+            if (value === V3_EDIT) {
               setEditing(deck.id);
               setEditDraft({
                 founder: deck.founder ?? "",
@@ -1488,17 +1827,14 @@ export function DashboardPage() {
               });
               return;
             }
-            if (value === "__assign") {
-              // Guarded navigation. The guard is also on the option itself, so
-              // this branch is unreachable from the UI — it is here because a
-              // disabled option is a presentation fact and the rule is not.
+            if (value === V3_ASSIGN) {
               if (toAssign.ok) navigate("/app/assign", { state: { deckIds: [deck.id] } });
               return;
             }
-            if (value === "__query") {
-              // The same shape, the other arm of the partition. `QueryPage`
-              // resolves the handed id against `?list=query` before ticking
-              // anything, so this carries a suggestion, not an instruction.
+            if (value === V3_QUERY) {
+              // `QueryPage` resolves the handed id against `?list=query` before
+              // ticking anything, so this carries a suggestion, not an
+              // instruction.
               if (toQuery.ok) navigate("/app/query", { state: { deckIds: [deck.id] } });
               return;
             }
@@ -1507,21 +1843,11 @@ export function DashboardPage() {
           }}
         >
           <option value="">Actions ▾</option>
-          <option value="__assign" disabled={!toAssign.ok}>
-            {toAssign.ok ? "Send to Assign" : `Send to Assign — ${toAssign.reason}`}
-          </option>
-          <option value="__query" disabled={!toQuery.ok}>
-            {toQuery.ok ? "Send to Query" : `Send to Query — ${toQuery.reason}`}
-          </option>
-          {actions.map((a) => (
-            <option key={a.action} value={a.action}>
-              {a.label}
+          {options.map((o) => (
+            <option key={o.value} value={o.value} disabled={!o.ok}>
+              {o.label}
             </option>
           ))}
-          {withEdit && <option value="__edit">Edit</option>}
-          <option value="archive" disabled={!archive}>
-            {archive ? archive.label : "Archive — only from Rejected"}
-          </option>
         </select>
       </td>
     );
@@ -1769,12 +2095,30 @@ export function DashboardPage() {
         );
       // ── Incubator · V3 superuser Dashboard ──
       case "v3Default": {
-        // S1-DASH item 3 — one word, four possible values, derived from
-        // (ai_complete, missing_fields). The red "Incomplete details" chip this
-        // replaced existed only because the three-word vocabulary could not say
-        // "contact details"; it can now, so the chip is gone rather than
-        // doubled up beside it.
-        const status = v3StatusKey(deck);
+        /**
+         * ── THE STATUS CELL IS NOW ONE STRING (his composed status) ─────────
+         *
+         * S1-DASH shipped a pill of four words plus up to FOUR additive chips —
+         * Assigned, Queried, Contact Details Edited, Archived. His spec asks for
+         * "Incomplete contact details, Edited" as a single composed VALUE, and a
+         * cell made of five independent elements cannot be sorted at all, which
+         * is why the merge is the PREREQUISITE for the STATUS column sort rather
+         * than a sibling of it.
+         *
+         * The composing happened in the VOCABULARY, not here: S0-VOCAB made the
+         * four Edited variants their own statuses, so `screeningStatus` returns
+         * one value, `SCREENING_STATUS_LABELS` gives one string, and
+         * `screeningStatusRank` sorts it. All four chips are gone.
+         *
+         * **One thing the chips said and the string does not**, recorded rather
+         * than smuggled back: a deck that was queried LONG AGO, answered, and
+         * has since been shortlisted used to keep a "Queried" chip for good.
+         * `Incomplete, Queried` is the sink for a deck that was sent and is not
+         * yet resolved (S0-VOCAB's `isQueriedSinkCurrent`), so such a row now
+         * reads `Complete` and its query history lives where history belongs —
+         * the deck's pipeline events. Flagged in the handoff.
+         */
+        const status = v3Status(deck);
         const hint = V3_STATUS_HINTS[status];
         const isEditing = editing === deck.id;
         const cell = (f: (typeof V3_EDIT_FIELDS)[number]) => {
@@ -1801,39 +2145,10 @@ export function DashboardPage() {
             <td className={td}>
               <ScoreChip value={deck.aiScore} />
             </td>
-            <td className={td}>
+            <td className={td} data-status={status}>
               <span data-testid="v3-status" title={hint}>
-                <StatusPill tone={V3_STATUS_TONES[status]}>{V3_STATUS_LABELS[status]}</StatusPill>
+                <StatusPill tone={V3_STATUS_TONES[status]}>{SCREENING_STATUS_LABELS[status]}</StatusPill>
               </span>
-              {/* ── Item 6 · the post-action statuses ───────────────────────
-                  Measured rather than rebuilt: Queried and Archived already
-                  shipped, **Assigned did not** — a deck sent to Assign and
-                  given an evaluator reads "AI Evaluated" and nothing else,
-                  because `assigned` is one of POST_AI_STAGES. Same predicate
-                  as the Assigned tile, so chip and count cannot disagree. */}
-              {matchesV3Stat(deck, "assigned") && (
-                <span className="ml-1.5 inline-block rounded-full bg-blue-lt px-[7px] py-px text-[9px] font-bold text-blue-dk">
-                  Assigned
-                </span>
-              )}
-              {deck.queried && (
-                <span className="ml-1.5 inline-block rounded-full bg-blue-lt px-[7px] py-px text-[9px] font-bold text-blue-dk">
-                  Queried
-                </span>
-              )}
-              {/* The fourth post-action word. It had no source until the PATCH
-                  handler began recording an `edit_contact` event — the row
-                  simply never said an edit had happened. */}
-              {deck.contactEditedAt && (
-                <span className="ml-1.5 inline-block rounded-full bg-blue-lt px-[7px] py-px text-[9px] font-bold text-blue-dk">
-                  Contact Details Edited
-                </span>
-              )}
-              {isArchivedDeck(deck) && (
-                <span className="ml-1.5 inline-block rounded-full bg-surface-2 px-[7px] py-px text-[9px] font-bold text-fg-muted">
-                  Archived
-                </span>
-              )}
             </td>
             {v3ActionCell(deck, true)}
           </>
@@ -2288,11 +2603,42 @@ export function DashboardPage() {
           <table className="w-full min-w-[48rem] text-left" data-shape={shape}>
             <thead>
               <tr className="border-b border-line bg-offwhite">
-                {ALL_DECKS_COLUMNS[shape].map((h) => (
-                  <th key={h} className={th}>
-                    {h}
-                  </th>
-                ))}
+                {ALL_DECKS_COLUMNS[shape].map((h) => {
+                  // One sortable column on one shape. The Status header exists
+                  // on five other shapes (`details`, `assigned`, `juryOpen`,
+                  // `vcIncomplete`, `icPipeline`) and each of those cells holds
+                  // a DIFFERENT vocabulary — `IntakeStatusPill`, `stagePill`,
+                  // `juryPill` — none of which `screeningStatusRank` can rank.
+                  // His row is about the screening status, so the sort is where
+                  // that status is drawn and nowhere else.
+                  if (!(isV3Dash && shape === "v3Default" && h === "Status")) {
+                    return (
+                      <th key={h} className={th}>
+                        {h}
+                      </th>
+                    );
+                  }
+                  const dir = statusSort === "asc" ? "ascending" : statusSort === "desc" ? "descending" : "none";
+                  return (
+                    <th key={h} className={th} aria-sort={dir}>
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 uppercase tracking-[0.05em] hover:text-fg"
+                        // null -> asc -> desc -> null, so the prototype's
+                        // activity order is reachable again.
+                        onClick={() => setStatusSort(statusSort === null ? "asc" : statusSort === "asc" ? "desc" : null)}
+                      >
+                        {h}
+                        <ChevronDown
+                          aria-hidden="true"
+                          className={`h-3 w-3 transition-transform ${
+                            statusSort === null ? "opacity-30" : statusSort === "asc" ? "rotate-180" : ""
+                          }`}
+                        />
+                      </button>
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>

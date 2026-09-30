@@ -1,0 +1,134 @@
+S2-DASH — the e2e delta for the client's 24-Sep screening vocabulary (screening wave, S-2).
+
+WHAT IT CHANGES (two files, two hunks, no src/ behaviour):
+
+  e2e/upload.spec.ts    1 assertion — the walk reads the deck's Status cell and
+                        asserted "Not AI Evaluated", which is the word his row 6
+                        DELETES. C3's answer is the tile stays and its rows read
+                        "Awaiting AI evaluation". One string.
+
+  e2e/all-decks.spec.ts 1 hunk added to the superuser Dashboard walk — the STATUS
+                        column sort (new construction; there was no column-sort
+                        primitive anywhere in src/client before this, so this is
+                        the walk that proves the header is a control and not a
+                        styled <th>), the Status cell being ONE element rather
+                        than a pill plus four additive chips, that every row's
+                        word is one of his sixteen, and that the Shortlisted
+                        shape has no Status column to sort. Every assertion is
+                        data-independent — aria-sort through its three-state
+                        cycle, an element count, and a set membership — so a
+                        concurrent spec cannot move it.
+
+WHY IT IS A PATCH AND NOT A COMMIT
+  docs/plan_screening.md §6.1: no session in this wave owns anything under e2e/,
+  and e2e/upload.spec.ts in particular is shared with the My Account wave, which
+  may be in flight concurrently. S-INT applies it after `git apply --check`.
+
+VERIFIED
+  `git apply --check` clean against screening/S2-DASH @ the commit that carries
+  this file. `npm run test:e2e` was NOT run, per the session prompt.
+
+diff --git a/e2e/all-decks.spec.ts b/e2e/all-decks.spec.ts
+index cf658f0..77137e1 100644
+--- a/e2e/all-decks.spec.ts
++++ b/e2e/all-decks.spec.ts
+@@ -114,6 +114,65 @@ test("superuser: the Dashboard's two shapes, archived as a STATE, and the report
+     await expect.poll(() => headers(page)).toEqual(V3_DEFAULT);
+   }
+ 
++  // ── S2-DASH — the STATUS column sorts, and the cell is ONE string ─────────
++  //
++  // New construction: there was no column-sort primitive anywhere in the client
++  // before this (`aria-sort`, `SortableHeader`, `onSort`, `sortDir` all returned
++  // zero hits under `src/client/`), so this is the walk that proves the header
++  // is really a control and not a styled `<th>`. Data-independent: it reads
++  // `aria-sort` through the three-state cycle rather than any row's order, so a
++  // concurrent spec cannot move it.
++  await tile(page, "Uploaded").click();
++  await expect.poll(() => headers(page)).toEqual(V3_DEFAULT);
++  const statusHeader = page.locator("table[data-shape] thead th", { hasText: /^Status$/ });
++  await expect(statusHeader).toHaveAttribute("aria-sort", "none");
++  await statusHeader.getByRole("button").click();
++  await expect(statusHeader).toHaveAttribute("aria-sort", "ascending");
++  await statusHeader.getByRole("button").click();
++  await expect(statusHeader).toHaveAttribute("aria-sort", "descending");
++  // A third click returns the prototype's activity order, so it is somewhere the
++  // operator can get back to rather than a state they can only leave.
++  await statusHeader.getByRole("button").click();
++  await expect(statusHeader).toHaveAttribute("aria-sort", "none");
++
++  // The Status CELL is one element now, not a pill plus up to four additive
++  // chips — his "Incomplete contact details, Edited" is a single composed value,
++  // and a composite of five elements has no order to sort by.
++  const anyStatus = page.locator("table[data-shape] tbody [data-testid='v3-status']").first();
++  await expect(anyStatus.locator("span")).toHaveCount(1);
++  // …and its word is in HIS vocabulary. Data-independent: whatever the seed
++  // holds, every row's status is one of these sixteen.
++  const SCREENING_WORDS = [
++    "Awaiting AI evaluation",
++    "Both incomplete",
++    "Incomplete decks",
++    "Incomplete decks, Edited",
++    "Incomplete contact details",
++    "Incomplete contact details, Edited",
++    "Contact details edited",
++    "Below threshold",
++    "Below threshold, Edited",
++    "Rejected",
++    "Complete",
++    "Complete, Edited",
++    "No response",
++    "Incomplete, Queried",
++    "AI Evaluated, Assigned",
++    "Archived",
++  ];
++  const words = await page.locator("table[data-shape] tbody [data-testid='v3-status']").allInnerTexts();
++  for (const w of words) {
++    expect(SCREENING_WORDS, `"${w}" is not in the client's 24-Sep vocabulary`).toContain(w.trim());
++  }
++
++  // The Shortlisted shape has NO Status column, so "sortable on all stat boxes"
++  // cannot be literal — there is nothing there to sort. Stated here so the next
++  // parity capture reads it as intended rather than filing it as a gap.
++  await tile(page, "Shortlisted").click();
++  await expect.poll(() => headers(page)).toEqual(V3_SHORTLISTED);
++  await expect(page.locator("table[data-shape] thead th", { hasText: /^Status$/ })).toHaveCount(0);
++  await tile(page, "Uploaded").click();
++
+   // The report overlay still opens from the name, with the prototype's sections.
+   await tile(page, "AI Evaluated").click();
+   await expect.poll(() => headers(page)).toEqual(V3_DEFAULT);
+diff --git a/e2e/upload.spec.ts b/e2e/upload.spec.ts
+index 2dec0ff..ef141ae 100644
+--- a/e2e/upload.spec.ts
++++ b/e2e/upload.spec.ts
+@@ -151,17 +151,21 @@ test("a PA uploads a deck, reviews it, sends it to Query — and is never shown
+   // 5 · the deck is on the Dashboard, not yet AI-evaluated, with readable slides.
+   //
+   // Wave R (R1-DASH) widened the V3 Dashboard to the program associate, so this
+-  // walk now reads the V3 status VOCABULARY: a deck with no verdict is "Not AI
+-  // Evaluated" (`V3_STATUS_LABELS.noteval`), where the pre-V3 screen said
+-  // "Pending AI". Asserting the old word here did not just fail — it resolved to
+-  // the Actions menu's own disabled `<option>` ("Send to Assign — not available
+-  // at Pending AI"), which is `hidden` inside a closed select, so the failure
+-  // read as a visibility bug rather than a vocabulary change. Target the status
+-  // cell by its testid so the row's other text can never stand in for it.
++  // walk reads the Dashboard's status VOCABULARY rather than the pre-V3 screen's
++  // "Pending AI". Asserting a word that is not in the vocabulary did not just
++  // fail — it resolved to the Actions menu's own disabled `<option>`, which is
++  // `hidden` inside a closed select, so the failure read as a visibility bug
++  // rather than a vocabulary change. Target the status cell by its testid so the
++  // row's other text can never stand in for it.
++  //
++  // S2-DASH (2026-09-30) replaces the vocabulary with the client's 24-Sep
++  // thirteen statuses. "Not AI Evaluated" is the word his row 6 DELETES, and C3
++  // is the answer: it is a populated stat box as well as a word, so the box stays
++  // and its rows read "Awaiting AI evaluation" (`SCREENING_STATUS_LABELS`).
+   await page.goto("/app/alldecks");
+   const deckRow = page.getByRole("row", { name: new RegExp(name) });
+   await expect(deckRow).toBeVisible();
+-  await expect(deckRow.getByTestId("v3-status")).toHaveText("Not AI Evaluated");
++  await expect(deckRow.getByTestId("v3-status")).toHaveText("Awaiting AI evaluation");
+ 
+   // The report drawer renders DeckPdfViewer against the R2 object just stored.
+   // W7-A (F0325): the startup NAME is the report link, not the whole row.
