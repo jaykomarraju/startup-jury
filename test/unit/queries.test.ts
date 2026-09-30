@@ -8,6 +8,7 @@ import {
   isDeckComplete,
   isQueryListed,
   deckListRoute,
+  QUERY_MEMBERSHIP_IS_DERIVED_PENDING_ROW3,
   latestQuery,
   parseQueryTimestamp,
   queryDueAt,
@@ -354,11 +355,15 @@ describe("which decks the list shows", () => {
     expect(isQueryListed({ statusId: "shortlisted" }, open, "incubator")).toBe(false);
   });
 
+  // The client's row 3 deletes this listing rule for the incubator, so the
+  // reading is written out: it pins what the RETAINED derivation does, and the
+  // row-3 describe at the foot of this file pins what replaces it.
   it("lists the incubator's own flag stages even with no areas computed yet", () => {
-    expect(isQueryListed({ statusId: "incomplete" }, [], "incubator")).toBe(true);
-    expect(isQueryListed({ statusId: "manual_review" }, [], "incubator")).toBe(true);
-    expect(isQueryListed({ statusId: "uploaded" }, [], "incubator")).toBe(false);
-    expect(isQueryListed({ statusId: "ai_evaluated", weakAreas: ["Team"] }, [], "incubator")).toBe(false);
+    const derive = { deriveQuery: true };
+    expect(isQueryListed({ statusId: "incomplete" }, [], "incubator", derive)).toBe(true);
+    expect(isQueryListed({ statusId: "manual_review" }, [], "incubator", derive)).toBe(true);
+    expect(isQueryListed({ statusId: "uploaded" }, [], "incubator", derive)).toBe(false);
+    expect(isQueryListed({ statusId: "ai_evaluated", weakAreas: ["Team"] }, [], "incubator", derive)).toBe(false);
   });
 
   it("does not list an unflagged VC deal just because it is being scored (F0274)", () => {
@@ -511,9 +516,20 @@ describe("the complete / incomplete mark", () => {
   });
 });
 
+// ── The pre-row-3 reading, RETAINED behind a flag, not deleted ─────────────
+//
+// Every test in this describe asserts today's behaviour, which is still the
+// shipped default (`QUERY_MEMBERSHIP_IS_DERIVED_PENDING_ROW3`). The client's
+// 24-Sep feedback row 3 reverses the QUERY half of it; the describe below this
+// one is that reading, and the two are kept side by side deliberately — the flip
+// is one line, and these tests are what say exactly what the flip costs.
 describe("the Assign / Query partition", () => {
-  const queried = { queried: true };
-  const fresh = { queried: false };
+  // `deriveQuery: true` is written out rather than left to the default, so this
+  // whole describe keeps pinning the RETAINED reading after S2-SERVER flips the
+  // default. Which reading each assertion is about then reads off the call.
+  const derive = { deriveQuery: true };
+  const queried = { queried: true, ...derive };
+  const fresh = { queried: false, ...derive };
 
   it("routes an evaluated deck by its mark, in both directions", () => {
     for (const statusId of ["ai_evaluated", "assigned"]) {
@@ -540,7 +556,12 @@ describe("the Assign / Query partition", () => {
     for (const deck of decks) {
       for (const opts of [fresh, queried]) {
         const onAssign = deckListRoute(deck, "incubator", opts) === "assign";
-        const onQuery = isQueryListed(deck, opts.queried ? [{ deck_id: "d", founder_response: null, created_at: "2026-09-01T10:00:00Z" }] : [], "incubator");
+        const onQuery = isQueryListed(
+          deck,
+          opts.queried ? [{ deck_id: "d", founder_response: null, created_at: "2026-09-01T10:00:00Z" }] : [],
+          "incubator",
+          derive,
+        );
         expect(onAssign && onQuery).toBe(false);
       }
     }
@@ -552,7 +573,7 @@ describe("the Assign / Query partition", () => {
     // `missing_fields` still set landed on Assign's roster in four requests.
     const walked = { statusId: "ai_evaluated", complete: false, missingFields: ["founderPhone"] as never };
     expect(deckListRoute(walked, "incubator", fresh)).not.toBe("assign");
-    expect(isQueryListed(walked, [], "incubator")).toBe(true);
+    expect(isQueryListed(walked, [], "incubator", derive)).toBe(true);
   });
 
   it("(a) filling the missing detail does NOT make an unscored deck assignable", () => {
@@ -561,7 +582,7 @@ describe("the Assign / Query partition", () => {
     // also what keeps F0214's Responded row from vanishing.
     const fixed = { statusId: "incomplete", complete: false, missingFields: [] as never };
     expect(deckListRoute(fixed, "incubator", fresh)).not.toBe("assign");
-    expect(isQueryListed(fixed, [], "incubator")).toBe(true);
+    expect(isQueryListed(fixed, [], "incubator", derive)).toBe(true);
   });
 
   it("leaves the VC edition alone — it has neither stage, so neither arm can fire", () => {
@@ -582,5 +603,156 @@ describe("the Assign / Query partition", () => {
     expect(deckListRoute({ statusId: "uploaded" }, "incubator", queried)).toBe("query");
     expect(deckListRoute({ statusId: "pending_ai" }, "incubator", queried)).toBe("query");
     expect(deckListRoute({ statusId: "shortlisted" }, "incubator", queried)).toBe(null);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROW 3 — Query membership becomes a recorded action (S0-VOCAB, 2026-09-30)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// His feedback row 3: decks with incomplete decks or incomplete contact details
+// must NOT reach the Query screen automatically, only when Send to Query is
+// clicked. His stated reason is a LIVE DEFECT, quoted in the source:
+// `POST /api/decks/:id/queries` emails a deck with no contact details —
+// `routes/pipeline.ts:770-771` falls back to "founder@portal.local" — and
+// `deckListRoute` is what puts such a deck on the list with no click.
+//
+// The reading is not open; only the flip is. These tests pin the new reading
+// through `deriveQuery: false` so it is fully specified BEFORE the session that
+// owns the route and the tests that move with it turns it on.
+describe("row 3 — Query membership is a recorded action, not a derivation", () => {
+  const ship = { deriveQuery: false };
+  const fresh = { queried: false, ...ship };
+  const queried = { queried: true, ...ship };
+
+  it("is shipped OFF, and the default is per edition on purpose", () => {
+    // S2-SERVER sets `incubator` to false in the same change that makes
+    // `?list=query` mean "queried". VC is separate because his screening spec is
+    // the INCUBATOR's — his §5 matrix, his §4 diagram and his stat boxes are all
+    // the incubator superuser Dashboard — and VC's auto-listing rules came from
+    // the VC prototype (F0274, F0341). Flipping both on one boolean would delete
+    // those without him having asked.
+    expect(QUERY_MEMBERSHIP_IS_DERIVED_PENDING_ROW3.incubator).toBe(true);
+    expect(QUERY_MEMBERSHIP_IS_DERIVED_PENDING_ROW3.vc).toBe(true);
+    // The default is what an unqualified call gets, both arms.
+    expect(deckListRoute({ statusId: "incomplete" }, "incubator", { queried: false })).toBe("query");
+    expect(deckListRoute({ statusId: "incomplete" }, "incubator", fresh)).toBe(null);
+  });
+
+  it("stops the two arms he names: evaluated-but-incomplete, and stage `incomplete`", () => {
+    // Arm 1 — ASSIGNABLE_STAGES ∧ ¬complete used to conclude "therefore Query".
+    for (const statusId of ["ai_evaluated", "assigned"]) {
+      expect(deckListRoute({ statusId, complete: false }, "incubator", fresh)).toBe(null);
+      expect(deckListRoute({ statusId, complete: true, missingFields: ["founderPhone"] }, "incubator", fresh)).toBe(
+        null,
+      );
+    }
+    // Arm 2 — FLAG_STAGES. Stage `incomplete` IS the AI's "this deck is
+    // incomplete" verdict, so listing on it is precisely the derivation row 3
+    // deletes; `manual_review` is the same arm.
+    expect(deckListRoute({ statusId: "incomplete" }, "incubator", fresh)).toBe(null);
+    expect(deckListRoute({ statusId: "manual_review" }, "incubator", fresh)).toBe(null);
+    // …and so does the areas arm, which reaches the same screen by a third route.
+    expect(deckListRoute({ statusId: "incomplete", weakAreas: ["Team"] }, "incubator", fresh)).toBe(null);
+    expect(deckListRoute({ statusId: "incomplete", missingFields: ["city"] }, "incubator", fresh)).toBe(null);
+  });
+
+  it("THE ASSIGN ARM SURVIVES UNCHANGED — that is the whole point of the split", () => {
+    // What row 3 takes away is only the CONCLUSION that being off Assign puts a
+    // deck on Query. A deck marked complete still belongs on Assign, and the
+    // three measured drift paths (plan §4.1) still keep an incomplete deck off
+    // it — which is V4-ROUTE's half and he did not ask for it back.
+    for (const statusId of ["ai_evaluated", "assigned"]) {
+      expect(deckListRoute({ statusId, complete: true }, "incubator", fresh)).toBe("assign");
+      expect(deckListRoute({ statusId, complete: true, missingFields: ["founderPhone"] }, "incubator", fresh)).not.toBe(
+        "assign",
+      );
+      expect(deckListRoute({ statusId, complete: false }, "incubator", fresh)).not.toBe("assign");
+    }
+    // (c) the deck walked back onto Assign through `approve_review`.
+    const walked = { statusId: "ai_evaluated", complete: false, missingFields: ["founderPhone"] as never };
+    expect(deckListRoute(walked, "incubator", fresh)).not.toBe("assign");
+    // (a) filling the missing detail still does not make an unscored deck assignable.
+    expect(deckListRoute({ statusId: "incomplete", complete: false, missingFields: [] as never }, "incubator", fresh))
+      .not.toBe("assign");
+  });
+
+  it("a SENT deck reaches Query, and that is now the only way", () => {
+    expect(deckListRoute({ statusId: "incomplete", complete: false }, "incubator", queried)).toBe("query");
+    expect(deckListRoute({ statusId: "manual_review" }, "incubator", queried)).toBe("query");
+    // The same deck, not sent, is on neither list — and it is NOT lost: the
+    // uploaded status screen draws every deck, always ("all decks, including
+    // archived, stay on the uploaded status screen", his own display rule). What
+    // moves is the Incomplete TILE predicate, in deckStats.ts, not the partition.
+    expect(deckListRoute({ statusId: "incomplete", complete: false }, "incubator", fresh)).toBe(null);
+  });
+
+  it("keeps F0214 — an answered query stays listed until review picks it back up", () => {
+    // Untouched by row 3, and the reason the stage window survives as its own
+    // named predicate: `founder_response` moves an incubator deck
+    // `incomplete -> uploaded`, and the row must not vanish the moment the
+    // founder replies.
+    const answered = [{ deck_id: "d1", founder_response: "Here you go.", created_at: "2026-09-01T10:00:00Z" }];
+    expect(isQueryListed({ statusId: "uploaded" }, answered, "incubator", ship)).toBe(true);
+    expect(isQueryListed({ statusId: "pending_ai" }, answered, "incubator", ship)).toBe(true);
+    // …and drops it once review has.
+    expect(isQueryListed({ statusId: "ai_evaluated" }, answered, "incubator", ship)).toBe(false);
+    expect(isQueryListed({ statusId: "shortlisted" }, answered, "incubator", ship)).toBe(false);
+  });
+
+  it("never puts one deck on both lists — the invariant holds under BOTH readings", () => {
+    // The return type is the invariant, and row 3 must not be the change that
+    // breaks it. `deckListRoute`'s own header says "one function, one answer per
+    // deck, so 'on both screens' is not a state it can express", and that stays
+    // true: the uploaded screen is not one of the two things it partitions.
+    const decks = [
+      { statusId: "ai_evaluated", complete: true },
+      { statusId: "ai_evaluated", complete: false },
+      { statusId: "assigned", complete: true, missingFields: ["city"] as never },
+      { statusId: "incomplete", complete: false, missingFields: ["founderPhone"] as never },
+      { statusId: "manual_review", complete: true },
+      { statusId: "uploaded", complete: false },
+      { statusId: "pending_ai", complete: true },
+      { statusId: "shortlisted", complete: true },
+      { statusId: "rejected", complete: true },
+      { statusId: "archived", complete: false },
+    ];
+    for (const deck of decks) {
+      for (const derive of [true, false]) {
+        for (const wasQueried of [true, false]) {
+          const opts = { queried: wasQueried, deriveQuery: derive };
+          const onAssign = deckListRoute(deck, "incubator", opts) === "assign";
+          const onQuery =
+            isQueryListed(
+              deck,
+              wasQueried ? [{ deck_id: "d", founder_response: null, created_at: "2026-09-01T10:00:00Z" }] : [],
+              "incubator",
+              { deriveQuery: derive },
+            );
+          expect(onAssign && onQuery, `${deck.statusId} derive=${derive} queried=${wasQueried}`).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("does not silently rewrite the VC Query screen", () => {
+    // NEGATIVE CONTROL for the per-edition shape. Flipping the incubator leaves
+    // every VC listing decision exactly where F0274 and W9-A put it, because the
+    // flag is read per edition. Whether row 3 reaches the VC screen is a client
+    // question, not something this function decides for him.
+    expect(deckListRoute({ statusId: "analyst_scoring", weakAreas: ["Team"] }, "vc", { queried: false })).toBe("query");
+    expect(deckListRoute({ statusId: "incomplete", complete: false }, "vc", { queried: false })).toBe("query");
+    expect(deckListRoute({ statusId: "analyst_scoring" }, "vc", { queried: false })).toBe(null);
+    // …and if he does ask for it, this is what it would do — pinned so the
+    // consequence is measured before anyone flips it, not after.
+    expect(deckListRoute({ statusId: "analyst_scoring", weakAreas: ["Team"] }, "vc", fresh)).toBe(null);
+    expect(deckListRoute({ statusId: "analyst_scoring", weakAreas: ["Team"] }, "vc", queried)).toBe("query");
+  });
+
+  it("the ASSIGN arm has no VC half to lose, under either reading", () => {
+    // `ASSIGNABLE_STAGES.vc` is empty because `src/pipeline/vc.ts` has neither
+    // stage, so the invariant never fired on a VC deal and row 3 cannot unfire it.
+    expect(deckListRoute({ statusId: "ai_evaluated", complete: false }, "vc", fresh)).toBe(null);
+    expect(deckListRoute({ statusId: "assigned", complete: true }, "vc", fresh)).toBe(null);
   });
 });
