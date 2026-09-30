@@ -1,0 +1,466 @@
+diff --git a/e2e/admin-console.spec.ts b/e2e/admin-console.spec.ts
+index 2ea765c..8785386 100644
+--- a/e2e/admin-console.spec.ts
++++ b/e2e/admin-console.spec.ts
+@@ -10,9 +10,17 @@ import type { Edition, Role } from "../src/shared/roles";
+  * The Admin console shell (W1-C). The prototype's console is a full-screen
+  * sixteen-section overlay reached from the sidebar by `openAdmin()`; the repo
+  * shipped a single flat user-CRUD page in its place. These walks assert the
+- * three things that shape is made of — every section is reachable, no
++ * three things that shape is made of — every shipped section is reachable, no
+  * non-admin role can reach the console at all, and the Sign-up group is
+- * withheld even from a role that could otherwise get in.
++ * withheld from everybody.
++ *
++ * **ELEVEN of the prototype's sixteen ship** (S2-ADMIN, 30-Sep). `pc` Price
++ * configuration was removed on 24-Sep, and the same day's feedback row 11 hid
++ * the whole Sign-up group — four sections — until the next release. The screens
++ * and their routes are untouched: `src/client/routes/admin/sections.ts`
++ * `HIDDEN_ADMIN_GROUPS` is the one line that decides it, and the walks of those
++ * four screens are skipped, not deleted, in `e2e/signup-config.spec.ts` and
++ * `e2e/agreements.spec.ts`.
+  */
+ 
+ async function login(page: Page, email: string) {
+@@ -53,7 +61,7 @@ const NON_ADMINS: { email: string; edition: Edition; role: Role }[] = [
+ ];
+ 
+ for (const admin of ADMINS) {
+-  test(`${admin.edition}/${admin.role} walks all 15 admin console sections`, async ({ page }) => {
++  test(`${admin.edition}/${admin.role} walks all 11 admin console sections`, async ({ page }) => {
+     test.setTimeout(120_000);
+     await login(page, admin.email);
+     await page.goto("/app/admin");
+@@ -68,11 +76,14 @@ for (const admin of ADMINS) {
+     }
+ 
+     const sections = adminSections(admin.edition);
+-    // Fifteen since 24-Sep: "Price configuration" left the customer console at
+-    // the client's instruction ("why would a user set their price"). The
+-    // catalogue is one document serving every customer, so it is the AISJ
+-    // Admin's, not the workspace's — see `src/client/routes/admin/sections.ts`.
+-    expect(sections).toHaveLength(15);
++    // Eleven since 24-Sep, in two steps. "Price configuration" left the customer
++    // console at the client's instruction ("why would a user set their price"):
++    // the catalogue is one document serving every customer, so it is the AISJ
++    // Admin's, not the workspace's. Then feedback row 11 hid the Sign-up group,
++    // four more — "we want to introduce this in the next release". 16 − 1 − 4.
++    // Both are deliberate deviations from `AISJ_ICAdmin_V6`, whose own console
++    // map still carries all sixteen; see `src/client/routes/admin/sections.ts`.
++    expect(sections).toHaveLength(11);
+ 
+     // Opens on Scoring framework, as the prototype's `.ni on` does.
+     await expect(page.getByTestId("admin-section-title")).toHaveText("Scoring framework");
+@@ -153,31 +164,71 @@ for (const admin of ADMINS) {
+   });
+ }
+ 
+-// The fourth Sign-up section is the one place the two editions' consoles
++// REWRITTEN for row 11, not renumbered — this pair had no subject left.
++//
++// The fourth Sign-up section WAS the one place the two editions' consoles
+ // differ: `suseat` Seat capacity in the incubator, `sufund` Fund Deployment in
+-// the VC build (AISJ_VC_Superuser_V8 / AISJ_VC_Admin_V4, `secs[11]`).
+-const EDITION_SWAP: { edition: Edition; email: string; present: string; absent: string }[] = [
+-  {
+-    edition: "incubator",
+-    email: "priya.sharma@demo.startupjury.ai",
+-    present: "Seat capacity",
+-    absent: "Fund Deployment",
+-  },
+-  {
+-    edition: "vc",
+-    email: "aarav.khanna@demo.startupjury.ai",
+-    present: "Fund Deployment",
+-    absent: "Seat capacity",
+-  },
++// the VC build (AISJ_VC_Superuser_V8 / AISJ_VC_Admin_V4, `secs[11]`). It sat in
++// the group row 11 hides, so neither half is in either rail and the two
++// editions now draw the SAME eleven sections. The swap itself is not gone, it is
++// unshipped: `allAdminSections()` still resolves it per edition, asserted in
++// `test/client/adminConsole.test.tsx`. What is worth a browser is that no
++// edition leaks the other's half, and that the rails really are identical.
++const EDITION_CONSOLES: { edition: Edition; email: string }[] = [
++  { edition: "incubator", email: "priya.sharma@demo.startupjury.ai" },
++  { edition: "vc", email: "aarav.khanna@demo.startupjury.ai" },
+ ];
+ 
+-for (const swap of EDITION_SWAP) {
+-  test(`the ${swap.edition} console shows ${swap.present}, not ${swap.absent}`, async ({ page }) => {
+-    await login(page, swap.email);
++for (const each of EDITION_CONSOLES) {
++  test(`the ${each.edition} console shows neither half of the edition swap`, async ({ page }) => {
++    await login(page, each.email);
+     await page.goto("/app/admin");
+     const rail = page.getByRole("navigation", { name: "Admin console sections" });
+-    await expect(rail.getByRole("button", { name: swap.present, exact: false })).toBeVisible();
+-    await expect(rail.getByRole("button", { name: swap.absent, exact: false })).toHaveCount(0);
++    await expect(rail.getByRole("button", { name: "Scoring framework", exact: false })).toBeVisible();
++    for (const label of ["Seat capacity", "Fund Deployment"]) {
++      await expect(rail.getByRole("button", { name: label, exact: false })).toHaveCount(0);
++    }
++    // Count, not an exact label list: the Team & roles entry can carry the
++    // pending-invite badge, whose digit lands inside the button's text.
++    await expect(rail.getByRole("button")).toHaveCount(adminSections(each.edition).length);
++    for (const section of adminSections(each.edition)) {
++      await expect(rail.getByRole("button", { name: section.label, exact: false })).toBeVisible();
++    }
++  });
++}
++
++// The console opens for the admin and the superuser, and they are the two
++// principals whose rail actually MOVED on 24-Sep — the Sign-up group was
++// admin-only, so no other role had it to lose. The absence assertions further
++// down run on a page where the console was REFUSED, which proves nothing about
++// a rail; this is the one that does.
++for (const admin of ADMINS) {
++  test(`${admin.edition}/${admin.role} is not offered the hidden Sign-up group`, async ({ page }) => {
++    test.setTimeout(120_000);
++    await login(page, admin.email);
++    await page.goto("/app/admin");
++    const rail = page.getByRole("navigation", { name: "Admin console sections" });
++    await expect(rail).toBeVisible();
++
++    // The group heading is gone too, not just its sections.
++    await expect(rail.getByText("Sign-up", { exact: true })).toHaveCount(0);
++    for (const label of [
++      "Required documents",
++      "Agreements library",
++      "Authorised signatories",
++      "Seat capacity",
++      "Fund Deployment",
++    ]) {
++      await expect(rail.getByRole("button", { name: label, exact: false })).toHaveCount(0);
++    }
++
++    // And a bookmark from before 24-Sep lands on the default section rather than
++    // a blank pane — these ids resolved for THIS principal until row 11. Same
++    // guard `e2e/price-configuration.spec.ts` keeps over `?section=pc`.
++    for (const id of ["sudocs", "suagr", "susign", admin.edition === "vc" ? "sufund" : "suseat"]) {
++      await page.goto(`/app/admin?section=${id}`);
++      await expect(page.getByTestId("admin-section-title")).toHaveText("Scoring framework");
++    }
+   });
+ }
+ 
+@@ -207,12 +258,21 @@ for (const person of NON_ADMINS) {
+     }
+ 
+     // The registry withholds the whole Sign-up group from this role, so the
+-    // console cannot hand it over if reachability ever widens (F0038).
++    // console cannot hand it over if reachability ever widens (F0038). That
++    // restriction is now redundant — row 11 hides the group from everyone — and
++    // is asserted anyway, because it has to still be there when the group
++    // returns next release.
+     const visible = adminSectionsFor(person.edition, person.role);
+     expect(visible.map((s) => s.group)).not.toContain("Sign-up");
+-    // Eleven, not twelve — "Price configuration" left the console entirely on
+-    // 24-Sep. It was in the Organisation group, which this role DOES see, so
+-    // its removal moves this count as well as the admin's.
++    // Eleven, and **row 11 DID NOT MOVE THIS NUMBER.** Read before changing it.
++    //
++    // It went 12 → 11 on 24-Sep when "Price configuration" left the console,
++    // because `pc` was in the Organisation group, which this role DOES see. The
++    // Sign-up group is the opposite case: this role never saw it (ADMIN_ONLY_
++    // GROUPS), so hiding its four sections takes nothing away from a non-admin.
++    // The ADMIN's count fell 15 → 11 and this one stayed put — they are equal
++    // now by arithmetic, not by sharing a cause. A single-section removal from
++    // any OTHER group would move both.
+     expect(visible).toHaveLength(11);
+   });
+ }
+@@ -220,6 +280,9 @@ for (const person of NON_ADMINS) {
+ test("a deep link to a Sign-up section falls back for a role that cannot see it", async ({
+   page,
+ }) => {
++  // The route gate answers first for this role, so the section id never gets a
++  // chance to resolve. The admin's version of this — where the id DOES reach
++  // `resolveAdminSection` — is in the per-admin walk above.
+   await login(page, "raj.kumar@demo.startupjury.ai");
+   await page.goto("/app/admin?section=sudocs");
+   await expect(page.getByText("Not available for your role")).toBeVisible();
+diff --git a/e2e/agreements.spec.ts b/e2e/agreements.spec.ts
+index 96526fe..6efac48 100644
+--- a/e2e/agreements.spec.ts
++++ b/e2e/agreements.spec.ts
+@@ -17,6 +17,24 @@ import { test, expect, type Page } from "@playwright/test";
+ 
+ test.describe.configure({ mode: "serial" });
+ 
++/**
++ * ── THE FIVE CONSOLE WALKS ARE SKIPPED 30-Sep-2026 · feedback row 11 ────────
++ *
++ * The Admin console's whole **Sign-up group** is hidden until the next release:
++ * *"we want to introduce this in the next release."* Both sections this file
++ * walks, `suagr` and `susign`, are in it, and `openSection` reaches them through
++ * `/app/admin?section=…`, which now resolves to Scoring framework.
++ *
++ * **Skipped one test at a time, not by skipping the file, and NOT deleted.**
++ * The last two tests here are pure `/api/esign/*` role checks that do not touch
++ * the console — they must keep running, because hiding a rail entry does not
++ * unguard a route, and the whole point of the `pc` precedent
++ * (`e2e/price-configuration.spec.ts`) is that the API assertion survives the
++ * screen. Un-skip the five below when "Sign-up" leaves `HIDDEN_ADMIN_GROUPS` in
++ * `src/client/routes/admin/sections.ts`; the screens keep their component tests
++ * (`test/client/agreements.test.tsx`) meanwhile.
++ */
++
+ async function login(page: Page, email: string) {
+   await page.goto("/login");
+   await page.getByPlaceholder("you@firm.com").fill(email);
+@@ -50,7 +68,7 @@ function row(page: Page, name: string) {
+   return page.locator("li").filter({ hasText: name }).first();
+ }
+ 
+-test("the seeded library renders with its lifecycle badges and summary lines", async ({ page }) => {
++test.skip("the seeded library renders with its lifecycle badges and summary lines", async ({ page }) => {
+   test.setTimeout(120_000);
+   await openLibrary(page);
+ 
+@@ -73,7 +91,7 @@ test("the seeded library renders with its lifecycle badges and summary lines", a
+   await expect(nda.getByRole("button", { name: "Retire" })).toHaveCount(0);
+ });
+ 
+-test("an admin uploads a template, maps it to a stage and a programme, and it survives a reload", async ({
++test.skip("an admin uploads a template, maps it to a stage and a programme, and it survives a reload", async ({
+   page,
+ }) => {
+   test.setTimeout(180_000);
+@@ -150,7 +168,7 @@ test("an admin uploads a template, maps it to a stage and a programme, and it su
+   await expect(row(page, "E2E Incubation Addendum")).toHaveCount(0);
+ });
+ 
+-test("the merge-field editor refuses a duplicate key before it reaches the server", async ({
++test.skip("the merge-field editor refuses a duplicate key before it reaches the server", async ({
+   page,
+ }) => {
+   test.setTimeout(120_000);
+@@ -171,7 +189,7 @@ test("the merge-field editor refuses a duplicate key before it reaches the serve
+   await expect(row(page, "Incubation Agreement")).toContainText("5 merge fields");
+ });
+ 
+-test("a granted signatory appears in the sign-up countersign picker", async ({ page }) => {
++test.skip("a granted signatory appears in the sign-up countersign picker", async ({ page }) => {
+   test.setTimeout(120_000);
+   await login(page, "nisha.kapoor@demo.startupjury.ai");
+   await openSection(page, "susign", "Authorised signatories");
+@@ -219,7 +237,7 @@ test("a granted signatory appears in the sign-up countersign picker", async ({ p
+   );
+ });
+ 
+-test("a named individual can be granted from the roster behind Add individual", async ({ page }) => {
++test.skip("a named individual can be granted from the roster behind Add individual", async ({ page }) => {
+   test.setTimeout(120_000);
+   await login(page, "nisha.kapoor@demo.startupjury.ai");
+   await openSection(page, "susign", "Authorised signatories");
+@@ -236,6 +254,22 @@ test("a named individual can be granted from the roster behind Add individual",
+   await expect(page.getByRole("button", { name: "Show granted only" })).toBeVisible();
+ });
+ 
++// Added 30-Sep with the skips above: with all five console walks dark, this is
++// the only live proof in a browser that the two hidden sections' routes still
++// serve their admin. A rail entry going away neither unmounts a screen nor
++// unguards a route — and must not be taken as licence to delete one, because the
++// screens come back next release and the data has to be there.
++test("the esign API still serves the admin with both sections hidden", async ({ page }) => {
++  test.setTimeout(120_000);
++  await login(page, "nisha.kapoor@demo.startupjury.ai"); // incubator admin
++  const templates = await page.request.get("/api/esign/templates");
++  expect(templates.status(), await templates.text()).toBe(200);
++  expect(((await templates.json()) as { templates: unknown[] }).templates.length).toBeGreaterThan(0);
++
++  const signatories = await page.request.get("/api/esign/signatories");
++  expect(signatories.status(), await signatories.text()).toBe(200);
++});
++
+ test("a non-admin is refused both halves of the esign API", async ({ page }) => {
+   test.setTimeout(120_000);
+   await login(page, "sunita.rao@demo.startupjury.ai"); // program_associate
+diff --git a/e2e/roles.spec.ts b/e2e/roles.spec.ts
+index aadc7ec..f433121 100644
+--- a/e2e/roles.spec.ts
++++ b/e2e/roles.spec.ts
+@@ -19,8 +19,11 @@ const INC_JURY = "rajesh.kumar@demo.startupjury.ai";
+ 
+ test("admin creates a user in the Admin console and gets a temp password", async ({ page }) => {
+   await login(page, INC_ADMIN);
+-  // W1-C: the Admin console is now the prototype's sixteen-section overlay and
+-  // opens on Scoring framework. The user roster is its Team & roles section.
++  // W1-C: the Admin console is now the prototype's full-screen overlay and opens
++  // on Scoring framework. It ships eleven of the prototype's sixteen sections —
++  // `pc` removed 24-Sep, the Sign-up group hidden the same day (row 11) — but
++  // `tm` is in neither set, so nothing here moved. The user roster is its
++  // Team & roles section.
+   await page.goto("/app/admin?section=tm");
+   await expect(page.getByRole("heading", { name: "Admin console" })).toBeVisible();
+   await expect(page.getByTestId("admin-section-title")).toHaveText("Team & roles");
+diff --git a/e2e/signup-config.spec.ts b/e2e/signup-config.spec.ts
+index baca3c8..68cb269 100644
+--- a/e2e/signup-config.spec.ts
++++ b/e2e/signup-config.spec.ts
+@@ -22,6 +22,28 @@ import { test, expect, type Page } from "@playwright/test";
+  */
+ test.describe.configure({ mode: "serial" });
+ 
++/**
++ * ── THE CONSOLE WALKS ARE SKIPPED 30-Sep-2026 · feedback row 11 ─────────────
++ *
++ * The Admin console's whole **Sign-up group** is hidden until the next release:
++ * *"we want to introduce this in the next release."* All three sections this
++ * file walks — `sudocs`, `suseat`, `sufund` — are in it, and `openSection`
++ * reaches them through `/app/admin?section=…`, which now resolves to Scoring
++ * framework.
++ *
++ * **Skipped one test at a time and NOT deleted — this is the coverage that comes
++ * back with the group.** What is NOT skipped is the API check at the foot of the
++ * file, added with these skips: a screen leaving a rail neither unmounts it nor
++ * unguards its routes, and with every walk here dark that assertion is the only
++ * live proof left in a browser that `/api/signup-config/*` still serves. It is
++ * the same shape `e2e/price-configuration.spec.ts` kept when `pc` went.
++ *
++ * Un-skip when "Sign-up" leaves `HIDDEN_ADMIN_GROUPS` in
++ * `src/client/routes/admin/sections.ts`. Meanwhile the screens keep
++ * `test/client/signupConfig.test.tsx` and the routes keep
++ * `test/worker/signup-config.test.ts`, neither of which needed a change.
++ */
++
+ const INC_ADMIN = "nisha.kapoor@demo.startupjury.ai";
+ const VC_ADMIN = "nisha.kapoor.vc@demo.startupjury.ai";
+ 
+@@ -44,7 +66,7 @@ const save = (page: Page) => page.getByRole("button", { name: /Save changes/ });
+ 
+ // ── Required documents ───────────────────────────────────────────────────────
+ 
+-test("the checklist renders the prototype's five items with their mandatory toggles", async ({
++test.skip("the checklist renders the prototype's five items with their mandatory toggles", async ({
+   page,
+ }) => {
+   test.setTimeout(120_000);
+@@ -69,7 +91,7 @@ test("the checklist renders the prototype's five items with their mandatory togg
+   await expect(page.getByText(/this list is the per-program default/)).toBeVisible();
+ });
+ 
+-test("turning an item mandatory saves and survives a reload", async ({ page }) => {
++test.skip("turning an item mandatory saves and survives a reload", async ({ page }) => {
+   test.setTimeout(120_000);
+   await openSection(page, INC_ADMIN, "sudocs", "Required documents");
+   const toggle = page.getByRole("switch", { name: "GST / tax registration mandatory" });
+@@ -96,7 +118,7 @@ test("turning an item mandatory saves and survives a reload", async ({ page }) =
+   await expect(page.getByText(/Checklist saved/)).toBeVisible();
+ });
+ 
+-test("a document walks the lifecycle one step at a time, and the skip is refused", async ({
++test.skip("a document walks the lifecycle one step at a time, and the skip is refused", async ({
+   page,
+ }) => {
+   test.setTimeout(120_000);
+@@ -148,7 +170,7 @@ test("a document walks the lifecycle one step at a time, and the skip is refused
+ 
+ // ── Seat capacity ───────────────────────────────────────────────────────────
+ 
+-test("seat capacity draws the seeded cohorts, and over capacity warns without blocking", async ({
++test.skip("seat capacity draws the seeded cohorts, and over capacity warns without blocking", async ({
+   page,
+ }) => {
+   test.setTimeout(120_000);
+@@ -186,7 +208,7 @@ test("seat capacity draws the seeded cohorts, and over capacity warns without bl
+   await expect(page.getByText(/Seat settings saved/)).toBeVisible();
+ });
+ 
+-test("the seatless queue reports an all-clear on the seeded workspace", async ({ page }) => {
++test.skip("the seatless queue reports an all-clear on the seeded workspace", async ({ page }) => {
+   test.setTimeout(120_000);
+   await openSection(page, INC_ADMIN, "suseat", "Seat capacity");
+   await expect(page.getByTestId("seatless-note")).toHaveText(
+@@ -196,7 +218,7 @@ test("the seatless queue reports an all-clear on the seeded workspace", async ({
+ 
+ // ── Fund Deployment ─────────────────────────────────────────────────────────
+ 
+-test("fund deployment draws the third figure and reconciles, then warns when it does not", async ({
++test.skip("fund deployment draws the third figure and reconciles, then warns when it does not", async ({
+   page,
+ }) => {
+   test.setTimeout(120_000);
+@@ -236,21 +258,51 @@ test("fund deployment draws the third figure and reconciles, then warns when it
+   );
+ });
+ 
++// ── REWRITTEN for row 11, and this pair is the file's only LIVE test ─────────
++//
++// It used to walk each edition's fourth Sign-up section — `suseat` Seat capacity
++// in the incubator, `sufund` Fund Deployment in the VC build — to prove the
++// console resolves that one entry per edition. Hiding the group leaves that
++// check no subject on screen; the swap itself still lives in
++// `allAdminSections()` and is asserted in `test/client/adminConsole.test.tsx`.
++//
++// What replaces it is the assertion the skips above create a need for: the
++// SECTIONS are hidden, the ROUTES are not. Nothing in the repo unguarded them
++// and nothing should re-guard, widen or delete them on the strength of a rail
++// entry going away — the screens come back next release and the data has to be
++// there. Per edition, because the config is edition-resolved on the server too.
++//
+ // One test per edition, NOT one test that signs in twice: a second `login()` on
+ // an already-authenticated page navigates to /login, gets redirected straight
+ // back into /app, and waits forever for an email field that never renders.
+-// `admin-console.spec.ts` splits its own edition-swap check for the same reason.
+ const EDITIONS = [
+-  { edition: "incubator", email: INC_ADMIN, section: "suseat", present: "Seat capacity", absent: "Fund Deployment" },
+-  { edition: "vc", email: VC_ADMIN, section: "sufund", present: "Fund Deployment", absent: "Seat capacity" },
++  { edition: "incubator", email: INC_ADMIN, own: "seats", other: "fund", otherSection: "sufund" },
++  { edition: "vc", email: VC_ADMIN, own: "fund", other: "seats", otherSection: "suseat" },
+ ] as const;
+ 
+ for (const e of EDITIONS) {
+-  test(`the ${e.edition} console's fourth Sign-up section is ${e.present}, not ${e.absent}`, async ({
++  test(`the ${e.edition} sign-up config API still serves /${e.own} with the sections hidden`, async ({
+     page,
+   }) => {
+     test.setTimeout(120_000);
+-    await openSection(page, e.email, e.section, e.present);
+-    await expect(page.getByRole("heading", { level: 2, name: e.absent })).toHaveCount(0);
++    await login(page, e.email);
++
++    // The checklist both editions share.
++    const docs = await page.request.get("/api/signup-config/documents");
++    expect(docs.status(), await docs.text()).toBe(200);
++    expect(((await docs.json()) as { items: unknown[] }).items.length).toBeGreaterThan(0);
++
++    // …and the edition's own half of the fourth section.
++    const own = await page.request.get(`/api/signup-config/${e.own}`);
++    expect(own.status(), await own.text()).toBe(200);
++
++    // The other edition's half is still refused 403 `wrong_edition` and still
++    // names the SECTION it is refusing — `requireIncubator` / `requireVc`,
++    // `src/server/routes/signup-config.ts:795-807`. That reason string is now
++    // the only place the phrase "not in the rail" is load-bearing for a section
++    // that is not in ANY rail, so it is worth pinning rather than loosening.
++    const other = await page.request.get(`/api/signup-config/${e.other}`);
++    expect(other.status()).toBe(403);
++    expect(await other.json()).toEqual({ error: "wrong_edition", section: e.otherSection });
+   });
+ }
+diff --git a/e2e/signup-workspace.spec.ts b/e2e/signup-workspace.spec.ts
+index 1009033..ae0ee5c 100644
+--- a/e2e/signup-workspace.spec.ts
++++ b/e2e/signup-workspace.spec.ts
+@@ -116,7 +116,19 @@ test.beforeAll(async ({ baseURL }) => {
+   await su.dispose();
+ });
+ 
+-test("admin — the programme's checklist asks for four documents, and its template is mapped", async ({ page }) => {
++// SKIPPED 30-Sep-2026 · feedback row 11 (S2-ADMIN). This is the one test in this
++// file that configures the sign-up from inside the Admin console, and both
++// screens it opens — `?section=sudocs` and `?section=suagr` — are in the Sign-up
++// group, hidden until the next release. The deep links now resolve to Scoring
++// framework, so the first `admin-section-title` assertion would fail.
++//
++// Skipped rather than rewritten against the API alone: what it walks IS the
++// admin's console journey, and it comes back with the group. The configuration
++// this test writes is exercised by the pipeline half of this file through
++// `/api/signup-config/documents` directly, and the two screens keep
++// `test/client/signupConfig.test.tsx` and `test/client/agreements.test.tsx`.
++// Un-skip alongside `e2e/signup-config.spec.ts` and `e2e/agreements.spec.ts`.
++test.skip("admin — the programme's checklist asks for four documents, and its template is mapped", async ({ page }) => {
+   test.setTimeout(120_000);
+   await login(page, ADMIN);
+   await page.goto("/app/admin?section=sudocs");

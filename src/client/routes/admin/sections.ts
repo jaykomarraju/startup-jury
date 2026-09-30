@@ -18,16 +18,37 @@
  * Wave 1 builds the shell; each section's body lands in Waves 2–5. Every
  * section therefore carries a `placeholder` that NAMES what will fill it and
  * which session owns it — the slot those sessions land in.
+ *
+ * ── What the console SHIPS, versus those sixteen ─────────────────────────────
+ * **Eleven.** Two client instructions have taken five sections out of the rail,
+ * and both left the screen behind them standing:
+ *
+ *   `pc` Price configuration — REMOVED 24-Sep. One section, one group. The
+ *   reasoning is at the foot of the Organisation block.
+ *
+ *   The whole **Sign-up group** — HIDDEN 24-Sep (feedback row 11). Four
+ *   sections per edition: `sudocs`, `suagr`, `susign`, and `suseat` / `sufund`.
+ *   See `HIDDEN_ADMIN_GROUPS` below.
+ *
+ * So: 16 − 1 removed − 4 hidden = 11 in the rail, and `allAdminSections()`
+ * still returns all 15 that survive as screens.
  */
 import type { Edition, Role } from "../../../shared/roles";
 
 export type AdminSectionGroup = "Evaluation" | "Organisation" | "Sign-up" | "System";
 
-/** Fixed rail order, top to bottom (prototype `_ADMIN-CONSOLE.html` sidebar). */
+/**
+ * Fixed rail order, top to bottom (prototype `_ADMIN-CONSOLE.html` sidebar).
+ *
+ * **"Sign-up" is deliberately absent** — it is hidden, not deleted, and
+ * `HIDDEN_ADMIN_GROUPS` is the single place that says so. This list is the
+ * groups the rail DRAWS, which is what `adminGroupsFor` filters and what the
+ * console's tests compare a rendered rail against; a hidden group that stayed
+ * here would advertise a heading with nothing under it.
+ */
 export const ADMIN_SECTION_GROUPS: AdminSectionGroup[] = [
   "Evaluation",
   "Organisation",
-  "Sign-up",
   "System",
 ];
 
@@ -53,12 +74,45 @@ export interface AdminSection {
 }
 
 /**
+ * Groups defined in full but withheld from every role, including superuser.
+ *
+ * ── "Sign-up" · feedback row 11, 24-Sep-2026 ─────────────────────────────────
+ * *"Admin console: the Sign up section should be hidden — we want to introduce
+ * this in the next release."*
+ *
+ * **There is no section labelled "Sign up".** Decoding `var ADMIN_B64` out of
+ * `docs/prototype/source/incubator/AISJ_ICAdmin_V6.html` gives
+ * `<div class="sb-lbl">Sign-up</div>` — a rail GROUP heading over four
+ * sections, not a section. So row 11 is the whole group: `sudocs`, `suagr`,
+ * `susign` and the edition's fourth (`suseat` / `sufund`). `susign` alone is
+ * "Authorised signatories"; if he meant only that one this is three sections
+ * too many, which is why it went out as a client question.
+ *
+ * **HIDDEN, NOT DELETED**, because he says next release. The four section
+ * objects below are untouched and still returned by `allAdminSections()`; their
+ * components stay mounted in `registry.tsx`, their screens keep their own test
+ * files (`test/client/signupConfig.test.tsx`, `test/client/agreements.test.tsx`),
+ * and **the server routes stay** — `routes/signup-config.ts` and
+ * `esign/routes.ts` are not unguarded by a rail entry going away, and are not
+ * re-guarded by it either. Un-hiding is deleting one string from this array.
+ *
+ * This follows `pc` (see the Organisation block) in everything except that `pc`
+ * is gone for good and this comes back.
+ */
+export const HIDDEN_ADMIN_GROUPS: AdminSectionGroup[] = ["Sign-up"];
+
+/**
  * Sections in the Sign-up group configure org-wide commercial and legal
  * settings (required documents, agreement templates, signatories, seats /
  * fund deployment). They stay admin + superuser only even if console
  * reachability widens — F0038 proposes opening `nt` and `al` to every internal
  * role, and this list is what keeps that from carrying the Sign-up group with
  * it.
+ *
+ * Currently SUBSUMED by `HIDDEN_ADMIN_GROUPS`, and kept for exactly that
+ * reason: the day the group is un-hidden it must come back admin-only, and a
+ * restriction deleted because it was temporarily unreachable is a restriction
+ * that does not come back.
  */
 const ADMIN_ONLY_GROUPS: AdminSectionGroup[] = ["Sign-up"];
 
@@ -69,6 +123,8 @@ export function canOpenAdminConsole(role: Role): boolean {
 
 /** Whether a role may see a given group in the rail. */
 export function canSeeAdminGroup(role: Role, group: AdminSectionGroup): boolean {
+  // Hidden beats role: a superuser does not see a group that is not shipped.
+  if (HIDDEN_ADMIN_GROUPS.includes(group)) return false;
   if (ADMIN_ONLY_GROUPS.includes(group)) return canOpenAdminConsole(role);
   return true;
 }
@@ -218,6 +274,13 @@ const ORGANISATION: AdminSection[] = [
   // mounted nowhere a customer can reach.
 ];
 
+// ── The "Sign-up" group · HIDDEN, NOT DELETED ───────────────────────────
+//
+// Everything from here to the end of FUND_DEPLOYMENT is live, typechecked,
+// component-mounted and route-backed — and out of the rail until the next
+// release. `HIDDEN_ADMIN_GROUPS` is where that is decided and why; nothing in
+// these four objects records it, deliberately, so that un-hiding touches one
+// line and not five.
 const SIGNUP_COMMON: AdminSection[] = [
   {
     id: "sudocs",
@@ -374,8 +437,15 @@ const SYSTEM: AdminSection[] = [
   },
 ];
 
-/** Every section of the console for an edition, in rail order. */
-export function adminSections(edition: Edition): AdminSection[] {
+/**
+ * Every section that still EXISTS for an edition, in rail order — hidden ones
+ * included. Fifteen: the prototype's sixteen less `pc`.
+ *
+ * This is what proves a hidden group was hidden rather than deleted, and it is
+ * what the next release re-reads. Nothing in the console renders from it; use
+ * `adminSections` for anything a user sees.
+ */
+export function allAdminSections(edition: Edition): AdminSection[] {
   return [
     ...EVALUATION,
     ...ORGANISATION,
@@ -383,6 +453,18 @@ export function adminSections(edition: Edition): AdminSection[] {
     edition === "vc" ? FUND_DEPLOYMENT : SEAT_CAPACITY,
     ...SYSTEM,
   ];
+}
+
+/**
+ * Every section the console SHIPS for an edition, in rail order — eleven.
+ *
+ * Hidden groups are dropped here, once, so that every reader downstream
+ * (`adminSectionsFor`, `adminGroupsFor`, `resolveAdminSection`, the rail, the
+ * `?section=` resolver and the e2e walk) inherits the decision instead of
+ * repeating it.
+ */
+export function adminSections(edition: Edition): AdminSection[] {
+  return allAdminSections(edition).filter((s) => !HIDDEN_ADMIN_GROUPS.includes(s.group));
 }
 
 /** The sections a (edition, role) may see, in rail order. */
@@ -402,6 +484,11 @@ export const DEFAULT_ADMIN_SECTION = "fw";
 /**
  * Resolve a `?section=` value to a section this role may open, falling back to
  * the default. A hidden or unknown id must not render a blank console.
+ *
+ * Three things arrive here and all three land on Scoring framework: a typo, a
+ * bookmark from before a section left (`?section=pc`), and — since row 11 — a
+ * Sign-up id from ANY role, an admin's included. That last one is new: the id
+ * resolved for an admin until 24-Sep.
  */
 export function resolveAdminSection(
   edition: Edition,
