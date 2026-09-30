@@ -258,13 +258,6 @@ export function QueryPage() {
     setResult(null);
   }
 
-  function toggleAll() {
-    const ids = visibleRows.map((d) => d.id);
-    const all = ids.length > 0 && ids.every((id) => selectedIds.includes(id));
-    setSelectedIds(all ? [] : ids);
-    setResult(null);
-  }
-
   function clearSelection() {
     setSelectedIds([]);
     setResult(null);
@@ -314,9 +307,6 @@ export function QueryPage() {
 
   const founderDeck = founderDeckId ? (decks ?? []).find((d) => d.id === founderDeckId) : undefined;
   const head = VIEW_HEAD[view === "founder" && !founderDeck ? "list" : view];
-  const allVisibleSelected =
-    visibleRows.length > 0 && visibleRows.every((d) => selectedIds.includes(d.id));
-  const someVisibleSelected = visibleRows.some((d) => selectedIds.includes(d.id));
 
   return (
     <section className="sj-frame">
@@ -615,18 +605,13 @@ export function QueryPage() {
                   <table className="w-full min-w-[56rem] border-collapse text-left">
                     <thead>
                       <tr>
-                        <th className="w-[38px] border-b border-stone-dk bg-stone px-[14px] py-[10px] text-center">
-                          <input
-                            type="checkbox"
-                            aria-label="Select all startups"
-                            className="h-[15px] w-[15px] cursor-pointer accent-olive-dk"
-                            checked={allVisibleSelected}
-                            ref={(el) => {
-                              if (el) el.indeterminate = someVisibleSelected && !allVisibleSelected;
-                            }}
-                            onChange={toggleAll}
-                          />
-                        </th>
+                        {/* Feedback row 10's sibling (24-Sep): no select-all here —
+                            *"not relevant since each deck has distinguished missing
+                            items"*, i.e. every founder gets their own letter, so
+                            ticking the whole page is never the thing you meant. The
+                            cell stays, empty, to keep the 38px checkbox column of
+                            the body aligned under it. The PER-ROW boxes stay. */}
+                        <th className="w-[38px] border-b border-stone-dk bg-stone px-[14px] py-[10px]" />
                         {QUERY_LIST_HEADERS.map((h) => (
                           <th
                             key={h}

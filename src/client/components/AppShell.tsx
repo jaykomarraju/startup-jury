@@ -1,13 +1,83 @@
 import { useEffect, useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import { JuryBuddyLauncher } from "../routes/help/JuryBuddyLauncher";
 import { X } from "lucide-react";
 import { Topbar } from "./Topbar";
 import { Sidebar } from "./Sidebar";
+import { NavIcon } from "./icons";
+import { ToolbarLink } from "./PanelFrame";
 import { ToastProvider } from "./Toast";
 import { useAuth } from "../auth/useAuth";
+import { usePermissions } from "../auth/usePermissions";
 import { useTheme } from "../theme/useTheme";
-import { roleLabel, editionLabel } from "../../shared/roles";
+import { roleLabel, editionLabel, type Edition, type Role } from "../../shared/roles";
+import { canAccessNav, navIcon, navItemById, navLabel } from "../../shared/nav";
+
+/**
+ * The nav slug the client calls "the Dashboard". His own gloss on feedback row
+ * 10 is *"Move to Dashboard (meaning the Uploaded screen)"*, and the uploaded
+ * status screen is `alldecks` — see docs/plan_screening.md §2 C9.
+ */
+const DASHBOARD_NAV_ID = "alldecks";
+
+/**
+ * FEEDBACK ROW 10 (24-Sep) — "Move to Dashboard", on every sidebar screen.
+ *
+ * His justification is *"useful if a deck is moved to a wrong screen by
+ * mistake"*, and that half of the ask has nothing to act on: screens here are
+ * FILTERS, not locations. `matchesV3Stat(deck,"all")` is unconditionally true
+ * (`src/shared/deckStats.ts:584-586`), Assign/Query membership is derived per
+ * read, and no deck is ever removed from the uploaded screen — so there is no
+ * "which screen is this deck on" to reset. The only thing that CAN be wrong is
+ * the STAGE, and `restore` ("Restore", rejected|archived -> ai_evaluated,
+ * `src/pipeline/incubator.ts:168-179`) already fixes that from the Dashboard row
+ * menu. So this ships as what it literally says: a way back to the Dashboard
+ * from wherever you are. His one universal — *"Move to Dashboard unaffected by
+ * any status"* — is satisfied for free, because this control reads no deck.
+ *
+ * WHERE IT LIVES, and the cost of that choice. The prototype would put this
+ * inside each screen's own `.tbr` toolbar strip, and `<PanelFrame>` already
+ * takes an `actions` node — but only six route files have adopted PanelFrame;
+ * QueryPage, AssignPage, ReviewScreen and the rest still hand-roll their
+ * toolbar, and those files belong to other sessions. So it is ONE insertion in
+ * the shell, above the content pane, which buys "on every screen" at the price
+ * of a band above the screen's own toolbar rather than a button inside it. That
+ * is a deliberate choice, not an oversight: a later parity pass that wants the
+ * per-screen version can move it into each `.tbr` with <ToolbarLink>, which is
+ * exported from PanelFrame.tsx for exactly that.
+ *
+ * Two rules the band follows:
+ *  · It names the destination as THAT ROLE sees it — `navLabel` — so "Move to
+ *    Dashboard" for the superuser, admin, PM and PA, "Move to My Pipeline" for
+ *    the jury, "Move to All decks" in the VC edition. The alternative (his
+ *    literal string for everyone) would promise a screen name that role's
+ *    sidebar does not have. Whether the jury and VC sidebars should instead be
+ *    RENAMED "Dashboard" is §8 Q16, and is not shipped: those two labels are
+ *    prototype-sourced (`AISJ_IC_Jury_V4` says "My Pipeline", all six VC files
+ *    say "All decks"), so renaming them is seven new `parity:nav` label rows
+ *    whose waivers live in a file this session does not own.
+ *  · It is hidden ON the Dashboard, where it would be a link to here. Nothing
+ *    else suppresses it: no status, no stage, no screen.
+ */
+export function MoveToDashboardBar({ edition, role }: { edition: Edition; role: Role }) {
+  const { pathname } = useLocation();
+  const can = usePermissions();
+  const item = navItemById(edition, DASHBOARD_NAV_ID);
+  const here = /^\/app\/([^/]+)/.exec(pathname)?.[1];
+  // `here === undefined` is `/app` itself, which only ever redirects.
+  if (!item || here === undefined || here === DASHBOARD_NAV_ID) return null;
+  // Reachability, not sidebar listing: a founder cannot reach `alldecks` at all,
+  // and their portal must not offer a link into the staff register.
+  if (!canAccessNav(edition, role, DASHBOARD_NAV_ID, can)) return null;
+  return (
+    <div className="flex shrink-0 items-center border-b border-line bg-surface px-4 py-1.5">
+      <ToolbarLink to={`/app/${DASHBOARD_NAV_ID}`}>
+        <NavIcon name={navIcon(role, item)} className="h-3.5 w-3.5" />
+        Move to {navLabel(role, item)}
+      </ToolbarLink>
+    </div>
+  );
+}
 
 /**
  * Authenticated app layout — the prototype's fixed frame:
@@ -102,11 +172,18 @@ export function AppShell() {
             </div>
           )}
 
-          {/* The content pane. `relative` is the frame <PanelFrame> pins itself
-              to; screens that have not adopted it scroll this pane as before. */}
-          <main className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
-            <Outlet />
-          </main>
+          {/* The content side: the "Move to Dashboard" band (row 10) over the
+              content pane. The band is OUTSIDE <main> deliberately — `.sj-frame`
+              is `position:absolute; inset:0` within the pane, so anything drawn
+              inside <main> alongside a PanelFrame screen would be covered by it. */}
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <MoveToDashboardBar edition={user.edition} role={user.role} />
+            {/* The content pane. `relative` is the frame <PanelFrame> pins itself
+                to; screens that have not adopted it scroll this pane as before. */}
+            <main className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
+              <Outlet />
+            </main>
+          </div>
         </div>
         {/* JURYbuddy's floating launcher — the form `Help_JURYbuddy.HTM` ships.
             Mounted at the shell, not per route, because the spec fixes it to the

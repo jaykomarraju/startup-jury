@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Link, type LinkProps } from "react-router-dom";
 
 /**
  * The prototype's surface toolbar (`.tb`, `_style.css:60-68`) and the fixed
@@ -50,6 +51,26 @@ export function ToolbarButton({ primary, className, children, ...rest }: Toolbar
     <button type="button" className={`tbb ${primary ? "pr" : ""} ${className ?? ""}`} {...rest}>
       {children}
     </button>
+  );
+}
+
+interface ToolbarLinkProps extends LinkProps {
+  /** `.tbb.pr` — the olive primary action. */
+  primary?: boolean;
+}
+
+/**
+ * `.tbb` as a NAVIGATION — visually the same 11px toolbar action, but a real
+ * anchor, so ⌘-click, middle-click and "copy link" all behave. Added for the
+ * shell's "Move to Dashboard" control (S2-CHROME, feedback row 10); it lives
+ * here so that when a later parity pass moves that control down into each
+ * screen's own `.tbr` strip, the strip already has the right primitive.
+ */
+export function ToolbarLink({ primary, className, children, ...rest }: ToolbarLinkProps) {
+  return (
+    <Link className={`tbb ${primary ? "pr" : ""} ${className ?? ""}`} {...rest}>
+      {children}
+    </Link>
   );
 }
 

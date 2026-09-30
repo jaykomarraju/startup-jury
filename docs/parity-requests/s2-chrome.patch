@@ -1,0 +1,33 @@
+diff --git a/e2e/chrome.spec.ts b/e2e/chrome.spec.ts
+index 19f6385..686b618 100644
+--- a/e2e/chrome.spec.ts
++++ b/e2e/chrome.spec.ts
+@@ -161,3 +161,28 @@ test("the .tb frame pins its toolbar and footer while only its body scrolls", as
+   expect(geo.toolbarSurface).toBe("rgb(255, 255, 255)");
+   expect(geo.primaryButton).toBe("rgb(107, 132, 84)"); // #6B8454
+ });
++
++/**
++ * S2-CHROME · 24-Sep feedback row 10 — "Move to Dashboard", on every sidebar
++ * screen. The shell renders it once, above the content pane (see the comment on
++ * <MoveToDashboardBar>), so this walk is what proves "every screen": three
++ * screens with three different toolbar implementations — PanelFrame (My
++ * Parameters), a hand-rolled `.tb` (Query) and the three-column Assign frame.
++ */
++test("every screen offers the way back to the Dashboard, and the Dashboard itself does not", async ({
++  page,
++}) => {
++  await login(page, SUPERUSER);
++
++  for (const slug of ["query", "assign", "myparams"]) {
++    await page.goto(`/app/${slug}`);
++    await expect(page.getByRole("link", { name: "Move to Dashboard" })).toBeVisible();
++  }
++
++  // It is a real link, and it lands on the uploaded status screen (§2 C9).
++  await page.getByRole("link", { name: "Move to Dashboard" }).click();
++  await page.waitForURL("**/app/alldecks");
++  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
++  // …and there it is gone, because it would point at the screen you are on.
++  await expect(page.getByRole("link", { name: "Move to Dashboard" })).toHaveCount(0);
++});

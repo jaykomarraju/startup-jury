@@ -247,6 +247,45 @@ describe("Founder queries list (#qview-list)", () => {
     expect(screen.getByText("AI-flagged decks awaiting founder clarification")).toBeInTheDocument();
   });
 
+  /**
+   * 24-Sep feedback, the Query screen's own item: the header select-all goes —
+   * *"not relevant since each deck has distinguished missing items"*. Every
+   * founder is asked a different set of questions and gets their own letter, so
+   * "tick the whole page" is never the thing the operator meant. The PER-ROW
+   * boxes are untouched; only the header one was removed.
+   */
+  it("has no select-all in the header, and keeps the empty 38px cell that aligns the column", async () => {
+    renderPage();
+    await populated();
+
+    const first = within(screen.getByRole("table")).getAllByRole("columnheader")[0];
+    expect(first.className).toContain("w-[38px]");
+    expect(first.querySelector("input")).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Select all startups" })).toBeNull();
+
+    // The only checkboxes left are the four rows'.
+    const boxes = screen.getAllByRole("checkbox");
+    expect(boxes).toHaveLength(4);
+    expect(boxes.map((b) => b.getAttribute("aria-label")).sort()).toEqual([
+      "Select CreditBridge",
+      "Select NimbusHR",
+      "Select PayRoute",
+      "Select WealthOS",
+    ]);
+  });
+
+  it("still selects one row at a time, and every row ticked is just four selections", async () => {
+    renderPage();
+    await populated();
+    for (const name of ["PayRoute", "NimbusHR", "WealthOS", "CreditBridge"]) {
+      fireEvent.click(screen.getByRole("checkbox", { name: `Select ${name}` }));
+    }
+    expect(screen.getByText("4 founders selected")).toBeInTheDocument();
+    // And a row can still be unticked on its own.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select PayRoute" }));
+    expect(screen.getByText("3 founders selected")).toBeInTheDocument();
+  });
+
   it("lists flagged decks and keeps an answered one as Responded; never an unflagged stage", async () => {
     renderPage();
     await populated();
