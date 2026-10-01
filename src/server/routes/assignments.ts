@@ -119,7 +119,7 @@ assignments.get(
 
     // Blind scoring holds here exactly as it does on GET /api/decks: an evaluator
     // who has not submitted for a deck does not see the AI's numbers for it.
-    const scoring = await loadScoringSettings(db, edition);
+    const scoring = await loadScoringSettings(db, scopeOf(c.var.user));
     const isEvaluator = isAssignableEvaluator(edition, role);
     const submittedByViewer = new Set(
       (

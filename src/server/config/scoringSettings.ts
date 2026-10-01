@@ -18,9 +18,9 @@ import {
   type OrgScoringSettingsRow,
   type ScoreScale,
 } from "../../shared/types";
-import { scoped } from "../../shared/tenant";
+import { scoped, type TenantScope } from "../../shared/tenant";
 import type { Env } from "../types";
-import { configScope, type ConfigScopeArg } from "./scope";
+
 
 const COLUMNS =
   "edition, ai_pre_scoring_enabled, auto_clarification, show_ai_score_to_jury, " +
@@ -92,9 +92,9 @@ export function toScoringSettings(row: Partial<OrgScoringSettingsRow> | null): S
  */
 export async function loadScoringSettings(
   db: D1Database,
-  scope: ConfigScopeArg,
+  scope: TenantScope,
 ): Promise<ScoringSettings> {
-  const q = scoped(configScope(scope)).on("s");
+  const q = scoped(scope).on("s");
   const row = await db
     .prepare(`SELECT ${COLUMNS} FROM org_scoring_settings s ${q.whereClause()}`)
     .bind(...q.binds)
@@ -103,6 +103,6 @@ export async function loadScoringSettings(
 }
 
 /** Convenience for the server paths that hold an `Env` rather than a `D1Database`. */
-export function scoringSettingsFor(env: Env, scope: ConfigScopeArg): Promise<ScoringSettings> {
+export function scoringSettingsFor(env: Env, scope: TenantScope): Promise<ScoringSettings> {
   return loadScoringSettings(env.DB, scope);
 }

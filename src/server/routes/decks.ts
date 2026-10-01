@@ -616,7 +616,7 @@ decks.get("/", async (c) => {
   // Blindness is per (deck, evaluator) and lifts once they have submitted for
   // that deck, so fetch the set they have submitted for rather than blanking the
   // whole list. One extra query, and only when the toggle is actually off.
-  const scoring = await loadScoringSettings(c.env.DB, edition);
+  const scoring = await loadScoringSettings(c.env.DB, scopeOf(c.var.user));
   // The partition runs on the mapped view, so the server and the screens read
   // the same shape through the same function — never two implementations of it.
   // That property is why `deriveQuery` is passed rather than forked on here:
@@ -827,7 +827,7 @@ decks.get("/:id", async (c) => {
   // AI composite and no AI verdict, and `aiScoreWithheld` tells the workbench to
   // say so. Submitting reveals it — the point is independence before scoring,
   // not secrecy afterwards. Staff who oversee rather than score are unaffected.
-  const scoring = await loadScoringSettings(c.env.DB, edition);
+  const scoring = await loadScoringSettings(c.env.DB, scopeOf(c.var.user));
   const qsub = scoped(scopeOf(c.var.user));
   const subJoin = qsub.viaParent("evaluations", "e");
   qsub.and("e.deck_id = ?", id).and("e.evaluator_id = ?", userId);
@@ -952,7 +952,7 @@ decks.put("/:id/onboarding", requireTask("onboard", ...ONBOARDING_ROLES), async 
     .bind(...qu.binds)
     .first<DeckRow>();
   // The returned view carries the shortlist hint, which needs the org's split.
-  const scoring = updated ? await loadScoringSettings(c.env.DB, edition) : null;
+  const scoring = updated ? await loadScoringSettings(c.env.DB, scopeOf(c.var.user)) : null;
   return c.json({
     ok: true,
     deck: updated && scoring ? toDeckView(edition, updated, c.var.user.role, scoring) : null,
@@ -1132,7 +1132,7 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
     .bind(...qu.binds)
     .first<DeckRow>();
   // The returned view carries the shortlist hint, which needs the org's split.
-  const scoring = updated ? await loadScoringSettings(c.env.DB, edition) : null;
+  const scoring = updated ? await loadScoringSettings(c.env.DB, scopeOf(c.var.user)) : null;
   return c.json({
     ok: true,
     deck: updated && scoring ? toDeckView(edition, updated, c.var.user.role, scoring) : null,
@@ -1259,7 +1259,7 @@ decks.post("/:id/send-to-query", requireTask("query", ...SEND_TO_QUERY_ROLES), a
   )
     .bind(...qu.binds)
     .first<DeckRow>();
-  const scoring = updated ? await loadScoringSettings(c.env.DB, edition) : null;
+  const scoring = updated ? await loadScoringSettings(c.env.DB, scopeOf(c.var.user)) : null;
   return c.json({
     ok: true,
     // `false` when the deck was already on the list, so the screen can say
@@ -1335,7 +1335,7 @@ decks.post("/:id/send-to-assign", requireTask("assign", ...SEND_TO_ASSIGN_ROLES)
   )
     .bind(...qu.binds)
     .first<DeckRow>();
-  const scoring = updated ? await loadScoringSettings(c.env.DB, edition) : null;
+  const scoring = updated ? await loadScoringSettings(c.env.DB, scopeOf(c.var.user)) : null;
   return c.json({
     ok: true,
     deck: updated && scoring ? toDeckView(edition, updated, c.var.user.role, scoring) : null,
@@ -1452,6 +1452,11 @@ decks.get("/:id/report", async (c) => {
   const seenEvaluators = new Map<string, Column>();
   let hidden = 0;
 
+  // Both config reads below are the VIEWER's workspace, from the session — the
+  // toggles and the matrix are the customer's own. Not the deck's edition: the
+  // deck row is already this workspace's, because `oneDeck` scoped it above.
+  const scope = scopeOf(c.var.user);
+
   // ── Peer visibility (F0109) ───────────────────────────────────────────────
   // Admin console → Scoring framework → "Jury can see each other's scores" ·
   // "Turn off for fully independent scoring rounds". It ships **OFF** — the
@@ -1462,7 +1467,7 @@ decks.get("/:id/report", async (c) => {
   // the role rule below still applies on top: the two are a conjunction, not a
   // replacement. Roles that oversee rather than score — admin, superuser — are
   // outside the toggle entirely.
-  const scoring = await loadScoringSettings(c.env.DB, edition);
+  const scoring = await loadScoringSettings(c.env.DB, scope);
   // V4-WEIGHT (0074) — the split THIS deck is judged at, not the org's bare
   // value: its cohort's, else its programme's, else the organisation's.
   const workbenchWeight = aiWeightFor(
@@ -1480,7 +1485,7 @@ decks.get("/:id/report", async (c) => {
   // CELLS either (see the `visibleEvaluators` pass below). Pairs the matrix
   // does not draw — `admin` is in neither edition's — fall through to the
   // ladder, so nothing outside the 4×4 / 5×5 changed.
-  const visibility = await loadScoreVisibility(c.env.DB, edition);
+  const visibility = await loadScoreVisibility(c.env.DB, scope);
 
   // ── Blind scoring (F0106) — the third route that has to hold it ───────────
   // "Show AI score to jury before they score" · off for blind independent jury
@@ -1777,11 +1782,10 @@ const RETRY_AI_ROLES = [
  * (a new PDF version → decks.content_version bumps) unblocks it.
  */
 decks.post("/:id/rescore", requireTask("evaluate", ...RESCORE_ROLES), async (c) => {
-  const { edition } = c.var.user;
   const id = c.req.param("id");
   // With AI pre-scoring switched off there is no pass to re-run — say so
   // rather than quietly moving the deck's stage from a "re-score" button.
-  const scoring = await loadScoringSettings(c.env.DB, edition);
+  const scoring = await loadScoringSettings(c.env.DB, scopeOf(c.var.user));
   if (!scoring.aiPreScoringEnabled) return c.json({ error: "ai_disabled" }, 409);
   const qg = oneDeck(c.var.user, id);
   const deck = await c.env.DB.prepare(

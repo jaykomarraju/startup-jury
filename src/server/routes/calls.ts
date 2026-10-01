@@ -1005,7 +1005,10 @@ const FALLBACK_ORGANIZER = "no-reply@startup-jury.invalid";
 calls.get("/:id/prompts", async (c) => {
   const row = await loadVisibleCall(c, c.req.param("id"));
   if (!row) return c.json({ error: "not_found" }, 404);
-  return c.json(await introCallPrompts(c.env, c.var.user.edition as Edition, row.deck_id));
+  // The settings behind the prompts are the VIEWER's workspace, and `loadVisibleCall`
+  // has already scoped the deck to it — so `rowScope(row)`, which the sibling .ics
+  // handler needs because it reads the row's own participants, would say the same thing.
+  return c.json(await introCallPrompts(c.env, scopeOf(c.var.user), row.deck_id));
 });
 
 /**

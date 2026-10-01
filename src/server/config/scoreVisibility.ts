@@ -13,8 +13,8 @@
  * throwing halfway through a report.
  */
 import { resolveVisibility, type VisibilityMatrix } from "../../shared/scoreVisibility";
-import { scoped } from "../../shared/tenant";
-import { configScope, type ConfigScopeArg } from "./scope";
+import { scoped, type TenantScope } from "../../shared/tenant";
+
 
 interface Row {
   viewer_role: string;
@@ -38,9 +38,9 @@ interface Row {
  */
 export async function loadScoreVisibility(
   db: D1Database,
-  scope: ConfigScopeArg,
+  scope: TenantScope,
 ): Promise<VisibilityMatrix> {
-  const resolved = configScope(scope);
+  const resolved = scope;
   const q = scoped(resolved).on("v");
   const rows = await db
     .prepare(`SELECT v.viewer_role, v.target_role, v.visible FROM score_visibility v ${q.whereClause()}`)

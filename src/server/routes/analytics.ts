@@ -13,7 +13,6 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import type { AppEnv } from "../types";
-import type { Edition } from "../../shared/roles";
 import { requireAuth } from "../auth/middleware";
 import { loadScoringSettings } from "../config/scoringSettings";
 import { loadScoreVisibility } from "../config/scoreVisibility";
@@ -120,12 +119,15 @@ function num(v: string | number | null): number | null {
  * because the row SET does not move (Wave 9 integration caught a vacuous test
  * that only ever compared row counts).
  */
-async function humanEvalsByDeck(
-  c: Context<AppEnv>,
-  edition: Edition,
-): Promise<Map<string, number[]>> {
-  const { role, id: viewerId } = c.var.user;
-  const visibility = await loadScoreVisibility(c.env.DB, edition);
+async function humanEvalsByDeck(c: Context<AppEnv>): Promise<Map<string, number[]>> {
+  // T1 integration — the matrix is the CALLER'S, from the principal. Read by
+  // edition alone it resolved to `t_default`, which on a second customer filters
+  // this customer's means through the FIRST customer's visibility rules: three
+  // screens' numbers, wrong, with nothing in the response saying so. The caller's
+  // edition is already half of that scope, so the `edition` parameter this helper
+  // took is gone rather than converted — it was a second source for the same fact.
+  const { role, edition, id: viewerId } = c.var.user;
+  const visibility = await loadScoreVisibility(c.env.DB, scopeOf(c.var.user));
   // Three reports take a mean out of this map (`/cohort`, `/drift` and the ranked
   // final score), so one missing predicate here moves three screens' numbers at
   // once. `evaluations` is scoped through `decks`, which this statement already
@@ -193,7 +195,6 @@ analytics.get("/funnel", guard("funnel"), async (c) => {
 // ── Cohort summary (incubator) ───────────────────────────────────────────────
 
 analytics.get("/cohort", guard("cohortsummary"), async (c) => {
-  const edition = c.var.user.edition;
   const qb = scoped(scopeOf(c.var.user)).on("d");
   const decks = (
     await c.env.DB.prepare(
@@ -224,7 +225,7 @@ analytics.get("/cohort", guard("cohortsummary"), async (c) => {
 
   // W8-A (F0797) — the report ranks FINAL scores: the mean human evaluation,
   // falling back to the AI pre-score for a deck no human has scored.
-  const humans = await humanEvalsByDeck(c, edition);
+  const humans = await humanEvalsByDeck(c);
   // W8-A (F0798) — "In clarification — awaiting founder input" is the query
   // loop: decks with a founder query not yet answered (the same predicate the
   // VC diligence report counts), not the intake states.
@@ -264,7 +265,7 @@ analytics.get("/evaluators", guard("evaluatorscores"), async (c) => {
   // so a viewer must not see one the matrix withholds. Same predicate as
   // `humanEvalsByDeck` and `/scoring` — V3 item 13's configurable matrix.
   const { edition, role, id: viewerId } = c.var.user;
-  const visibility = await loadScoreVisibility(c.env.DB, edition);
+  const visibility = await loadScoreVisibility(c.env.DB, scopeOf(c.var.user));
   // This report lists an average BY NAME per evaluator, so an unscoped read would
   // put another customer's staff names on the screen AND fold their scores into
   // every mean — the list leak and the aggregate leak in one statement.
@@ -296,11 +297,10 @@ analytics.get("/evaluators", guard("evaluatorscores"), async (c) => {
 // ── Score drift: AI vs human final (incubator) ───────────────────────────────
 
 analytics.get("/drift", guard("scoredrift"), async (c) => {
-  const edition = c.var.user.edition;
   // Admin console → Scoring framework → "Show score drift analysis in reports".
   // Off means the report carries no drift analysis — enforced here, so turning
   // it off is not something a client can decline to honour.
-  const scoring = await loadScoringSettings(c.env.DB, edition);
+  const scoring = await loadScoringSettings(c.env.DB, scopeOf(c.var.user));
   if (!scoring.showScoreDrift) return c.json({ ...scoreDrift([]), disabled: true });
   const qb = scoped(scopeOf(c.var.user)).on("d").andRaw("ai_score IS NOT NULL");
   const decks = (
@@ -310,7 +310,7 @@ analytics.get("/drift", guard("scoredrift"), async (c) => {
       .bind(...qb.binds)
       .all<{ id: string; name: string; ai_score: number }>()
   ).results;
-  const humans = await humanEvalsByDeck(c, edition);
+  const humans = await humanEvalsByDeck(c);
   const input: DriftInput[] = decks
     .filter((d) => humans.has(d.id))
     .map((d) => {
@@ -324,7 +324,7 @@ analytics.get("/drift", guard("scoredrift"), async (c) => {
 
 analytics.get("/scoring", guard("scoring"), async (c) => {
   const { edition, role, id: viewerId } = c.var.user;
-  const visibility = await loadScoreVisibility(c.env.DB, edition);
+  const visibility = await loadScoreVisibility(c.env.DB, scopeOf(c.var.user));
   const deckQb = scoped(scopeOf(c.var.user)).on("d");
   const decks = (
     await c.env.DB.prepare(`SELECT id, name, ai_score FROM decks d ${deckQb.whereClause()}`)
@@ -361,7 +361,7 @@ analytics.get("/scoring", guard("scoring"), async (c) => {
   // W9-D — blind scoring (F0106) held on the deck read but not here: with "Show
   // AI score to jury before they score" off, an assignable evaluator read every
   // AI score on this report before scoring. Same predicate as `GET /api/decks/:id`.
-  const scoring = await loadScoringSettings(c.env.DB, edition);
+  const scoring = await loadScoringSettings(c.env.DB, scopeOf(c.var.user));
   const submitted = new Set(evals.filter((e) => e.eid === viewerId).map((e) => e.deck_id));
   const isEvaluator = isAssignableEvaluator(edition, role);
 
@@ -645,7 +645,7 @@ analytics.get("/my/decks", guard("repdecks"), async (c) => {
   ).results;
   // Blind scoring holds here exactly as on GET /api/decks: no AI score on a deck
   // the juror has not yet scored.
-  const scoring = await loadScoringSettings(c.env.DB, edition);
+  const scoring = await loadScoringSettings(c.env.DB, scopeOf(c.var.user));
   const isEvaluator = isAssignableEvaluator(edition, role);
   const input: MyDeckInput[] = rows
     .filter((r) => r.mine !== null || AWAITING_JURY.includes(r.status))
@@ -680,7 +680,7 @@ analytics.get("/my/scores", guard("repscores"), async (c) => {
 analytics.get("/my/drift", guard("repdrift"), async (c) => {
   // W8-A — the same toggle `/drift` honours: a juror's own drift report is
   // drift analysis in a report too (§9, Wave 2 integration).
-  const scoring = await loadScoringSettings(c.env.DB, c.var.user.edition);
+  const scoring = await loadScoringSettings(c.env.DB, scopeOf(c.var.user));
   if (!scoring.showScoreDrift) return c.json({ ...scoreDrift([]), disabled: true });
   const rows = await myEvals(c).then((rs) => rs.filter((r) => r.ai !== null));
   const input: DriftInput[] = rows.map((r) => ({

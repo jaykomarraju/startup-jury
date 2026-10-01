@@ -294,15 +294,16 @@ interface ShortlistGuard {
  *
  * Returns null when the deck has no program, or the program has no floor set.
  */
-async function checkShortlistFloor(
-  c: Context<AppEnv>,
-  deckId: string,
-  edition: Edition,
-): Promise<ShortlistGuard | null> {
+async function checkShortlistFloor(c: Context<AppEnv>, deckId: string): Promise<ShortlistGuard | null> {
   // The guard is reached by deck id, so it is scoped like every other by-id read:
   // a floor read off another customer's programme would refuse — or wave through —
-  // a shortlist on a number from the wrong workspace.
-  const qd = scoped(scopeOf(c.var.user)).on("d").and("d.id = ?", deckId);
+  // a shortlist on a number from the wrong workspace. T1: the ONE scope the guard
+  // uses, and it comes from the principal — the deck row and the org threshold are
+  // two reads of the same workspace, so they cannot be allowed to disagree. The
+  // caller used to hand in `deck.edition`; `loadDeck` already scopes that row to
+  // this principal, so the parameter said nothing the session did not.
+  const scope = scopeOf(c.var.user);
+  const qd = scoped(scope).on("d").and("d.id = ?", deckId);
   // LEFT JOIN, not JOIN: a deck with no programme still faces the org-wide
   // shortlist threshold (F0187), which the programme floor merely overrides.
   const row = await c.env.DB.prepare(
@@ -329,7 +330,7 @@ async function checkShortlistFloor(
   // Scoring framework; the build only had the per-programme floor, reachable
   // from a different screen. The programme's own value still wins where one is
   // set; otherwise every deck is held to the organisation's.
-  const scoring = await loadScoringSettings(c.env.DB, edition);
+  const scoring = await loadScoringSettings(c.env.DB, scope);
   const { minimum, source } = shortlistFloor(row.shortlist_min, scoring.shortlistThreshold);
 
   const score = decisionScore(
@@ -397,7 +398,7 @@ pipeline.post("/decks/:id/transition", async (c) => {
   // The shortlist floor: the programme's own where it has one, otherwise the
   // org-wide Scoring-framework threshold.
   if (SHORTLIST_ACTIONS.has(action)) {
-    const guard = await checkShortlistFloor(c, deck.id, deck.edition);
+    const guard = await checkShortlistFloor(c, deck.id);
     if (guard?.blocked) {
       return c.json(
         {
@@ -543,7 +544,15 @@ pipeline.post(
     // The org's scoring framework governs three things here: the scale the
     // submitted numbers are ON, the formula the roll-up uses, and whether an
     // override far from the AI needs a written rationale.
-    const scoring = await loadScoringSettings(c.env.DB, deck.edition);
+    //
+    // T1 — the scope is the PRINCIPAL's, not the deck row's, and the two are the
+    // same thing here: `loadDeck` fetched this deck through `scoped(scopeOf(user))
+    // .on("d")`, so a deck that reached this line is already in the caller's
+    // workspace and `deck.edition` could not differ from `user.edition`. Taking it
+    // from the principal keeps the settings read on the same key as the
+    // `parameters` and `scores` reads below, instead of on a row-derived edition
+    // with no tenant attached.
+    const scoring = await loadScoringSettings(c.env.DB, scopeOf(c.var.user));
 
     const qp = scoped(scopeOf(c.var.user)).on("p").andRaw("p.active = 1");
     const params = (

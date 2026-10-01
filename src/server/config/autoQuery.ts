@@ -30,7 +30,6 @@ import { buildQueryEmail, sendEmail } from "../email/outbox";
 import { scoped, type TenantScope } from "../../shared/tenant";
 import type { Env } from "../types";
 import { scoringSettingsFor } from "./scoringSettings";
-import { configScope } from "./scope";
 import type { Edition } from "../../shared/roles";
 
 export interface AutoClarifyInput {
@@ -39,18 +38,18 @@ export interface AutoClarifyInput {
   /**
    * The deck's owning customer (`decks.tenant_id`).
    *
-   * OPTIONAL, and the only optional scope field T1-CONFIG ships. The sole caller
-   * is `ai/evaluate.ts:1149` — T1-DECKS' file — and it builds this input from a
-   * `decks` row whose `SELECT` does not yet carry `tenant_id`. Adding it means
-   * editing that statement and its `DeckRow` type, which is that session's work
-   * and not safely done from this branch.
+   * REQUIRED. It was optional while the tenancy wave was in flight, because the
+   * sole caller — `ai/evaluate.ts`, T1-DECKS' file — built this input from a
+   * `decks` row whose `SELECT` did not carry `tenant_id`, and adding it was that
+   * session's work. T1-DECKS added it; T1 integration made this required.
    *
-   * Absent, it resolves to `DEFAULT_TENANT_ID`, which is today's behaviour. See
-   * `config/scope.ts` for the ratchet that stops that becoming permanent:
-   * `test/unit/config-scope-bridge.test.ts` lists this call site and fails when a
-   * new one appears.
+   * It matters more here than the field count suggests. `maybeAutoClarify` reads
+   * the scoring settings, the weak areas and the QUESTION BANK, then MAILS the
+   * result to a founder. Without the tenant, a second customer's founder would be
+   * asked the FIRST customer's clarification questions, over email, in the second
+   * customer's name.
    */
-  tenantId?: string;
+  tenantId: string;
   deckName: string;
   founderName: string | null;
   founderEmail: string | null;
@@ -166,9 +165,7 @@ export async function maybeAutoClarify(
   input: AutoClarifyInput,
   now: () => string = () => new Date().toISOString(),
 ): Promise<AutoClarifyResult> {
-  const scope = configScope(
-    input.tenantId ? { tenantId: input.tenantId, edition: input.edition } : input.edition,
-  );
+  const scope: TenantScope = { tenantId: input.tenantId, edition: input.edition };
   const settings = await scoringSettingsFor(env, scope);
   if (!settings.autoClarification) return { triggered: false, reason: "disabled" };
 
@@ -196,17 +193,25 @@ export async function maybeAutoClarify(
     .bind(queryId, input.deckId, questions, ts)
     .run();
 
-  // Unscoped on purpose, and this is the one place in T1-CONFIG where adding the
-  // predicate would be the bug. `input.tenantId` is optional (see above), so a
-  // scoped read here would bind `DEFAULT_TENANT_ID` for every caller that has not
-  // passed it — and then fail to find a SECOND customer's uploader, silently
-  // falling back to `founder@portal.local` and mailing the clarification letter
-  // into a void. `uploadedBy` comes off the deck being evaluated, so the owner is
-  // already established; T1-DECKS can scope it once the deck row carries the key.
+  // SCOPED at T1 integration, and the reason it was not is worth keeping: while
+  // `input.tenantId` was optional, a predicate here would have bound
+  // `DEFAULT_TENANT_ID` for any caller that omitted it, failed to find a SECOND
+  // customer's uploader, and silently fallen back to `founder@portal.local` —
+  // mailing the clarification letter into a void. That argument died with the
+  // optional marker.
+  //
+  // It is defence in depth rather than a leak closed: `uploadedBy` comes off the
+  // deck being evaluated, so the id already names a row in the right workspace.
+  // What the predicate buys is that a WRONG id cannot resolve — it fails to find
+  // anybody instead of finding a stranger whose address this letter is then
+  // addressed to, which is the shape of mistake a `users` lookup by bare id makes.
   const uploader = input.uploadedBy
-    ? await env.DB.prepare("SELECT email, name FROM users WHERE id = ?")
-        .bind(input.uploadedBy)
-        .first<{ email: string; name: string }>()
+    ? await (async () => {
+        const q = scoped(scope).onTenantOnly("u").and("u.id = ?", input.uploadedBy!);
+        return env.DB.prepare(`SELECT u.email, u.name FROM users u ${q.whereClause()}`)
+          .bind(...q.binds)
+          .first<{ email: string; name: string }>();
+      })()
     : null;
   const { subject, body } = buildQueryEmail({
     deckName: input.deckName,

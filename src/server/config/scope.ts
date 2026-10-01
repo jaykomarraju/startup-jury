@@ -1,80 +1,54 @@
 /**
- * THE CONFIG MODULES' SCOPE ARGUMENT — AND THE ONE TRANSITIONAL EDGE IN T1-CONFIG
+ * THE CONFIG MODULES' SCOPE — AND THE BRIDGE THAT USED TO BE HERE
  * ==============================================================================
  *
- * `src/server/config/**` is T1-CONFIG's by `plan_multitenancy.md` §11. Four of
- * the five modules in it export a loader that other T1 sessions' route files
- * call, and that is the whole problem this file exists to state honestly.
+ * `src/server/config/**`'s loaders take a `TenantScope` and nothing else. The
+ * type system carries the invariant, so there is no longer anything for a test to
+ * assert about it.
  *
- * ── THE MEASUREMENT ─────────────────────────────────────────────────────────
+ * ── WHAT WAS HERE, AND WHY IT IS GONE ───────────────────────────────────────
  *
- * Twenty call sites of the four exported loaders live OUTSIDE T1-CONFIG's paths:
+ * T1-CONFIG could not land that signature outright. Twenty-one call sites of
+ * these loaders lived in FIVE other sessions' route files, and in a wave whose
+ * split §11 verified "disjoint by path", changing the parameter would have
+ * reddened five files that branch could not test. So it shipped
  *
- *   loadScoringSettings  decks.ts ×8, analytics.ts ×4, pipeline.ts ×2,
- *                        assignments.ts ×1            → T1-DECKS, T1-REPORTS
- *   scoringSettingsFor   ai/evaluate.ts ×1            → T1-DECKS
- *   loadScoreVisibility  analytics.ts ×3, decks.ts ×1 → T1-REPORTS, T1-DECKS
- *   introCallPrompts     calls.ts ×1                  → T1-FLOW
- *   maybeAutoClarify     ai/evaluate.ts ×1            → T1-DECKS
+ *     export type ConfigScopeArg = TenantScope | Edition;
  *
- * Changing the second parameter from `Edition` to `TenantScope` would redden
- * every one of those files on a branch that cannot test them, in a wave whose
- * shape §11 verified "disjoint by path". And two of them — `pipeline.ts:520`
- * and `ai/evaluate.ts:897` — cannot be fixed from here at all: they derive the
- * key from a `decks` row whose `SELECT` does not carry `tenant_id`, so the fix
- * is an edit to another session's statement and to its row type.
+ * where a bare `Edition` resolved to `DEFAULT_TENANT_ID` — byte-identical to the
+ * pre-tenancy behaviour, and a CROSS-TENANT READ the moment a second customer
+ * existed, because `org_settings`, `org_scoring_settings` and `score_visibility`
+ * were all rebuilt with `(tenant_id, edition)` keys by 0089, 0090 and 0092.
  *
- * ── SO THE PARAMETER TAKES EITHER, AND THE BRIDGE IS LOUD ───────────────────
+ * `test/unit/config-scope-bridge.test.ts` held it to a ratchet: it asserted the
+ * exact per-file count of edition-only calls and failed in BOTH directions, so a
+ * new one could not appear and a closed one could not go unnoticed. T1
+ * integration closed all 21 and deleted the `Edition` arm and that test together,
+ * which is exactly what this file said would happen.
  *
- * `configScope()` accepts a `TenantScope` — which every T1-CONFIG call site now
- * passes — or a bare `Edition`, which resolves to `DEFAULT_TENANT_ID`. On an
- * edition-only call the behaviour is byte-identical to today's, because
- * `t_default` is the organisation every seeded row was backfilled to.
+ * ── TWO PREDICTIONS IT GOT WRONG, KEPT BECAUSE THEY MISLED ──────────────────
  *
- * **An edition-only call is a LEAK, not a nicety.** `org_settings`,
- * `org_scoring_settings` and `score_visibility` were all rebuilt with
- * `(tenant_id, edition)` in the key (`0089`, `0090`, `0092`), so a second
- * customer's row can exist and an edition-only read returns the FIRST
- * customer's. The routes that still make such a call are the routes
- * `test/worker/tenant-scope.test.ts` still lists as `pending`, owned by the
- * sessions named above. This bridge does not hide that; it is what lets each
- * session close its own row without waiting on the others.
+ * This header used to name `pipeline.ts:520` and `ai/evaluate.ts:897` as
+ * impossible to close from anywhere — both derive the key from a `decks` row
+ * whose `SELECT` carried no `tenant_id`. Neither needed what it predicted:
  *
- * ── THE RATCHET, SO IT CANNOT ROT ───────────────────────────────────────────
+ *   · `ai/evaluate.ts` — correct in substance, already stale in fact. T1-DECKS
+ *     had added `tenant_id` to that SELECT and to `DeckRow` before integration
+ *     ran, so the scope was already built from the row. It is a QUEUE CONSUMER
+ *     with no session, so the deck row is the only scope it can have, and the
+ *     answer had to come from stored state rather than a principal.
+ *   · `pipeline.ts` — the premise was simply false by then. `loadDeck` is
+ *     `scoped(scopeOf(user)).on("d")`, which binds BOTH halves of the key, so a
+ *     deck reaching that line is already in the caller's workspace and
+ *     `deck.edition` cannot differ from the principal's. Adding `tenant_id` to a
+ *     SELECT that already predicates on it would have re-derived a value the
+ *     predicate had pinned.
  *
- * `test/unit/config-scope-bridge.test.ts` scans `src/server/` for calls that
- * pass an edition rather than a scope and asserts the EXACT set. A new one fails
- * the test; a fixed one fails it too, and the fix is to delete that line from the
- * list. **T1 integration deletes the `Edition` arm of `ConfigScopeArg` and that
- * test together**, at which point the four loaders take a `TenantScope` and
- * nothing else, and the type system carries the invariant instead of a grep.
- *
- * `rescoreEdition` is deliberately NOT on the bridge: both of its call sites are
- * in `routes/config.ts`, so it takes a `TenantScope` outright.
+ * The lesson worth keeping: "this cannot be fixed from here" is a statement about
+ * a branch, not about the code, and it expires when the branches merge.
  */
 import type { Edition } from "../../shared/roles";
-import { DEFAULT_TENANT_ID, type TenantScope } from "../../shared/tenant";
-
-/**
- * What the config loaders accept while the wave is in flight: a real workspace
- * scope, or — from the twenty foreign call sites listed above — the edition
- * alone.
- *
- * **Integration narrows this to `TenantScope`.** Do not add a new call site that
- * passes an `Edition`; `test/unit/config-scope-bridge.test.ts` refuses one.
- */
-export type ConfigScopeArg = TenantScope | Edition;
-
-/**
- * Resolve the argument to a workspace.
- *
- * A bare `Edition` resolves to `DEFAULT_TENANT_ID` — today's behaviour exactly,
- * because every backfilled row belongs to that organisation. It is the WRONG
- * answer for a second customer, which is the point of the ratchet above.
- */
-export function configScope(arg: ConfigScopeArg): TenantScope {
-  return typeof arg === "string" ? { tenantId: DEFAULT_TENANT_ID, edition: arg } : arg;
-}
+import type { TenantScope } from "../../shared/tenant";
 
 /**
  * The same workspace, in a different edition.

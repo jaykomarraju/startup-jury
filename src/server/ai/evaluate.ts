@@ -913,7 +913,12 @@ export async function evaluateDeck(
   // read, no model call, no scores, no gate. The deck leaves the AI queue for
   // the edition's first human stage and says so in its audit trail, so nothing
   // strands at `pending_ai` waiting for a pass that will never run.
-  const settings = await scoringSettingsFor(env, deck.edition);
+  //
+  // Scoped by THIS DECK's workspace, which is the only scope a queue consumer
+  // has: `org_scoring_settings` is keyed `(tenant_id, edition)` since `0090`, so
+  // an edition-only read would let the first customer's toggle decide whether a
+  // second customer's deck gets scored at all.
+  const settings = await scoringSettingsFor(env, scope);
   if (!settings.aiPreScoringEnabled) {
     return skipAiEvaluation(env, deck, now);
   }
@@ -1176,7 +1181,12 @@ export async function evaluateDeck(
       env,
       {
         deckId,
-        edition: deck.edition,
+        // Both halves of the workspace, from the deck row rather than a default:
+        // the letter's questions come out of `question_bank` and the toggle out of
+        // `org_scoring_settings`, and without the tenant this deck's founder would
+        // be asked the FIRST customer's questions.
+        tenantId: scope.tenantId,
+        edition: scope.edition,
         deckName: effectiveName ?? "your pitch deck",
         founderName: details.founder ?? null,
         founderEmail: details.founderEmail ?? null,
