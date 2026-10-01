@@ -49,6 +49,13 @@
  *
  * Incubator only. The VC edition's term-sheet workspace (F0660) is a different
  * record on a different screen; its roles do not hold `signuppipeline`.
+ *
+ * TENANCY (T1-FLOW). Everything this router reads is proxy-scoped: `signups`
+ * one hop from `decks`, `signup_documents` and `agreements` two. §2 B12 names
+ * the stakes — **founder-submitted legal documents streamed from R2**, and seat
+ * allocation. `required_documents` is the one tenant-OWNED table here (`0085`).
+ * The `ON CONFLICT (deck_id)` keys below are deck-scoped and stay as they are:
+ * they are two of the nine the plan says not to touch.
  */
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -65,6 +72,7 @@ import {
   verifiableCount,
   type DocumentStatus,
 } from "../../shared/signupConfig";
+import { scopeOf, scoped, type TenantScope } from "../../shared/tenant";
 import { applicableTemplate, listTemplates } from "../esign/store";
 
 const signups = new Hono<AppEnv>();
@@ -102,19 +110,19 @@ const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
  * list REPLACES the default) is `loadChecklist`'s in `signup-config.ts`, which
  * is not exported; it is restated here in three reads and §9 asks for it to be.
  */
-async function ensureSignups(c: Context<AppEnv>, edition: Edition): Promise<void> {
+async function ensureSignups(c: Context<AppEnv>, scope: TenantScope): Promise<void> {
+  const q = scoped(scope).on("d").andRaw("d.status = 'signup'");
   const { results: missing } = await c.env.DB.prepare(
     "SELECT d.id AS deck_id, d.program_id AS program_id, d.cohort_id AS cohort_id FROM decks d " +
-      "WHERE d.edition = ? AND d.status = 'signup' " +
-      "AND NOT EXISTS (SELECT 1 FROM signups s WHERE s.deck_id = d.id)",
+      `${q.whereClause()} AND NOT EXISTS (SELECT 1 FROM signups s WHERE s.deck_id = d.id)`,
   )
-    .bind(edition)
+    .bind(...q.binds)
     .all<{ deck_id: string; program_id: string | null; cohort_id: string | null }>();
   if (missing.length === 0) return;
 
   for (const deck of missing) {
     const signupId = `su_${deck.deck_id}`;
-    const checklist = await checklistFor(c, edition, deck.program_id, deck.cohort_id);
+    const checklist = await checklistFor(c, scope, deck.program_id, deck.cohort_id);
     await c.env.DB.batch([
       c.env.DB.prepare(
         "INSERT INTO signups (id, deck_id, status) VALUES (?, ?, 'initiated') ON CONFLICT (deck_id) DO NOTHING",
@@ -139,7 +147,7 @@ async function ensureSignups(c: Context<AppEnv>, edition: Edition): Promise<void
     const row = await c.env.DB.prepare("SELECT id FROM signups WHERE deck_id = ?")
       .bind(deck.deck_id)
       .first<{ id: string }>();
-    if (row) await syncRollUp(c, row.id);
+    if (row) await syncRollUp(c, row.id, scope);
   }
 }
 
@@ -153,27 +161,31 @@ interface ChecklistRow {
 
 async function checklistFor(
   c: Context<AppEnv>,
-  edition: Edition,
+  scope: TenantScope,
   programId: string | null,
   cohortId: string | null,
 ): Promise<ChecklistRow[]> {
-  const read = (where: string, ...binds: unknown[]) =>
-    c.env.DB.prepare(
-      "SELECT id, name, note, mandatory, sort_order FROM required_documents " +
-        `WHERE edition = ? AND active = 1 AND ${where} ORDER BY sort_order, rowid`,
+  const read = (where: string, ...binds: unknown[]) => {
+    // `required_documents` is tenant-OWNED, so this is a direct-column scope,
+    // not a join. Each call builds its own builder: an instance is single-use.
+    const q = scoped(scope).on("rd").andRaw("rd.active = 1").and(where, ...binds);
+    return c.env.DB.prepare(
+      "SELECT rd.id, rd.name, rd.note, rd.mandatory, rd.sort_order FROM required_documents rd " +
+        `${q.whereClause()} ORDER BY rd.sort_order, rd.rowid`,
     )
-      .bind(edition, ...binds)
+      .bind(...q.binds)
       .all<ChecklistRow>()
       .then((r) => r.results);
+  };
   if (programId && cohortId) {
-    const own = await read("program_id = ? AND cohort_id = ?", programId, cohortId);
+    const own = await read("(rd.program_id = ? AND rd.cohort_id = ?)", programId, cohortId);
     if (own.length > 0) return own;
   }
   if (programId) {
-    const own = await read("program_id = ? AND cohort_id IS NULL", programId);
+    const own = await read("(rd.program_id = ? AND rd.cohort_id IS NULL)", programId);
     if (own.length > 0) return own;
   }
-  return read("program_id IS NULL AND cohort_id IS NULL");
+  return read("(rd.program_id IS NULL AND rd.cohort_id IS NULL)");
 }
 
 /**
@@ -182,17 +194,30 @@ async function checklistFor(
  * upsert `signup-config.ts`'s `syncRollUp` performs, over the same pure
  * `rollUpDocumentsStatus`.
  */
-async function syncRollUp(c: Context<AppEnv>, signupId: string): Promise<void> {
-  const signup = await c.env.DB.prepare("SELECT deck_id FROM signups WHERE id = ?")
-    .bind(signupId)
+async function syncRollUp(
+  c: Context<AppEnv>,
+  signupId: string,
+  scope: TenantScope,
+): Promise<void> {
+  const sq = scoped(scope);
+  const sJoins = sq.viaParent("signups", "s");
+  sq.and("s.id = ?", signupId);
+  const signup = await c.env.DB.prepare(
+    `SELECT s.deck_id FROM signups s ${sJoins} ${sq.whereClause()}`,
+  )
+    .bind(...sq.binds)
     .first<{ deck_id: string }>();
   if (!signup) return;
+  const dq = scoped(scope);
+  const dJoins = dq.viaParent("signup_documents", "sd");
+  dq.and("sd.signup_id = ?", signupId);
   const { results } = await c.env.DB.prepare(
-    "SELECT sd.status AS status, sd.waived AS waived, rd.mandatory AS mandatory " +
-      "FROM signup_documents sd LEFT JOIN required_documents rd ON rd.id = sd.required_document_id " +
-      "WHERE sd.signup_id = ?",
+    `SELECT sd.status AS status, sd.waived AS waived, rd.mandatory AS mandatory ` +
+      `FROM signup_documents sd ${dJoins} ` +
+      "LEFT JOIN required_documents rd ON rd.id = sd.required_document_id " +
+      `${dq.whereClause()}`,
   )
-    .bind(signupId)
+    .bind(...dq.binds)
     .all<{ status: DocumentStatus; waived: number; mandatory: number | null }>();
   const status = rollUpDocumentsStatus(
     results.map((r) => ({ status: r.status, mandatory: r.mandatory === 1, waived: r.waived === 1 })),
@@ -222,6 +247,8 @@ interface WorkspaceRow {
   assigned_user_id: string | null;
   assigned_name: string | null;
   startup: string;
+  /** The owning customer, off the deck — `signups` has no key of its own. */
+  tenant_id: string;
   edition: Edition;
   deck_status: string;
   uploaded_by: string | null;
@@ -232,11 +259,41 @@ interface WorkspaceRow {
   cohort_name: string | null;
 }
 
-async function loadRow(c: Context<AppEnv>, signupId: string): Promise<WorkspaceRow | null> {
+/**
+ * A cohort's seat numbers, scoped through its programme — the path
+ * `TENANT_OWNER` holds for `cohorts`. The id comes off the deck, so the bind
+ * alone is sound; the join is what makes the statement say so.
+ */
+async function loadCohortSeats(c: Context<AppEnv>, cohortId: string, scope: TenantScope) {
+  const q = scoped(scope);
+  const joins = q.viaParent("cohorts", "ch");
+  q.and("ch.id = ?", cohortId);
+  return c.env.DB.prepare(
+    `SELECT ch.id, ch.seat_capacity, ch.seats_filled FROM cohorts ch ${joins} ${q.whereClause()}`,
+  )
+    .bind(...q.binds)
+    .first<{ id: string; seat_capacity: number; seats_filled: number }>();
+}
+
+/**
+ * The workspace a loaded record belongs to. `loadRow` selects `d.tenant_id`, so
+ * the row satisfies `TenantPrincipal` and every child read below is scoped from
+ * the record rather than re-deriving the caller's session.
+ */
+function rowScope(row: WorkspaceRow): TenantScope {
+  return scopeOf({ tenantId: row.tenant_id, edition: row.edition });
+}
+
+async function loadRow(
+  c: Context<AppEnv>,
+  signupId: string,
+  scope: TenantScope,
+): Promise<WorkspaceRow | null> {
+  const q = scoped(scope).on("d").and("s.id = ?", signupId);
   return c.env.DB.prepare(
     "SELECT s.id, s.deck_id, s.status, s.founder_signed_at, s.completed_at, s.seatless, " +
       "s.seat_allocated_at, s.assigned_user_id, au.name AS assigned_name, " +
-      "d.name AS startup, d.edition, d.status AS deck_status, d.uploaded_by, " +
+      "d.name AS startup, d.tenant_id, d.edition, d.status AS deck_status, d.uploaded_by, " +
       "COALESCE(d.founder_email, fu.email) AS founder_email, " +
       "d.program_id, d.cohort_id, p.name AS program_name, co.name AS cohort_name " +
       "FROM signups s JOIN decks d ON d.id = s.deck_id " +
@@ -244,21 +301,26 @@ async function loadRow(c: Context<AppEnv>, signupId: string): Promise<WorkspaceR
       "LEFT JOIN users fu ON fu.id = d.uploaded_by " +
       "LEFT JOIN programs p ON p.id = d.program_id " +
       "LEFT JOIN cohorts co ON co.id = d.cohort_id " +
-      "WHERE s.id = ?",
+      `${q.whereClause()}`,
   )
-    .bind(signupId)
+    .bind(...q.binds)
     .first<WorkspaceRow>();
 }
 
 /**
- * `:signupId` against the caller. A record in another edition, or — for a
+ * `:signupId` against the caller. A record in another WORKSPACE, or — for a
  * founder — on a deck somebody else uploaded, is a 404: the same answer a
  * ghost id gets, so a probe learns nothing about which ids exist.
  */
 async function resolve(c: Context<AppEnv>): Promise<WorkspaceRow | Response> {
   const user = c.var.user;
-  const row = await loadRow(c, c.req.param("signupId") ?? "");
-  if (!row || row.edition !== user.edition) return c.json({ error: "not_found" }, 404);
+  // The workspace is now IN the query rather than compared after it. The
+  // post-hoc `row.edition !== user.edition` was correct for one customer and
+  // would have been correct for two as well — but only for the half of the key
+  // it names, and a 404 that depends on a comparison somebody must remember to
+  // write is the shape this wave exists to remove.
+  const row = await loadRow(c, c.req.param("signupId") ?? "", scopeOf(user));
+  if (!row) return c.json({ error: "not_found" }, 404);
   if (user.role === "founder" && row.uploaded_by !== user.id) {
     return c.json({ error: "not_found" }, 404);
   }
@@ -308,13 +370,17 @@ export const esignWorkspaceGate = createMiddleware<AppEnv>(async (c, next) => {
   if (c.req.method === "GET" || c.req.method === "HEAD") return next();
   const user = await getSession(c.env.SESSIONS, getCookie(c, SESSION_COOKIE));
   if (!user || user.role !== "program_manager") return next();
+  // Scoped to the SESSION's workspace: the middleware reads the session itself
+  // because it runs before esign's `requireAuth`, and `SessionUser.tenantId` is
+  // required and non-optional precisely so a path like this cannot forget it.
+  const q = scoped(scopeOf(user)).on("d").and("s.id = ?", c.req.param("signupId") ?? "");
   const row = await c.env.DB.prepare(
     "SELECT s.assigned_user_id AS assigned_user_id, d.edition AS edition " +
-      "FROM signups s JOIN decks d ON d.id = s.deck_id WHERE s.id = ?",
+      `FROM signups s JOIN decks d ON d.id = s.deck_id ${q.whereClause()}`,
   )
-    .bind(c.req.param("signupId") ?? "")
+    .bind(...q.binds)
     .first<{ assigned_user_id: string | null; edition: Edition }>();
-  if (!row || row.edition !== user.edition) return next();
+  if (!row) return next();
   if (isReadOnly(user, row.assigned_user_id)) {
     return c.json({ error: "read_only", message: READ_ONLY_MESSAGE }, 403);
   }
@@ -339,14 +405,21 @@ interface DocRow {
 
 const ALL_STATUSES: DocumentStatus[] = ["not_requested", "awaiting", "submitted", "verified"];
 
-async function loadDocuments(c: Context<AppEnv>, signupId: string) {
+async function loadDocuments(c: Context<AppEnv>, signupId: string, scope: TenantScope) {
+  // Two hops — `signup_documents → signups → decks`. The documents themselves
+  // are the founder's legal paperwork (§2 B12), so the statement names the owner
+  // rather than relying on the caller's `signup_id` having been vouched for.
+  const q = scoped(scope);
+  const joins = q.viaParent("signup_documents", "sd");
+  q.and("sd.signup_id = ?", signupId);
   const { results } = await c.env.DB.prepare(
     "SELECT sd.id, sd.name, sd.note, sd.status, sd.waived, sd.waived_reason, sd.verified_at, " +
       "sd.file_url, rd.mandatory AS mandatory " +
-      "FROM signup_documents sd LEFT JOIN required_documents rd ON rd.id = sd.required_document_id " +
-      "WHERE sd.signup_id = ? ORDER BY sd.sort_order, sd.rowid",
+      `FROM signup_documents sd ${joins} ` +
+      "LEFT JOIN required_documents rd ON rd.id = sd.required_document_id " +
+      `${q.whereClause()} ORDER BY sd.sort_order, sd.rowid`,
   )
-    .bind(signupId)
+    .bind(...q.binds)
     .all<DocRow>();
   // `SignupDocumentView` (shared/signupConfig.ts), plus whether a file is held.
   const items = results.map((r) => ({
@@ -376,13 +449,21 @@ async function loadDocuments(c: Context<AppEnv>, signupId: string) {
  * would pick).
  */
 async function loadAgreementSummary(c: Context<AppEnv>, row: WorkspaceRow) {
+  // `agreements` is two hops from `decks` through `signups` — and NOT one hop
+  // through `countersigned_by`, which `TENANT_OWNER` explains is wrong twice
+  // over: the column is nullable, so an unsigned agreement would vanish from the
+  // join, and a countersignatory is not an owner.
+  const q = scoped(rowScope(row));
+  const joins = q.viaParent("agreements", "a");
+  q.and("a.signup_id = ?", row.id);
   const raised = await c.env.DB.prepare(
     "SELECT t.name AS template_name, a.countersigned_at AS countersigned_at, u.name AS countersigned_by " +
-      "FROM agreements a LEFT JOIN agreement_templates t ON t.id = a.template_id " +
+      `FROM agreements a ${joins} ` +
+      "LEFT JOIN agreement_templates t ON t.id = a.template_id " +
       "LEFT JOIN users u ON u.id = a.countersigned_by " +
-      "WHERE a.signup_id = ? ORDER BY a.rowid LIMIT 1",
+      `${q.whereClause()} ORDER BY a.rowid LIMIT 1`,
   )
-    .bind(row.id)
+    .bind(...q.binds)
     .first<{ template_name: string | null; countersigned_at: string | null; countersigned_by: string | null }>();
   if (raised) {
     return {
@@ -391,7 +472,10 @@ async function loadAgreementSummary(c: Context<AppEnv>, row: WorkspaceRow) {
       countersignedBy: raised.countersigned_by,
     };
   }
-  const template = applicableTemplate(await listTemplates(c.env, row.edition), {
+  // T1-ESIGN: `listTemplates` takes a `TenantScope`. `scopeOf(c.var.user)` and
+  // not `row.edition` — the row's edition was already asserted equal to the
+  // caller's at `resolve()`, and the session is where a scope must come from.
+  const template = applicableTemplate(await listTemplates(c.env, scopeOf(c.var.user)), {
     programId: row.program_id,
     stage: "on_signup",
   });
@@ -402,12 +486,16 @@ async function workspaceView(c: Context<AppEnv>, row: WorkspaceRow) {
   const user = c.var.user;
   const founder = user.role === "founder";
   const canAssign = user.role === "admin" || user.role === "superuser";
+  const pmQ = scoped(rowScope(row))
+    .on("u")
+    .andRaw("u.role = 'program_manager'")
+    .andRaw("u.active = 1");
   const programManagers = canAssign
     ? (
         await c.env.DB.prepare(
-          "SELECT id, name FROM users WHERE edition = ? AND role = 'program_manager' AND active = 1 ORDER BY name",
+          `SELECT u.id, u.name FROM users u ${pmQ.whereClause()} ORDER BY u.name`,
         )
-          .bind(row.edition)
+          .bind(...pmQ.binds)
           .all<{ id: string; name: string }>()
       ).results
     : [];
@@ -423,7 +511,7 @@ async function workspaceView(c: Context<AppEnv>, row: WorkspaceRow) {
     founderSignedAt: row.founder_signed_at,
     completedAt: row.completed_at,
     agreement: await loadAgreementSummary(c, row),
-    documents: await loadDocuments(c, row.id),
+    documents: await loadDocuments(c, row.id, rowScope(row)),
     seat: {
       seatless: row.seatless === 1,
       // The prototype's `seated = !!d.seat || sg === 'onboarded'`.
@@ -446,14 +534,16 @@ async function workspaceView(c: Context<AppEnv>, row: WorkspaceRow) {
 /** GET /api/signups — one summary per open sign-up, for the pipeline rows. */
 signups.get("/", staffOnly, async (c) => {
   const user = c.var.user;
-  await ensureSignups(c, user.edition);
+  const scope = scopeOf(user);
+  await ensureSignups(c, scope);
+  const q = scoped(scope).on("d").andRaw("d.status IN ('signup', 'onboard_ready')");
   const { results } = await c.env.DB.prepare(
     "SELECT s.id AS signup_id, s.deck_id, s.status, s.founder_signed_at, s.seatless, " +
       "s.seat_allocated_at, s.assigned_user_id, u.name AS assigned_name, d.name AS startup, d.status AS deck_status " +
       "FROM signups s JOIN decks d ON d.id = s.deck_id LEFT JOIN users u ON u.id = s.assigned_user_id " +
-      "WHERE d.edition = ? AND d.status IN ('signup', 'onboard_ready') ORDER BY s.created_at DESC, s.id",
+      `${q.whereClause()} ORDER BY s.created_at DESC, s.id`,
   )
-    .bind(user.edition)
+    .bind(...q.binds)
     .all<{
       signup_id: string;
       deck_id: string;
@@ -468,7 +558,7 @@ signups.get("/", staffOnly, async (c) => {
     }>();
   const summaries = [];
   for (const r of results) {
-    const docs = await loadDocuments(c, r.signup_id);
+    const docs = await loadDocuments(c, r.signup_id, scope);
     summaries.push({
       signupId: r.signup_id,
       deckId: r.deck_id,
@@ -490,16 +580,18 @@ signups.get("/", staffOnly, async (c) => {
 /** GET /api/signups/mine — the founder's own sign-ups, and only theirs. */
 signups.get("/mine", requireRole("founder"), async (c) => {
   const user = c.var.user;
-  await ensureSignups(c, user.edition);
+  const scope = scopeOf(user);
+  await ensureSignups(c, scope);
+  const q = scoped(scope).on("d").and("d.uploaded_by = ?", user.id);
   const { results } = await c.env.DB.prepare(
     "SELECT s.id FROM signups s JOIN decks d ON d.id = s.deck_id " +
-      "WHERE d.edition = ? AND d.uploaded_by = ? ORDER BY s.created_at DESC, s.id",
+      `${q.whereClause()} ORDER BY s.created_at DESC, s.id`,
   )
-    .bind(user.edition, user.id)
+    .bind(...q.binds)
     .all<{ id: string }>();
   const views = [];
   for (const { id } of results) {
-    const row = await loadRow(c, id);
+    const row = await loadRow(c, id, scope);
     if (row) views.push(await workspaceView(c, row));
   }
   return c.json({ signups: views });
@@ -522,10 +614,18 @@ signups.get("/:signupId/documents/:docId/file", requireRole(...STAFF_ROLES, "fou
   }
   const row = await resolve(c);
   if (row instanceof Response) return row;
+  // `signup_id = ?` already confines this to a record `resolve()` proved is the
+  // caller's, and `id = ?` comes from the browser. The owner path is added
+  // anyway: this read ends in an R2 object being streamed back, which is the
+  // founder's legal paperwork (§2 B12), and that is not a place to rely on a
+  // check made one frame up.
+  const docQ = scoped(rowScope(row));
+  const docJoins = docQ.viaParent("signup_documents", "sd");
+  docQ.and("sd.id = ?", c.req.param("docId")).and("sd.signup_id = ?", row.id);
   const doc = await c.env.DB.prepare(
-    "SELECT name, file_url FROM signup_documents WHERE id = ? AND signup_id = ?",
+    `SELECT sd.name, sd.file_url FROM signup_documents sd ${docJoins} ${docQ.whereClause()}`,
   )
-    .bind(c.req.param("docId"), row.id)
+    .bind(...docQ.binds)
     .first<{ name: string; file_url: string | null }>();
   if (!doc) return c.json({ error: "not_found" }, 404);
   if (!doc.file_url) return c.json({ error: "no_file" }, 404);
@@ -558,10 +658,13 @@ signups.post("/:signupId/documents/:docId/file", requireRole("founder"), async (
   if (row.status !== "initiated" && row.status !== "progress") {
     return c.json({ error: "signup_closed" }, 409);
   }
+  const docQ = scoped(rowScope(row));
+  const docJoins = docQ.viaParent("signup_documents", "sd");
+  docQ.and("sd.id = ?", c.req.param("docId")).and("sd.signup_id = ?", row.id);
   const doc = await c.env.DB.prepare(
-    "SELECT id, name, status, waived FROM signup_documents WHERE id = ? AND signup_id = ?",
+    `SELECT sd.id, sd.name, sd.status, sd.waived FROM signup_documents sd ${docJoins} ${docQ.whereClause()}`,
   )
-    .bind(c.req.param("docId"), row.id)
+    .bind(...docQ.binds)
     .first<{ id: string; name: string; status: DocumentStatus; waived: number }>();
   if (!doc) return c.json({ error: "not_found" }, 404);
   if (doc.waived === 1) return c.json({ error: "document_waived" }, 400);
@@ -598,8 +701,8 @@ signups.post("/:signupId/documents/:docId/file", requireRole("founder"), async (
     deckId: row.deck_id,
     detail: { from: doc.status, to: "submitted", by: "founder" },
   });
-  await syncRollUp(c, row.id);
-  return c.json(await workspaceView(c, (await loadRow(c, row.id))!));
+  await syncRollUp(c, row.id, rowScope(row));
+  return c.json(await workspaceView(c, (await loadRow(c, row.id, rowScope(row)))!));
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -618,10 +721,13 @@ signups.post("/:signupId/documents/verify-all", staffOnly, async (c) => {
   const ro = refuseReadOnly(c, row);
   if (ro) return ro;
 
+  const listQ = scoped(rowScope(row));
+  const listJoins = listQ.viaParent("signup_documents", "sd");
+  listQ.and("sd.signup_id = ?", row.id);
   const { results } = await c.env.DB.prepare(
-    "SELECT id, status, waived FROM signup_documents WHERE signup_id = ?",
+    `SELECT sd.id, sd.status, sd.waived FROM signup_documents sd ${listJoins} ${listQ.whereClause()}`,
   )
-    .bind(row.id)
+    .bind(...listQ.binds)
     .all<{ id: string; status: DocumentStatus; waived: number }>();
   const movable = results.filter((r) => r.waived === 0 && canTransitionDocument(r.status, "verified"));
   if (movable.length > 0) {
@@ -639,7 +745,7 @@ signups.post("/:signupId/documents/verify-all", staffOnly, async (c) => {
       `Verified all documents for ${row.startup}: ${movable.length} items`,
       { targetType: "signups", targetId: row.id, deckId: row.deck_id, detail: { moved: movable.length } },
     );
-    await syncRollUp(c, row.id);
+    await syncRollUp(c, row.id, rowScope(row));
   }
   return c.json({ ok: true, moved: movable.length, view: await workspaceView(c, row) });
 });
@@ -677,9 +783,7 @@ signups.post("/:signupId/complete", staffOnly, async (c) => {
   let seatless = row.seatless === 1;
   if (!seatResolved) {
     const cohort = row.cohort_id
-      ? await c.env.DB.prepare("SELECT id, seat_capacity, seats_filled FROM cohorts WHERE id = ?")
-          .bind(row.cohort_id)
-          .first<{ id: string; seat_capacity: number; seats_filled: number }>()
+      ? await loadCohortSeats(c, row.cohort_id, rowScope(row))
       : null;
     if (cohort && cohort.seats_filled < cohort.seat_capacity) {
       statements.push(
@@ -718,7 +822,7 @@ signups.post("/:signupId/complete", staffOnly, async (c) => {
       : `${row.startup} completed sign-up · seat allocated in ${row.cohort_name ?? "cohort"}`,
     { targetType: "signups", targetId: row.id, deckId: row.deck_id, detail: { seatless } },
   );
-  const view = await workspaceView(c, (await loadRow(c, row.id))!);
+  const view = await workspaceView(c, (await loadRow(c, row.id, rowScope(row)))!);
   return c.json({ ok: true, deckStatus: "onboard_ready", seated, seatless, view });
 });
 
@@ -751,7 +855,7 @@ signups.post("/:signupId/seat", staffOnly, async (c) => {
     targetId: row.id,
     deckId: row.deck_id,
   });
-  return c.json({ ok: true, view: await workspaceView(c, (await loadRow(c, row.id))!) });
+  return c.json({ ok: true, view: await workspaceView(c, (await loadRow(c, row.id, rowScope(row)))!) });
 });
 
 /**
@@ -765,10 +869,13 @@ signups.put("/:signupId/assignee", requireTask("signuppipeline", "admin"), async
   const body = (await c.req.json().catch(() => ({}))) as { userId?: unknown };
   let assignee: { id: string; name: string } | null = null;
   if (typeof body.userId === "string" && body.userId !== "") {
-    assignee = await c.env.DB.prepare(
-      "SELECT id, name FROM users WHERE id = ? AND edition = ? AND role = 'program_manager' AND active = 1",
-    )
-      .bind(body.userId, row.edition)
+    const aq = scoped(rowScope(row))
+      .on("u")
+      .and("u.id = ?", body.userId)
+      .andRaw("u.role = 'program_manager'")
+      .andRaw("u.active = 1");
+    assignee = await c.env.DB.prepare(`SELECT u.id, u.name FROM users u ${aq.whereClause()}`)
+      .bind(...aq.binds)
       .first<{ id: string; name: string }>();
     if (!assignee) return c.json({ error: "not_a_program_manager" }, 400);
   } else if (body.userId !== null) {
@@ -785,7 +892,7 @@ signups.put("/:signupId/assignee", requireTask("signuppipeline", "admin"), async
       : `Program manager unassigned from ${row.startup}'s sign-up`,
     { targetType: "signups", targetId: row.id, deckId: row.deck_id },
   );
-  return c.json(await workspaceView(c, (await loadRow(c, row.id))!));
+  return c.json(await workspaceView(c, (await loadRow(c, row.id, rowScope(row)))!));
 });
 
 export default signups;

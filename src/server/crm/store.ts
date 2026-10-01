@@ -7,10 +7,18 @@
  * `{ configured, hint, ref, setAt }` — presence and a masked tail. There is no
  * code path from a stored secret to a GET because no secret is stored (see
  * `migrations/0043_crm_sync.sql`).
+ *
+ * TENANCY (T1-ESIGN): §2 B19 names what crosses here — base URLs, webhook paths
+ * and **credential hints**. A hint is a masked tail, not a key, but it is still
+ * a fact about another customer's integration, and `crm_connections` was keyed
+ * on `edition` alone. Both it and `crm_sync_log` carry `tenant_id` directly
+ * (`0086`, and `0098` rebuilt `crm_connections` for `UNIQUE (tenant_id, edition,
+ * provider)`); `crm_field_mappings` has no key of its own and is reached through
+ * its connection.
  */
 
 import type { Env } from "../types";
-import type { Edition } from "../../shared/roles";
+import { scoped, type TenantScope } from "../../shared/tenant";
 import {
   CRM_PROVIDERS,
   CRM_PROVIDER_BLURBS,
@@ -65,24 +73,30 @@ const COLUMNS =
 
 export async function loadConnection(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   provider: CrmProvider,
 ): Promise<ConnectionRow | null> {
-  return env.DB.prepare(
-    `SELECT ${COLUMNS} FROM crm_connections WHERE edition = ? AND provider = ?`,
-  )
-    .bind(edition, provider)
+  const q = scoped(scope).on("c").and("c.provider = ?", provider);
+  return env.DB.prepare(`SELECT ${COLUMNS} FROM crm_connections c ${q.whereClause()}`)
+    .bind(...q.binds)
     .first<ConnectionRow>();
 }
 
-async function loadMappings(env: Env, connectionIds: string[]): Promise<MappingRow[]> {
+async function loadMappings(
+  env: Env,
+  scope: TenantScope,
+  connectionIds: string[],
+): Promise<MappingRow[]> {
   if (connectionIds.length === 0) return [];
   const marks = connectionIds.map(() => "?").join(", ");
+  const q = scoped(scope);
+  const joins = q.viaParent("crm_field_mappings", "m");
+  q.and(`m.connection_id IN (${marks})`, ...connectionIds);
   const res = await env.DB.prepare(
-    "SELECT connection_id, crm_field, app_field, direction, sort_order FROM crm_field_mappings " +
-      `WHERE connection_id IN (${marks}) ORDER BY sort_order, rowid`,
+    "SELECT m.connection_id, m.crm_field, m.app_field, m.direction, m.sort_order " +
+      `FROM crm_field_mappings m ${joins} ${q.whereClause()} ORDER BY m.sort_order, m.rowid`,
   )
-    .bind(...connectionIds)
+    .bind(...q.binds)
     .all<MappingRow>();
   return res.results;
 }
@@ -165,31 +179,45 @@ export function maskHint(value: string | null): string | null {
 }
 
 /**
- * All four providers for an edition, in the prototype's row order, whether or
+ * All four providers for a workspace, in the prototype's row order, whether or
  * not they have ever been connected. `0037` seeds a row per (edition,
  * provider), so a missing row means a hand-edited database rather than a normal
  * state — it is synthesised as inactive rather than dropped from the list.
+ *
+ * That synthesis is also why `tenant-scope.test.ts` records `GET /api/crm` as
+ * `unprobed`: the response "shapes the response from the request, not the row
+ * set", so a second customer's connection vanished into a blank row instead of
+ * appearing as a leak. With the read scoped it is a real four-row list of THIS
+ * workspace, and the probe is promoted to `enforced` behind a fixture that gives
+ * tenant B a connection of its own.
  */
-export async function listConnections(env: Env, edition: Edition): Promise<CrmConnectionView[]> {
+export async function listConnections(
+  env: Env,
+  scope: TenantScope,
+): Promise<CrmConnectionView[]> {
+  const q = scoped(scope).on("c");
   const rows = (
-    await env.DB.prepare(`SELECT ${COLUMNS} FROM crm_connections WHERE edition = ?`)
-      .bind(edition)
+    await env.DB.prepare(`SELECT ${COLUMNS} FROM crm_connections c ${q.whereClause()}`)
+      .bind(...q.binds)
       .all<ConnectionRow>()
   ).results;
   const mappings = await loadMappings(
     env,
+    scope,
     rows.map((r) => r.id),
   );
   return CRM_PROVIDERS.map((provider) => {
     const row = rows.find((r) => r.provider === provider);
-    return row ? toView(row, mappings) : toView(blankRow(edition, provider), []);
+    return row ? toView(row, mappings) : toView(blankRow(scope, provider), []);
   });
 }
 
-function blankRow(edition: Edition, provider: CrmProvider): ConnectionRow {
+function blankRow(scope: TenantScope, provider: CrmProvider): ConnectionRow {
   return {
-    id: `crm_${edition}_${provider}`,
-    edition,
+    // The synthetic id carries the tenant for the same reason the real one's
+    // UNIQUE did (`0098`): two customers each have a `hubspot` row.
+    id: `crm_${scope.tenantId}_${scope.edition}_${provider}`,
+    edition: scope.edition,
     provider,
     status: "inactive",
     base_url: null,
@@ -212,12 +240,27 @@ function blankRow(edition: Edition, provider: CrmProvider): ConnectionRow {
   };
 }
 
-/** Replace a connection's mapping set wholesale — the editor saves all rows. */
+/**
+ * Replace a connection's mapping set wholesale — the editor saves all rows.
+ *
+ * The DELETE and the INSERTs are keyed on `connection_id` alone and cannot be
+ * scoped themselves, so ownership is checked FIRST and the batch does not run
+ * when the connection is another customer's. Same reasoning as `updateTemplate`
+ * in `esign/store.ts`: a scoped statement followed by unscoped children is the
+ * shape that breaks together.
+ */
 export async function replaceMappings(
   env: Env,
+  scope: TenantScope,
   connectionId: string,
   mappings: CrmFieldMapping[],
 ): Promise<void> {
+  const own = scoped(scope).on("c").and("c.id = ?", connectionId);
+  const owned = await env.DB.prepare(`SELECT 1 n FROM crm_connections c ${own.whereClause()}`)
+    .bind(...own.binds)
+    .first<{ n: number }>();
+  if (!owned) return;
+
   const statements: D1PreparedStatement[] = [
     env.DB.prepare("DELETE FROM crm_field_mappings WHERE connection_id = ?").bind(connectionId),
   ];
@@ -235,14 +278,17 @@ export async function replaceMappings(
 /** The most recent sync attempts for a connection — the section's telemetry. */
 export async function listSyncLog(
   env: Env,
+  scope: TenantScope,
   connectionId: string,
   limit = 20,
 ): Promise<CrmSyncLogView[]> {
+  const q = scoped(scope).on("l").and("l.connection_id = ?", connectionId);
   const res = await env.DB.prepare(
-    "SELECT id, provider, direction, operation, status, deck_id, record_count, payload_json, error, created_at " +
-      "FROM crm_sync_log WHERE connection_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+    "SELECT l.id, l.provider, l.direction, l.operation, l.status, l.deck_id, l.record_count, " +
+      `l.payload_json, l.error, l.created_at FROM crm_sync_log l ${q.whereClause()} ` +
+      "ORDER BY l.created_at DESC, l.rowid DESC LIMIT ?",
   )
-    .bind(connectionId, limit)
+    .bind(...q.binds, limit)
     .all<{
       id: string;
       provider: string;

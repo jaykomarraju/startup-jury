@@ -16,7 +16,12 @@ import { recordEvalFailure } from "../ai/health";
 import { emitNotification } from "../email/outbox";
 import { LOW_CREDIT_THRESHOLD } from "../../shared/notifications";
 // W4-C — the ledger row behind every credit this application spends.
-import { recordLedgerEntry } from "../billing/ledger";
+import { asScope, recordLedgerEntry } from "../billing/ledger";
+// T1-DECKS — T0's scope helper. `billing/ledger.ts`'s header hands this file the one
+// arm of `recordLedgerEntry` that still accepts a bare `Edition`, because the public
+// founder resubmit reaches the credit path with no session at all. The answer is
+// `TENANT_OWNER`'s one-hop path: the tenant comes off the DECK ROW.
+import { scoped, type TenantScope } from "../../shared/tenant";
 
 /**
  * The largest deck PDF the application accepts. **50 MB** — the client's
@@ -77,18 +82,30 @@ export interface CreditContext {
  */
 export async function reserveCredits(
   env: Env,
-  edition: Edition,
+  scope: TenantScope | Edition,
   n: number,
   ctx: CreditContext = {},
 ): Promise<boolean> {
+  // ── WHY THIS ONE IS WORSE THAN A LEAK ───────────────────────────────────────
+  // `org_settings` was keyed on `edition` alone and its PK is now
+  // `(tenant_id, edition)`, so with a second customer this UPDATE matched TWO rows.
+  // It would not merely have read another customer's balance — it would have
+  // DEBITED it, and then `res.meta.changes !== 1` would have been true (changes
+  // === 2), so the function would have returned false and refused the upload as
+  // "no credits" **after taking the credit from both customers**. §2 B24-30 names
+  // the refund half of this ("credit refunds charged to an edition, not a
+  // customer"); the reservation half breaks the gate as well as the books.
+  const sc = asScope(scope);
+  const q = scoped(sc).on("org_settings").and("org_settings.credits_balance >= ?", n);
   const res = await env.DB.prepare(
-    "UPDATE org_settings SET credits_balance = credits_balance - ? WHERE edition = ? AND credits_balance >= ?",
+    `UPDATE org_settings SET credits_balance = credits_balance - ? ${q.whereClause()}`,
   )
-    .bind(n, edition, n)
+    // `n` is the SET bind and comes earlier in the statement than the builder's.
+    .bind(n, ...q.binds)
     .run();
   if (res.meta.changes !== 1) return false;
 
-  await recordLedgerEntry(env, edition, {
+  await recordLedgerEntry(env, sc, {
     delta: -n,
     reason: "deck_evaluated",
     deckId: ctx.deckId ?? null,
@@ -105,14 +122,16 @@ export async function reserveCredits(
   // at 9 is a warning, alerting again at 8, 7 and 6 is noise that trains an
   // administrator to filter the mail. Topping up and dropping back under
   // crosses again and alerts again, which is the behaviour you want.
-  await announceIfCreditsLow(env, edition, n);
+  await announceIfCreditsLow(env, sc, n);
   return true;
 }
 
 /** Read the post-reservation balance and alert if this spend took it under. */
-async function announceIfCreditsLow(env: Env, edition: Edition, spent: number): Promise<void> {
-  const row = await env.DB.prepare("SELECT credits_balance FROM org_settings WHERE edition = ?")
-    .bind(edition)
+async function announceIfCreditsLow(env: Env, scope: TenantScope, spent: number): Promise<void> {
+  const { edition } = scope;
+  const q = scoped(scope).on("org_settings");
+  const row = await env.DB.prepare(`SELECT credits_balance FROM org_settings ${q.whereClause()}`)
+    .bind(...q.binds)
     .first<{ credits_balance: number }>();
   if (!row) return;
   const after = row.credits_balance;
@@ -140,17 +159,21 @@ async function announceIfCreditsLow(env: Env, edition: Edition, spent: number): 
  */
 export async function refundCredits(
   env: Env,
-  edition: Edition,
+  scope: TenantScope | Edition,
   n: number,
   ctx: CreditContext = {},
 ): Promise<void> {
   if (n <= 0) return;
-  await env.DB.prepare(
-    "UPDATE org_settings SET credits_balance = credits_balance + ? WHERE edition = ?",
-  )
-    .bind(n, edition)
+  // The credit goes back to the customer it was taken from. Unscoped, this
+  // CREDITED every customer in the edition — §2 B24-30's "tenant A's failed
+  // evaluation refunds a balance tenant B draws on", which is a transfer of value
+  // between customers written as a single UPDATE.
+  const sc = asScope(scope);
+  const q = scoped(sc).on("org_settings");
+  await env.DB.prepare(`UPDATE org_settings SET credits_balance = credits_balance + ? ${q.whereClause()}`)
+    .bind(n, ...q.binds)
     .run();
-  await recordLedgerEntry(env, edition, {
+  await recordLedgerEntry(env, sc, {
     delta: n,
     reason: "refund",
     deckId: ctx.deckId ?? null,
@@ -190,6 +213,14 @@ export function versionStatement(
 
 export interface AddVersionArgs {
   deckId: string;
+  /**
+   * The caller's edition. **No longer the scope** — `addDeckVersion` reads the
+   * workspace off the DECK ROW, because its other caller is the PUBLIC tokenized
+   * founder resubmit (`routes/resubmit.ts`), which has no session and therefore no
+   * tenant to pass. The field stays, and keeps its name, as the CROSS-CHECK: a
+   * caller that thinks it is re-versioning an incubator deck and reaches a VC one
+   * is a routing bug, and it now says so instead of proceeding.
+   */
   edition: Edition;
   /** Current `decks.content_version`; the new version is this + 1. */
   contentVersion: number | null;
@@ -216,8 +247,27 @@ export type AddVersionResult =
  * the retrying queue consumer instead of being stranded unscored (§9).
  */
 export async function addDeckVersion(env: Env, args: AddVersionArgs): Promise<AddVersionResult> {
+  // ── THE TENANT COMES OFF THE DECK, NOT OFF THE CALLER ───────────────────────
+  // `TENANT_OWNER`'s one-hop path, read directly because this is the owner table
+  // itself. Unscoped on purpose: both callers have already resolved this deck — the
+  // authenticated one through `oneDeck()` in `routes/decks.ts`, the public one
+  // through a single-use `resubmit_tokens` row — and the public one has no session
+  // whose scope could be compared against anything.
+  const owner = await env.DB.prepare("SELECT tenant_id, edition FROM decks WHERE id = ?")
+    .bind(args.deckId)
+    .first<{ tenant_id: string; edition: Edition }>();
+  if (!owner) throw new Error(`deck not found: ${args.deckId}`);
+  if (owner.edition !== args.edition) {
+    // Loud, not silent. The alternative is spending a credit from one workspace on
+    // a deck in another, which is the §2 B24-30 shape with the sign reversed.
+    throw new Error(
+      `deck ${args.deckId} is in edition ${owner.edition}, not ${args.edition}`,
+    );
+  }
+  const scope: TenantScope = { tenantId: owner.tenant_id, edition: owner.edition };
+
   // Re-scoring the new version costs a credit, same as any other AI run.
-  if (!(await reserveCredits(env, args.edition, 1, { deckId: args.deckId })))
+  if (!(await reserveCredits(env, scope, 1, { deckId: args.deckId })))
     return { ok: false, error: "no_credits" };
 
   const version = (args.contentVersion ?? 1) + 1;
@@ -243,7 +293,7 @@ export async function addDeckVersion(env: Env, args: AddVersionArgs): Promise<Ad
       ).bind(key, version, ts, args.deckId),
     ]);
   } catch (err) {
-    await refundCredits(env, args.edition, 1, { deckId: args.deckId });
+    await refundCredits(env, scope, 1, { deckId: args.deckId });
     throw err;
   }
 

@@ -8,6 +8,20 @@
 // mentor row carries user_type='mentor' + role='mentor' (no pipeline/nav power).
 // Ordinary team members are user_type='staff' with a real edition role.
 //
+// ── T1-PEOPLE, tenancy wave ─────────────────────────────────────────────────
+// "Edition-scoped to the caller" above is now WORKSPACE-scoped: every statement
+// in this file binds `(tenant_id, edition)` through `scoped(scopeOf(c.var.user))`,
+// and the global `getUserByEmail` — "does this address exist anywhere on the
+// platform?", which T0 deprecated and deliberately left at the one call site in
+// this file rather than editing another session's file — is gone.
+//
+// §6 names this file as the one a foundation session must not touch, and both
+// reasons live here. `transfer-ownership` writes `role = 'superuser'` onto a row
+// found by id and demotes the actor in the same batch. And `users` is the one
+// table whose UNIQUE constraint changed SHAPE (`0087`: `UNIQUE (email)` →
+// `UNIQUE (tenant_id, email)`), so `email_taken` stopped being a question about
+// the platform and became one about a workspace.
+//
 // New users get a generated TEMPORARY PASSWORD. Session 8 makes that an actual
 // EMAIL (`buildAccountInviteEmail`) rather than a value the admin copies off the
 // screen — but only when the Worker can genuinely deliver mail. See
@@ -37,14 +51,22 @@ import { auditUserInvited, auditUserUpdated } from "../audit/events";
 // directly. Same table, same shape, same sentence voice.
 import { recordAudit } from "../audit/log";
 import { hashPassword, verifyPassword } from "../auth/password";
-import { getUserByEmail } from "../db";
+// `getUserByEmailInScope`, NOT the deprecated global `getUserByEmail`. The create
+// route says why the difference is not tidiness.
+import { getUserByEmailInScope } from "../db";
+// T0-SCHEMA's one scope helper, used by all seven T1 sessions and written by none
+// of them. `scopeOf` takes the PRINCIPAL and nothing else — `scopeOf(c.req.query())`
+// would not compile — which is what keeps §2's one piece of good news true here
+// too: not one of the 211 existing predicates takes its workspace key from the
+// browser, and none of the ones below does either.
+import { insertScope, scopeOf, scoped, type TenantScope } from "../../shared/tenant";
 import {
   buildAccountInviteEmail,
   emailDeliveryConfigured,
   sendEmail,
   type SentEmail,
 } from "../email/outbox";
-import { orgName } from "../resubmit";
+import { orgNameInScope } from "../resubmit";
 
 const users = new Hono<AppEnv>();
 users.use("*", requireAuth);
@@ -116,7 +138,7 @@ function loginUrl(env: Env): string {
 async function deliverInvite(
   env: Env,
   args: {
-    edition: Edition;
+    scope: TenantScope;
     name: string;
     email: string;
     roleLabel: string;
@@ -131,13 +153,17 @@ async function deliverInvite(
     roleLabel: args.roleLabel,
     tempPassword: args.tempPassword,
     loginUrl: loginUrl(env),
-    orgName: await orgName(env, args.edition),
+    orgName: await orgNameInScope(env, args.scope),
     invitedByName: args.invitedByName,
   });
 
   try {
     const sent = await sendEmail(env, {
       kind: "account_invite",
+      // The invite's audit row belongs to the workspace that issued it, not to
+      // whichever tenant `email_outbox.tenant_id`'s `DEFAULT 't_default'` would
+      // have supplied. See `email/outbox.ts`'s `scope` field.
+      scope: args.scope,
       toEmail: args.email,
       toName: args.name,
       subject: invite.subject,
@@ -213,11 +239,16 @@ function normaliseTitle(value: unknown): string | null | undefined {
  */
 users.get("/", requireTask("adminconsole", "admin"), async (c) => {
   const edition = c.var.user.edition;
+  // §2 B6, and the measurement the whole wave exists for: a second accelerator
+  // added to a local copy — brand-new account, zero decks — signed in and read 8
+  // staff rows belonging to the first, with names, addresses, roles and invite
+  // state, because `edition` has two values and every customer shares one of them.
+  const q = scoped(scopeOf(c.var.user)).on("u").andRaw("u.deleted_at IS NULL");
   const rows = (
     await c.env.DB.prepare(
-      `SELECT ${ROSTER_COLUMNS} FROM users WHERE edition = ? AND deleted_at IS NULL ORDER BY active DESC, name`,
+      `SELECT ${ROSTER_COLUMNS} FROM users u ${q.whereClause()} ORDER BY u.active DESC, u.name`,
     )
-      .bind(edition)
+      .bind(...q.binds)
       .all<UserRosterRow>()
   ).results;
   return c.json({ users: rows.map((r) => toUserView(edition, r)) });
@@ -239,8 +270,14 @@ users.patch("/me", async (c) => {
   const title = normaliseTitle(body.title);
   if (title === undefined) return c.json({ error: "title_required" }, 400);
 
-  await c.env.DB.prepare("UPDATE users SET title = ? WHERE id = ?")
-    .bind(title, c.var.user.id)
+  // `c.var.user.id` is the caller's own session id and `users.id` is globally
+  // unique, so the scope adds nothing to CORRECTNESS here. It is added anyway, and
+  // uniformly across this file, because the alternative is a reader deciding per
+  // statement whether an `id`-only predicate happens to be one of the safe ones —
+  // and `transfer-ownership` below is what that judgement costs when it is wrong.
+  const q = scoped(scopeOf(c.var.user)).on("users").and("users.id = ?", c.var.user.id);
+  await c.env.DB.prepare(`UPDATE users SET title = ? ${q.whereClause()}`)
+    .bind(title, ...q.binds)
     .run();
 
   return c.json({ ok: true, title: title ?? undefined });
@@ -262,6 +299,7 @@ interface CreateUserBody {
  *  could not actually be delivered (see `deliverInvite`). */
 users.post("/", requireTask("addmembers", "admin"), async (c) => {
   const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const body = await readBody<CreateUserBody>(c);
 
   const name = typeof body.name === "string" ? body.name.trim() : "";
@@ -283,8 +321,24 @@ users.post("/", requireTask("addmembers", "admin"), async (c) => {
     role = submitted;
   }
 
-  // Unique email (the UNIQUE constraint would otherwise throw a raw D1 error).
-  const existing = await getUserByEmail(c.env.DB, email);
+  // ── THE CALL SITE T0 LEFT HERE DELIBERATELY ──────────────────────────────
+  // This was `getUserByEmail(c.env.DB, email)` — the GLOBAL lookup, which asks
+  // whether the address exists anywhere on the platform. `0001_init.sql:7` made
+  // `users.email` globally `UNIQUE`, so that was the same question as "is this
+  // address free here?" and the 409 it produced was right. `0087` made the
+  // constraint `UNIQUE (tenant_id, email)`, and from that moment the global form
+  // is wrong in BOTH directions:
+  //
+  //   · it REFUSES tenant B's admin the right to add a colleague tenant A already
+  //     employs — §7 Q4's "two customers employing the same person is not an edge
+  //     case; it is the second customer" — so the 409 blocks a legitimate invite;
+  //   · and the 409 itself DISCLOSES that the address is in use somewhere on the
+  //     platform, which is a membership oracle an administrator should not have.
+  //
+  // The scoped form asks the question the UNIQUE constraint now enforces, so the
+  // check and the index agree again. T0 wrote `getUserByEmailInScope` and left the
+  // call site rather than edit this file (`db.ts:59-76`; §11's ownership table).
+  const existing = await getUserByEmailInScope(c.env.DB, email, scope);
   if (existing) return c.json({ error: "email_taken" }, 409);
 
   const id = `usr_${crypto.randomUUID().slice(0, 8)}`;
@@ -298,15 +352,29 @@ users.post("/", requireTask("addmembers", "admin"), async (c) => {
   // is what User access reads. `invite_accepted_at` stays NULL until the new
   // account signs in for the first time (0041 / `POST /api/auth/login`), and
   // that NULL is the roster's "Invite pending".
+  // ── THE ONE PLACE A `users` ROW IS CREATED, AND THE WORST SILENT WRITE ────
+  // `0087`'s header names this INSERT by line number. It first shipped `tenant_id
+  // TEXT NOT NULL` with no default so that forgetting the tenant would FAIL rather
+  // than quietly create tenant B's colleague inside tenant A — "the single worst
+  // silent write in the schema, because that account then signs in and sees
+  // everything". Measured, the loud column reddened 109 tests, all of them because
+  // of this statement, in a file T0 does not own. So the column took
+  // `DEFAULT 't_default'` and the loudness was deferred to here.
+  //
+  // `insertScope` is what discharges it: the column list and the binds come from
+  // one call, so the column cannot be named without the value. Integration may now
+  // drop the default — `0087`'s rebuild recipe is proven and reusable — and the
+  // handoff asks for exactly that.
+  const t = insertScope(scope);
   await c.env.DB.prepare(
-    "INSERT INTO users (id, name, email, password_hash, role, edition, initials, active, user_type, title, invite_sent_at, must_change_password) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, datetime('now'), 1)",
+    `INSERT INTO users (id, ${t.columns}, name, email, password_hash, role, initials, active, user_type, title, invite_sent_at, must_change_password) ` +
+      `VALUES (?, ${t.placeholders}, ?, ?, ?, ?, ?, 1, ?, ?, datetime('now'), 1)`,
   )
-    .bind(id, name, email, passwordHash, role, edition, initials, userType, title)
+    .bind(id, ...t.binds, name, email, passwordHash, role, initials, userType, title)
     .run();
 
   const invite = await deliverInvite(c.env, {
-    edition,
+    scope,
     name,
     email,
     roleLabel: displayRole(edition, role, userType),
@@ -353,11 +421,16 @@ interface UpdateUserBody {
  *  superuser row is immutable here (protects the account's single owner). */
 users.patch("/:id", requireTask("adminconsole", "admin"), async (c) => {
   const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const id = c.req.param("id");
+  // Scoped, so another customer's member is a 404 — the route never confirms that
+  // the id names somebody, which is what an unscoped `WHERE id = ?` would do before
+  // it went on to re-role them.
+  const load = scoped(scope).on("u").and("u.id = ?", id).andRaw("u.deleted_at IS NULL");
   const target = await c.env.DB.prepare(
-    `SELECT ${ROSTER_COLUMNS} FROM users WHERE id = ? AND edition = ? AND deleted_at IS NULL`,
+    `SELECT ${ROSTER_COLUMNS} FROM users u ${load.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...load.binds)
     .first<UserRosterRow>();
   if (!target) return c.json({ error: "not_found" }, 404);
   if (target.role === "superuser") return c.json({ error: "immutable_superuser" }, 403);
@@ -392,10 +465,11 @@ users.patch("/:id", requireTask("adminconsole", "admin"), async (c) => {
   const titleUpdate = normaliseTitle(body.title);
   const title = titleUpdate === undefined ? (target.title ?? null) : titleUpdate;
 
+  const q = scoped(scope).on("users").and("users.id = ?", id);
   await c.env.DB.prepare(
-    "UPDATE users SET name = ?, role = ?, initials = ?, active = ?, title = ? WHERE id = ? AND edition = ?",
+    `UPDATE users SET name = ?, role = ?, initials = ?, active = ?, title = ? ${q.whereClause()}`,
   )
-    .bind(name, role, initialsFrom(name), active, title, id, edition)
+    .bind(name, role, initialsFrom(name), active, title, ...q.binds)
     .run();
 
   await auditUserUpdated(
@@ -450,18 +524,22 @@ users.put("/me/password", async (c) => {
   if (next.length < MIN_PASSWORD) return c.json({ error: "password_too_short" }, 400);
   if (next === current) return c.json({ error: "password_unchanged" }, 400);
 
-  const row = await c.env.DB.prepare("SELECT password_hash FROM users WHERE id = ?")
-    .bind(c.var.user.id)
+  const self = scoped(scopeOf(c.var.user)).on("u").and("u.id = ?", c.var.user.id);
+  const row = await c.env.DB.prepare(
+    `SELECT u.password_hash FROM users u ${self.whereClause()}`,
+  )
+    .bind(...self.binds)
     .first<{ password_hash: string | null }>();
   if (!row?.password_hash) return c.json({ error: "not_found" }, 404);
   if (!(await verifyPassword(current, row.password_hash))) {
     return c.json({ error: "invalid_credentials" }, 403);
   }
 
+  const write = scoped(scopeOf(c.var.user)).on("users").and("users.id = ?", c.var.user.id);
   await c.env.DB.prepare(
-    "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
+    `UPDATE users SET password_hash = ?, must_change_password = 0 ${write.whereClause()}`,
   )
-    .bind(await hashPassword(next), c.var.user.id)
+    .bind(await hashPassword(next), ...write.binds)
     .run();
 
   // A credential change is an authorisation event, not a roster edit — the same
@@ -484,10 +562,14 @@ async function loadTarget(
   c: Context<AppEnv>,
   id: string,
 ): Promise<UserRosterRow | null> {
-  return c.env.DB.prepare(
-    `SELECT ${ROSTER_COLUMNS} FROM users WHERE id = ? AND edition = ? AND deleted_at IS NULL`,
-  )
-    .bind(id, c.var.user.edition)
+  // The one loader behind `DELETE`, `reset-password`, `resend-invite` and
+  // `transfer-ownership`. §6 calls the last of those the most dangerous route in
+  // the codebase once tenancy exists; making this function the only way any of the
+  // four reaches a row is what means the scope is applied once rather than four
+  // times, and cannot be present in three of them.
+  const q = scoped(scopeOf(c.var.user)).on("u").and("u.id = ?", id).andRaw("u.deleted_at IS NULL");
+  return c.env.DB.prepare(`SELECT ${ROSTER_COLUMNS} FROM users u ${q.whereClause()}`)
+    .bind(...q.binds)
     .first<UserRosterRow>();
 }
 
@@ -516,7 +598,7 @@ async function loadTarget(
  *     actually hold `adminconsole`, so it follows the grid rather than a literal.
  */
 users.delete("/:id", requireTask("deleteuser", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const id = c.req.param("id");
   const target = await loadTarget(c, id);
   if (!target) return c.json({ error: "not_found" }, 404);
@@ -525,11 +607,16 @@ users.delete("/:id", requireTask("deleteuser", "admin"), async (c) => {
 
   if (await wouldStrandTheConsole(c, target)) return c.json({ error: "last_admin" }, 409);
 
+  // `email = 'deleted:' || id` is what frees the address for a re-invite, and under
+  // `0087` it frees it per workspace: `UNIQUE (tenant_id, email)` is what the rename
+  // steps out of the way of, so the same person can be re-invited here without
+  // touching a namesake at another customer.
+  const q = scoped(scope).on("users").and("users.id = ?", id);
   await c.env.DB.prepare(
     "UPDATE users SET deleted_at = datetime('now'), active = 0, deleted_email = email, " +
-      "email = 'deleted:' || id WHERE id = ? AND edition = ?",
+      `email = 'deleted:' || id ${q.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...q.binds)
     .run();
 
   await recordAudit(c, {
@@ -560,18 +647,39 @@ async function wouldStrandTheConsole(
   target: UserRosterRow,
 ): Promise<boolean> {
   const edition = c.var.user.edition;
+  // CROSS-SESSION: `loadEditionOverrides` reads `role_permissions WHERE edition = ?`
+  // (`auth/permissions.ts:53`). `role_permissions` IS tenant-owned, so that read
+  // wants a scope — but the file is T0's and the route that writes the table is
+  // T1-CONFIG's `routes/permissions.ts`, which is one of the nine `ON CONFLICT`
+  // sites. Until it is widened the grid is shared, which makes this count's ROLE
+  // LIST shared too. The count itself is scoped below, which is the half that
+  // decides whether a workspace is left without an administrator. Recorded in
+  // `docs/parity-requests/T1-PEOPLE.md`.
   const overrides = await loadEditionOverrides(c.env.DB, edition);
   const keyholders = PERMISSION_ROLES[edition].filter((role) =>
     can(edition, role, "adminconsole", overrides),
   );
   if (!keyholders.includes(target.role as Role)) return false;
 
-  const placeholders = keyholders.map(() => "?").join(", ");
+  // An AGGREGATE, which §11 names as the dangerous shape: a leaking COUNT here does
+  // not show anybody another customer's staff, it silently answers "no, removing
+  // this administrator is fine" because somebody at another customer still holds
+  // the console. The workspace is then left with nobody who can open it, and the
+  // refusal that exists to prevent exactly that never fires.
+  const q = scoped(scopeOf(c.var.user))
+    .on("u")
+    .andRaw("u.deleted_at IS NULL")
+    .andRaw("u.active = 1")
+    .and("u.id <> ?", target.id)
+    // The fragment and ITS binds in one call, which is the whole point of the
+    // builder: a role list and its placeholders cannot drift apart, and a
+    // hand-assembled `bind(...q.binds, ...keyholders)` is exactly the mistake a
+    // 211-site sweep makes.
+    .and(`u.role IN (${keyholders.map(() => "?").join(", ")})`, ...keyholders);
   const row = await c.env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM users WHERE edition = ? AND deleted_at IS NULL AND active = 1 ` +
-      `AND id <> ? AND role IN (${placeholders})`,
+    `SELECT COUNT(*) AS n FROM users u ${q.whereClause()}`,
   )
-    .bind(edition, target.id, ...keyholders)
+    .bind(...q.binds)
     .first<{ n: number }>();
   return (row?.n ?? 0) === 0;
 }
@@ -595,7 +703,8 @@ async function wouldStrandTheConsole(
  * over the account owner's session. A superuser may.
  */
 users.post("/:id/reset-password", requireTask("adminconsole", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
+  const { edition } = scope;
   const id = c.req.param("id");
   const target = await loadTarget(c, id);
   if (!target) return c.json({ error: "not_found" }, 404);
@@ -606,14 +715,18 @@ users.post("/:id/reset-password", requireTask("adminconsole", "admin"), async (c
   if (id === c.var.user.id) return c.json({ error: "cannot_reset_self" }, 403);
 
   const password = tempPassword();
+  // §6's point about this route, now that `users` is tenant-keyed: an `id`-only
+  // UPDATE here would overwrite the credential of whichever customer's row matched.
+  // `loadTarget` already refused an out-of-workspace id, and the write says so too.
+  const q = scoped(scope).on("users").and("users.id = ?", id);
   await c.env.DB.prepare(
-    "UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ? AND edition = ?",
+    `UPDATE users SET password_hash = ?, must_change_password = 1 ${q.whereClause()}`,
   )
-    .bind(await hashPassword(password), id, edition)
+    .bind(await hashPassword(password), ...q.binds)
     .run();
 
   const invite = await deliverInvite(c.env, {
-    edition,
+    scope,
     name: target.name,
     email: target.email,
     roleLabel: displayRole(edition, target.role, target.user_type),
@@ -651,22 +764,24 @@ users.post("/:id/reset-password", requireTask("adminconsole", "admin"), async (c
  * place, because a resend is the tail of that one act.
  */
 users.post("/:id/resend-invite", requireTask("addmembers", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
+  const { edition } = scope;
   const id = c.req.param("id");
   const target = await loadTarget(c, id);
   if (!target) return c.json({ error: "not_found" }, 404);
   if (target.invite_accepted_at) return c.json({ error: "invite_already_accepted" }, 409);
 
   const password = tempPassword();
+  const q = scoped(scope).on("users").and("users.id = ?", id);
   await c.env.DB.prepare(
     "UPDATE users SET password_hash = ?, must_change_password = 1, invite_sent_at = datetime('now') " +
-      "WHERE id = ? AND edition = ?",
+      q.whereClause(),
   )
-    .bind(await hashPassword(password), id, edition)
+    .bind(await hashPassword(password), ...q.binds)
     .run();
 
   const invite = await deliverInvite(c.env, {
-    edition,
+    scope,
     name: target.name,
     email: target.email,
     roleLabel: displayRole(edition, target.role, target.user_type),
@@ -713,7 +828,13 @@ users.post("/:id/resend-invite", requireTask("addmembers", "admin"), async (c) =
  *
  * ATOMIC, because a half-applied transfer is either two owners or none: both
  * UPDATEs go in one `batch`. The invariant it preserves is exactly one
- * `superuser` per edition.
+ * `superuser` per **(tenant, edition)** — `0087`'s header names this route and
+ * this sentence as T1-PEOPLE's, and §6 calls it the most dangerous route in the
+ * codebase once tenancy exists. Both UPDATEs were `WHERE id = ? AND edition = ?`;
+ * with `tenant_id` on the table but absent from those clauses, the batch would
+ * promote a target and demote the actor in WHICHEVER CUSTOMER'S ROW MATCHED. It
+ * is an authorisation check expressed as an absence, which is why the predicate
+ * has to carry it rather than a guard above it.
  *
  * AND IT ENDS THE OUTGOING OWNER'S SESSION. Sessions are KV values written at
  * login and good for seven days (`auth/session.ts`), so a demoted owner would
@@ -722,7 +843,8 @@ users.post("/:id/resend-invite", requireTask("addmembers", "admin"), async (c) =
  * they stay an `admin` until they sign in again.
  */
 users.post("/:id/transfer-ownership", requireTask("adminconsole"), async (c) => {
-  const { edition, id: actorId } = c.var.user;
+  const { id: actorId } = c.var.user;
+  const scope = scopeOf(c.var.user);
   const id = c.req.param("id");
   const target = await loadTarget(c, id);
   if (!target) return c.json({ error: "not_found" }, 404);
@@ -734,15 +856,13 @@ users.post("/:id/transfer-ownership", requireTask("adminconsole"), async (c) => 
   if (target.active !== 1) return c.json({ error: "inactive_user" }, 409);
   if (target.invite_accepted_at === null) return c.json({ error: "invite_pending" }, 409);
 
+  const promote = scoped(scope).on("users").and("users.id = ?", id);
+  const demote = scoped(scope).on("users").and("users.id = ?", actorId);
   await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE users SET role = 'superuser' WHERE id = ? AND edition = ?").bind(
-      id,
-      edition,
-    ),
-    c.env.DB.prepare("UPDATE users SET role = 'admin' WHERE id = ? AND edition = ?").bind(
-      actorId,
-      edition,
-    ),
+    c.env.DB
+      .prepare(`UPDATE users SET role = 'superuser' ${promote.whereClause()}`)
+      .bind(...promote.binds),
+    c.env.DB.prepare(`UPDATE users SET role = 'admin' ${demote.whereClause()}`).bind(...demote.binds),
   ]);
 
   await recordAudit(c, {

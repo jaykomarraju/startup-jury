@@ -32,6 +32,12 @@ import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { denyMentor, requireAuth, requireTask } from "../auth/middleware";
+// T1-PEOPLE — T0's one scope helper. Named `tenantScopeOf` here because this file
+// already has a `scopeOf`, which answers an unrelated question (user vs workspace
+// PREFERENCE layer) and predates the wave by months. Two different scopes, one of
+// which is a customer and one of which is a row's audience: renaming either would
+// be worse than qualifying the import.
+import { insertScope, scopeOf as tenantScopeOf, scoped } from "../../shared/tenant";
 import { emailDeliveryConfigured } from "../email/outbox";
 import {
   NOTIFICATION_CHANNELS,
@@ -83,13 +89,21 @@ async function readGrid(
   c: Context<AppEnv>,
   scope: Scope,
 ): Promise<NotificationPreferenceView[]> {
-  const { edition, id: userId } = c.var.user;
+  const { id: userId } = c.var.user;
+  // The `user_id IS NULL` row is the WORKSPACE DEFAULT, keyed by
+  // `(edition, event_key, channel)` and nothing else — so unscoped, this read
+  // merged another customer's notification policy into this person's resolved
+  // grid, and `canEditWorkspace` below let an admin write it back. The per-user
+  // half was already safe (`users.id` is globally unique); the default row is the
+  // one that needed the tenant, and `0099` re-cut both partial uniques to match.
+  const q = scoped(tenantScopeOf(c.var.user))
+    .on("np")
+    .and("(np.user_id IS NULL OR np.user_id = ?)", userId);
   const rows = (
     await c.env.DB.prepare(
-      "SELECT user_id, event_key, channel, enabled FROM notification_preferences " +
-        "WHERE edition = ? AND (user_id IS NULL OR user_id = ?)",
+      `SELECT np.user_id, np.event_key, np.channel, np.enabled FROM notification_preferences np ${q.whereClause()}`,
     )
-      .bind(edition, userId)
+      .bind(...q.binds)
       .all<PrefRow>()
   ).results;
 
@@ -214,7 +228,8 @@ notifications.put("/preferences", async (c) => {
     writes.push({ event: p.event, channel: p.channel, enabled: p.enabled });
   }
 
-  const { edition, id: userId } = c.var.user;
+  const { id: userId } = c.var.user;
+  const tenantScope = tenantScopeOf(c.var.user);
   const owner = scope === "workspace" ? null : userId;
   const ts = new Date().toISOString();
 
@@ -223,21 +238,32 @@ notifications.put("/preferences", async (c) => {
   // a plain UNIQUE would let the default be inserted twice. A partial index
   // cannot back ON CONFLICT, so the upsert is an UPDATE that falls through to an
   // INSERT when it matched nothing.
+  // The UPDATE's predicate is what decides whether this is an update or an insert,
+  // so an unscoped one would have found ANOTHER customer's row, changed it, and
+  // reported `changes: 1` — a write that lands in the wrong workspace and never
+  // reaches the INSERT arm, which is the silent shape §5b warns about with the
+  // 200-and-a-row response.
+  const t = insertScope(tenantScope);
   for (const w of writes) {
+    const q = scoped(tenantScope)
+      .on("notification_preferences")
+      .and("notification_preferences.event_key = ?", w.event)
+      .and("notification_preferences.channel = ?", w.channel);
+    if (owner) q.and("notification_preferences.user_id = ?", owner);
+    else q.andRaw("notification_preferences.user_id IS NULL");
     const updated = await c.env.DB.prepare(
-      "UPDATE notification_preferences SET enabled = ?, updated_at = ? " +
-        `WHERE edition = ? AND event_key = ? AND channel = ? AND user_id IS ${owner ? "?" : "NULL"}`,
+      `UPDATE notification_preferences SET enabled = ?, updated_at = ? ${q.whereClause()}`,
     )
-      .bind(...[w.enabled ? 1 : 0, ts, edition, w.event, w.channel, ...(owner ? [owner] : [])])
+      .bind(w.enabled ? 1 : 0, ts, ...q.binds)
       .run();
     if (updated.meta.changes === 0) {
       await c.env.DB.prepare(
-        "INSERT INTO notification_preferences (id, edition, user_id, event_key, channel, enabled, updated_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        `INSERT INTO notification_preferences (id, ${t.columns}, user_id, event_key, channel, enabled, updated_at) ` +
+          `VALUES (?, ${t.placeholders}, ?, ?, ?, ?, ?)`,
       )
         .bind(
           `np_${crypto.randomUUID()}`,
-          edition,
+          ...t.binds,
           owner,
           w.event,
           w.channel,
@@ -257,11 +283,11 @@ notifications.put("/preferences", async (c) => {
  * defaults"; never touches the default rows themselves.
  */
 notifications.delete("/preferences", async (c) => {
-  const { edition, id } = c.var.user;
-  await c.env.DB.prepare(
-    "DELETE FROM notification_preferences WHERE edition = ? AND user_id = ?",
-  )
-    .bind(edition, id)
+  const q = scoped(tenantScopeOf(c.var.user))
+    .on("notification_preferences")
+    .and("notification_preferences.user_id = ?", c.var.user.id);
+  await c.env.DB.prepare(`DELETE FROM notification_preferences ${q.whereClause()}`)
+    .bind(...q.binds)
     .run();
   return c.json({ ok: true, ...(await gridPayload(c, "user")) });
 });
@@ -295,23 +321,41 @@ function toView(r: NotificationRow): NotificationView {
   };
 }
 
-/** GET /api/notifications/bell — the caller's recent alerts + unread count. */
+/**
+ * GET /api/notifications/bell — the caller's recent alerts + unread count.
+ *
+ * `tenant-scope.test.ts` records this route as `unprobed` rather than leaking, and
+ * the reason it gives is right: it is scoped per USER, so a tenant-A principal
+ * could not see a tenant-B row even with no tenant predicate at all. The scope is
+ * added anyway, and both halves of it, because `notifications` is one of the 30
+ * tenant-keyed tables and "the predicate it already had happens to be sufficient"
+ * is an argument that has to be re-made by every reader. The leak §2 B22 names on
+ * this surface is the OUTBOUND one, in `email/outbox.ts`.
+ */
 notifications.get("/bell", async (c) => {
+  const q = scoped(tenantScopeOf(c.var.user)).on("n").and("n.user_id = ?", c.var.user.id);
   const rows = (
     await c.env.DB.prepare(
-      "SELECT id, event_key, title, body, link, deck_id, read_at, created_at FROM notifications " +
-        "WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+      "SELECT n.id, n.event_key, n.title, n.body, n.link, n.deck_id, n.read_at, n.created_at " +
+        `FROM notifications n ${q.whereClause()} ORDER BY n.created_at DESC LIMIT ?`,
     )
-      .bind(c.var.user.id, BELL_LIMIT)
+      // The builder owns the WHERE clause and its binds; `LIMIT` is a TAIL bind and
+      // goes after them, which is the one bind-order rule `src/shared/tenant.ts`
+      // states.
+      .bind(...q.binds, BELL_LIMIT)
       .all<NotificationRow>()
   ).results;
 
   // Counted over the whole table, not the page: a bell that says "3" while
   // holding twenty unread rows is worse than no count at all.
+  const u = scoped(tenantScopeOf(c.var.user))
+    .on("n")
+    .and("n.user_id = ?", c.var.user.id)
+    .andRaw("n.read_at IS NULL");
   const unread = await c.env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND read_at IS NULL",
+    `SELECT COUNT(*) AS n FROM notifications n ${u.whereClause()}`,
   )
-    .bind(c.var.user.id)
+    .bind(...u.binds)
     .first<{ n: number }>();
 
   return c.json({ notifications: rows.map(toView), unread: unread?.n ?? 0 });
@@ -325,19 +369,17 @@ notifications.get("/bell", async (c) => {
 notifications.post("/read", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { id?: unknown };
   const ts = new Date().toISOString();
-  if (typeof body.id === "string") {
-    await c.env.DB.prepare(
-      "UPDATE notifications SET read_at = ? WHERE id = ? AND user_id = ? AND read_at IS NULL",
-    )
-      .bind(ts, body.id, c.var.user.id)
-      .run();
-  } else {
-    await c.env.DB.prepare(
-      "UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL",
-    )
-      .bind(ts, c.var.user.id)
-      .run();
-  }
+  const q = scoped(tenantScopeOf(c.var.user))
+    .on("notifications")
+    .and("notifications.user_id = ?", c.var.user.id)
+    .andRaw("notifications.read_at IS NULL");
+  // An id belonging to someone else matches nothing rather than 403-ing and
+  // confirming it exists — the same reasoning the route already applied to a
+  // sibling user, now applied to another customer as well.
+  if (typeof body.id === "string") q.and("notifications.id = ?", body.id);
+  await c.env.DB.prepare(`UPDATE notifications SET read_at = ? ${q.whereClause()}`)
+    .bind(ts, ...q.binds)
+    .run();
   return c.json({ ok: true });
 });
 
@@ -358,26 +400,42 @@ const OUTBOX_LIMIT = 50;
 
 /** GET /api/notifications/outbox — what the app has actually mailed, and how it went. */
 notifications.get("/outbox", requireConsole, async (c) => {
+  const scope = tenantScopeOf(c.var.user);
+  // ── THE TENANT HALF IS NOW DIRECT; THE EDITION HALF IS STILL BY PROXY ──────
+  // `email_outbox` has a `tenant_id` COLUMN as of `0086`, which is the plan
+  // correction §5b forced: it classifies this table as "scoped by proxy", but
+  // `deck_id` and `query_id` are both nullable, so there is no join that scopes
+  // it. `onTenantOnly` because the column arrived without an `edition` companion —
+  // the table predates the two-edition split and adding one needs a migration plus
+  // a stamp at every `sendEmail` call site, which this session has no slot for.
+  //
+  // So the edition half keeps the COALESCE this route already had, and it still
+  // fails CLOSED: mail to a non-user with no deck drops out of the log rather than
+  // crossing. What the tenant predicate adds is the half that matters — the
+  // COALESCE alone would have shown one customer's admin every other customer's
+  // recipient addresses and subject lines in the same edition.
+  //
+  // AND THE `users` JOIN ITSELF CHANGED MEANING. It was `ON u.email = o.to_email`,
+  // which was single-valued only because `users.email` was globally UNIQUE.
+  // `0087` made it `UNIQUE (tenant_id, email)`, so an address held by two customers
+  // now matches two rows and would DUPLICATE every outbox entry addressed to that
+  // person — and the duplicate would carry the other customer's edition, defeating
+  // the COALESCE. `AND u.tenant_id = o.tenant_id` is what makes the join
+  // single-valued again, and it costs no bind.
+  const q = scoped(scope)
+    .onTenantOnly("o")
+    .and("COALESCE(d.edition, u.edition) = ?", scope.edition);
   const rows = (
     await c.env.DB.prepare(
-      // Scoped to the caller's edition. `email_outbox` has no edition column —
-      // it predates the two-edition split — so this resolves one through the
-      // deck the mail is about, falling back to the recipient's own user row.
-      // Without it an incubator admin read VC recipients' addresses and subject
-      // lines, and `0017` seeds an incubator row that a VC admin could see on a
-      // freshly migrated database. The COALESCE fails CLOSED: mail to a
-      // non-user with no deck drops out of the log rather than leaking across.
-      // The durable fix is an `edition` column stamped by `sendEmail`, which
-      // needs every call site — recorded in §9. Wave 3 integration.
       "SELECT o.id AS id, o.kind AS kind, o.to_email AS to_email, o.to_name AS to_name, " +
         "o.subject AS subject, o.status AS status, o.error AS error, o.created_at AS created_at " +
         "FROM email_outbox o " +
-        "LEFT JOIN decks d ON d.id = o.deck_id " +
-        "LEFT JOIN users u ON u.email = o.to_email " +
-        "WHERE COALESCE(d.edition, u.edition) = ? " +
+        "LEFT JOIN decks d ON d.id = o.deck_id AND d.tenant_id = o.tenant_id " +
+        "LEFT JOIN users u ON u.email = o.to_email AND u.tenant_id = o.tenant_id " +
+        `${q.whereClause()} ` +
         "ORDER BY o.created_at DESC LIMIT ?",
     )
-      .bind(c.var.user.edition, OUTBOX_LIMIT)
+      .bind(...q.binds, OUTBOX_LIMIT)
       .all<OutboxRow>()
   ).results;
 

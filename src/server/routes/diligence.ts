@@ -24,12 +24,31 @@
  * VC only: the incubator has no diligence stages and is refused with
  * `wrong_edition`, the shape `signup-config.ts` uses for its edition-scoped
  * sections.
+ *
+ * ── TENANCY (T1-ESIGN) ──────────────────────────────────────────────────────
+ *
+ * `plan_multitenancy.md` §2 B14 singles this file out: its scope was the LITERAL
+ * `edition = 'vc'`, four times, and "a literal is worse than a bound parameter:
+ * there is not even a variable to re-point". What crosses is term sheets,
+ * valuations, ownership percentages and legal DD.
+ *
+ * All four literals are gone. They are replaced by `scoped(dealScope(c))`, which
+ * binds `(tenant_id, edition)` from the session — and the `'vc'` half of the old
+ * predicate is not lost, because the router's own middleware above answers 403
+ * `wrong_edition` to anything else, so a scope reaching a handler always carries
+ * `edition = 'vc'`. The product rule and the tenancy predicate are now the same
+ * bind instead of a literal standing in for both.
+ *
+ * `dd_items`, `vc_deals` and `pipeline_events` carry no scope column; they hang
+ * off `decks` and are reached either through a deck this file already scoped or
+ * through `ScopeBuilder.viaParent`.
  */
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Role } from "../../shared/roles";
 import { requireAuth, requireTask } from "../auth/middleware";
+import { scoped, scopeOf, type TenantScope } from "../../shared/tenant";
 import { auditConfig } from "../audit/events";
 import {
   INVESTMENT_TRACK_STAGES,
@@ -77,6 +96,15 @@ const DEAL_STAGES: readonly string[] = INVESTMENT_TRACK_STAGES;
 const DEAL_READERS: Role[] = ["admin", "partner", "ic_member"];
 const DEAL_READ_TASKS = ["openchecklist", "icpipeline", "signup", "onboard"];
 
+/**
+ * The workspace every statement in this file binds. The middleware above has
+ * already refused a non-VC caller, so `scope.edition` is always `'vc'` here —
+ * which is why nothing needs the old literal back.
+ */
+function dealScope(c: Context<AppEnv>): TenantScope {
+  return scopeOf(c.var.user);
+}
+
 async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
   return (await c.req.json().catch(() => ({}))) as Partial<T>;
 }
@@ -111,8 +139,9 @@ interface DeckRow {
 }
 
 async function loadDeck(c: Context<AppEnv>): Promise<DeckRow | null> {
-  return c.env.DB.prepare("SELECT id, name, status FROM decks WHERE id = ? AND edition = 'vc'")
-    .bind(c.req.param("deckId") ?? "")
+  const q = scoped(dealScope(c)).on("d").and("d.id = ?", c.req.param("deckId") ?? "");
+  return c.env.DB.prepare(`SELECT d.id, d.name, d.status FROM decks d ${q.whereClause()}`)
+    .bind(...q.binds)
     .first<DeckRow>();
 }
 
@@ -132,12 +161,15 @@ async function ensureItems(c: Context<AppEnv>, deckIds?: string[]): Promise<void
   ];
   const stmts: D1PreparedStatement[] = [];
   for (const [track, stages] of tracks) {
-    const scope = deckIds ? ` AND d.id IN (${deckIds.map(() => "?").join(", ")})` : "";
-    const { results } = await c.env.DB.prepare(
-      `SELECT d.id FROM decks d WHERE d.edition = 'vc' AND d.status IN (${stages.map(() => "?").join(", ")})${scope} ` +
-        "AND (SELECT COUNT(*) FROM dd_items i WHERE i.deck_id = d.id AND i.track = ?) < ?",
-    )
-      .bind(...stages, ...(deckIds ?? []), track, TRACK_ITEMS[track].length)
+    const q = scoped(dealScope(c))
+      .on("d")
+      .and(`d.status IN (${stages.map(() => "?").join(", ")})`, ...stages);
+    if (deckIds) q.and(`d.id IN (${deckIds.map(() => "?").join(", ")})`, ...deckIds);
+    // The correlated `dd_items` count needs no scope of its own: it is tied to
+    // `d.id`, and `d` is the scoped deck.
+    q.and("(SELECT COUNT(*) FROM dd_items i WHERE i.deck_id = d.id AND i.track = ?) < ?", track, TRACK_ITEMS[track].length);
+    const { results } = await c.env.DB.prepare(`SELECT d.id FROM decks d ${q.whereClause()}`)
+      .bind(...q.binds)
       .all<{ id: string }>();
     for (const { id } of results) {
       TRACK_ITEMS[track].forEach((label, i) => {
@@ -202,26 +234,55 @@ interface DealRow {
   last_activity_at: string | null;
 }
 
-const DEAL_SELECT =
-  "SELECT d.id, d.status, v.ask, v.valuation, v.mp_approval, v.dd_status, v.investment_lead, v.legal_lead, " +
-  "v.term_sheet_status, v.term_sheet_file, t.name AS template_name, t.version AS template_version, " +
-  // The deal's partner: whoever sponsored it to IC, else whoever issued its term sheet.
-  "(SELECT u.name FROM pipeline_events pe JOIN users u ON u.id = pe.actor_id WHERE pe.deck_id = d.id " +
-  "AND pe.action IN ('sponsor_to_ic', 'issue_term_sheet') ORDER BY CASE pe.action WHEN 'sponsor_to_ic' THEN 0 ELSE 1 END, " +
-  "pe.created_at DESC, pe.rowid DESC LIMIT 1) AS partner_name, " +
-  "(SELECT pe.created_at FROM pipeline_events pe WHERE pe.deck_id = d.id AND pe.action = 'invest' " +
-  "ORDER BY pe.created_at DESC, pe.rowid DESC LIMIT 1) AS cleared_at, " +
-  "COALESCE((SELECT MAX(pe.created_at) FROM pipeline_events pe WHERE pe.deck_id = d.id), d.updated_at, d.created_at) AS last_activity_at " +
-  "FROM decks d LEFT JOIN vc_deals v ON v.deck_id = d.id " +
-  "LEFT JOIN agreement_templates t ON t.id = v.term_sheet_template_id ";
+/**
+ * The `DealView` projection.
+ *
+ * It takes the scope because the LEFT JOIN to `agreement_templates` has to carry
+ * it. The three correlated `pipeline_events` subqueries do not: each is tied to
+ * `d.id`, and `d` is scoped by the caller's `WHERE`, so they inherit it. The
+ * template join cannot inherit anything — `v.term_sheet_template_id` is a bare
+ * id, so an unscoped join would print another customer's template NAME and
+ * VERSION onto this deal's term sheet. Adding the predicate to the join (not the
+ * `WHERE`) keeps it a LEFT JOIN: a cross-tenant template reads as "no template"
+ * rather than removing the deal from the list.
+ *
+ * `templateBinds` are the two the join carries, and they come FIRST in the
+ * statement, so every caller binds `...templateBinds, ...q.binds` — the head-bind
+ * rule `src/shared/tenant.ts` states.
+ */
+function dealSelect(scope: TenantScope): { sql: string; binds: unknown[] } {
+  return {
+    sql:
+      "SELECT d.id, d.status, v.ask, v.valuation, v.mp_approval, v.dd_status, v.investment_lead, v.legal_lead, " +
+      "v.term_sheet_status, v.term_sheet_file, t.name AS template_name, t.version AS template_version, " +
+      // The deal's partner: whoever sponsored it to IC, else whoever issued its term sheet.
+      "(SELECT u.name FROM pipeline_events pe JOIN users u ON u.id = pe.actor_id WHERE pe.deck_id = d.id " +
+      "AND pe.action IN ('sponsor_to_ic', 'issue_term_sheet') ORDER BY CASE pe.action WHEN 'sponsor_to_ic' THEN 0 ELSE 1 END, " +
+      "pe.created_at DESC, pe.rowid DESC LIMIT 1) AS partner_name, " +
+      "(SELECT pe.created_at FROM pipeline_events pe WHERE pe.deck_id = d.id AND pe.action = 'invest' " +
+      "ORDER BY pe.created_at DESC, pe.rowid DESC LIMIT 1) AS cleared_at, " +
+      "COALESCE((SELECT MAX(pe.created_at) FROM pipeline_events pe WHERE pe.deck_id = d.id), d.updated_at, d.created_at) AS last_activity_at " +
+      "FROM decks d LEFT JOIN vc_deals v ON v.deck_id = d.id " +
+      "LEFT JOIN agreement_templates t ON t.id = v.term_sheet_template_id " +
+      "AND t.tenant_id = ? AND t.edition = ? ",
+    binds: [scope.tenantId, scope.edition],
+  };
+}
 
 async function loadSummaries(c: Context<AppEnv>, deckIds: string[]): Promise<Map<string, Record<DiligenceTrack, DdSummary>>> {
   const out = new Map<string, Record<DiligenceTrack, DdSummary>>();
   if (deckIds.length === 0) return out;
+  // The ids arrive from a scoped read, but this feeds the per-track COUNTS the
+  // five screens show — §11's aggregate shape, where a leak is a number and not
+  // a name. `dd_items` is scoped through its deck rather than trusted to the id
+  // list, so the count cannot be inflated by a frame that moves later.
+  const q = scoped(dealScope(c));
+  const joins = q.viaParent("dd_items", "i");
+  q.and(`i.deck_id IN (${deckIds.map(() => "?").join(", ")})`, ...deckIds);
   const { results } = await c.env.DB.prepare(
-    `SELECT deck_id, track, status FROM dd_items WHERE deck_id IN (${deckIds.map(() => "?").join(", ")})`,
+    `SELECT i.deck_id, i.track, i.status FROM dd_items i ${joins} ${q.whereClause()}`,
   )
-    .bind(...deckIds)
+    .bind(...q.binds)
     .all<{ deck_id: string; track: DiligenceTrack; status: DdItemStatus }>();
   const grouped = new Map<string, Record<DiligenceTrack, { status: DdItemStatus }[]>>();
   for (const r of results) {
@@ -266,7 +327,11 @@ function toDealView(r: DealRow, s: Record<DiligenceTrack, DdSummary> | undefined
 }
 
 async function dealView(c: Context<AppEnv>, deckId: string): Promise<DealView | null> {
-  const row = await c.env.DB.prepare(`${DEAL_SELECT} WHERE d.id = ? AND d.edition = 'vc'`).bind(deckId).first<DealRow>();
+  const select = dealSelect(dealScope(c));
+  const q = scoped(dealScope(c)).on("d").and("d.id = ?", deckId);
+  const row = await c.env.DB.prepare(`${select.sql} ${q.whereClause()}`)
+    .bind(...select.binds, ...q.binds)
+    .first<DealRow>();
   if (!row) return null;
   return toDealView(row, (await loadSummaries(c, [deckId])).get(deckId));
 }
@@ -297,10 +362,14 @@ diligence.get("/", async (c) => {
   if (!allowed) return c.json({ error: "forbidden" }, 403);
 
   await ensureItems(c);
+  const select = dealSelect(dealScope(c));
+  const q = scoped(dealScope(c))
+    .on("d")
+    .and(`d.status IN (${DEAL_STAGES.map(() => "?").join(", ")})`, ...DEAL_STAGES);
   const { results } = await c.env.DB.prepare(
-    `${DEAL_SELECT} WHERE d.edition = 'vc' AND d.status IN (${DEAL_STAGES.map(() => "?").join(", ")}) ORDER BY d.name, d.id`,
+    `${select.sql} ${q.whereClause()} ORDER BY d.name, d.id`,
   )
-    .bind(...DEAL_STAGES)
+    .bind(...select.binds, ...q.binds)
     .all<DealRow>();
   const summaries = await loadSummaries(c, results.map((r) => r.id));
   return c.json({ deals: results.map((r) => toDealView(r, summaries.get(r.id))) });
@@ -385,10 +454,16 @@ diligence.patch("/:deckId/checklist/:track/:itemId", checklistTask, async (c) =>
   if (cols.length === 0) return c.json({ error: "nothing_to_update" }, 400);
 
   const ts = new Date().toISOString();
+  // `AND deck_id = ?` is redundant today — `item` was loaded `WHERE id = ? AND
+  // deck_id = ?` against a deck `loadDeck` scoped — and it is here anyway,
+  // because this is a WRITE on a diligence finding and §5b's point about the
+  // proxy bucket is that statements safe only because a check happened in an
+  // earlier frame are the ones that break together when a frame moves.
   await c.env.DB.prepare(
-    `UPDATE dd_items SET ${cols.map((k) => `${k} = ?`).join(", ")}, updated_at = ?, updated_by = ? WHERE id = ?`,
+    `UPDATE dd_items SET ${cols.map((k) => `${k} = ?`).join(", ")}, updated_at = ?, updated_by = ? ` +
+      "WHERE id = ? AND deck_id = ?",
   )
-    .bind(...cols.map((k) => set[k]), ts, c.var.user.id, item.id)
+    .bind(...cols.map((k) => set[k]), ts, c.var.user.id, item.id, deck.id)
     .run();
   if (set.status !== undefined && set.status !== item.status) {
     await auditConfig(c, "dd_item_status", `${deck.name} · ${item.label}: ${item.status} → ${set.status}`, {
@@ -400,9 +475,10 @@ diligence.patch("/:deckId/checklist/:track/:itemId", checklistTask, async (c) =>
   }
 
   const fresh = await c.env.DB.prepare(
-    "SELECT id, deck_id, track, sort_order, label, status, owner, rating, finding, updated_at FROM dd_items WHERE id = ?",
+    "SELECT id, deck_id, track, sort_order, label, status, owner, rating, finding, updated_at " +
+      "FROM dd_items WHERE id = ? AND deck_id = ?",
   )
-    .bind(item.id)
+    .bind(item.id, deck.id)
     .first<ItemRow>();
   return c.json({ item: toItemView(fresh!), deal: await dealView(c, deck.id) });
 });
@@ -478,10 +554,13 @@ diligence.put("/:deckId/term-sheet", termSheetTask, async (c) => {
 
 /** GET /api/diligence/templates — `TS_AGR_TEMPLATES`: the VC Agreements library, retired last. */
 diligence.get("/templates", termSheetTask, async (c) => {
+  const q = scoped(dealScope(c)).on("t");
   const { results } = await c.env.DB.prepare(
-    "SELECT id, name, file_name, version, status FROM agreement_templates WHERE edition = 'vc' " +
-      "ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, name",
-  ).all<{ id: string; name: string; file_name: string | null; version: string; status: string }>();
+    `SELECT t.id, t.name, t.file_name, t.version, t.status FROM agreement_templates t ${q.whereClause()} ` +
+      "ORDER BY CASE t.status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, t.name",
+  )
+    .bind(...q.binds)
+    .all<{ id: string; name: string; file_name: string | null; version: string; status: string }>();
   return c.json({
     templates: results.map((t) => ({
       id: t.id,
@@ -505,12 +584,16 @@ diligence.post("/:deckId/term-sheet/attach", termSheetTask, async (c) => {
     return c.json({ error: "no_term_sheet", stage: deck.status }, 409);
   }
   const body = await readBody<{ templateId: unknown }>(c);
+  // The worst of §2 B14's four literals, because this one is a WRITE: the id
+  // comes off the request, and unscoped it would stamp another customer's term
+  // sheet template onto this deal and name it in the audit row below.
+  const tq = scoped(dealScope(c)).on("t").and("t.id = ?", body.templateId);
   const template =
     typeof body.templateId === "string"
       ? await c.env.DB.prepare(
-          "SELECT id, name, file_name, version, status FROM agreement_templates WHERE id = ? AND edition = 'vc'",
+          `SELECT t.id, t.name, t.file_name, t.version, t.status FROM agreement_templates t ${tq.whereClause()}`,
         )
-          .bind(body.templateId)
+          .bind(...tq.binds)
           .first<{ id: string; name: string; file_name: string | null; version: string; status: string }>()
       : null;
   if (!template) return c.json({ error: "template_not_found" }, 404);

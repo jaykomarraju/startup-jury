@@ -17,24 +17,37 @@
  */
 
 import type { Env } from "../types";
-import type { Edition } from "../../shared/roles";
+import { scoped, type TenantScope } from "../../shared/tenant";
 import { loadConnection, type ConnectionRow } from "./store";
 import { recordSyncAttempt, type CrmSyncRecord } from "./provider";
 import type { CrmProvider } from "../../shared/crm";
 
-/** Deals pulled this calendar month, against which the cap is measured. */
+/**
+ * Deals pulled this calendar month, against which the cap is measured.
+ *
+ * §11's aggregate warning with money attached: this `SUM` is the ONLY spend
+ * guard on auto-pulled decks (F0179), and a leak here is a number nobody can
+ * see is wrong. Unscoped, one customer's pulls eat another customer's cap — the
+ * same shape §2 B24 names for credit refunds, where "tenant A's failed
+ * evaluation refunds a balance tenant B draws on". `crm_sync_log` carries
+ * `tenant_id` directly, so this is a `.on()` and not a join.
+ */
 export async function pulledThisMonth(
   env: Env,
+  scope: TenantScope,
   connectionId: string,
   now: Date = new Date(),
 ): Promise<number> {
   const month = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  const q = scoped(scope)
+    .on("l")
+    .and("l.connection_id = ?", connectionId)
+    .andRaw("l.operation = 'pull_deals' AND l.status IN ('recorded', 'sent')")
+    .and("substr(l.created_at, 1, 7) = ?", month);
   const row = await env.DB.prepare(
-    "SELECT COALESCE(SUM(record_count), 0) AS n FROM crm_sync_log " +
-      "WHERE connection_id = ? AND operation = 'pull_deals' AND status IN ('recorded', 'sent') " +
-      "AND substr(created_at, 1, 7) = ?",
+    `SELECT COALESCE(SUM(l.record_count), 0) AS n FROM crm_sync_log l ${q.whereClause()}`,
   )
-    .bind(connectionId, month)
+    .bind(...q.binds)
     .first<{ n: number }>();
   return row?.n ?? 0;
 }
@@ -62,10 +75,11 @@ export interface PullOutcome {
  */
 export async function runPull(
   env: Env,
+  scope: TenantScope,
   row: ConnectionRow,
   now: Date = new Date(),
 ): Promise<PullOutcome> {
-  const used = await pulledThisMonth(env, row.id, now);
+  const used = await pulledThisMonth(env, scope, row.id, now);
   const headroom = capHeadroom(row.monthly_deck_cap, used);
   const limit = headroom ?? DEFAULT_PULL_LIMIT;
 
@@ -78,9 +92,9 @@ export async function runPull(
 
   const record = await recordSyncAttempt(
     env,
+    scope,
     {
       connectionId: row.id,
-      edition: row.edition as Edition,
       provider: row.provider as CrmProvider,
       operation: "pull_deals",
       direction: "pull",
@@ -105,26 +119,35 @@ export const DEFAULT_PULL_LIMIT = 50;
 
 /**
  * Push one deck's evaluation result back to the CRM (F0180). Called after an
- * evaluation completes; a no-op — recorded as `'skipped'` — unless the edition
- * has a live connection with write-back enabled and a target field configured.
+ * evaluation completes; a no-op — recorded as `'skipped'` — unless the
+ * workspace has a live connection with write-back enabled and a target field
+ * configured.
  *
- * Returns `null` when the edition has no live write-back connection at all, so
- * the caller can ignore CRM entirely in the common case.
+ * Returns `null` when the workspace has no live write-back connection at all,
+ * so the caller can ignore CRM entirely in the common case.
  */
 export async function writeBackDeckScore(
   env: Env,
+  scope: TenantScope,
   args: {
-    edition: Edition;
     deckId: string;
     externalId?: string | null;
     fields: Record<string, unknown>;
   },
 ): Promise<CrmSyncRecord | null> {
+  // **The outbound one.** `LIMIT 1` over a predicate that named only the
+  // edition picked whichever live write-back connection the table happened to
+  // hold — so one customer's evaluation score would have been pushed into
+  // ANOTHER customer's CRM, with no row in any response to notice it by. The
+  // same shape §2 B22 calls "a leak that leaves the building".
+  const q = scoped(scope)
+    .on("c")
+    .andRaw("c.status = 'live' AND c.write_back_scores = 1");
   const row = await env.DB.prepare(
-    "SELECT id, edition, provider, status, base_url, score_writeback_field, write_back_scores, credential_ref " +
-      "FROM crm_connections WHERE edition = ? AND status = 'live' AND write_back_scores = 1 LIMIT 1",
+    "SELECT c.id, c.edition, c.provider, c.status, c.base_url, c.score_writeback_field, " +
+      `c.write_back_scores, c.credential_ref FROM crm_connections c ${q.whereClause()} LIMIT 1`,
   )
-    .bind(args.edition)
+    .bind(...q.binds)
     .first<{
       id: string;
       edition: string;
@@ -143,9 +166,9 @@ export async function writeBackDeckScore(
 
   return recordSyncAttempt(
     env,
+    scope,
     {
       connectionId: row.id,
-      edition: args.edition,
       provider: row.provider as CrmProvider,
       operation: "write_back_score",
       direction: "push",
@@ -166,8 +189,8 @@ export async function writeBackDeckScore(
 /** Load a connection row for a manual action, or `null` if the provider is unknown. */
 export async function connectionFor(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   provider: CrmProvider,
 ): Promise<ConnectionRow | null> {
-  return loadConnection(env, edition, provider);
+  return loadConnection(env, scope, provider);
 }

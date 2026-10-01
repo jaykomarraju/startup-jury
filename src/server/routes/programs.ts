@@ -5,12 +5,19 @@
 // (org-admins create programs); cohort CRUD is admin/superuser OR the owning
 // Program Manager (Session 4 — owner-scoped via programs.owner_id). VC programs
 // carry fund economics (size / allocated / deployed) that feed Capital Deployment.
+//
+// TENANCY (T1-FLOW). `sectors` and `programs` are tenant-OWNED (`0085`);
+// `cohorts` has no key of its own and is scoped through its programme, the path
+// `TENANT_OWNER` names. Fund size and allocation are on `programs`, which is why
+// §2 B24 lists this router by name: an unscoped read here is one customer
+// reading another's fund. Every predicate below is built by `scoped()` so the
+// fragment and its binds cannot drift apart across a 44-mention sweep.
 
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
-import type { Edition } from "../../shared/roles";
 import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
+import { insertScope, scopeOf, scoped, type TenantScope } from "../../shared/tenant";
 import { NEW_PROGRAMME_AI_WEIGHT_PCT } from "../../shared/scoring";
 
 const programs = new Hono<AppEnv>();
@@ -111,42 +118,49 @@ function canManageCohorts(c: Context<AppEnv>, ownerId: string | null): boolean {
   return c.var.user.role === "program_manager" && ownerId !== null && ownerId === c.var.user.id;
 }
 
-// ── Read: the whole hierarchy for the caller's edition ───────────────────────
+// ── Read: the whole hierarchy for the caller's workspace ────────────────────
 
 /** GET /api/programs — sectors + programs (with nested cohorts) for the caller's
- *  edition. Any authed user (drives filters / Applies-to / the Set up wizard).
+ *  workspace. Any authed user (drives filters / Applies-to / the Set up wizard).
  *  `?all=1` (admin only) includes inactive rows for the management view. */
 programs.get("/", async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const includeInactive = isAdmin(c) && c.req.query("all") === "1";
-  const activeClause = includeInactive ? "" : " AND active = 1";
 
+  const sq = scoped(scope).on("s");
+  if (!includeInactive) sq.andRaw("s.active = 1");
   const sectors = (
     await c.env.DB.prepare(
-      `SELECT id, name, active, sort_order FROM sectors WHERE edition = ?${activeClause} ORDER BY sort_order, name`,
+      `SELECT s.id, s.name, s.active, s.sort_order FROM sectors s ${sq.whereClause()} ORDER BY s.sort_order, s.name`,
     )
-      .bind(edition)
+      .bind(...sq.binds)
       .all<SectorRow>()
   ).results;
 
+  const pq = scoped(scope).on("p");
+  if (!includeInactive) pq.andRaw("p.active = 1");
   const progRows = (
     await c.env.DB.prepare(
-      `SELECT id, sector, name, description, fund_size, fund_allocated, capital_deployed, shortlist_min, owner_id, active, sort_order ` +
-        `FROM programs WHERE edition = ?${activeClause} ORDER BY sort_order, name`,
+      `SELECT p.id, p.sector, p.name, p.description, p.fund_size, p.fund_allocated, p.capital_deployed, ` +
+        `p.shortlist_min, p.owner_id, p.active, p.sort_order ` +
+        `FROM programs p ${pq.whereClause()} ORDER BY p.sort_order, p.name`,
     )
-      .bind(edition)
+      .bind(...pq.binds)
       .all<ProgramRow>()
   ).results;
 
-  // Cohorts scoped to this edition's programs (join keeps it edition-safe).
-  const cohortClause = includeInactive ? "" : " AND c.active = 1";
+  // `cohorts` has no workspace key: `TENANT_OWNER` scopes it through its
+  // programme, which is the same JOIN this read already had — now carrying the
+  // customer as well as the edition.
+  const cq = scoped(scope);
+  const cJoins = cq.viaParent("cohorts", "c");
+  if (!includeInactive) cq.andRaw("c.active = 1");
   const cohortRows = (
     await c.env.DB.prepare(
       `SELECT c.id, c.program_id, c.name, c.starts_on, c.ends_on, c.active, c.sort_order ` +
-        `FROM cohorts c JOIN programs p ON p.id = c.program_id ` +
-        `WHERE p.edition = ?${cohortClause} ORDER BY c.sort_order, c.name`,
+        `FROM cohorts c ${cJoins} ${cq.whereClause()} ORDER BY c.sort_order, c.name`,
     )
-      .bind(edition)
+      .bind(...cq.binds)
       .all<CohortRow>()
   ).results;
 
@@ -159,31 +173,36 @@ programs.get("/", async (c) => {
 // ── Sectors ──────────────────────────────────────────────────────────────────
 
 programs.post("/sectors", requireRole("admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const body = await readBody<{ name: string }>(c);
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name) return c.json({ error: "name_required" }, 400);
   const id = `sec_${crypto.randomUUID().slice(0, 8)}`;
+  const nq = scoped(scope).on("s");
   const next = await c.env.DB.prepare(
-    "SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM sectors WHERE edition = ?",
+    `SELECT COALESCE(MAX(s.sort_order), 0) + 1 AS n FROM sectors s ${nq.whereClause()}`,
   )
-    .bind(edition)
+    .bind(...nq.binds)
     .first<{ n: number }>();
+  const t = insertScope(scope);
   await c.env.DB.prepare(
-    "INSERT INTO sectors (id, edition, name, active, sort_order) VALUES (?, ?, ?, 1, ?)",
+    `INSERT INTO sectors (id, ${t.columns}, name, active, sort_order) VALUES (?, ${t.placeholders}, ?, 1, ?)`,
   )
-    .bind(id, edition, name, next?.n ?? 1)
+    .bind(id, ...t.binds, name, next?.n ?? 1)
     .run();
   return c.json({ ok: true, sector: { id, name, active: true } });
 });
 
 programs.delete("/sectors/:id", requireRole("admin"), async (c) => {
-  const edition = c.var.user.edition;
   const id = c.req.param("id");
+  // `UPDATE … WHERE id = ?` with the workspace appended: the id arrives from the
+  // browser, so this is one of the predicates §2 B24 counts. Without the tenant
+  // half it retires another customer's sector and answers `{ ok: true }`.
+  const q = scoped(scopeOf(c.var.user)).on("sectors").and("id = ?", id);
   const res = await c.env.DB.prepare(
-    "UPDATE sectors SET active = 0 WHERE id = ? AND edition = ?",
+    `UPDATE sectors SET active = 0 ${q.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...q.binds)
     .run();
   if (res.meta.changes === 0) return c.json({ error: "not_found" }, 404);
   return c.json({ ok: true });
@@ -192,7 +211,7 @@ programs.delete("/sectors/:id", requireRole("admin"), async (c) => {
 // ── Programs ─────────────────────────────────────────────────────────────────
 
 programs.post("/", requireRole("admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const body = await readBody<{
     name: string;
     sector: string;
@@ -216,22 +235,24 @@ programs.post("/", requireRole("admin"), async (c) => {
   if (!sm.ok) return c.json({ error: "invalid_shortlist_min" }, 400);
 
   const id = `prog_${crypto.randomUUID().slice(0, 8)}`;
+  const nq = scoped(scope).on("p");
   const next = await c.env.DB.prepare(
-    "SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM programs WHERE edition = ?",
+    `SELECT COALESCE(MAX(p.sort_order), 0) + 1 AS n FROM programs p ${nq.whereClause()}`,
   )
-    .bind(edition)
+    .bind(...nq.binds)
     .first<{ n: number }>();
   // V4-WEIGHT (0074) — a programme created from here is stamped with the
   // client's 50:50 split; every programme that predates the column keeps
   // NULL and goes on following the organisation's. "previous cohorts will
   // remain same. only the new program or cohorts would take effect."
+  const t = insertScope(scope);
   await c.env.DB.prepare(
-    "INSERT INTO programs (id, edition, sector, name, description, fund_size, fund_allocated, capital_deployed, shortlist_min, ai_weight_pct, active, sort_order) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+    `INSERT INTO programs (id, ${t.columns}, sector, name, description, fund_size, fund_allocated, capital_deployed, shortlist_min, ai_weight_pct, active, sort_order) ` +
+      `VALUES (?, ${t.placeholders}, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
   )
     .bind(
       id,
-      edition,
+      ...t.binds,
       sector,
       name,
       description,
@@ -262,12 +283,14 @@ programs.post("/", requireRole("admin"), async (c) => {
 });
 
 programs.put("/:id", requireRole("admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const id = c.req.param("id");
+  const loadQ = scoped(scope).on("p").and("p.id = ?", id);
   const existing = await c.env.DB.prepare(
-    "SELECT id, sector, name, description, fund_size, fund_allocated, capital_deployed, shortlist_min, owner_id, active, sort_order FROM programs WHERE id = ? AND edition = ?",
+    `SELECT p.id, p.sector, p.name, p.description, p.fund_size, p.fund_allocated, p.capital_deployed, ` +
+      `p.shortlist_min, p.owner_id, p.active, p.sort_order FROM programs p ${loadQ.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...loadQ.binds)
     .first<ProgramRow>();
   if (!existing) return c.json({ error: "not_found" }, 404);
 
@@ -310,10 +333,22 @@ programs.put("/:id", requireRole("admin"), async (c) => {
   }
   const active = typeof body.active === "boolean" ? (body.active ? 1 : 0) : existing.active;
 
+  const saveQ = scoped(scope).on("programs").and("id = ?", id);
   await c.env.DB.prepare(
-    "UPDATE programs SET sector = ?, name = ?, description = ?, fund_size = ?, fund_allocated = ?, capital_deployed = ?, shortlist_min = ?, active = ? WHERE id = ? AND edition = ?",
+    `UPDATE programs SET sector = ?, name = ?, description = ?, fund_size = ?, fund_allocated = ?, ` +
+      `capital_deployed = ?, shortlist_min = ?, active = ? ${saveQ.whereClause()}`,
   )
-    .bind(sector, name, description, fundSize, fundAllocated, capitalDeployed, shortlistMin, active, id, edition)
+    .bind(
+      sector,
+      name,
+      description,
+      fundSize,
+      fundAllocated,
+      capitalDeployed,
+      shortlistMin,
+      active,
+      ...saveQ.binds,
+    )
     .run();
 
   return c.json({
@@ -333,15 +368,16 @@ programs.put("/:id", requireRole("admin"), async (c) => {
 });
 
 programs.delete("/:id", requireRole("admin"), async (c) => {
-  const edition = c.var.user.edition;
   const id = c.req.param("id");
-  const res = await c.env.DB.prepare(
-    "UPDATE programs SET active = 0 WHERE id = ? AND edition = ?",
-  )
-    .bind(id, edition)
+  const q = scoped(scopeOf(c.var.user)).on("programs").and("id = ?", id);
+  const res = await c.env.DB.prepare(`UPDATE programs SET active = 0 ${q.whereClause()}`)
+    .bind(...q.binds)
     .run();
   if (res.meta.changes === 0) return c.json({ error: "not_found" }, 404);
   // Retire the program's cohorts with it (soft delete keeps history referenced).
+  // `program_id` alone is the right predicate here and needs no tenant half: the
+  // programme it names was just proved to be this workspace's by the UPDATE
+  // above, and a cohort belongs to exactly one programme.
   await c.env.DB.prepare("UPDATE cohorts SET active = 0 WHERE program_id = ?").bind(id).run();
   return c.json({ ok: true });
 });
@@ -349,13 +385,16 @@ programs.delete("/:id", requireRole("admin"), async (c) => {
 // ── Cohorts ──────────────────────────────────────────────────────────────────
 
 programs.post("/:id/cohorts", requireRole("program_manager", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const programId = c.req.param("id");
-  // The program must exist in the caller's edition.
+  // The program must exist in the caller's WORKSPACE, not merely in their
+  // edition. Everything below keys off `program_id`, so this is the one check
+  // that stops a cohort being opened under another customer's programme.
+  const pq = scoped(scope).on("p").and("p.id = ?", programId);
   const prog = await c.env.DB.prepare(
-    "SELECT id, owner_id FROM programs WHERE id = ? AND edition = ?",
+    `SELECT p.id, p.owner_id FROM programs p ${pq.whereClause()}`,
   )
-    .bind(programId, edition)
+    .bind(...pq.binds)
     .first<{ id: string; owner_id: string | null }>();
   if (!prog) return c.json({ error: "not_found" }, 404);
   // A program_manager may only manage cohorts for programs they lead.
@@ -388,21 +427,31 @@ programs.post("/:id/cohorts", requireRole("program_manager", "admin"), async (c)
   });
 });
 
-/** Confirm a cohort belongs to a program in the caller's edition. Carries the
- *  owning program's owner_id so cohort mutations can be owner-scoped. */
-async function loadCohort(c: Context<AppEnv>, cohortId: string, edition: Edition) {
+/**
+ * Confirm a cohort belongs to a program in the caller's WORKSPACE. Carries the
+ * owning program's owner_id so cohort mutations can be owner-scoped.
+ *
+ * The join comes from `viaParent` rather than being written here, which is why
+ * `owner0_programs` appears in the SELECT: the helper names each hop's alias
+ * `owner<n>_<parent>` so the path to the owner is answered once in
+ * `TENANT_OWNER` and not re-derived at thirty-three call sites.
+ */
+async function loadCohort(c: Context<AppEnv>, cohortId: string, scope: TenantScope) {
+  const q = scoped(scope);
+  const joins = q.viaParent("cohorts", "ch");
+  q.and("ch.id = ?", cohortId);
   return c.env.DB.prepare(
-    "SELECT c.id, c.program_id, c.name, c.starts_on, c.ends_on, c.active, c.sort_order, p.owner_id AS owner_id " +
-      "FROM cohorts c JOIN programs p ON p.id = c.program_id WHERE c.id = ? AND p.edition = ?",
+    `SELECT ch.id, ch.program_id, ch.name, ch.starts_on, ch.ends_on, ch.active, ch.sort_order, ` +
+      `owner0_programs.owner_id AS owner_id FROM cohorts ch ${joins} ${q.whereClause()}`,
   )
-    .bind(cohortId, edition)
+    .bind(...q.binds)
     .first<CohortRow & { owner_id: string | null }>();
 }
 
 programs.put("/cohorts/:cohortId", requireRole("program_manager", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const cohortId = c.req.param("cohortId");
-  const existing = await loadCohort(c, cohortId, edition);
+  const existing = await loadCohort(c, cohortId, scope);
   if (!existing) return c.json({ error: "not_found" }, 404);
   if (!canManageCohorts(c, existing.owner_id)) return c.json({ error: "forbidden" }, 403);
 
@@ -442,9 +491,9 @@ programs.put("/cohorts/:cohortId", requireRole("program_manager", "admin"), asyn
 });
 
 programs.delete("/cohorts/:cohortId", requireRole("program_manager", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const cohortId = c.req.param("cohortId");
-  const existing = await loadCohort(c, cohortId, edition);
+  const existing = await loadCohort(c, cohortId, scope);
   if (!existing) return c.json({ error: "not_found" }, 404);
   if (!canManageCohorts(c, existing.owner_id)) return c.json({ error: "forbidden" }, 403);
   await c.env.DB.prepare("UPDATE cohorts SET active = 0 WHERE id = ?").bind(cohortId).run();

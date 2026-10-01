@@ -4,7 +4,7 @@
 
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { AppEnv } from "../types";
+import type { AppEnv, SessionUser } from "../types";
 import type { Edition, Role } from "../../shared/roles";
 import { evaluationRank, isAssignableEvaluator, roleLabel } from "../../shared/roles";
 import { canSeeEvaluatorScoresIn } from "../../shared/scoreVisibility";
@@ -50,6 +50,12 @@ import {
 // P0-1 — the one answer to "is this person assigned?" (`decks.assigned_to` UNION
 // `deck_assignments`). Read the union, never the join table alone.
 import { ASSIGNEE_PAIRS_SQL } from "../decks/assignments";
+// T1-DECKS — the ONE scope helper (T0-SCHEMA). `scopeOf(user)` is the only way a
+// scope is built, so a predicate can never take its key from the browser; `scoped()`
+// carries each fragment and its binds together; `viaParent` reads the ownership path
+// out of `TENANT_OWNER` so "what owns `scores`?" is answered once, in that file, and
+// not at each of the 61 `FROM decks` sites in this one.
+import { scopeOf, scoped, insertScope } from "../../shared/tenant";
 
 const decks = new Hono<AppEnv>();
 // The deck pipeline is staff-only: a mentor is a directory record, not an
@@ -73,13 +79,42 @@ const DECK_COLUMNS =
 
 // Joined columns: the assignee's name, the program's shortlist floor, and the mean
 // of this deck's human evaluations (the other half of the decision score).
+//
+// T1-DECKS — every join to a TENANT-KEYED table also matches `d.tenant_id`. These
+// are LEFT joins on ids that belong to the scoped deck, so they are already
+// unreachable from another customer unless a column drifted; the extra condition
+// makes a drifted id render NULL rather than the other customer's name, and it
+// costs no bind (column = column), so it cannot disturb bind order at the 7 call
+// sites that interpolate this string. `cohorts` and `deck_onboarding` carry no
+// tenant column of their own — they are reached through `programs` and `d.id`.
 const DECK_JOINS =
-  "LEFT JOIN users u ON u.id = d.assigned_to " +
-  "LEFT JOIN programs pr ON pr.id = d.program_id " +
+  "LEFT JOIN users u ON u.id = d.assigned_to AND u.tenant_id = d.tenant_id " +
+  "LEFT JOIN programs pr ON pr.id = d.program_id AND pr.tenant_id = d.tenant_id " +
+  // NOT also `AND co.program_id = pr.id`: a deck may carry a cohort with its
+  // programme column unset, and that condition would silently drop the cohort
+  // name. `cohorts` is owned through `programs` (TENANT_OWNER) and the id comes
+  // off the scoped deck row.
   "LEFT JOIN cohorts co ON co.id = d.cohort_id " +
   // Aug-2026 issues 29/30 — sign-up + curation state for the pipeline screens.
   "LEFT JOIN deck_onboarding ob ON ob.deck_id = d.id " +
-  "LEFT JOIN users lead ON lead.id = ob.lead_user_id";
+  "LEFT JOIN users lead ON lead.id = ob.lead_user_id AND lead.tenant_id = d.tenant_id";
+//
+// ── T1-DECKS · WHY NONE OF THE SUBQUERIES BELOW CARRIES A TENANT PREDICATE ────
+// Every one of them is CORRELATED on `d.id` — `WHERE pe.deck_id = d.id`,
+// `WHERE s.deck_id = d.id`, and so on — and `d` is scoped by the caller at all
+// seven sites that interpolate this string. The correlation IS the scope: a row in
+// another customer's `pipeline_events` has a `deck_id` that no scoped `d.id` can
+// equal, so there is nothing for a predicate to exclude.
+//
+// This is NOT the §5b exemption being claimed loosely. §5b's hazard is a child read
+// in its own statement, relying on a parent check one FRAME up — a guard that can be
+// rearranged away. These are in the same statement as their parent and cannot be
+// separated from it; adding `pe.tenant_id` would not even compile, because
+// `pipeline_events` has no such column, and routing each through `viaParent` would
+// emit twelve more `JOIN decks` for no change in the result set.
+//
+// If any of these is ever lifted OUT of this string into a statement of its own, it
+// stops being correlated and MUST take `viaParent`. That is the line.
 const DECK_DERIVED =
   "u.name AS assigned_to_name, pr.shortlist_min AS shortlist_min, " +
   "pr.name AS program_name, co.name AS cohort_name, " +
@@ -482,13 +517,37 @@ function ownDecksBinds(userId: string): string[] {
  * same founder contact one request away. Costs a query only for the roles that
  * are actually scoped; everyone else short-circuits.
  */
-async function canReadDeck(db: D1Database, role: Role, userId: string, deckId: string): Promise<boolean> {
-  if (!scopesToOwnDecks(role)) return true;
+async function canReadDeck(
+  db: D1Database,
+  user: SessionUser,
+  deckId: string,
+): Promise<boolean> {
+  if (!scopesToOwnDecks(user.role)) return true;
+  // T1-DECKS — the workspace predicate goes on FIRST, so an id from another
+  // customer fails here rather than falling through to OWN_DECKS_SQL. It takes the
+  // whole `SessionUser` now instead of `role`/`userId`: the previous signature had
+  // no way to see the tenant, and threading it as a sixth scalar is how a caller
+  // ends up passing the wrong one.
+  const q = scoped(scopeOf(user)).on("d").and("d.id = ?", deckId).and(OWN_DECKS_SQL, ...ownDecksBinds(user.id));
   const row = await db
-    .prepare(`SELECT 1 AS n FROM decks d WHERE d.id = ? AND ${OWN_DECKS_SQL}`)
-    .bind(deckId, ...ownDecksBinds(userId))
+    .prepare(`SELECT 1 AS n FROM decks d ${q.whereClause()}`)
+    .bind(...q.binds)
     .first<{ n: number }>();
   return Boolean(row);
+}
+
+/**
+ * The workspace predicate for ONE deck by id. Not a predicate of its own — it is
+ * exactly `scoped(scopeOf(user)).on(alias).and("<alias>.id = ?", id)`, in the order
+ * T0's helper emits — but this file does that at eighteen sites, and an eighteen-way
+ * copy is how one of them ends up binding `edition` alone again.
+ *
+ * `alias` defaults to `d` for the SELECTs; UPDATE takes no alias in SQLite, so those
+ * callers pass `"decks"` and get the same predicate qualified by the table name,
+ * which SQLite accepts in an UPDATE's WHERE (verified).
+ */
+function oneDeck(user: SessionUser, deckId: string, alias = "d") {
+  return scoped(scopeOf(user)).on(alias).and(`${alias}.id = ?`, deckId);
 }
 
 /** GET /api/decks — decks in the caller's edition (Review-decks table),
@@ -511,47 +570,42 @@ decks.get("/", async (c) => {
   const q = (c.req.query("q") ?? "").trim();
   const tag = (c.req.query("tag") ?? "").trim().toLowerCase();
 
-  const clauses = ["d.edition = ?"];
-  const params: unknown[] = [edition];
-  if (role === "founder") {
-    clauses.push("d.uploaded_by = ?");
-    params.push(id);
-  }
+  // ── THE PREDICATE THIS WHOLE WAVE EXISTS FOR ────────────────────────────────
+  // This was `["d.edition = ?"]` and nothing else, and `edition` has two values,
+  // so every accelerator shared a bucket: a brand-new second customer with zero
+  // decks signed in and saw all 15 of the first customer's, with founder names,
+  // emails and phones (`plan_multitenancy.md` §2 B1, "the highest-value data on
+  // the platform"). `scoped(scopeOf(user)).on("d")` binds BOTH halves of the
+  // workspace key, and `and()` takes each later fragment with its binds so the
+  // two cannot drift — which is the mistake a sweep of this size makes.
+  const qy = scoped(scopeOf(c.var.user)).on("d");
+  if (role === "founder") qy.and("d.uploaded_by = ?", id);
   // P0-1 — a juror's rows are their own allocation plus the calls they are on.
   // See `OWN_DECKS_SQL` above for why this is the API's job and not a screen's.
-  if (scopesToOwnDecks(role)) {
-    clauses.push(OWN_DECKS_SQL);
-    params.push(...ownDecksBinds(id));
-  }
-  if (programId) {
-    clauses.push("d.program_id = ?");
-    params.push(programId);
-  }
-  if (cohortId) {
-    clauses.push("d.cohort_id = ?");
-    params.push(cohortId);
-  }
+  if (scopesToOwnDecks(role)) qy.and(OWN_DECKS_SQL, ...ownDecksBinds(id));
+  if (programId) qy.and("d.program_id = ?", programId);
+  if (cohortId) qy.and("d.cohort_id = ?", cohortId);
   if (q) {
     // LIKE with escaped wildcards — the term is user input, not a pattern. One
     // bound value per column: SQLite's numbered placeholders can't be mixed with
     // the positional `?`s the other clauses use.
     const like = `%${q.replace(/[%_\\]/g, (m) => `\\${m}`)}%`;
     const cols = ["d.name", "d.founder", "d.sector", "d.city", "d.founder_email"];
-    clauses.push(`(${cols.map((col) => `${col} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
-    cols.forEach(() => params.push(like));
+    qy.and(
+      `(${cols.map((col) => `${col} LIKE ? ESCAPE '\\'`).join(" OR ")})`,
+      ...cols.map(() => like),
+    );
   }
   if (tag) {
     // Tags are stored as a lowercase JSON array, so a quoted substring match is
     // exact per element without needing json_each.
-    clauses.push("d.tags LIKE ?");
-    params.push(`%"${tag.replace(/[%_\\]/g, "")}"%`);
+    qy.and("d.tags LIKE ?", `%"${tag.replace(/[%_\\]/g, "")}"%`);
   }
 
   const sql =
-    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} WHERE ` +
-    clauses.join(" AND ") +
-    " ORDER BY d.created_at DESC";
-  const rows = (await c.env.DB.prepare(sql).bind(...params).all<DeckRow>()).results;
+    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} ` +
+    `${qy.whereClause()} ORDER BY d.created_at DESC`;
+  const rows = (await c.env.DB.prepare(sql).bind(...qy.binds).all<DeckRow>()).results;
 
   // Blind scoring has to hold HERE too. `withholdsAiScore` was applied only on
   // GET /api/decks/:id, so with `show_ai_score_to_jury` off a juror still saw the
@@ -620,9 +674,20 @@ decks.get("/", async (c) => {
   }
   const submitted = new Set(
     (
-      await c.env.DB.prepare("SELECT deck_id FROM evaluations WHERE evaluator_id = ?")
-        .bind(id)
-        .all<{ deck_id: string }>()
+      await (() => {
+        // `evaluations` has no tenant column: it is owned through its deck
+        // (`TENANT_OWNER`), so the scope arrives as a JOIN. The predicate is
+        // redundant while `evaluator_id` is the caller's own — but this is one of
+        // the 24 `FROM evaluations` sites §5b counted, only 7 of which carried a
+        // JOIN, and "redundant here" is exactly the reasoning that leaves the
+        // other seventeen unscoped.
+        const qs = scoped(scopeOf(c.var.user));
+        const joins = qs.viaParent("evaluations", "ev");
+        qs.and("ev.evaluator_id = ?", id);
+        return c.env.DB.prepare(`SELECT ev.deck_id FROM evaluations ev ${joins} ${qs.whereClause()}`)
+          .bind(...qs.binds)
+          .all<{ deck_id: string }>();
+      })()
     ).results.map((r) => r.deck_id),
   );
   return c.json({
@@ -650,12 +715,13 @@ function canTag(role: Role): boolean {
 
 /** GET /api/decks/tags — every tag in use in the caller's edition, sorted. */
 decks.get("/tags", async (c) => {
-  const { edition } = c.var.user;
+  // The tag vocabulary is built from deck rows, so an unscoped read publishes
+  // another customer's tag names — the one piece of deck text that reaches a
+  // screen without a deck row around it.
+  const qt = scoped(scopeOf(c.var.user)).on("d").andRaw("d.tags IS NOT NULL").andRaw("d.tags != ''");
   const rows = (
-    await c.env.DB.prepare(
-      "SELECT tags FROM decks WHERE edition = ? AND tags IS NOT NULL AND tags != ''",
-    )
-      .bind(edition)
+    await c.env.DB.prepare(`SELECT d.tags FROM decks d ${qt.whereClause()}`)
+      .bind(...qt.binds)
       .all<{ tags: string | null }>()
   ).results;
   const seen = new Set<string>();
@@ -665,18 +731,22 @@ decks.get("/tags", async (c) => {
 
 /** PUT /api/decks/:id/tags — replace a deck's tag list. Body: { tags: string[] }. */
 decks.put("/:id/tags", async (c) => {
-  const { edition, role } = c.var.user;
+  const { role } = c.var.user;
   if (!canTag(role)) return c.json({ error: "forbidden" }, 403);
   const id = c.req.param("id");
-  const exists = await c.env.DB.prepare("SELECT id FROM decks WHERE id = ? AND edition = ?")
-    .bind(id, edition)
+  const qr = oneDeck(c.var.user, id);
+  const exists = await c.env.DB.prepare(`SELECT d.id FROM decks d ${qr.whereClause()}`)
+    .bind(...qr.binds)
     .first<{ id: string }>();
   if (!exists) return c.json({ error: "not_found" }, 404);
 
   const body = (await c.req.json().catch(() => ({}))) as { tags?: unknown };
   const tags = normaliseTags(body.tags);
-  await c.env.DB.prepare("UPDATE decks SET tags = ? WHERE id = ? AND edition = ?")
-    .bind(tags.length > 0 ? JSON.stringify(tags) : null, id, edition)
+  // The write carries the same predicate as the read. A 404 above and an
+  // unscoped UPDATE below would be a tenancy check that only reports.
+  const qw = oneDeck(c.var.user, id, "decks");
+  await c.env.DB.prepare(`UPDATE decks SET tags = ? ${qw.whereClause()}`)
+    .bind(tags.length > 0 ? JSON.stringify(tags) : null, ...qw.binds)
     .run();
   return c.json({ ok: true, tags });
 });
@@ -691,11 +761,12 @@ const VERDICT_LABELS: Record<string, string> = {
 decks.get("/:id", async (c) => {
   const { id: userId, edition, role } = c.var.user;
   const id = c.req.param("id");
+  const qd = oneDeck(c.var.user, id);
   const row = await c.env.DB.prepare(
     `SELECT ${DECK_COLUMNS}, d.uploaded_by, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} ` +
-      "WHERE d.id = ? AND d.edition = ?",
+      qd.whereClause(),
   )
-    .bind(id, edition)
+    .bind(...qd.binds)
     .first<DeckRow & { uploaded_by: string | null }>();
   if (!row) return c.json({ error: "not_found" }, 404);
   // Founders may only open their own submissions.
@@ -703,13 +774,20 @@ decks.get("/:id", async (c) => {
   // P0-1 — and a juror only the decks in their scope. `not_found`, not
   // `forbidden`: a 403 would confirm the deck exists, which is half of what the
   // listing was leaking.
-  if (!(await canReadDeck(c.env.DB, role, userId, id))) return c.json({ error: "not_found" }, 404);
+  if (!(await canReadDeck(c.env.DB, c.var.user, id))) return c.json({ error: "not_found" }, 404);
 
+  // `deck_extractions` holds the TEXT the model read out of the PDF — the deck's
+  // contents, section by section. Owned through its deck; scoped with the owner
+  // join so the statement names the owner.
+  const qx = scoped(scopeOf(c.var.user));
+  const xJoin = qx.viaParent("deck_extractions", "x");
+  qx.and("x.deck_id = ?", id);
   const extraction = (
     await c.env.DB.prepare(
-      "SELECT label, heading, text, missing FROM deck_extractions WHERE deck_id = ? ORDER BY sort_order",
+      `SELECT x.label, x.heading, x.text, x.missing FROM deck_extractions x ${xJoin} ` +
+        `${qx.whereClause()} ORDER BY x.sort_order`,
     )
-      .bind(id)
+      .bind(...qx.binds)
       .all<{ label: string; heading: string | null; text: string | null; missing: number }>()
   ).results.map((e) => ({
     label: e.label,
@@ -718,20 +796,26 @@ decks.get("/:id", async (c) => {
     missing: e.missing === 1,
   }));
 
+  const qsc = scoped(scopeOf(c.var.user));
+  const scJoin = qsc.viaParent("scores", "s");
+  qsc.and("s.deck_id = ?", id).andRaw("s.evaluator_kind = 'ai'");
   const scores = (
     await c.env.DB.prepare(
       "SELECT p.key AS key, p.name AS label, p.weight AS weight, s.value AS value, s.comment AS comment " +
-        "FROM scores s JOIN parameters p ON p.id = s.parameter_id " +
-        "WHERE s.deck_id = ? AND s.evaluator_kind = 'ai' ORDER BY p.sort_order",
+        `FROM scores s ${scJoin} JOIN parameters p ON p.id = s.parameter_id ` +
+        `${qsc.whereClause()} ORDER BY p.sort_order`,
     )
-      .bind(id)
+      .bind(...qsc.binds)
       .all<{ key: string; label: string; weight: number; value: number; comment: string | null }>()
   ).results;
 
+  const qev = scoped(scopeOf(c.var.user));
+  const evJoin = qev.viaParent("evaluations", "e");
+  qev.and("e.deck_id = ?", id).andRaw("e.evaluator_id IS NULL");
   const evaluation = await c.env.DB.prepare(
-    "SELECT weighted_total, verdict FROM evaluations WHERE deck_id = ? AND evaluator_id IS NULL",
+    `SELECT e.weighted_total, e.verdict FROM evaluations e ${evJoin} ${qev.whereClause()}`,
   )
-    .bind(id)
+    .bind(...qev.binds)
     .first<{ weighted_total: number | null; verdict: string | null }>();
 
   // ── Blind scoring (F0106) ──────────────────────────────────────────────────
@@ -744,10 +828,13 @@ decks.get("/:id", async (c) => {
   // say so. Submitting reveals it — the point is independence before scoring,
   // not secrecy afterwards. Staff who oversee rather than score are unaffected.
   const scoring = await loadScoringSettings(c.env.DB, edition);
+  const qsub = scoped(scopeOf(c.var.user));
+  const subJoin = qsub.viaParent("evaluations", "e");
+  qsub.and("e.deck_id = ?", id).and("e.evaluator_id = ?", userId);
   const submitted = await c.env.DB.prepare(
-    "SELECT 1 AS n FROM evaluations WHERE deck_id = ? AND evaluator_id = ?",
+    `SELECT 1 AS n FROM evaluations e ${subJoin} ${qsub.whereClause()}`,
   )
-    .bind(id, userId)
+    .bind(...qsub.binds)
     .first<{ n: number }>();
   const blind = withholdsAiScore(scoring, {
     isEvaluator: isAssignableEvaluator(edition, role),
@@ -787,17 +874,21 @@ const ONBOARDING_ROLES = ["program_associate", "program_manager", "admin", "part
 decks.put("/:id/onboarding", requireTask("onboard", ...ONBOARDING_ROLES), async (c) => {
   const { edition, id: actorId } = c.var.user;
   const id = c.req.param("id");
-  const deck = await c.env.DB.prepare("SELECT id FROM decks WHERE id = ? AND edition = ?")
-    .bind(id, edition)
+  const qg = oneDeck(c.var.user, id);
+  const deck = await c.env.DB.prepare(`SELECT d.id FROM decks d ${qg.whereClause()}`)
+    .bind(...qg.binds)
     .first<{ id: string }>();
   if (!deck) return c.json({ error: "not_found" }, 404);
 
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const qob = scoped(scopeOf(c.var.user));
+  const obJoin = qob.viaParent("deck_onboarding", "ob");
+  qob.and("ob.deck_id = ?", id);
   const existing = await c.env.DB.prepare(
-    "SELECT payment_status, documents_status, curation_stage, progress, lead_user_id, notes " +
-      "FROM deck_onboarding WHERE deck_id = ?",
+    "SELECT ob.payment_status, ob.documents_status, ob.curation_stage, ob.progress, ob.lead_user_id, ob.notes " +
+      `FROM deck_onboarding ob ${obJoin} ${qob.whereClause()}`,
   )
-    .bind(id)
+    .bind(...qob.binds)
     .first<{
       payment_status: string;
       documents_status: string;
@@ -831,10 +922,12 @@ decks.put("/:id/onboarding", requireTask("onboard", ...ONBOARDING_ROLES), async 
     if (candidate === "") {
       leadId = null;
     } else {
-      const lead = await c.env.DB.prepare(
-        "SELECT id FROM users WHERE id = ? AND edition = ? AND active = 1",
-      )
-        .bind(candidate, edition)
+      // A lead must be a colleague, not merely somebody in the same edition:
+      // this id comes from the request body, so it is the one place in the route
+      // where another customer's user could be named outright.
+      const ql = scoped(scopeOf(c.var.user)).on("u").and("u.id = ?", candidate).andRaw("u.active = 1");
+      const lead = await c.env.DB.prepare(`SELECT u.id FROM users u ${ql.whereClause()}`)
+        .bind(...ql.binds)
         .first<{ id: string }>();
       if (!lead) return c.json({ error: "invalid_lead" }, 400);
       leadId = lead.id;
@@ -852,10 +945,11 @@ decks.put("/:id/onboarding", requireTask("onboard", ...ONBOARDING_ROLES), async 
     .bind(id, payment, documents, stage, progress, leadId, notes, new Date().toISOString(), actorId)
     .run();
 
+  const qu = oneDeck(c.var.user, id);
   const updated = await c.env.DB.prepare(
-    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} WHERE d.id = ? AND d.edition = ?`,
+    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} ${qu.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...qu.binds)
     .first<DeckRow>();
   // The returned view carries the shortlist hint, which needs the org's split.
   const scoring = updated ? await loadScoringSettings(c.env.DB, edition) : null;
@@ -889,8 +983,9 @@ const EDIT_DECK_ROLES = [
 decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
   const { edition } = c.var.user;
   const id = c.req.param("id");
-  const existing = await c.env.DB.prepare("SELECT id FROM decks WHERE id = ? AND edition = ?")
-    .bind(id, edition)
+  const qg = oneDeck(c.var.user, id);
+  const existing = await c.env.DB.prepare(`SELECT d.id FROM decks d ${qg.whereClause()}`)
+    .bind(...qg.binds)
     .first<{ id: string }>();
   if (!existing) return c.json({ error: "not_found" }, 404);
 
@@ -933,17 +1028,23 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
   if (sets.length === 0) return c.json({ error: "nothing_to_update" }, 400);
 
   sets.push("updated_at = ?");
-  binds.push(new Date().toISOString(), id, edition);
-  await c.env.DB.prepare(`UPDATE decks SET ${sets.join(", ")} WHERE id = ? AND edition = ?`)
-    .bind(...binds)
+  binds.push(new Date().toISOString());
+  // The SET list's binds come EARLIER in the statement than the builder's, which
+  // is the bind-order rule in `src/shared/tenant.ts`: head binds first, then
+  // `q.binds`.
+  const qw = oneDeck(c.var.user, id, "decks");
+  await c.env.DB.prepare(`UPDATE decks SET ${sets.join(", ")} ${qw.whereClause()}`)
+    .bind(...binds, ...qw.binds)
     .run();
 
   // Re-derive what is still missing so the deck's Incomplete state follows the
   // correction instead of going stale.
+  const qrd = oneDeck(c.var.user, id);
   const row = await c.env.DB.prepare(
-    "SELECT founder, founder_email, founder_phone, city, sector, status, ai_complete, complete FROM decks WHERE id = ?",
+    "SELECT d.founder, d.founder_email, d.founder_phone, d.city, d.sector, d.status, " +
+      `d.ai_complete, d.complete FROM decks d ${qrd.whereClause()}`,
   )
-    .bind(id)
+    .bind(...qrd.binds)
     .first<{
       founder: string | null;
       founder_email: string | null;
@@ -1024,10 +1125,11 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
       .run();
   }
 
+  const qu = oneDeck(c.var.user, id);
   const updated = await c.env.DB.prepare(
-    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} WHERE d.id = ? AND d.edition = ?`,
+    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} ${qu.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...qu.binds)
     .first<DeckRow>();
   // The returned view carries the shortlist hint, which needs the org's split.
   const scoring = updated ? await loadScoringSettings(c.env.DB, edition) : null;
@@ -1125,8 +1227,9 @@ const SEND_TO_QUERY_ROLES = [
 decks.post("/:id/send-to-query", requireTask("query", ...SEND_TO_QUERY_ROLES), async (c) => {
   const { edition } = c.var.user;
   const id = c.req.param("id");
-  const row = await c.env.DB.prepare("SELECT id FROM decks WHERE id = ? AND edition = ?")
-    .bind(id, edition)
+  const qg = oneDeck(c.var.user, id);
+  const row = await c.env.DB.prepare(`SELECT d.id FROM decks d ${qg.whereClause()}`)
+    .bind(...qg.binds)
     .first<{ id: string }>();
   if (!row) return c.json({ error: "not_found" }, 404);
 
@@ -1134,10 +1237,13 @@ decks.post("/:id/send-to-query", requireTask("query", ...SEND_TO_QUERY_ROLES), a
   // nobody has answered, it is already ON the list and a second pending row
   // would only push the no-response clock back. An ANSWERED history does not
   // block a fresh send — that is the resubmit loop working.
+  const qq = scoped(scopeOf(c.var.user));
+  const qqJoin = qq.viaParent("queries", "q");
+  qq.and("q.deck_id = ?", id).andRaw("q.founder_response IS NULL");
   const open = await c.env.DB.prepare(
-    "SELECT id FROM queries WHERE deck_id = ? AND founder_response IS NULL LIMIT 1",
+    `SELECT q.id FROM queries q ${qqJoin} ${qq.whereClause()} LIMIT 1`,
   )
-    .bind(id)
+    .bind(...qq.binds)
     .first<{ id: string }>();
   if (!open) {
     await c.env.DB.prepare(
@@ -1147,10 +1253,11 @@ decks.post("/:id/send-to-query", requireTask("query", ...SEND_TO_QUERY_ROLES), a
       .run();
   }
 
+  const qu = oneDeck(c.var.user, id);
   const updated = await c.env.DB.prepare(
-    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} WHERE d.id = ? AND d.edition = ?`,
+    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} ${qu.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...qu.binds)
     .first<DeckRow>();
   const scoring = updated ? await loadScoringSettings(c.env.DB, edition) : null;
   return c.json({
@@ -1205,8 +1312,9 @@ const SEND_TO_ASSIGN_ROLES = ["program_manager", "program_associate", "admin"] a
 decks.post("/:id/send-to-assign", requireTask("assign", ...SEND_TO_ASSIGN_ROLES), async (c) => {
   const { edition } = c.var.user;
   const id = c.req.param("id");
-  const row = await c.env.DB.prepare("SELECT status FROM decks WHERE id = ? AND edition = ?")
-    .bind(id, edition)
+  const qg = oneDeck(c.var.user, id);
+  const row = await c.env.DB.prepare(`SELECT d.status FROM decks d ${qg.whereClause()}`)
+    .bind(...qg.binds)
     .first<{ status: string | null }>();
   if (!row) return c.json({ error: "not_found" }, 404);
 
@@ -1221,10 +1329,11 @@ decks.post("/:id/send-to-assign", requireTask("assign", ...SEND_TO_ASSIGN_ROLES)
     .bind(`${id}_evt_${crypto.randomUUID()}`, id, c.var.user.id, stage, stage ?? "", new Date().toISOString())
     .run();
 
+  const qu = oneDeck(c.var.user, id);
   const updated = await c.env.DB.prepare(
-    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} WHERE d.id = ? AND d.edition = ?`,
+    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} ${qu.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...qu.binds)
     .first<DeckRow>();
   const scoring = updated ? await loadScoringSettings(c.env.DB, edition) : null;
   return c.json({
@@ -1251,32 +1360,49 @@ decks.get("/:id/report", async (c) => {
   const id = c.req.param("id");
   const layout = reportLayout(edition, parseReportStage(c.req.query("stage")), role);
 
+  const qd = oneDeck(c.var.user, id);
   const deckRow = await c.env.DB.prepare(
-    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} WHERE d.id = ? AND d.edition = ?`,
+    `SELECT ${DECK_COLUMNS}, ${DECK_DERIVED} FROM decks d ${DECK_JOINS} ${qd.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...qd.binds)
     .first<DeckRow>();
   if (!deckRow) return c.json({ error: "not_found" }, 404);
   // P0-1 — the report carries the same founder block as the listing row.
-  if (!(await canReadDeck(c.env.DB, role, viewerId, id))) return c.json({ error: "not_found" }, 404);
+  if (!(await canReadDeck(c.env.DB, c.var.user, id))) return c.json({ error: "not_found" }, 404);
 
+  // `parameters` is tenant-OWNED (it carries the column), so the scope is direct.
+  // The rubric is the customer's own, and an unscoped read would print another
+  // customer's parameter names down the side of this report.
+  const qp = scoped(scopeOf(c.var.user)).on("p").andRaw("p.active = 1");
   const params = (
     await c.env.DB.prepare(
-      "SELECT id, key, name, weight, informational, role_scope FROM parameters " +
-        "WHERE edition = ? AND active = 1 ORDER BY sort_order",
+      "SELECT p.id, p.key, p.name, p.weight, p.informational, p.role_scope FROM parameters p " +
+        `${qp.whereClause()} ORDER BY p.sort_order`,
     )
-      .bind(edition)
+      .bind(...qp.binds)
       .all<ReportParamRow>()
   ).results;
 
+  // `scores` carries no tenant column — it is owned through its deck, and
+  // `viaParent` emits that join from `TENANT_OWNER`. The deck above was already
+  // resolved in the caller's workspace, so this is belt-and-braces; it is also one
+  // of the 13 `FROM scores` sites §5b counted, and the belt is what stops the next
+  // reader of this file assuming the deck guard travels with the statement.
+  const qs = scoped(scopeOf(c.var.user));
+  const scoreJoin = qs.viaParent("scores", "s");
+  qs.and("s.deck_id = ?", id);
   const scoreRows = (
     await c.env.DB.prepare(
       "SELECT s.parameter_id, s.evaluator_id, s.evaluator_kind, s.value, s.comment, " +
         "u.name AS evaluator_name, u.role AS evaluator_role, u.title AS evaluator_title, " +
         "u.initials AS evaluator_initials " +
-        "FROM scores s LEFT JOIN users u ON u.id = s.evaluator_id WHERE s.deck_id = ?",
+        // The `users` LEFT JOIN is deliberately NOT given a tenant condition of
+        // its own: `evaluator_id` is NULL on every AI row, and an inner-flavoured
+        // condition would drop the AI column from the report. The rows are already
+        // fenced by the scoped parent join above.
+        `FROM scores s ${scoreJoin} LEFT JOIN users u ON u.id = s.evaluator_id ${qs.whereClause()}`,
     )
-      .bind(id)
+      .bind(...qs.binds)
       .all<ReportScoreRow>()
   ).results;
 
@@ -1284,14 +1410,18 @@ decks.get("/:id/report", async (c) => {
   // evaluator who has submitted a total but whose per-parameter detail predates
   // this report still earns a column (issue 20 — the report widens as the deck
   // passes hands), it just has empty cells.
+  const qe = scoped(scopeOf(c.var.user));
+  const evalJoin = qe.viaParent("evaluations", "e");
+  qe.and("e.deck_id = ?", id);
   const evaluationRows = (
     await c.env.DB.prepare(
       "SELECT e.evaluator_id, e.weighted_total, e.remarks, e.submitted_at, " +
         "u.name AS evaluator_name, u.role AS evaluator_role, u.title AS evaluator_title, " +
         "u.initials AS evaluator_initials " +
-        "FROM evaluations e LEFT JOIN users u ON u.id = e.evaluator_id WHERE e.deck_id = ?",
+        // No tenant condition on the `users` join — see the note on `scoreRows`.
+        `FROM evaluations e ${evalJoin} LEFT JOIN users u ON u.id = e.evaluator_id ${qe.whereClause()}`,
     )
-      .bind(id)
+      .bind(...qe.binds)
       .all<{
         evaluator_id: string | null;
         weighted_total: number | null;
@@ -1537,13 +1667,19 @@ interface VersionRow {
 }
 
 async function loadVersions(c: Context<AppEnv>, deckId: string) {
+  // `deck_versions` is owned through its deck. Both callers resolve the deck in the
+  // caller's workspace first, so this join is the second fence rather than the
+  // first — and it is the one that travels with the statement.
+  const qv = scoped(scopeOf(c.var.user));
+  const join = qv.viaParent("deck_versions", "v");
+  qv.and("v.deck_id = ?", deckId);
   const rows = (
     await c.env.DB.prepare(
       "SELECT v.id, v.version, v.file_name, v.size_bytes, v.note, v.created_at, u.name AS uploaded_by_name " +
-        "FROM deck_versions v LEFT JOIN users u ON u.id = v.uploaded_by " +
-        "WHERE v.deck_id = ? ORDER BY v.version DESC",
+        `FROM deck_versions v ${join} LEFT JOIN users u ON u.id = v.uploaded_by ` +
+        `${qv.whereClause()} ORDER BY v.version DESC`,
     )
-      .bind(deckId)
+      .bind(...qv.binds)
       .all<VersionRow>()
   ).results;
   return rows.map((v) => ({
@@ -1559,34 +1695,36 @@ async function loadVersions(c: Context<AppEnv>, deckId: string) {
 
 /** GET /api/decks/:id/versions — the deck's upload history (newest first). */
 decks.get("/:id/versions", async (c) => {
-  const { id: userId, edition, role } = c.var.user;
+  const { id: userId, role } = c.var.user;
   const id = c.req.param("id");
-  const row = await c.env.DB.prepare(
-    "SELECT id, uploaded_by FROM decks WHERE id = ? AND edition = ?",
-  )
-    .bind(id, edition)
+  const qg = oneDeck(c.var.user, id);
+  const row = await c.env.DB.prepare(`SELECT d.id, d.uploaded_by FROM decks d ${qg.whereClause()}`)
+    .bind(...qg.binds)
     .first<{ id: string; uploaded_by: string | null }>();
   if (!row) return c.json({ error: "not_found" }, 404);
   if (role === "founder" && row.uploaded_by !== userId) return c.json({ error: "not_found" }, 404);
-  if (!(await canReadDeck(c.env.DB, role, userId, id))) return c.json({ error: "not_found" }, 404);
+  if (!(await canReadDeck(c.env.DB, c.var.user, id))) return c.json({ error: "not_found" }, 404);
   return c.json({ versions: await loadVersions(c, id) });
 });
 
 /** GET /api/decks/:id/file — stream the deck's PDF from R2 (in-app viewer).
  *  Edition-scoped like the report; founders may only stream their own uploads. */
 decks.get("/:id/file", async (c) => {
-  const { id: userId, edition, role } = c.var.user;
+  const { id: userId, role } = c.var.user;
   const id = c.req.param("id");
-  const row = await c.env.DB.prepare(
-    "SELECT r2_key, uploaded_by FROM decks WHERE id = ? AND edition = ?",
-  )
-    .bind(id, edition)
+  // The PDF itself. R2 keys are flat and carry no tenant prefix (§2's closing
+  // note), so this D1 lookup is the ONLY thing standing between a deck id and
+  // another customer's deck file — which is why it is scoped and not merely
+  // edition-filtered.
+  const qg = oneDeck(c.var.user, id);
+  const row = await c.env.DB.prepare(`SELECT d.r2_key, d.uploaded_by FROM decks d ${qg.whereClause()}`)
+    .bind(...qg.binds)
     .first<{ r2_key: string | null; uploaded_by: string | null }>();
   if (!row) return c.json({ error: "not_found" }, 404);
   if (role === "founder" && row.uploaded_by !== userId) return c.json({ error: "not_found" }, 404);
   // P0-1 — scoping the listing but streaming any PDF by id would hide the index
   // and leave the deck itself open.
-  if (!(await canReadDeck(c.env.DB, role, userId, id))) return c.json({ error: "not_found" }, 404);
+  if (!(await canReadDeck(c.env.DB, c.var.user, id))) return c.json({ error: "not_found" }, 404);
   // No stored PDF yet (seed decks / still pending) — the viewer shows its
   // graceful "not stored" state on a 404.
   if (!row.r2_key) return c.json({ error: "no_pdf" }, 404);
@@ -1645,20 +1783,25 @@ decks.post("/:id/rescore", requireTask("evaluate", ...RESCORE_ROLES), async (c) 
   // rather than quietly moving the deck's stage from a "re-score" button.
   const scoring = await loadScoringSettings(c.env.DB, edition);
   if (!scoring.aiPreScoringEnabled) return c.json({ error: "ai_disabled" }, 409);
+  const qg = oneDeck(c.var.user, id);
   const deck = await c.env.DB.prepare(
-    "SELECT id, r2_key, content_version FROM decks WHERE id = ? AND edition = ?",
+    `SELECT d.id, d.r2_key, d.content_version FROM decks d ${qg.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...qg.binds)
     .first<{ id: string; r2_key: string | null; content_version: number | null }>();
   if (!deck) return c.json({ error: "not_found" }, 404);
 
+  const qpe = scoped(scopeOf(c.var.user));
+  const peJoin = qpe.viaParent("evaluations", "e");
+  qpe.and("e.deck_id = ?", id).andRaw("e.evaluator_id IS NULL");
   const priorEval = await c.env.DB.prepare(
-    "SELECT scored_criteria_version, scored_content_version FROM evaluations WHERE deck_id = ? AND evaluator_id IS NULL",
+    `SELECT e.scored_criteria_version, e.scored_content_version FROM evaluations e ${peJoin} ${qpe.whereClause()}`,
   )
-    .bind(id)
+    .bind(...qpe.binds)
     .first<{ scored_criteria_version: number | null; scored_content_version: number | null }>();
-  const org = await c.env.DB.prepare("SELECT criteria_version FROM org_settings WHERE edition = ?")
-    .bind(edition)
+  const qo = scoped(scopeOf(c.var.user)).on("os");
+  const org = await c.env.DB.prepare(`SELECT os.criteria_version FROM org_settings os ${qo.whereClause()}`)
+    .bind(...qo.binds)
     .first<{ criteria_version: number | null }>();
   const currentCriteria = org?.criteria_version ?? 1;
   const currentContent = deck.content_version ?? 1;
@@ -1734,14 +1877,22 @@ async function storeDeck(
   await c.env.DECKS.put(key, file, {
     httpMetadata: { contentType: "application/pdf" },
   });
+  // ── THE WRITE SIDE, WHICH IS THE SILENT HALF ────────────────────────────────
+  // This is the ONLY place a `decks` row is created. `tenant_id` carries
+  // `DEFAULT 't_default'` (SQLite offers no other way to backfill a NOT NULL
+  // column), so an INSERT that simply omitted it would answer 201, put the row in
+  // the first customer's workspace, and look entirely correct. `insertScope`
+  // returns the columns, the placeholders and the binds together, so the column
+  // cannot be named without the value.
+  const t = insertScope(scopeOf(c.var.user));
   await c.env.DB.batch([
     c.env.DB.prepare(
-      "INSERT INTO decks (id, edition, name, name_auto, sector, stage, city, founder, founder_email, founder_phone, " +
+      `INSERT INTO decks (id, ${t.columns}, name, name_auto, sector, stage, city, founder, founder_email, founder_phone, ` +
         "program_id, cohort_id, status, r2_key, uploaded_by, complete) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_ai', ?, ?, 1)",
+        `VALUES (?, ${t.placeholders}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_ai', ?, ?, 1)`,
     ).bind(
       id,
-      c.var.user.edition,
+      ...t.binds,
       meta.name || file.name.replace(/\.pdf$/i, "") || "Untitled deck",
       // Aug-2026 issue 12 — a name derived from the file name is PROVISIONAL:
       // the AI extraction replaces it with the startup's real name. A name the
@@ -1804,7 +1955,7 @@ async function flagIntake(
   meta: DeckMeta,
   name: string,
 ): Promise<IntakeMatch[]> {
-  const classification = await detectIntakeFlags(c.env, c.var.user.edition, {
+  const classification = await detectIntakeFlags(c.env, scopeOf(c.var.user), {
     name,
     founder: meta.founder,
     founderEmail: meta.founderEmail,
@@ -1823,10 +1974,13 @@ async function flagIntake(
 
 // Credit accounting lives in `decks/versions.ts` (shared with the public founder
 // resubmit route); these wrappers just bind it to the caller's edition.
+// The authenticated upload paths DO have a session, so they pass the full scope
+// rather than the edition. The two aliases keep their names so the eight call sites
+// below read unchanged.
 const reserveCredits = (c: Context<AppEnv>, n: number) =>
-  reserveEditionCredits(c.env, c.var.user.edition, n);
+  reserveEditionCredits(c.env, scopeOf(c.var.user), n);
 const refundCredits = (c: Context<AppEnv>, n: number) =>
-  refundEditionCredits(c.env, c.var.user.edition, n);
+  refundEditionCredits(c.env, scopeOf(c.var.user), n);
 
 /** POST /api/decks/upload — single deck → R2 → evaluate directly (synchronous). */
 decks.post("/upload", async (c) => {
@@ -1840,7 +1994,7 @@ decks.post("/upload", async (c) => {
 
   const meta = metaFromForm(form);
   // W7-B — programme/cohort validated, sector resolved from the workspace.
-  Object.assign(meta, await resolveIntakeContext(c.env, c.var.user.edition, meta));
+  Object.assign(meta, await resolveIntakeContext(c.env, scopeOf(c.var.user), meta));
   let id: string;
   try {
     id = await storeDeck(c, file, meta);
@@ -1912,10 +2066,11 @@ decks.post("/upload", async (c) => {
  */
 decks.post("/:id/retry-ai", requireTask("upload", ...RETRY_AI_ROLES), async (c) => {
   const user = c.var.user;
+  const qg = oneDeck(user, c.req.param("id"));
   const deck = await c.env.DB.prepare(
-    "SELECT id, status, ai_credit_refunded FROM decks WHERE id = ? AND edition = ?",
+    `SELECT d.id, d.status, d.ai_credit_refunded FROM decks d ${qg.whereClause()}`,
   )
-    .bind(c.req.param("id"), user.edition)
+    .bind(...qg.binds)
     .first<{ id: string; status: string; ai_credit_refunded: number }>();
   if (!deck) return c.json({ error: "not_found" }, 404);
   if (deck.status !== "pending_ai") return c.json({ error: "not_pending" }, 409);
@@ -1924,7 +2079,14 @@ decks.post("/:id/retry-ai", requireTask("upload", ...RETRY_AI_ROLES), async (c) 
   // balance is empty the deck stays exactly as it was.
   if (deck.ai_credit_refunded === 1) {
     if (!(await reserveCredits(c, 1))) return c.json({ error: "no_credits" }, 402);
-    await c.env.DB.prepare("UPDATE decks SET ai_credit_refunded = 0 WHERE id = ?").bind(deck.id).run();
+    // Scoped like every other write in this file, not because the id could be
+    // another customer's — `oneDeck` above already settled that — but so the grep
+    // in `docs/parity-requests/T1-DECKS.md` ("no `.bind(deck.id)` on a statement
+    // whose WHERE the builder owns") comes back clean and stays a usable check.
+    const qc = oneDeck(user, deck.id, "decks");
+    await c.env.DB.prepare(`UPDATE decks SET ai_credit_refunded = 0 ${qc.whereClause()}`)
+      .bind(...qc.binds)
+      .run();
   }
 
   await clearEvalFailure(c.env, deck.id);
@@ -1978,7 +2140,7 @@ decks.post("/bulk", async (c) => {
 
   // W7-B (F0223) — the operator's programme, cohort and workspace sector apply
   // to EVERY deck in the batch; only per-deck details are left to the AI.
-  const context = await resolveIntakeContext(c.env, c.var.user.edition, metaFromForm(form));
+  const context = await resolveIntakeContext(c.env, scopeOf(c.var.user), metaFromForm(form));
 
   if (!(await reserveCredits(c, accepted.length))) {
     return c.json({ error: "no_credits" }, 402);
@@ -2041,10 +2203,11 @@ decks.post("/:id/version", requireTask("upload", ...REUPLOAD_ROLES), async (c) =
   const { id: userId, edition, role } = c.var.user;
   const id = c.req.param("id");
 
+  const qg = oneDeck(c.var.user, id);
   const deck = await c.env.DB.prepare(
-    "SELECT id, uploaded_by, content_version FROM decks WHERE id = ? AND edition = ?",
+    `SELECT d.id, d.uploaded_by, d.content_version FROM decks d ${qg.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...qg.binds)
     .first<{ id: string; uploaded_by: string | null; content_version: number | null }>();
   if (!deck) return c.json({ error: "not_found" }, 404);
   // A founder may only replace their own submission.

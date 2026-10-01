@@ -1,9 +1,20 @@
 import { SELF, env } from "cloudflare:test";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import { reserveCredits, refundCredits } from "../../src/server/decks/versions";
 import { recordPaymentIntent, type PaymentClient } from "../../src/server/billing/provider";
-import { issueMissingInvoices, listLedger } from "../../src/server/billing/ledger";
+import {
+  issueMissingInvoices,
+  listInvoices,
+  listLedger,
+  loadInvoice,
+  purchasedTotal,
+  readBalance,
+  readSubscription,
+  usageTotals,
+} from "../../src/server/billing/ledger";
 import type { CreditsBillingView } from "../../src/shared/plans";
+import { DEFAULT_TENANT_ID, type TenantScope } from "../../src/shared/tenant";
+import type { Edition } from "../../src/shared/roles";
 
 /**
  * W4-C — Credits & billing (`/api/billing`) and the metering behind it.
@@ -54,6 +65,17 @@ const E = () => env as unknown as import("../../src/server/types").Env;
  * the other's seeded ledger, and nothing has to be deleted to get a clean read.
  */
 const M = "vc" as const;
+
+/**
+ * T1-COMMERCE — the workspace helper this suite binds through.
+ *
+ * `DEFAULT_TENANT_ID` is the organisation every seeded row was backfilled to by
+ * `0083`-`0100`, so `W("vc")` is the workspace the seed actually describes. The
+ * second-tenant isolation cases below build their own scope instead, which is the
+ * point: a suite that only ever passes the default tenant proves the signature
+ * compiles and nothing about isolation.
+ */
+const W = (edition: Edition): TenantScope => ({ tenantId: DEFAULT_TENANT_ID, edition });
 
 async function balance(edition = "incubator"): Promise<number> {
   const row = await env.DB.prepare("SELECT credits_balance FROM org_settings WHERE edition = ?")
@@ -250,7 +272,7 @@ describe("GET /api/billing", () => {
     // Idempotent: a second read must not issue a duplicate.
     const second = (await (await get("/api/billing", admin)).json()) as CreditsBillingView;
     expect(second.invoices).toHaveLength(1);
-    expect(await issueMissingInvoices(E(), "incubator")).toBe(0);
+    expect(await issueMissingInvoices(E(), W("incubator"))).toBe(0);
   });
 
   it("issues one for a purchase written after the fact, with the tax added", async () => {
@@ -258,7 +280,7 @@ describe("GET /api/billing", () => {
       "INSERT INTO credit_ledger (id, edition, delta, reason, amount_minor, currency, reference, note, created_at) " +
         "VALUES ('cl_new_purchase', 'vc', 10, 'purchase', 500000, 'INR', 'SIM123', '10-unit pack', '2026-07-01 10:00:00')",
     ).run();
-    const issued = await issueMissingInvoices(E(), "vc");
+    const issued = await issueMissingInvoices(E(), W("vc"));
     expect(issued).toBe(1);
     const row = await env.DB.prepare(
       "SELECT number, subtotal_minor, tax_minor, total_minor FROM billing_invoices WHERE ledger_id = 'cl_new_purchase'",
@@ -463,6 +485,7 @@ describe("POST /api/billing/purchase", () => {
     const intent = await recordPaymentIntent(
       E(),
       {
+        tenantId: DEFAULT_TENANT_ID,
         edition: "incubator",
         purpose: "credit_pack",
         planCode: "pack_50",
@@ -486,7 +509,7 @@ describe("POST /api/billing/purchase", () => {
     expect(intent.status).toBe("redirected");
     expect(intent.checkoutUrl).toBe("https://pay.example/checkout/abc");
     // A redirect is still not a payment: no credits moved.
-    const rows = await listLedger(E(), "incubator");
+    const rows = await listLedger(E(), W("incubator"));
     expect(rows.some((r) => r.reason === "purchase" && r.reference === "pr_1")).toBe(false);
   });
 
@@ -500,6 +523,7 @@ describe("POST /api/billing/purchase", () => {
     const intent = await recordPaymentIntent(
       E(),
       {
+        tenantId: DEFAULT_TENANT_ID,
         edition: "incubator",
         purpose: "subscription",
         planCode: "pro",
@@ -627,5 +651,353 @@ describe("billing authZ", () => {
         "UPDATE role_permissions SET granted = 1 WHERE edition = 'incubator' AND role = 'admin' AND task_id = 'adminconsole'",
       ).run();
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T1-COMMERCE · TENANT ISOLATION
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// §2 B16: `/api/billing` carried `billing.ts:122,161,242,313,373` — five
+// predicates on `edition` alone — over **invoices, subscriptions and payment
+// intents**. `edition` has two values, so every customer shared a bucket.
+//
+// ── WHY EACH CASE ASSERTS BOTH DIRECTIONS ──────────────────────────────────
+//
+// A scoped read that returns nothing passes an "A cannot see B" assertion for
+// the wrong reason — a typo in the predicate, a bind in the wrong position, or a
+// fixture that was never written all look identical from that side. So every case
+// here also asserts that **tenant B's own read returns tenant B's row**, and the
+// aggregate cases additionally assert that the UNSCOPED number still includes
+// B's contribution. If the fixture ever stops landing, the negative control fails
+// instead of passing vacuously.
+//
+// `account_profiles` and `billing_subscriptions` are the two tables this session
+// cannot give tenant B a row in: `0094`/`0095` left `UNIQUE (edition)` standing as
+// a transitional index so T0 could merge green, and integration drops it in
+// 0101-0108. That constraint is not worked around here — it is ASSERTED, in the
+// upsert block at the end, because the correction this session makes to those
+// three `ON CONFLICT` targets is precisely what turns a silent cross-tenant
+// overwrite into that loud refusal.
+
+const CX = "t_cx_billing";
+const CX_MARK = "CXTENANT";
+const CX_ADMIN = "cx.admin@cxtenant.test";
+const CX_SCOPE: TenantScope = { tenantId: CX, edition: "incubator" };
+const A_SCOPE: TenantScope = W("incubator");
+
+/**
+ * FILE-LEVEL, not per-describe, and that is a measured requirement rather than a
+ * style choice. `@cloudflare/vitest-pool-workers` runs with isolated storage: each
+ * suite's writes sit in their own frame and are popped when the suite ends. A
+ * `beforeAll` inside the first `describe` created `cx_admin` and the THIRD
+ * describe's login then answered 401, because the user no longer existed. The
+ * outermost frame is visible to every suite in the file.
+ */
+beforeAll(async () => {
+  {
+    await env.DB.prepare(
+      "INSERT INTO organizations (id, name, slug, status) VALUES (?, ?, 'cx-billing', 'active') " +
+        "ON CONFLICT (id) DO NOTHING",
+    )
+      .bind(CX, `${CX_MARK} Ventures`)
+      .run();
+    // The seeded demo hash, so tenant B's admin can actually sign in — which is
+    // what the "B sees its own" half of every route case needs.
+    await env.DB.prepare(
+      "INSERT INTO users (id, tenant_id, name, email, role, edition, initials, password_hash) " +
+        "SELECT 'cx_admin', ?, ?, ?, 'admin', 'incubator', 'CX', password_hash FROM users WHERE email = ?",
+    )
+      .bind(CX, `${CX_MARK} Admin`, CX_ADMIN, ADMIN)
+      .run();
+    // Tenant B's own balance row. `org_settings` is NOT one of the five tables a
+    // transitional key still blocks (`0089` widened its PK and dropped the old
+    // one), so the balance tile is genuinely testable across customers.
+    await env.DB.prepare(
+      "INSERT INTO org_settings (tenant_id, edition, credits_balance) VALUES (?, 'incubator', 4242)",
+    )
+      .bind(CX)
+      .run();
+    // Deliberately extreme values. §11: "a COUNT(*) or an AVG(score) that leaks
+    // returns a perfectly ordinary-looking number" — 777 and 4242 are numbers no
+    // seeded aggregate can produce, so a leak MOVES and isolation does not.
+    await env.DB.prepare(
+      "INSERT INTO credit_ledger (id, tenant_id, edition, delta, reason, amount_minor, currency, reference, note, created_at) " +
+        "VALUES ('cx_cl_buy', ?, 'incubator', 777, 'purchase', 1000000, 'INR', 'CXREF1', ?, ?)",
+    )
+      .bind(CX, `${CX_MARK} credit purchase`, new Date().toISOString().replace("T", " ").slice(0, 19))
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO credit_ledger (id, tenant_id, edition, delta, reason, note, created_at) " +
+        "VALUES ('cx_cl_spend', ?, 'incubator', -11, 'deck_evaluated', ?, ?)",
+    )
+      .bind(CX, `${CX_MARK} evaluation`, new Date().toISOString().replace("T", " ").slice(0, 19))
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO billing_payment_intents (id, tenant_id, edition, purpose, plan_name, currency, " +
+        "subtotal_minor, tax_minor, total_minor, gst_rate_pct) " +
+        "VALUES ('cx_pi', ?, 'incubator', 'credit_pack', ?, 'INR', 100, 18, 118, 18)",
+    )
+      .bind(CX, `${CX_MARK} intent`)
+      .run();
+  }
+});
+
+describe("tenancy — /api/billing isolates one customer from another", () => {
+  it("the fixture really landed, so nothing below passes for the wrong reason", async () => {
+    const row = await env.DB.prepare(
+      "SELECT count(*) n FROM credit_ledger WHERE tenant_id = ?",
+    )
+      .bind(CX)
+      .first<{ n: number }>();
+    expect(row!.n, "tenant B has no ledger rows — every case below is vacuous").toBe(2);
+    expect(await login(CX_ADMIN), "tenant B's admin cannot sign in").toBeTruthy();
+  });
+
+  it("the balance tile reads one customer's balance, and the other's separately", async () => {
+    expect(await readBalance(E(), CX_SCOPE)).toBe(4242);
+    expect(await readBalance(E(), A_SCOPE)).not.toBe(4242);
+  });
+
+  it("the purchased-credits denominator does not sum across customers", async () => {
+    const theirs = await purchasedTotal(E(), CX_SCOPE);
+    const ours = await purchasedTotal(E(), A_SCOPE);
+    expect(theirs).toBe(777);
+    expect(ours).not.toBe(777);
+    // The negative control an aggregate needs: prove the numbers are
+    // distinguishable at all. The unscoped SUM — which is what this denominator
+    // was — is the whole table, and the whole table is exactly the three
+    // workspaces that exist in this file: tenant A incubator, tenant A vc (the
+    // seed ships both editions), and tenant B. Decomposing it that way rather than
+    // asserting `unscoped > ours` is what keeps the case honest: if the fixture
+    // ever stops landing, or a fourth workspace appears, the sum stops balancing
+    // and this fails instead of quietly losing its power to detect a leak.
+    const unscoped = (
+      await env.DB.prepare(
+        "SELECT COALESCE(SUM(delta), 0) n FROM credit_ledger WHERE reason = 'purchase' AND delta > 0",
+      ).first<{ n: number }>()
+    )!.n;
+    const oursVc = await purchasedTotal(E(), W("vc"));
+    expect(unscoped).toBe(ours + oursVc + theirs);
+    expect(unscoped).not.toBe(ours);
+  });
+
+  it("usage totals count only the asking customer's debits", async () => {
+    const cycle = (await readSubscription(E(), CX_SCOPE)).cycle;
+    const theirs = await usageTotals(E(), CX_SCOPE, cycle);
+    const ours = await usageTotals(E(), A_SCOPE, cycle);
+    expect(theirs.usedThisMonth).toBe(11);
+    expect(ours.usedThisMonth).not.toBe(theirs.usedThisMonth);
+  });
+
+  it("the usage history shows neither customer the other's rows", async () => {
+    const theirs = await listLedger(E(), CX_SCOPE);
+    const ours = await listLedger(E(), A_SCOPE);
+    expect(theirs.map((r) => r.id).sort()).toEqual(["cx_cl_buy", "cx_cl_spend"]);
+    expect(ours.some((r) => r.id.startsWith("cx_"))).toBe(false);
+  });
+
+  it("an invoice cannot be loaded, listed or downloaded across customers", async () => {
+    await issueMissingInvoices(E(), CX_SCOPE);
+    const theirs = await listInvoices(E(), CX_SCOPE);
+    expect(theirs).toHaveLength(1);
+    expect(theirs[0].description).toContain(CX_MARK);
+    const ours = await listInvoices(E(), A_SCOPE);
+    expect(ours.some((v) => v.description.includes(CX_MARK))).toBe(false);
+    // The id is known and the row exists; only the scope keeps it out.
+    expect(await loadInvoice(E(), A_SCOPE, theirs[0].id)).toBeNull();
+    expect(await loadInvoice(E(), CX_SCOPE, theirs[0].id)).not.toBeNull();
+  });
+
+  it("invoice numbering restarts per customer rather than continuing the first one's", async () => {
+    // `0097` widened `UNIQUE (edition, number)` to `UNIQUE (tenant_id, edition,
+    // number)` so the second customer's first invoice no longer COLLIDES. That
+    // removed the outage and left the counter wrong: the sequence was
+    // `COUNT(*) WHERE edition = ?`, so tenant B's first document would have been
+    // numbered from tenant A's invoice count — a customer whose account opens at
+    // INV-2026-0009 with no 0001-0008 anywhere in it.
+    const theirs = await listInvoices(E(), CX_SCOPE);
+    expect(theirs[0].number).toMatch(/^INV-\d{4}-0001$/);
+    const aCount = (
+      await env.DB.prepare(
+        "SELECT count(*) n FROM billing_invoices WHERE tenant_id = ?",
+      )
+        .bind(DEFAULT_TENANT_ID)
+        .first<{ n: number }>()
+    )!.n;
+    expect(aCount, "tenant A must already hold an invoice, or the counter proves nothing")
+      .toBeGreaterThan(0);
+  });
+
+  it("GET /api/billing shows each admin only their own customer's money", async () => {
+    const theirs = await (await get("/api/billing", await login(CX_ADMIN))).text();
+    expect(theirs).toContain(CX_MARK);
+    const ours = await (await get("/api/billing", await login(ADMIN))).text();
+    expect(ours, "§2 B16 — tenant B's invoices, intents and ledger crossed into tenant A").not.toContain(
+      CX_MARK,
+    );
+  });
+});
+
+describe("tenancy — the ON CONFLICT target, measured in D1 itself", () => {
+  // ══ THE CORRECTION THIS SESSION MAKES, AND WHY IT IS NOT COSMETIC ═════════
+  //
+  // `0095` widened `billing_subscriptions`'s PRIMARY KEY from `(edition)` to
+  // `(tenant_id, edition)` and left the old key standing as the transitional
+  // unique index `billing_subscriptions__pre_tenant_key`. Its header predicts the
+  // old conflict target then fails with "ON CONFLICT clause does not match any
+  // PRIMARY KEY or UNIQUE constraint".
+  //
+  // **It does not fail.** The transitional index IS a matching unique constraint,
+  // so `ON CONFLICT (edition)` keeps resolving — and resolves to THE OTHER
+  // CUSTOMER'S ROW. The first case below runs the old statement in D1 and records
+  // what it really does; the second runs the corrected one. This is the pair of
+  // measurements the three-line `ON CONFLICT` edit rests on, and it is asserted
+  // here rather than in a comment because D1's SQLite is the only authority on it.
+  const PROBE = "cx_oc_probe";
+
+  beforeAll(async () => {
+    await env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS ${PROBE} (` +
+        "tenant_id TEXT NOT NULL DEFAULT 't_default', edition TEXT NOT NULL, v TEXT, " +
+        "PRIMARY KEY (tenant_id, edition))",
+    ).run();
+    await env.DB.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS ${PROBE}__pre_tenant_key ON ${PROBE} (edition)`,
+    ).run();
+  });
+
+  beforeEach(async () => {
+    await env.DB.prepare(`DELETE FROM ${PROBE}`).run();
+    await env.DB.prepare(
+      `INSERT INTO ${PROBE} (tenant_id, edition, v) VALUES ('t_default', 'incubator', 'tenantA')`,
+    ).run();
+  });
+
+  it("the OLD target silently overwrites the other customer's row and reports success", async () => {
+    // No throw. One row. Still tenant A's key, now holding tenant B's value.
+    await env.DB.prepare(
+      `INSERT INTO ${PROBE} (tenant_id, edition, v) VALUES (?, 'incubator', 'tenantB') ` +
+        "ON CONFLICT (edition) DO UPDATE SET v = excluded.v",
+    )
+      .bind(CX)
+      .run();
+    const { results } = await env.DB.prepare(
+      `SELECT tenant_id, v FROM ${PROBE}`,
+    ).all<{ tenant_id: string; v: string }>();
+    expect(results).toEqual([{ tenant_id: "t_default", v: "tenantB" }]);
+  });
+
+  it("the WIDENED target still upserts a customer's own row in place", async () => {
+    // The positive control, and the reason this correction can ship before
+    // integration drops the transitional index: naming the new key does not break
+    // the existing single-customer upsert.
+    await env.DB.prepare(
+      `INSERT INTO ${PROBE} (tenant_id, edition, v) VALUES ('t_default', 'incubator', 'updatedA') ` +
+        "ON CONFLICT (tenant_id, edition) DO UPDATE SET v = excluded.v",
+    ).run();
+    const { results } = await env.DB.prepare(
+      `SELECT tenant_id, v FROM ${PROBE}`,
+    ).all<{ tenant_id: string; v: string }>();
+    expect(results).toEqual([{ tenant_id: "t_default", v: "updatedA" }]);
+  });
+
+  it("the WIDENED target refuses a second customer LOUDLY while the transitional index stands", async () => {
+    // This is the error `0095` wanted: the correct failure for "T1 integration has
+    // not dropped the transitional index yet". It is why `billing_subscriptions`
+    // and `account_profiles` stay in `BLOCKED_BY_TRANSITIONAL_KEY`, and it is
+    // strictly better than the silent overwrite above.
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO ${PROBE} (tenant_id, edition, v) VALUES (?, 'incubator', 'tenantB') ` +
+          "ON CONFLICT (tenant_id, edition) DO UPDATE SET v = excluded.v",
+      )
+        .bind(CX)
+        .run(),
+    ).rejects.toThrow(/UNIQUE constraint failed/);
+    // And tenant A's row is untouched, which is the whole point.
+    const row = await env.DB.prepare(`SELECT v FROM ${PROBE}`).first<{ v: string }>();
+    expect(row!.v).toBe("tenantA");
+  });
+
+  it("PUT /subscription refuses a second customer rather than overwriting the first's tax identity", async () => {
+    // The THIRD of this session's `ON CONFLICT` sites, exercised through the route
+    // rather than the probe table — because the probe proves what SQLite does and
+    // this proves what the handler does with it.
+    //
+    // With the old target this upsert answered 200 and wrote tenant B's billing
+    // email, GSTIN and cycle anchor into tenant A's `billing_subscriptions` row.
+    // GSTIN is the field that makes this the worst of the three: it prints on every
+    // tax invoice tenant A issues, so one customer's save would have put another
+    // customer's GST registration on documents already filed.
+    const before = await env.DB.prepare(
+      "SELECT tenant_id, billing_email, gstin, cycle_anchor FROM billing_subscriptions " +
+        "WHERE edition = 'incubator'",
+    ).first<Record<string, unknown>>();
+    expect(before, "tenant A must hold the incubator subscription, or this proves nothing").toBeTruthy();
+
+    const res = await req("PUT", "/api/billing/subscription", await login(CX_ADMIN), {
+      billingEmail: `billing@${CX_MARK.toLowerCase()}.test`,
+      gstin: "27AAAAA0000A1Z5",
+      cycleAnchor: "2027-03-01",
+      billingPeriod: "month",
+    });
+    expect(res.status).toBe(500);
+
+    const after = await env.DB.prepare(
+      "SELECT tenant_id, billing_email, gstin, cycle_anchor FROM billing_subscriptions " +
+        "WHERE edition = 'incubator'",
+    ).first<Record<string, unknown>>();
+    expect(after, "tenant A's billing identity was overwritten by another customer").toEqual(before);
+    const rows = await env.DB.prepare(
+      "SELECT count(*) n FROM billing_subscriptions WHERE edition = 'incubator'",
+    ).first<{ n: number }>();
+    expect(rows!.n).toBe(1);
+  });
+
+  it("both real tables still carry the transitional index integration must drop", async () => {
+    // A guard against this suite outliving its subject: when 0101-0108 drops these,
+    // this case fails and says what to do.
+    for (const table of ["account_profiles", "billing_subscriptions"]) {
+      const row = await env.DB.prepare(
+        "SELECT count(*) n FROM sqlite_master WHERE type = 'index' AND name = ?",
+      )
+        .bind(`${table}__pre_tenant_key`)
+        .first<{ n: number }>();
+      expect(
+        row!.n,
+        `${table}'s transitional UNIQUE (edition) is gone — integration has run, so the two ` +
+          `"blocked" cases above can become real second-tenant isolation cases`,
+      ).toBe(1);
+    }
+  });
+});
+
+describe("tenancy — a purchase is recorded against the customer that made it", () => {
+  it("POST /api/billing/purchase files the intent under the buying customer, not the first one", async () => {
+    // The silent half of the wave. `billing_payment_intents.tenant_id` carries
+    // `DEFAULT 't_default'` (`0086:33`), so an INSERT that named no tenant answered
+    // 200, wrote a row, and filed the second customer's purchase against the first.
+    // Nothing in the response says so, which is why this is asserted on the ROW.
+    const cookie = await login(CX_ADMIN);
+    const before = (
+      await env.DB.prepare("SELECT count(*) n FROM billing_payment_intents WHERE tenant_id = ?")
+        .bind(CX)
+        .first<{ n: number }>()
+    )!.n;
+    const res = await req("POST", "/api/billing/purchase", cookie, { planCode: "pack_50", quantity: 1 });
+    const payload = await res.text();
+    expect(res.status, payload).toBe(200);
+    const { intent } = JSON.parse(payload) as { intent: { id: string } };
+    const row = await env.DB.prepare("SELECT tenant_id FROM billing_payment_intents WHERE id = ?")
+      .bind(intent.id)
+      .first<{ tenant_id: string }>();
+    expect(row!.tenant_id).toBe(CX);
+    const after = (
+      await env.DB.prepare("SELECT count(*) n FROM billing_payment_intents WHERE tenant_id = ?")
+        .bind(CX)
+        .first<{ n: number }>()
+    )!.n;
+    expect(after).toBe(before + 1);
   });
 });

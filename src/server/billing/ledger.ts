@@ -21,10 +21,36 @@
  * Metering has no context — the public founder resubmit path has no `c.var.user`
  * at all — so `recordLedgerEntry` below is the Env-level half. They write the
  * same columns; the difference is only that one of them also audits.
+ *
+ * ── T1-COMMERCE · WHAT A SCOPE IS HERE, AND THE ONE ARM THAT IS NOT MINE ────
+ *
+ * Every READ in this file now binds the WORKSPACE — `(tenant_id, edition)` —
+ * through `scoped()` from `src/shared/tenant.ts`, because `credit_ledger`,
+ * `billing_invoices`, `billing_subscriptions` and `billing_payment_intents` are
+ * four of the 28 tenant-owned tables and `edition` has only two values. The
+ * balance tile, the usage history, the invoice list and the purchased-credits
+ * denominator all summed across customers before this.
+ *
+ * `readTaxSettings` keeps taking an `Env` and nothing else, deliberately:
+ * `pricing_settings` is one of §3's eight PLATFORM-GLOBAL tables and must not
+ * gain a tenant key. So does the `price_plans` lookup in `readSubscription` — the
+ * catalogue owns a plan's NAME product-wide.
+ *
+ * **`recordLedgerEntry` is the one entry point that still accepts a bare
+ * `Edition`, and that arm belongs to T1-DECKS.** It is called from
+ * `decks/versions.ts`'s `reserveCredits`/`refundCredits`, which have no session to
+ * read a tenant from — the public founder resubmit path reaches them with no
+ * `c.var.user` at all — so the tenant has to come off the deck row, which is
+ * `TENANT_OWNER`'s one-hop path and T1-DECKS' work in T1-DECKS' files. Widening it
+ * here would cascade through `decks/versions.ts`, `routes/decks.ts` (8 sites),
+ * `ai/health.ts` and two sibling sessions' test files. The arm is typed, named and
+ * pinned by a `pending` case in `test/worker/tenant-scope.test.ts`; the ask is in
+ * `docs/parity-requests/T1-COMMERCE.md`.
  */
 
 import type { Env } from "../types";
 import type { Edition } from "../../shared/roles";
+import { scoped, insertScope, DEFAULT_TENANT_ID, type TenantScope } from "../../shared/tenant";
 import {
   billingCycle,
   creditsUsedBetween,
@@ -60,21 +86,36 @@ export interface LedgerEntry {
  * Not swallowed on failure, and deliberately so: a balance that moved with no
  * ledger row is an accounting defect, not a lost log line. The one exception is
  * the caller in `reserveCredits`, which documents its own reason.
+ *
+ * ── THE SECOND ARGUMENT, AND WHY IT IS A UNION ──────────────────────────────
+ *
+ * A `TenantScope` writes the movement into the workspace that asked for it. A
+ * bare `Edition` is the TRANSITIONAL arm and lands the row in
+ * `DEFAULT_TENANT_ID` — which is what the column's `DEFAULT 't_default'`
+ * (`0086:32`) would have done anyway, except that here it is visible in the type,
+ * named at the call site, and counted by a test rather than inferred.
+ *
+ * The only callers on that arm are `reserveCredits` and `refundCredits` in
+ * `src/server/decks/versions.ts`, a file T1-DECKS owns. They are reached from the
+ * public founder resubmit path with no session at all, so their tenant has to be
+ * read off the deck — a `TENANT_OWNER` one-hop lookup inside their file, not a
+ * signature this session can supply from outside it.
  */
 export async function recordLedgerEntry(
   env: Env,
-  edition: Edition,
+  scope: TenantScope | Edition,
   entry: LedgerEntry,
 ): Promise<string> {
   if (entry.delta === 0) throw new Error("credit_ledger: a movement of 0 is not a movement");
   const id = `cl_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  const t = insertScope(asScope(scope));
   await env.DB.prepare(
-    "INSERT INTO credit_ledger (id, edition, delta, reason, deck_id, amount_minor, currency, reference, note, actor_id) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    `INSERT INTO credit_ledger (id, ${t.columns}, delta, reason, deck_id, amount_minor, currency, reference, note, actor_id) ` +
+      `VALUES (?, ${t.placeholders}, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
-      edition,
+      ...t.binds,
       Math.trunc(entry.delta),
       entry.reason,
       entry.deckId ?? null,
@@ -86,6 +127,20 @@ export async function recordLedgerEntry(
     )
     .run();
   return id;
+}
+
+/**
+ * Normalise `recordLedgerEntry`'s transitional arm. Exported ONLY so the test
+ * that pins the arm can count what it does, and so a reader of
+ * `decks/versions.ts` can find the one sentence that explains it.
+ *
+ * **Not a general-purpose constructor.** `scopeOf()` in `src/shared/tenant.ts` is
+ * the only way a scope should be built in new code; this is the named edge of a
+ * migration in progress, and it is deleted when T1-DECKS threads the deck's
+ * tenant through `reserveCredits`.
+ */
+export function asScope(scope: TenantScope | Edition): TenantScope {
+  return typeof scope === "string" ? { tenantId: DEFAULT_TENANT_ID, edition: scope } : scope;
 }
 
 // ── Reading ──────────────────────────────────────────────────────────────────
@@ -144,39 +199,63 @@ function toView(row: LedgerRow): LedgerEntryView {
   };
 }
 
-/** The most recent movements, newest first. */
+/**
+ * The most recent movements, newest first.
+ *
+ * Both LEFT JOINs also match the workspace. They are reached by an id that
+ * belongs to a scoped ledger row, so another customer's name could only appear if
+ * a `deck_id` or a `ledger_id` had drifted across tenants — but the whole point of
+ * `describe()` is that `decks.name` becomes the sentence the usage history prints,
+ * so a drifted id would put another customer's startup name on this screen. The
+ * extra conditions are column-to-column and bind nothing, so they cannot disturb
+ * bind order; a drift renders NULL and falls back to the movement's own words.
+ */
 export async function listLedger(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   limit = 50,
 ): Promise<LedgerEntryView[]> {
+  const q = scoped(scope).on("l");
   const res = await env.DB.prepare(
     "SELECT l.id, l.created_at, l.reason, l.delta, l.deck_id, l.amount_minor, l.currency, " +
       "l.reference, l.note, d.name AS company, i.id AS invoice_id " +
       "FROM credit_ledger l " +
-      "LEFT JOIN decks d ON d.id = l.deck_id " +
-      "LEFT JOIN billing_invoices i ON i.ledger_id = l.id " +
-      "WHERE l.edition = ? ORDER BY l.created_at DESC, l.id DESC LIMIT ?",
+      "LEFT JOIN decks d ON d.id = l.deck_id AND d.tenant_id = l.tenant_id AND d.edition = l.edition " +
+      "LEFT JOIN billing_invoices i ON i.ledger_id = l.id AND i.tenant_id = l.tenant_id " +
+      `${q.whereClause()} ORDER BY l.created_at DESC, l.id DESC LIMIT ?`,
   )
-    .bind(edition, Math.max(1, Math.min(500, limit)))
+    .bind(...q.binds, Math.max(1, Math.min(500, limit)))
     .all<LedgerRow>();
   return (res.results ?? []).map(toView);
 }
 
-export async function readBalance(env: Env, edition: Edition): Promise<number> {
-  const row = await env.DB.prepare("SELECT credits_balance FROM org_settings WHERE edition = ?")
-    .bind(edition)
+/**
+ * The balance tile. `org_settings` is a T1-CONFIG table, but this READ lives in a
+ * T1-COMMERCE file, so the predicate is scoped here — §11's rule is that the
+ * session owning the FILE scopes the statement, whoever owns the table.
+ */
+export async function readBalance(env: Env, scope: TenantScope): Promise<number> {
+  const q = scoped(scope).on("o");
+  const row = await env.DB.prepare(`SELECT o.credits_balance FROM org_settings o ${q.whereClause()}`)
+    .bind(...q.binds)
     .first<{ credits_balance: number }>();
   return row?.credits_balance ?? 0;
 }
 
-/** Lifetime credits bought — the "of 50 purchased" denominator. */
-export async function purchasedTotal(env: Env, edition: Edition): Promise<number> {
+/**
+ * Lifetime credits bought — the "of 50 purchased" denominator.
+ *
+ * §11's second standing instruction in one line: this is a `SUM`, so an unscoped
+ * one returns a perfectly ordinary-looking number rather than another customer's
+ * name. `AGGREGATE_PROBES` in `test/worker/tenant-scope.test.ts` is the layer that
+ * can see it, and `billing.test.ts` asserts it by value against a second tenant.
+ */
+export async function purchasedTotal(env: Env, scope: TenantScope): Promise<number> {
+  const q = scoped(scope).on("l").andRaw("l.reason = 'purchase'").andRaw("l.delta > 0");
   const row = await env.DB.prepare(
-    "SELECT COALESCE(SUM(delta), 0) AS n FROM credit_ledger " +
-      "WHERE edition = ? AND reason = 'purchase' AND delta > 0",
+    `SELECT COALESCE(SUM(l.delta), 0) AS n FROM credit_ledger l ${q.whereClause()}`,
   )
-    .bind(edition)
+    .bind(...q.binds)
     .first<{ n: number }>();
   return row?.n ?? 0;
 }
@@ -230,14 +309,15 @@ interface SubscriptionRow {
  */
 export async function readSubscription(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   now: Date = new Date(),
 ): Promise<SubscriptionView> {
+  const q = scoped(scope).on("s");
   const row = await env.DB.prepare(
-    "SELECT plan_code, plan_label, tier_label, seats, billing_period, cycle_anchor, currency, " +
-      "status, billing_email, gstin FROM billing_subscriptions WHERE edition = ?",
+    "SELECT s.plan_code, s.plan_label, s.tier_label, s.seats, s.billing_period, s.cycle_anchor, " +
+      `s.currency, s.status, s.billing_email, s.gstin FROM billing_subscriptions s ${q.whereClause()}`,
   )
-    .bind(edition)
+    .bind(...q.binds)
     .first<SubscriptionRow>();
 
   if (!row) {
@@ -258,6 +338,9 @@ export async function readSubscription(
 
   // The catalogue owns the NAME when the plan is a catalogue plan, so a rename
   // in W4-D's Price configuration flows through to this tile without a copy here.
+  // DELIBERATELY UNSCOPED: `price_plans` is one of §3's eight platform-global
+  // tables. One catalogue serves the whole product, so a plan's name is the same
+  // name for every customer and a tenant predicate here would find no column.
   let label = row.plan_label;
   if (row.plan_code) {
     const named = await env.DB.prepare("SELECT name FROM price_plans WHERE code = ? AND active = 1")
@@ -321,24 +404,25 @@ const INVOICE_COLUMNS =
   "id, number, kind, description, units, currency, subtotal_minor, tax_minor, total_minor, " +
   "gst_rate_pct, gst_registration, place_of_supply, reference, issued_at";
 
-export async function listInvoices(env: Env, edition: Edition): Promise<InvoiceView[]> {
+export async function listInvoices(env: Env, scope: TenantScope): Promise<InvoiceView[]> {
+  const q = scoped(scope).on("v");
   const res = await env.DB.prepare(
-    `SELECT ${INVOICE_COLUMNS} FROM billing_invoices WHERE edition = ? ORDER BY issued_at DESC, number DESC`,
+    `SELECT ${INVOICE_COLUMNS} FROM billing_invoices v ${q.whereClause()} ` +
+      "ORDER BY v.issued_at DESC, v.number DESC",
   )
-    .bind(edition)
+    .bind(...q.binds)
     .all<InvoiceRow>();
   return (res.results ?? []).map(invoiceView);
 }
 
 export async function loadInvoice(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   id: string,
 ): Promise<InvoiceView | null> {
-  const row = await env.DB.prepare(
-    `SELECT ${INVOICE_COLUMNS} FROM billing_invoices WHERE id = ? AND edition = ?`,
-  )
-    .bind(id, edition)
+  const q = scoped(scope).on("v").and("v.id = ?", id);
+  const row = await env.DB.prepare(`SELECT ${INVOICE_COLUMNS} FROM billing_invoices v ${q.whereClause()}`)
+    .bind(...q.binds)
     .first<InvoiceRow>();
   return row ? invoiceView(row) : null;
 }
@@ -358,19 +442,37 @@ export async function loadInvoice(
  * is — including ones added later — with no cross-session edit and no path where
  * a paid purchase quietly has no document.
  *
- * Numbering is `INV-<year>-<nnnn>`, sequential per edition in purchase order. A
- * concurrent reader can lose the race for a number; `UNIQUE (edition, number)`
- * refuses the duplicate and the next read issues it. That is the correct
- * trade: an invoice number is never reused, and a document is at worst late.
+ * Numbering is `INV-<year>-<nnnn>`, sequential **per workspace** in purchase
+ * order. A concurrent reader can lose the race for a number;
+ * `UNIQUE (tenant_id, edition, number)` refuses the duplicate and the next read
+ * issues it. That is the correct trade: an invoice number is never reused, and a
+ * document is at worst late.
+ *
+ * ── T1-COMMERCE · THE SEQUENCE IS THE TENANCY BUG HERE, NOT THE LIST ────────
+ *
+ * `0097`'s header is explicit that it widened `UNIQUE (edition, number)` to
+ * `UNIQUE (tenant_id, edition, number)` precisely so the second customer's first
+ * invoice does not compete for `INV-2026-0001`. That removed the collision; it did
+ * NOT fix the counter. The `SELECT COUNT(*)` below was `WHERE edition = ?`, so a
+ * second customer's very first invoice would have been numbered from the FIRST
+ * customer's invoice count — `INV-2026-0009` on day one, with no 0001 to 0008
+ * anywhere in their account. No error, no duplicate, and a numbering gap a
+ * customer's auditor asks about. Scoping the count is what makes `0097`'s widened
+ * key mean what its header says.
  */
-export async function issueMissingInvoices(env: Env, edition: Edition): Promise<number> {
+export async function issueMissingInvoices(env: Env, scope: TenantScope): Promise<number> {
+  const ledgerQ = scoped(scope)
+    .on("l")
+    .andRaw("l.reason = 'purchase'")
+    .andRaw("l.amount_minor IS NOT NULL")
+    .andRaw("i.id IS NULL");
   const res = await env.DB.prepare(
     "SELECT l.id, l.note, l.delta, l.amount_minor, l.currency, l.reference, l.created_at " +
       "FROM credit_ledger l LEFT JOIN billing_invoices i ON i.ledger_id = l.id " +
-      "WHERE l.edition = ? AND l.reason = 'purchase' AND l.amount_minor IS NOT NULL " +
-      "AND i.id IS NULL ORDER BY l.created_at ASC, l.id ASC",
+      `AND i.tenant_id = l.tenant_id ${ledgerQ.whereClause()} ` +
+      "ORDER BY l.created_at ASC, l.id ASC",
   )
-    .bind(edition)
+    .bind(...ledgerQ.binds)
     .all<{
       id: string;
       note: string | null;
@@ -384,14 +486,19 @@ export async function issueMissingInvoices(env: Env, edition: Edition): Promise<
   if (pending.length === 0) return 0;
 
   const tax = await readTaxSettings(env);
-  const sub = await env.DB.prepare("SELECT gstin FROM billing_subscriptions WHERE edition = ?")
-    .bind(edition)
+  const subQ = scoped(scope).on("s");
+  const sub = await env.DB.prepare(`SELECT s.gstin FROM billing_subscriptions s ${subQ.whereClause()}`)
+    .bind(...subQ.binds)
     .first<{ gstin: string | null }>();
 
+  const t = insertScope(scope);
   let issued = 0;
   for (const row of pending) {
-    const seq = await env.DB.prepare("SELECT COUNT(*) AS n FROM billing_invoices WHERE edition = ?")
-      .bind(edition)
+    const seqQ = scoped(scope).on("v");
+    const seq = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM billing_invoices v ${seqQ.whereClause()}`,
+    )
+      .bind(...seqQ.binds)
       .first<{ n: number }>();
     const year = row.created_at.slice(0, 4);
     const number = `INV-${year}-${String((seq?.n ?? 0) + 1).padStart(4, "0")}`;
@@ -401,13 +508,13 @@ export async function issueMissingInvoices(env: Env, edition: Edition): Promise<
 
     try {
       await env.DB.prepare(
-        "INSERT INTO billing_invoices (id, edition, number, kind, ledger_id, intent_id, description, units, " +
+        `INSERT INTO billing_invoices (id, ${t.columns}, number, kind, ledger_id, intent_id, description, units, ` +
           "currency, subtotal_minor, tax_minor, total_minor, gst_rate_pct, gst_registration, place_of_supply, " +
-          "reference, issued_at) VALUES (?, ?, ?, 'invoice', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+          `reference, issued_at) VALUES (?, ${t.placeholders}, ?, 'invoice', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
       )
         .bind(
           `inv_${row.id}`,
-          edition,
+          ...t.binds,
           number,
           row.id,
           row.note ?? "Credit purchase",
@@ -435,15 +542,17 @@ export async function issueMissingInvoices(env: Env, edition: Edition): Promise<
 
 export async function listIntents(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   limit = 10,
 ): Promise<PaymentIntentView[]> {
+  const q = scoped(scope).on("p");
   const res = await env.DB.prepare(
-    "SELECT id, purpose, plan_code, plan_name, units, quantity, currency, subtotal_minor, tax_minor, " +
-      "total_minor, gst_rate_pct, status, checkout_url, created_at FROM billing_payment_intents " +
-      "WHERE edition = ? ORDER BY created_at DESC LIMIT ?",
+    "SELECT p.id, p.purpose, p.plan_code, p.plan_name, p.units, p.quantity, p.currency, " +
+      "p.subtotal_minor, p.tax_minor, p.total_minor, p.gst_rate_pct, p.status, p.checkout_url, " +
+      `p.created_at FROM billing_payment_intents p ${q.whereClause()} ` +
+      "ORDER BY p.created_at DESC LIMIT ?",
   )
-    .bind(edition, Math.max(1, Math.min(100, limit)))
+    .bind(...q.binds, Math.max(1, Math.min(100, limit)))
     .all<{
       id: string;
       purpose: PaymentIntentView["purpose"];
@@ -492,14 +601,15 @@ export interface UsageTotals {
  */
 export async function usageTotals(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   cycle: BillingCycle,
   now: Date = new Date(),
 ): Promise<UsageTotals> {
+  const q = scoped(scope).on("l").andRaw("l.delta < 0");
   const res = await env.DB.prepare(
-    "SELECT delta, created_at FROM credit_ledger WHERE edition = ? AND delta < 0",
+    `SELECT l.delta, l.created_at FROM credit_ledger l ${q.whereClause()}`,
   )
-    .bind(edition)
+    .bind(...q.binds)
     .all<{ delta: number; created_at: string }>();
   const rows = (res.results ?? []).map((r) => ({
     delta: r.delta,

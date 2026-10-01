@@ -4,6 +4,7 @@ import type { Env } from "../../src/server/types";
 import { emitNotification } from "../../src/server/email/outbox";
 import { reserveCredits } from "../../src/server/decks/versions";
 import { recordSyncAttempt } from "../../src/server/crm/provider";
+import { DEFAULT_TENANT_ID } from "../../src/shared/tenant";
 import { evaluateDeck, type RawEvaluation } from "../../src/server/ai/evaluate";
 import { runMonthlyUsageSummary, previousMonth } from "../../src/server/scheduled";
 import {
@@ -381,9 +382,11 @@ describe("producers", () => {
 
     const record = await recordSyncAttempt(
       E(),
+      // T1-ESIGN: `recordSyncAttempt` takes the workspace, and `edition` has
+      // left `CrmSyncAttempt` because it is read off the scope.
+      { tenantId: DEFAULT_TENANT_ID, edition: "vc" },
       {
         connectionId: "crm_vc_salesforce",
-        edition: "vc",
         provider: "salesforce",
         operation: "pull_deals",
         direction: "pull",
@@ -406,9 +409,9 @@ describe("producers", () => {
     // A 'recorded' attempt (no adapter — the §1.3 default) is not a failure.
     await recordSyncAttempt(
       E(),
+      { tenantId: DEFAULT_TENANT_ID, edition: "vc" },
       {
         connectionId: "crm_vc_salesforce",
-        edition: "vc",
         provider: "salesforce",
         operation: "pull_deals",
         direction: "pull",

@@ -168,6 +168,73 @@ describe("programs — CRUD", () => {
     expect(list.programs.some((p) => p.id === id)).toBe(false);
   });
 
+  it("retires a sector, and refuses one belonging to another customer (T1-FLOW)", async () => {
+    // `DELETE /sectors/:id` and `DELETE /:id` are blind UPDATEs keyed on an id
+    // from the URL — the shape §2 B24 counts. Both now carry the workspace, and
+    // the predicate is attached to the TABLE NAME rather than an alias because
+    // SQLite's UPDATE takes no alias. That form is easy to get subtly wrong, so
+    // it is measured here rather than assumed.
+    const inc = await login(INC_ADMIN);
+    const made = await req("POST", "/api/programs/sectors", inc, { name: "AgriTech" });
+    const mine = ((await made.json()) as { sector: { id: string } }).sector.id;
+    expect((await req("DELETE", `/api/programs/sectors/${mine}`, inc)).status).toBe(200);
+    expect((await listPrograms(inc)).sectors.some((x) => x.id === mine)).toBe(false);
+
+    // A sector of a second customer, in the SAME edition — which is the whole
+    // point: `edition` has two values, so it cannot tell two customers apart.
+    await env.DB.prepare(
+      "INSERT INTO organizations (id, name, slug, status) VALUES ('t_other', 'Other Co', 'other-co', 'active') " +
+        "ON CONFLICT (id) DO NOTHING",
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO sectors (id, tenant_id, edition, name, active, sort_order) " +
+        "VALUES ('sec_other', 't_other', 'incubator', 'Other Co Sector', 1, 99)",
+    ).run();
+
+    expect((await req("DELETE", "/api/programs/sectors/sec_other", inc)).status).toBe(404);
+    const still = await env.DB.prepare("SELECT active FROM sectors WHERE id = 'sec_other'")
+      .first<{ active: number }>();
+    expect(still!.active, "another customer's sector was retired").toBe(1);
+    // …and it never appeared in the caller's list either.
+    expect((await listPrograms(inc)).sectors.some((x) => x.id === "sec_other")).toBe(false);
+  });
+
+  it("refuses to update or retire another customer's programme (T1-FLOW)", async () => {
+    const inc = await login(INC_ADMIN);
+    await env.DB.prepare(
+      "INSERT INTO organizations (id, name, slug, status) VALUES ('t_other', 'Other Co', 'other-co', 'active') " +
+        "ON CONFLICT (id) DO NOTHING",
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO programs (id, tenant_id, edition, name, fund_size, active, sort_order) " +
+        "VALUES ('prog_other', 't_other', 'incubator', 'Other Co Accelerator', 250, 1, 99)",
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO cohorts (id, program_id, name) VALUES ('coh_other', 'prog_other', 'Other Batch')",
+    ).run();
+
+    expect((await req("PUT", "/api/programs/prog_other", inc, { fundSize: 1 })).status).toBe(404);
+    expect((await req("DELETE", "/api/programs/prog_other", inc)).status).toBe(404);
+    expect((await req("POST", "/api/programs/prog_other/cohorts", inc, { name: "X" })).status).toBe(404);
+    expect((await req("PUT", "/api/programs/cohorts/coh_other", inc, { name: "X" })).status).toBe(404);
+    expect((await req("DELETE", "/api/programs/cohorts/coh_other", inc)).status).toBe(404);
+
+    const after = await env.DB.prepare(
+      "SELECT fund_size, active FROM programs WHERE id = 'prog_other'",
+    ).first<{ fund_size: number; active: number }>();
+    expect(after!.fund_size, "another customer's fund size was rewritten").toBe(250);
+    expect(after!.active, "another customer's programme was retired").toBe(1);
+    const coh = await env.DB.prepare("SELECT name, active FROM cohorts WHERE id = 'coh_other'")
+      .first<{ name: string; active: number }>();
+    expect(coh!.name).toBe("Other Batch");
+    expect(coh!.active).toBe(1);
+
+    // And none of it is visible in the caller's hierarchy.
+    const list = await listPrograms(inc);
+    expect(list.programs.some((p) => p.id === "prog_other")).toBe(false);
+    expect(list.programs.some((p) => p.cohorts.some((x) => x.id === "coh_other"))).toBe(false);
+  });
+
   it("cross-edition mutations are rejected (incubator admin → VC program)", async () => {
     const inc = await login(INC_ADMIN);
     const vcProgId = (

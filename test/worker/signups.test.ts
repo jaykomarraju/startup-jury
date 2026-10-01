@@ -438,3 +438,104 @@ describe("completion — after the countersign, moving the deck and resolving th
     expect((await row<{ n: number }>("SELECT seats_filled n FROM cohorts WHERE id = 'coh_0001'"))!.n).toBe(19);
   });
 });
+
+// ── Tenancy (T1-FLOW) ────────────────────────────────────────────────────────
+//
+// §2 B12: "founder-submitted legal documents streamed from R2; seat allocation".
+// `signups`, `signup_documents` and `agreements` have NO workspace key of their
+// own — they are §5b proxy tables, reached through `decks` at one, two and two
+// hops — so every refusal below rests on the owner join, not on a column. The
+// second customer is in the SAME edition on purpose: there are only two edition
+// values, so `edition` cannot tell two customers apart (§2).
+
+const SU_OTHER_TENANT = "t_signups_other";
+
+/** Idempotent — worker-test storage is per FILE, so this runs several times. */
+async function seedOtherTenantSignup(): Promise<void> {
+  await env.DB.prepare(
+    "INSERT INTO organizations (id, name, slug, status) VALUES (?, 'Other Co', 'signups-other-co', 'active') " +
+      "ON CONFLICT (id) DO NOTHING",
+  )
+    .bind(SU_OTHER_TENANT)
+    .run();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO decks (id, tenant_id, edition, name, status, founder_email, uploaded_by) " +
+      "VALUES ('deck_su_other', ?, 'incubator', 'OtherCo Startup', 'signup', 'founder@otherco.example', NULL)",
+  )
+    .bind(SU_OTHER_TENANT)
+    .run();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO signups (id, deck_id, status) VALUES ('su_other', 'deck_su_other', 'progress')",
+  ).run();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO signup_documents (id, signup_id, required_document_id, name, status, sort_order) " +
+      "VALUES ('sd_su_other', 'su_other', NULL, 'OtherCo incorporation certificate', 'submitted', 1)",
+  ).run();
+}
+
+describe("signups — tenancy (T1-FLOW)", () => {
+  it("the pipeline listing excludes another customer's record, and does not materialise one for it", async () => {
+    await seedOtherTenantSignup();
+    // A second deck of theirs at `signup` with NO sign-up row: `ensureSignups`
+    // opens one for every such deck it can see, so an unscoped read writes into
+    // the other customer's workspace as well as reading from it.
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO decks (id, tenant_id, edition, name, status) " +
+        "VALUES ('deck_su_other2', ?, 'incubator', 'OtherCo Second', 'signup')",
+    )
+      .bind(SU_OTHER_TENANT)
+      .run();
+
+    const admin = await login(ADMIN);
+    const res = await get("/api/signups", admin);
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain("su_other");
+    expect(text).not.toContain("OtherCo Startup");
+    expect(text).not.toContain("OtherCo incorporation certificate");
+
+    const opened = await env.DB.prepare(
+      "SELECT count(*) n FROM signups WHERE deck_id = 'deck_su_other2'",
+    ).first<{ n: number }>();
+    expect(opened!.n, "ensureSignups opened a record in another customer's workspace").toBe(0);
+  });
+
+  it("another customer's record is a 404 on every verb, and nothing is written", async () => {
+    await seedOtherTenantSignup();
+    const admin = await login(ADMIN);
+    expect((await get("/api/signups/su_other", admin)).status).toBe(404);
+    expect((await get("/api/signups/su_other/documents/sd_su_other/file", admin)).status).toBe(404);
+    expect((await send("POST", "/api/signups/su_other/documents/verify-all", admin)).status).toBe(404);
+    expect((await send("POST", "/api/signups/su_other/complete", admin)).status).toBe(404);
+    expect((await send("POST", "/api/signups/su_other/seat", admin)).status).toBe(404);
+    expect(
+      (await send("PUT", "/api/signups/su_other/assignee", admin, { userId: null })).status,
+    ).toBe(404);
+
+    const su = await env.DB.prepare(
+      "SELECT status, seatless, assigned_user_id FROM signups WHERE id = 'su_other'",
+    ).first<{ status: string; seatless: number; assigned_user_id: string | null }>();
+    expect(su!.status, "another customer's sign-up was completed").toBe("progress");
+    expect(su!.seatless).toBe(0);
+    expect(su!.assigned_user_id).toBeNull();
+    const doc = await env.DB.prepare(
+      "SELECT status FROM signup_documents WHERE id = 'sd_su_other'",
+    ).first<{ status: string }>();
+    expect(doc!.status, "another customer's document was verified").toBe("submitted");
+  });
+
+  it("the esign workspace gate steps aside for another customer rather than judging it", async () => {
+    // It must not answer 403 `read_only` about a record outside the caller's
+    // workspace: that would confirm the id exists. It steps aside and esign's
+    // own 404 answers — the same shape the roles harness's ghost-id probes read.
+    await seedOtherTenantSignup();
+    const pm = await login(PM);
+    const res = await send("PUT", "/api/esign/signups/su_other/method", pm, {
+      provider: "SignDesk",
+      sigType: "standard",
+    });
+    expect(res.status).not.toBe(200);
+    const payload = (await res.json()) as { error?: string };
+    expect(payload.error).not.toBe("read_only");
+  });
+});

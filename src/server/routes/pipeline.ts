@@ -57,6 +57,10 @@ import {
 // column-only on the bulk path, live in that module.
 import { DECK_FILE_ACTIONS, checkDeckFile, deckFileRefusal } from "../decks/deckFile";
 import { capacityFor } from "../../shared/assignment";
+// T1-DECKS — T0's one scope helper. `TENANT_OWNER` is where the question "what owns
+// `scores`?" is answered, so `viaParent` is used in place of a predicate invented
+// here; see `src/shared/tenant.ts`.
+import { scopeOf, scoped } from "../../shared/tenant";
 
 const pipeline = new Hono<AppEnv>();
 // Scope auth to this router's own prefixes (not "*"): mounted at /api, a "*"
@@ -104,11 +108,19 @@ async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
  */
 async function loadDeck(c: Context<AppEnv>, id: string): Promise<DeckRow | null> {
   const user = c.var.user;
+  // ── THE GATE FOR TEN ROUTES ─────────────────────────────────────────────────
+  // §2 B2: `/decks/:id/{transition,assign,evaluate,queries,send-signup,
+  // recommendation,ic-vote,events,my-scores}` all enter through here, and
+  // `scores`, `evaluations`, `pipeline_events`, `queries` and `ic_votes` are then
+  // reached by `deck_id` with no scope of their own. That is precisely the shape
+  // §5b calls the silent one — so this predicate is the first fence for all ten,
+  // and each of those child statements carries `viaParent` as the second.
+  const q = scoped(scopeOf(user)).on("d").and("d.id = ?", id);
   const row = await c.env.DB.prepare(
-    "SELECT id, edition, name, status, founder, founder_email, assigned_to, uploaded_by, content_version " +
-      "FROM decks WHERE id = ? AND edition = ?",
+    "SELECT d.id, d.edition, d.name, d.status, d.founder, d.founder_email, d.assigned_to, " +
+      `d.uploaded_by, d.content_version FROM decks d ${q.whereClause()}`,
   )
-    .bind(id, user.edition)
+    .bind(...q.binds)
     .first<DeckRow>();
   if (!row) return null;
   if (user.role === "founder" && row.uploaded_by !== user.id) return null;
@@ -142,20 +154,27 @@ async function allEvaluatorsHaveScored(
   if (deck.edition === "incubator") {
     const assignees = await assigneeIdsOf(c.env.DB, deck.id);
     if (assignees.length === 0) return false;
+    const qa = scoped(scopeOf(c.var.user));
+    const aJoin = qa.viaParent("evaluations", "e");
+    qa.and("e.deck_id = ?", deck.id).andRaw("e.evaluator_id IS NOT NULL");
     const scored = new Set(
       (
-        await c.env.DB.prepare("SELECT evaluator_id FROM evaluations WHERE deck_id = ? AND evaluator_id IS NOT NULL")
-          .bind(deck.id)
+        await c.env.DB.prepare(`SELECT e.evaluator_id FROM evaluations e ${aJoin} ${qa.whereClause()}`)
+          .bind(...qa.binds)
           .all<{ evaluator_id: string }>()
       ).results.map((r) => r.evaluator_id),
     );
     return assignees.every((id) => scored.has(id));
   }
+  const qb2 = scoped(scopeOf(c.var.user));
+  const bJoin = qb2.viaParent("evaluations", "e");
+  qb2.and("e.deck_id = ?", deck.id);
   const scored = (
     await c.env.DB.prepare(
-      "SELECT DISTINCT u.role AS role FROM evaluations e JOIN users u ON u.id = e.evaluator_id WHERE e.deck_id = ?",
+      "SELECT DISTINCT u.role AS role FROM evaluations e " +
+        `${bJoin} JOIN users u ON u.id = e.evaluator_id ${qb2.whereClause()}`,
     )
-      .bind(deck.id)
+      .bind(...qb2.binds)
       .all<{ role: string }>()
   ).results.map((r) => r.role);
   return ["analyst", "associate", "partner"].every((r) => scored.includes(r));
@@ -280,6 +299,10 @@ async function checkShortlistFloor(
   deckId: string,
   edition: Edition,
 ): Promise<ShortlistGuard | null> {
+  // The guard is reached by deck id, so it is scoped like every other by-id read:
+  // a floor read off another customer's programme would refuse — or wave through —
+  // a shortlist on a number from the wrong workspace.
+  const qd = scoped(scopeOf(c.var.user)).on("d").and("d.id = ?", deckId);
   // LEFT JOIN, not JOIN: a deck with no programme still faces the org-wide
   // shortlist threshold (F0187), which the programme floor merely overrides.
   const row = await c.env.DB.prepare(
@@ -288,10 +311,10 @@ async function checkShortlistFloor(
       // same reason: the transition must blend at the split the hint blended at.
       "p.ai_weight_pct AS program_ai_weight_pct, co.ai_weight_pct AS cohort_ai_weight_pct, " +
       "(SELECT AVG(e.weighted_total) FROM evaluations e WHERE e.deck_id = d.id AND e.evaluator_id IS NOT NULL) AS human_avg " +
-      "FROM decks d LEFT JOIN programs p ON p.id = d.program_id " +
-      "LEFT JOIN cohorts co ON co.id = d.cohort_id WHERE d.id = ?",
+      "FROM decks d LEFT JOIN programs p ON p.id = d.program_id AND p.tenant_id = d.tenant_id " +
+      `LEFT JOIN cohorts co ON co.id = d.cohort_id ${qd.whereClause()}`,
   )
-    .bind(deckId)
+    .bind(...qd.binds)
     .first<{
       ai_score: number | null;
       program_name: string | null;
@@ -419,10 +442,13 @@ pipeline.post(
     const assigneeId = typeof body.assigneeId === "string" ? body.assigneeId : "";
     // Aug-2026 issue 22 — the Assign screen picks a ROLE and then members of it,
     // so the assignee may be any evaluator role for the edition, not just jury.
-    const assignee = await c.env.DB.prepare(
-      "SELECT id, name, role FROM users WHERE id = ? AND edition = ? AND active = 1",
-    )
-      .bind(assigneeId, deck.edition)
+    // `assigneeId` is request input, so this is one of the few places another
+    // customer's user could be NAMED rather than merely listed. Scoped on the
+    // caller's workspace — `deck.edition` alone would have put a second
+    // customer's evaluator on this deck.
+    const qa = scoped(scopeOf(user)).on("u").and("u.id = ?", assigneeId).andRaw("u.active = 1");
+    const assignee = await c.env.DB.prepare(`SELECT u.id, u.name, u.role FROM users u ${qa.whereClause()}`)
+      .bind(...qa.binds)
       .first<{ id: string; name: string; role: string }>();
     if (!assignee || !isAssignableEvaluator(deck.edition as Edition, assignee.role)) {
       return c.json({ error: "invalid_assignee" }, 400);
@@ -519,11 +545,12 @@ pipeline.post(
     // override far from the AI needs a written rationale.
     const scoring = await loadScoringSettings(c.env.DB, deck.edition);
 
+    const qp = scoped(scopeOf(c.var.user)).on("p").andRaw("p.active = 1");
     const params = (
       await c.env.DB.prepare(
-        "SELECT id, key, weight, informational, role_scope FROM parameters WHERE edition = ? AND active = 1",
+        `SELECT p.id, p.key, p.weight, p.informational, p.role_scope FROM parameters p ${qp.whereClause()}`,
       )
-        .bind(deck.edition)
+        .bind(...qp.binds)
         .all<{ id: string; key: string; weight: number; informational: number; role_scope: string | null }>()
     ).results;
     const byKey = new Map(params.map((p) => [p.key, p]));
@@ -531,11 +558,16 @@ pipeline.post(
     // The AI's per-parameter values, for the override-rationale rule below.
     const aiByParam = new Map(
       (
-        await c.env.DB.prepare(
-          "SELECT parameter_id, value FROM scores WHERE deck_id = ? AND evaluator_kind = 'ai'",
-        )
-          .bind(deck.id)
-          .all<{ parameter_id: string; value: number }>()
+        await (() => {
+          const qai = scoped(scopeOf(user));
+          const aiJoin = qai.viaParent("scores", "s");
+          qai.and("s.deck_id = ?", deck.id).andRaw("s.evaluator_kind = 'ai'");
+          return c.env.DB.prepare(
+            `SELECT s.parameter_id, s.value FROM scores s ${aiJoin} ${qai.whereClause()}`,
+          )
+            .bind(...qai.binds)
+            .all<{ parameter_id: string; value: number }>();
+        })()
       ).results.map((r) => [r.parameter_id, r.value]),
     );
 
@@ -699,11 +731,15 @@ interface QueryRow {
 pipeline.get("/decks/:id/queries", async (c) => {
   const deck = await loadDeck(c, c.req.param("id"));
   if (!deck) return c.json({ error: "not_found" }, 404);
+  const qdq = scoped(scopeOf(c.var.user));
+  const dqJoin = qdq.viaParent("queries", "q");
+  qdq.and("q.deck_id = ?", deck.id);
   const rows = (
     await c.env.DB.prepare(
-      "SELECT id, deck_id, questions, email_status, founder_response, created_at, resolved_at FROM queries WHERE deck_id = ? ORDER BY created_at DESC",
+      "SELECT q.id, q.deck_id, q.questions, q.email_status, q.founder_response, q.created_at, " +
+        `q.resolved_at FROM queries q ${dqJoin} ${qdq.whereClause()} ORDER BY q.created_at DESC`,
     )
-      .bind(deck.id)
+      .bind(...qdq.binds)
       .all<QueryRow>()
   ).results;
   return c.json({ queries: rows });
@@ -727,12 +763,16 @@ pipeline.get(
     "ic_member",
   ),
   async (c) => {
+    // §2 B3 — "every clarification question and founder response". The statement
+    // already joined its owner, so the scope goes on that join's alias rather than
+    // through `viaParent`, which would emit a second `JOIN decks`.
+    const qy = scoped(scopeOf(c.var.user)).on("d");
     const rows = (
       await c.env.DB.prepare(
         "SELECT q.id, q.deck_id, q.questions, q.email_status, q.founder_response, q.created_at, q.resolved_at " +
-          "FROM queries q JOIN decks d ON d.id = q.deck_id WHERE d.edition = ? ORDER BY q.created_at DESC",
+          `FROM queries q JOIN decks d ON d.id = q.deck_id ${qy.whereClause()} ORDER BY q.created_at DESC`,
       )
-        .bind(c.var.user.edition)
+        .bind(...qy.binds)
         .all()
     ).results;
     return c.json({ queries: rows });
@@ -790,11 +830,13 @@ pipeline.post(
     //
     // Found by `e2e/query.spec.ts:176`, which asserts one row per founder and
     // received two.
+    const qph = scoped(scopeOf(user));
+    const phJoin = qph.viaParent("queries", "q");
+    qph.and("q.deck_id = ?", deck.id).andRaw("q.founder_response IS NULL").andRaw("q.questions = ''");
     const placeholder = await c.env.DB.prepare(
-      "SELECT id FROM queries WHERE deck_id = ? AND founder_response IS NULL AND questions = '' " +
-        "ORDER BY created_at ASC LIMIT 1",
+      `SELECT q.id FROM queries q ${phJoin} ${qph.whereClause()} ORDER BY q.created_at ASC LIMIT 1`,
     )
-      .bind(deck.id)
+      .bind(...qph.binds)
       .first<{ id: string }>();
     const queryId = placeholder?.id ?? `qry_${crypto.randomUUID()}`;
     const stmts: D1PreparedStatement[] = [
@@ -823,10 +865,16 @@ pipeline.post(
 
     // Deliver via the stubbed outbox. Prefer the deck's uploader email; fall
     // back to a portal placeholder so the loop is always exercisable.
+    // Scoped because this row decides WHERE THE MAIL GOES: `toEmail` falls back to
+    // `uploader?.email` below. §2 B22 is the only leak in the table that leaves the
+    // building, and an unscoped lookup here is the same shape one row narrower.
     const uploader = deck.uploaded_by
-      ? await c.env.DB.prepare("SELECT email, name FROM users WHERE id = ?")
-          .bind(deck.uploaded_by)
-          .first<{ email: string; name: string }>()
+      ? await (() => {
+          const qup = scoped(scopeOf(user)).on("u").and("u.id = ?", deck.uploaded_by);
+          return c.env.DB.prepare(`SELECT u.email, u.name FROM users u ${qup.whereClause()}`)
+            .bind(...qup.binds)
+            .first<{ email: string; name: string }>();
+        })()
       : null;
     // Prefer the founder's own address (captured at intake in Session 5) over
     // the uploader's — a staff bulk upload would otherwise mail the analyst.
@@ -856,10 +904,19 @@ pipeline.post(
 /** POST /queries/:id/respond — founder answers; deck re-enters intake. */
 pipeline.post("/queries/:id/respond", async (c) => {
   const user = c.var.user;
+  // Scoped at the FIRST read, not at the `loadDeck` below it. `loadDeck` does 404
+  // another customer's deck, so the route was not exploitable — but this statement
+  // selects `questions` and `founder_response` into a local before that guard runs,
+  // and §5b's whole point is that a child read which relies on a check one frame
+  // later is the one that breaks when the frames are rearranged.
+  const qqr = scoped(scopeOf(user));
+  const qrJoin = qqr.viaParent("queries", "q");
+  qqr.and("q.id = ?", c.req.param("id"));
   const query = await c.env.DB.prepare(
-    "SELECT id, deck_id, questions, email_status, founder_response, created_at, resolved_at FROM queries WHERE id = ?",
+    "SELECT q.id, q.deck_id, q.questions, q.email_status, q.founder_response, q.created_at, " +
+      `q.resolved_at FROM queries q ${qrJoin} ${qqr.whereClause()}`,
   )
-    .bind(c.req.param("id"))
+    .bind(...qqr.binds)
     .first<QueryRow>();
   if (!query) return c.json({ error: "not_found" }, 404);
   const deck = await loadDeck(c, query.deck_id);
@@ -945,10 +1002,16 @@ pipeline.post(
       ).bind(eventId(deck.id), deck.id, user.id, deck.status, to, ts),
     ]);
 
+    // Scoped because this row decides WHERE THE MAIL GOES: `toEmail` falls back to
+    // `uploader?.email` below. §2 B22 is the only leak in the table that leaves the
+    // building, and an unscoped lookup here is the same shape one row narrower.
     const uploader = deck.uploaded_by
-      ? await c.env.DB.prepare("SELECT email, name FROM users WHERE id = ?")
-          .bind(deck.uploaded_by)
-          .first<{ email: string; name: string }>()
+      ? await (() => {
+          const qup = scoped(scopeOf(user)).on("u").and("u.id = ?", deck.uploaded_by);
+          return c.env.DB.prepare(`SELECT u.email, u.name FROM users u ${qup.whereClause()}`)
+            .bind(...qup.binds)
+            .first<{ email: string; name: string }>();
+        })()
       : null;
     const { subject, body: emailBody } = buildSignupEmail({
       deckName: deck.name,
@@ -987,18 +1050,25 @@ const RECOMMENDING_ROLES = ["jury", "program_manager", "program_associate", "adm
 pipeline.get("/recommendations", requireTask("evaluate", ...RECOMMENDING_ROLES), async (c) => {
   const user = c.var.user;
   const [recs, evaluated] = await Promise.all([
-    c.env.DB.prepare(
-      "SELECT r.deck_id, r.status FROM evaluation_recommendations r JOIN decks d ON d.id = r.deck_id " +
-        "WHERE r.user_id = ? AND d.edition = ?",
-    )
-      .bind(user.id, user.edition)
-      .all<{ deck_id: string; status: Recommendation }>(),
-    c.env.DB.prepare(
-      "SELECT DISTINCT e.deck_id FROM evaluations e JOIN decks d ON d.id = e.deck_id " +
-        "WHERE e.evaluator_id = ? AND d.edition = ?",
-    )
-      .bind(user.id, user.edition)
-      .all<{ deck_id: string }>(),
+    ...(() => {
+      // Both statements already join their owner, so the scope lands on `d`.
+      const qr = scoped(scopeOf(user)).on("d").and("r.user_id = ?", user.id);
+      const qe = scoped(scopeOf(user)).on("d").and("e.evaluator_id = ?", user.id);
+      return [
+        c.env.DB.prepare(
+          "SELECT r.deck_id, r.status FROM evaluation_recommendations r JOIN decks d ON d.id = r.deck_id " +
+            qr.whereClause(),
+        )
+          .bind(...qr.binds)
+          .all<{ deck_id: string; status: Recommendation }>(),
+        c.env.DB.prepare(
+          "SELECT DISTINCT e.deck_id FROM evaluations e JOIN decks d ON d.id = e.deck_id " +
+            qe.whereClause(),
+        )
+          .bind(...qe.binds)
+          .all<{ deck_id: string }>(),
+      ] as const;
+    })(),
   ]);
   return c.json({
     recommendations: Object.fromEntries(recs.results.map((r) => [r.deck_id, r.status])),
@@ -1088,12 +1158,17 @@ pipeline.post(
 pipeline.get("/decks/:id/ic-votes", requireTask("icpipeline", "ic_member", "partner", "admin"), async (c) => {
   const deck = await loadDeck(c, c.req.param("id"));
   if (!deck) return c.json({ error: "not_found" }, 404);
+  // Individual IC ballots, confidential to the committee. Owned through the deck.
+  const qiv = scoped(scopeOf(c.var.user));
+  const ivJoin = qiv.viaParent("ic_votes", "v");
+  qiv.and("v.deck_id = ?", deck.id);
   const rows = (
     await c.env.DB.prepare(
       "SELECT v.id, v.member_id, v.vote, v.comment, v.created_at, u.name AS member_name " +
-        "FROM ic_votes v LEFT JOIN users u ON u.id = v.member_id WHERE v.deck_id = ? ORDER BY v.created_at",
+        `FROM ic_votes v ${ivJoin} LEFT JOIN users u ON u.id = v.member_id ` +
+        `${qiv.whereClause()} ORDER BY v.created_at`,
     )
-      .bind(deck.id)
+      .bind(...qiv.binds)
       .all<IcVoteRow>()
   ).results;
 
@@ -1130,12 +1205,18 @@ pipeline.get("/decks/:id/ic-votes", requireTask("icpipeline", "ic_member", "part
 pipeline.get("/decks/:id/events", async (c) => {
   const deck = await loadDeck(c, c.req.param("id"));
   if (!deck) return c.json({ error: "not_found" }, 404);
+  // `pipeline_events` is the per-deck audit trail — 21 `FROM` sites in this
+  // session's files alone, and no tenant column on any of them.
+  const qpev = scoped(scopeOf(c.var.user));
+  const pevJoin = qpev.viaParent("pipeline_events", "e");
+  qpev.and("e.deck_id = ?", deck.id);
   const rows = (
     await c.env.DB.prepare(
       "SELECT e.id, e.from_stage, e.to_stage, e.action, e.note, e.created_at, u.name AS actor_name " +
-        "FROM pipeline_events e LEFT JOIN users u ON u.id = e.actor_id WHERE e.deck_id = ? ORDER BY e.created_at DESC",
+        `FROM pipeline_events e ${pevJoin} LEFT JOIN users u ON u.id = e.actor_id ` +
+        `${qpev.whereClause()} ORDER BY e.created_at DESC`,
     )
-      .bind(deck.id)
+      .bind(...qpev.binds)
       .all<{
         id: string;
         from_stage: string | null;
@@ -1165,15 +1246,21 @@ pipeline.get("/decks/:id/events", async (c) => {
 pipeline.get("/decks/:id/my-scores", async (c) => {
   const deck = await loadDeck(c, c.req.param("id"));
   if (!deck) return c.json({ error: "not_found" }, 404);
+  const qms = scoped(scopeOf(c.var.user));
+  const msJoin = qms.viaParent("scores", "s");
+  qms
+    .and("s.deck_id = ?", deck.id)
+    .andRaw("s.evaluator_kind = 'human'")
+    .and("s.evaluator_id = ?", c.var.user.id);
   const rows = (
     await c.env.DB.prepare(
       // W2-A — the per-parameter comment comes back too: it is the override
       // rationale (F0107), and re-opening a scored deck must show what was
       // written or the next submit will be refused for a missing one.
-      "SELECT p.key AS key, s.value AS value, s.comment AS comment FROM scores s JOIN parameters p ON p.id = s.parameter_id " +
-        "WHERE s.deck_id = ? AND s.evaluator_kind = 'human' AND s.evaluator_id = ? ORDER BY p.sort_order",
+      "SELECT p.key AS key, s.value AS value, s.comment AS comment FROM scores s " +
+        `${msJoin} JOIN parameters p ON p.id = s.parameter_id ${qms.whereClause()} ORDER BY p.sort_order`,
     )
-      .bind(deck.id, c.var.user.id)
+      .bind(...qms.binds)
       .all<{ key: string; value: number; comment: string | null }>()
   ).results;
   return c.json({
@@ -1242,14 +1329,25 @@ pipeline.get(
     const edition = c.var.user.edition as Edition;
     const assignable = ASSIGNABLE_EVALUATOR_ROLES[edition];
     const placeholders = assignable.map(() => "?").join(", ");
+    const qv = scoped(scopeOf(c.var.user))
+      .on("u")
+      .andRaw("u.active = 1")
+      // The role list and its binds go in TOGETHER, which is what `and()` is for.
+      .and(`u.role IN (${placeholders})`, ...assignable);
     const rows = (
       await c.env.DB.prepare(
+        // §2 B7 — the evaluator roster and each person's workload. The correlated
+        // `open_decks` subquery counts decks matched on `u.id`, so once `u` is in
+        // the caller's workspace it cannot reach another customer's pipeline; the
+        // extra `d.tenant_id = u.tenant_id` makes that structural rather than
+        // consequential, and costs no bind.
         "SELECT u.id, u.name, u.initials, u.role, u.title, u.evaluation_capacity, " +
           `(SELECT COUNT(DISTINCT d.id) FROM decks d JOIN (${ASSIGNEE_PAIRS_SQL}) ap ON ap.deck_id = d.id ` +
-          "WHERE ap.evaluator_id = u.id AND d.status IN ('assigned', 'jury_evaluation', 'analyst_scoring', 'associate_review', 'partner_review')) AS open_decks " +
-          `FROM users u WHERE u.edition = ? AND u.active = 1 AND u.role IN (${placeholders}) ORDER BY u.name`,
+          "WHERE ap.evaluator_id = u.id AND d.tenant_id = u.tenant_id AND d.edition = u.edition " +
+          "AND d.status IN ('assigned', 'jury_evaluation', 'analyst_scoring', 'associate_review', 'partner_review')) AS open_decks " +
+          `FROM users u ${qv.whereClause()} ORDER BY u.name`,
       )
-        .bind(edition, ...assignable)
+        .bind(...qv.binds)
         .all<{
           id: string;
           name: string;
@@ -1283,11 +1381,12 @@ pipeline.get(
 /** GET /jury — assignable jury members in the caller's edition (Assign screen). */
 pipeline.get("/jury", requireTask("assign", "program_associate", "program_manager", "admin"), async (c) => {
   const rows = (
-    await c.env.DB.prepare(
-      "SELECT id, name, initials FROM users WHERE edition = ? AND role = 'jury' AND active = 1 ORDER BY name",
-    )
-      .bind(c.var.user.edition)
-      .all<{ id: string; name: string; initials: string }>()
+    await (() => {
+      const qj = scoped(scopeOf(c.var.user)).on("u").andRaw("u.role = 'jury'").andRaw("u.active = 1");
+      return c.env.DB.prepare(`SELECT u.id, u.name, u.initials FROM users u ${qj.whereClause()} ORDER BY u.name`)
+        .bind(...qj.binds)
+        .all<{ id: string; name: string; initials: string }>();
+    })()
   ).results;
   return c.json({ jury: rows });
 });
@@ -1297,12 +1396,13 @@ pipeline.get("/jury", requireTask("assign", "program_associate", "program_manage
  *  core areas in the weighted composite and the caller's own role-scoped
  *  additional params in a separate section. */
 pipeline.get("/parameters", async (c) => {
-  const edition = c.var.user.edition;
+  const qpr = scoped(scopeOf(c.var.user)).on("p").andRaw("p.active = 1");
   const paramRows = (
     await c.env.DB.prepare(
-      "SELECT id, key, name, weight, informational, role_scope, prompt, description FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
+      "SELECT p.id, p.key, p.name, p.weight, p.informational, p.role_scope, p.prompt, p.description " +
+        `FROM parameters p ${qpr.whereClause()} ORDER BY p.sort_order`,
     )
-      .bind(edition)
+      .bind(...qpr.binds)
       .all<{
         id: string;
         key: string;
@@ -1329,13 +1429,16 @@ pipeline.get("/parameters", async (c) => {
   // actually means for THIS area. `bands` is additive, so the existing client
   // keeps working; EvaluatePage still renders the generic scale until Wave 7
   // adopts it (F0102, recorded in §9).
+  const qb = scoped(scopeOf(c.var.user)).on("p").andRaw("p.active = 1");
   const bandRows = (
     await c.env.DB.prepare(
+      // `parameter_rubric_bands` is owned through `parameters`; the join is already
+      // written, so the scope goes on `p`.
       "SELECT b.parameter_id, b.band_index, b.band_label, b.band_name, b.description " +
         "FROM parameter_rubric_bands b JOIN parameters p ON p.id = b.parameter_id " +
-        "WHERE p.edition = ? AND p.active = 1 ORDER BY b.band_index",
+        `${qb.whereClause()} ORDER BY b.band_index`,
     )
-      .bind(edition)
+      .bind(...qb.binds)
       .all<{
         parameter_id: string;
         band_index: number;
@@ -1347,12 +1450,13 @@ pipeline.get("/parameters", async (c) => {
   // W7-D — the parameter detail panel's "AI clarification questions (asked when
   // signals are weak)" (`AISJ_IC_SuserV15` `evOpenParam`, F0442). The bank is
   // `question_bank` (0028); only active questions, in the area's Q order.
+  const qqb = scoped(scopeOf(c.var.user)).on("p").andRaw("p.active = 1").andRaw("q.active = 1");
   const questionRows = (
     await c.env.DB.prepare(
       "SELECT q.parameter_id, q.text FROM question_bank q JOIN parameters p ON p.id = q.parameter_id " +
-        "WHERE p.edition = ? AND p.active = 1 AND q.active = 1 ORDER BY q.seq",
+        `${qqb.whereClause()} ORDER BY q.seq`,
     )
-      .bind(edition)
+      .bind(...qqb.binds)
       .all<{ parameter_id: string; text: string }>()
   ).results;
   const parameters = paramRows.map((p) => ({

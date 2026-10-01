@@ -25,10 +25,19 @@
  *     it.
  *   - No vendor SDK and no credential is on the critical path. The imports here
  *     are this repo's own modules only.
+ *
+ * **T1-COMMERCE — an intent names the customer it is for.**
+ * `PaymentIntentAttempt.tenantId` is required, not optional: the column's
+ * backfill default would otherwise file one customer's purchase against another
+ * and report a 200 doing it. `paymentConfigured` and `resolvePaymentClient` stay
+ * tenant-blind and correctly so — they read Worker secrets, which are a property
+ * of the DEPLOYMENT and not of any customer. Per-customer payment credentials
+ * would be a platform-tier feature, not a scope predicate.
  */
 
 import type { Env } from "../types";
 import type { Edition } from "../../shared/roles";
+import { insertScope } from "../../shared/tenant";
 import type { PaymentIntentView, TaxBreakdown } from "../../shared/plans";
 
 /** The providers an adapter could be written for. Naming them costs nothing. */
@@ -38,6 +47,17 @@ export type IntentPurpose = "credit_pack" | "subscription" | "enterprise" | "sea
 
 /** What a purchase attempt carries. Never an instrument, never a card. */
 export interface PaymentIntentAttempt {
+  /**
+   * The CUSTOMER being charged — `organizations.id`, from `scopeOf(user).tenantId`.
+   *
+   * REQUIRED, and that is the whole point. `billing_payment_intents.tenant_id`
+   * carries `DEFAULT 't_default'` (`0086:33`) because SQLite offers no other way
+   * to backfill a NOT NULL column, so an attempt that simply omitted the tenant
+   * would record a 200, write a row, and file the second customer's purchase
+   * against the first — with nothing in the response to notice. A missing field
+   * here does not compile instead.
+   */
+  tenantId: string;
   edition: Edition;
   purpose: IntentPurpose;
   planCode: string | null;
@@ -172,15 +192,16 @@ export async function recordPaymentIntent(
     }
   }
 
+  const t = insertScope({ tenantId: attempt.tenantId, edition: attempt.edition });
   await env.DB.prepare(
-    "INSERT INTO billing_payment_intents (id, edition, purpose, plan_code, plan_name, units, quantity, currency, " +
+    `INSERT INTO billing_payment_intents (id, ${t.columns}, purpose, plan_code, plan_name, units, quantity, currency, ` +
       "subtotal_minor, tax_minor, total_minor, gst_rate_pct, gst_inclusive, provider, status, checkout_url, " +
-      "provider_ref, error, actor_id, created_at, updated_at) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      `provider_ref, error, actor_id, created_at, updated_at) ` +
+      `VALUES (?, ${t.placeholders}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
-      attempt.edition,
+      ...t.binds,
       attempt.purpose,
       attempt.planCode,
       attempt.planName,

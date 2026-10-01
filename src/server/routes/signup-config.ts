@@ -40,12 +40,22 @@
  * its API together (§8 Q16). The two edition-specific sections additionally
  * refuse the other edition with a 403 — the section is not in that console's
  * rail, so serving it would be a capability the UI never offers.
+ *
+ * TENANCY (T1-FLOW). §2 B13 lists this router for what it holds: document
+ * checklists, **fund size and allocation**, seat capacity. `required_documents`
+ * is tenant-OWNED (`0085`); `signups`, `signup_documents` and `cohorts` are
+ * proxy-scoped and reach their owner through `TENANT_OWNER`. One literal was
+ * worse than a bound parameter and is now gone: `loadFundRows` read
+ * `WHERE edition = 'vc'` — the same shape §2 B14 calls out in `diligence.ts`,
+ * where there is not even a variable to re-point. The `ON CONFLICT (deck_id)`
+ * upsert in `syncRollUp` is deck-scoped and stays as it is.
  */
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { requireAuth, requireTask } from "../auth/middleware";
+import { insertScope, scopeOf, scoped, type TenantScope } from "../../shared/tenant";
 import { auditConfig } from "../audit/events";
 import {
   canTransitionDocument,
@@ -166,39 +176,38 @@ async function loadChecklist(
   programId: string | null,
   cohortId: string | null,
 ): Promise<{ rows: RequiredRow[]; inherited: boolean }> {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   if (cohortId) {
-    const own = await scopedRows(c, edition, programId, cohortId);
+    const own = await scopedRows(c, scope, programId, cohortId);
     if (own.length > 0) return { rows: own, inherited: false };
   }
   if (programId) {
-    const own = await scopedRows(c, edition, programId, null);
+    const own = await scopedRows(c, scope, programId, null);
     if (own.length > 0) return { rows: own, inherited: false };
   }
-  const defaults = await scopedRows(c, edition, null, null);
+  const defaults = await scopedRows(c, scope, null, null);
   return { rows: defaults, inherited: programId !== null || cohortId !== null };
 }
 
 function scopedRows(
   c: Context<AppEnv>,
-  edition: Edition,
+  scope: TenantScope,
   programId: string | null,
   cohortId: string | null,
 ): Promise<RequiredRow[]> {
-  const where =
-    programId === null
-      ? "program_id IS NULL AND cohort_id IS NULL"
-      : cohortId === null
-        ? "program_id = ? AND cohort_id IS NULL"
-        : "program_id = ? AND cohort_id = ?";
-  const binds: unknown[] = [edition];
-  if (programId !== null) binds.push(programId);
-  if (programId !== null && cohortId !== null) binds.push(cohortId);
+  const q = scoped(scope).on("rd");
+  if (programId === null) {
+    q.andRaw("rd.program_id IS NULL AND rd.cohort_id IS NULL");
+  } else if (cohortId === null) {
+    q.and("rd.program_id = ?", programId).andRaw("rd.cohort_id IS NULL");
+  } else {
+    q.and("rd.program_id = ?", programId).and("rd.cohort_id = ?", cohortId);
+  }
   return c.env.DB.prepare(
-    `SELECT id, edition, program_id, cohort_id, name, note, mandatory, active, sort_order ` +
-      `FROM required_documents WHERE edition = ? AND ${where} ORDER BY sort_order, rowid`,
+    `SELECT rd.id, rd.edition, rd.program_id, rd.cohort_id, rd.name, rd.note, rd.mandatory, ` +
+      `rd.active, rd.sort_order FROM required_documents rd ${q.whereClause()} ORDER BY rd.sort_order, rd.rowid`,
   )
-    .bind(...binds)
+    .bind(...q.binds)
     .all<RequiredRow>()
     .then((r) => r.results);
 }
@@ -209,18 +218,23 @@ async function resolveScope(
   programId: unknown,
   cohortId: unknown,
 ): Promise<{ programId: string | null; cohortId: string | null } | null> {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const pid = typeof programId === "string" && programId ? programId : null;
   const cid = typeof cohortId === "string" && cohortId ? cohortId : null;
   if (cid !== null && pid === null) return null;
   if (pid === null) return { programId: null, cohortId: null };
 
-  const prog = await c.env.DB.prepare("SELECT id FROM programs WHERE id = ? AND edition = ?")
-    .bind(pid, edition)
+  // This is the gate for the whole section: both ids arrive from the browser,
+  // and every read and write below is narrowed by whatever comes back from here.
+  const pq = scoped(scope).on("p").and("p.id = ?", pid);
+  const prog = await c.env.DB.prepare(`SELECT p.id FROM programs p ${pq.whereClause()}`)
+    .bind(...pq.binds)
     .first<{ id: string }>();
   if (!prog) return null;
   if (cid === null) return { programId: pid, cohortId: null };
 
+  // `program_id = ?` is enough for the cohort: the programme was just proved to
+  // be this workspace's, and a cohort belongs to exactly one programme.
   const coh = await c.env.DB.prepare("SELECT id FROM cohorts WHERE id = ? AND program_id = ?")
     .bind(cid, pid)
     .first<{ id: string }>();
@@ -262,16 +276,9 @@ async function loadSignupSets(
   programId: string | null,
   cohortId: string | null,
 ): Promise<SignupDocumentSetView[]> {
-  const binds: unknown[] = [c.var.user.edition];
-  let scope = "";
-  if (programId !== null) {
-    scope += " AND d.program_id = ?";
-    binds.push(programId);
-  }
-  if (cohortId !== null) {
-    scope += " AND d.cohort_id = ?";
-    binds.push(cohortId);
-  }
+  const q = scoped(scopeOf(c.var.user)).on("d");
+  if (programId !== null) q.and("d.program_id = ?", programId);
+  if (cohortId !== null) q.and("d.cohort_id = ?", cohortId);
   const { results } = await c.env.DB.prepare(
     "SELECT s.id AS signup_id, s.deck_id AS deck_id, s.status AS signup_status, " +
       "d.name AS startup, p.name AS program_name, co.name AS cohort_name, " +
@@ -284,10 +291,10 @@ async function loadSignupSets(
       "LEFT JOIN cohorts co ON co.id = d.cohort_id " +
       "JOIN signup_documents sd ON sd.signup_id = s.id " +
       "LEFT JOIN required_documents rd ON rd.id = sd.required_document_id " +
-      `WHERE d.edition = ?${scope} ` +
+      `${q.whereClause()} ` +
       "ORDER BY s.created_at DESC, s.id, sd.sort_order, sd.rowid",
   )
-    .bind(...binds)
+    .bind(...q.binds)
     .all<SignupDocRow>();
 
   const sets = new Map<string, SignupDocumentSetView>();
@@ -348,16 +355,26 @@ function toDocumentItem(v: SignupDocumentView): DocumentItem {
  * this upserts rather than assuming one exists.
  */
 async function syncRollUp(c: Context<AppEnv>, signupId: string): Promise<void> {
-  const signup = await c.env.DB.prepare("SELECT deck_id FROM signups WHERE id = ?")
-    .bind(signupId)
+  const scope = scopeOf(c.var.user);
+  const sq = scoped(scope);
+  const sJoins = sq.viaParent("signups", "s");
+  sq.and("s.id = ?", signupId);
+  const signup = await c.env.DB.prepare(
+    `SELECT s.deck_id FROM signups s ${sJoins} ${sq.whereClause()}`,
+  )
+    .bind(...sq.binds)
     .first<{ deck_id: string }>();
   if (!signup) return;
+  const dq = scoped(scope);
+  const dJoins = dq.viaParent("signup_documents", "sd");
+  dq.and("sd.signup_id = ?", signupId);
   const { results } = await c.env.DB.prepare(
     "SELECT sd.status AS status, sd.waived AS waived, rd.mandatory AS mandatory " +
-      "FROM signup_documents sd LEFT JOIN required_documents rd ON rd.id = sd.required_document_id " +
-      "WHERE sd.signup_id = ?",
+      `FROM signup_documents sd ${dJoins} ` +
+      "LEFT JOIN required_documents rd ON rd.id = sd.required_document_id " +
+      `${dq.whereClause()}`,
   )
-    .bind(signupId)
+    .bind(...dq.binds)
     .all<{ status: DocumentStatus; waived: number; mandatory: number | null }>();
   const status = rollUpDocumentsStatus(
     results.map((r) => ({
@@ -437,7 +454,8 @@ signupConfig.put("/documents", async (c) => {
   if (!Array.isArray(body.items)) return c.json({ error: "items_required" }, 400);
   if (body.items.length === 0) return c.json({ error: "checklist_empty" }, 400);
 
-  const existing = await scopedRows(c, c.var.user.edition, scope.programId, scope.cohortId);
+  const workspace = scopeOf(c.var.user);
+  const existing = await scopedRows(c, workspace, scope.programId, scope.cohortId);
   const byId = new Map(existing.map((r) => [r.id, r]));
 
   // Validate the whole list before writing any of it.
@@ -460,19 +478,26 @@ signupConfig.put("/documents", async (c) => {
   const statements = [];
   parsed.forEach((item, i) => {
     if (item.id) {
+      // `id = ?` needs no workspace half: every id in `parsed` was checked
+      // against `byId`, which came from a scoped `scopedRows` read, and an
+      // unknown id is a 400 above.
       statements.push(
         c.env.DB.prepare(
           "UPDATE required_documents SET name = ?, note = ?, mandatory = ?, active = 1, sort_order = ? WHERE id = ?",
         ).bind(item.name, item.note, item.mandatory ? 1 : 0, i + 1, item.id),
       );
     } else {
+      // `insertScope` so the customer cannot be left off the INSERT. The column
+      // carries `DEFAULT 't_default'`, so a forgotten bind here would file the
+      // checklist against the first customer and answer `{ ok: true }`.
+      const t = insertScope(workspace);
       statements.push(
         c.env.DB.prepare(
-          "INSERT INTO required_documents (id, edition, program_id, cohort_id, name, note, mandatory, active, sort_order) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)",
+          `INSERT INTO required_documents (id, ${t.columns}, program_id, cohort_id, name, note, mandatory, active, sort_order) ` +
+            `VALUES (?, ${t.placeholders}, ?, ?, ?, ?, ?, 1, ?)`,
         ).bind(
           `rd_${crypto.randomUUID().slice(0, 12)}`,
-          c.var.user.edition,
+          ...t.binds,
           scope.programId,
           scope.cohortId,
           item.name,
@@ -535,22 +560,14 @@ async function resyncOpenSignups(
   c: Context<AppEnv>,
   scope: { programId: string | null; cohortId: string | null },
 ): Promise<number> {
-  const binds: unknown[] = [c.var.user.edition];
-  let where = "";
-  if (scope.programId !== null) {
-    where += " AND d.program_id = ?";
-    binds.push(scope.programId);
-  }
-  if (scope.cohortId !== null) {
-    where += " AND d.cohort_id = ?";
-    binds.push(scope.cohortId);
-  }
+  const q = scoped(scopeOf(c.var.user)).on("d").andRaw("s.status IN ('initiated', 'progress')");
+  if (scope.programId !== null) q.and("d.program_id = ?", scope.programId);
+  if (scope.cohortId !== null) q.and("d.cohort_id = ?", scope.cohortId);
   const { results: signups } = await c.env.DB.prepare(
     "SELECT s.id AS id, d.program_id AS program_id, d.cohort_id AS cohort_id " +
-      "FROM signups s JOIN decks d ON d.id = s.deck_id " +
-      `WHERE d.edition = ? AND s.status IN ('initiated', 'progress')${where}`,
+      `FROM signups s JOIN decks d ON d.id = s.deck_id ${q.whereClause()}`,
   )
-    .bind(...binds)
+    .bind(...q.binds)
     .all<{ id: string; program_id: string | null; cohort_id: string | null }>();
   if (signups.length === 0) return 0;
 
@@ -572,10 +589,13 @@ async function resyncOpenSignups(
   for (const signup of signups) {
     const live = await checklistFor(signup.program_id, signup.cohort_id);
     const liveIds = new Set(live.map((r) => r.id));
+    const hq = scoped(scopeOf(c.var.user));
+    const hJoins = hq.viaParent("signup_documents", "sd");
+    hq.and("sd.signup_id = ?", signup.id);
     const { results: held } = await c.env.DB.prepare(
-      "SELECT id, required_document_id, status FROM signup_documents WHERE signup_id = ?",
+      `SELECT sd.id, sd.required_document_id, sd.status FROM signup_documents sd ${hJoins} ${hq.whereClause()}`,
     )
-      .bind(signup.id)
+      .bind(...hq.binds)
       .all<{ id: string; required_document_id: string | null; status: DocumentStatus }>();
     const heldIds = new Set(held.map((h) => h.required_document_id).filter(Boolean));
 
@@ -624,14 +644,20 @@ interface DocRow {
 }
 
 async function loadDoc(c: Context<AppEnv>, signupId: string, docId: string): Promise<DocRow | null> {
+  // The two-hop path this statement already walked by hand, now carrying the
+  // customer as well as the edition. Both ids come from the URL.
+  const q = scoped(scopeOf(c.var.user))
+    .on("d")
+    .and("sd.id = ?", docId)
+    .and("sd.signup_id = ?", signupId);
   return c.env.DB.prepare(
     "SELECT sd.id AS id, sd.signup_id AS signup_id, sd.name AS name, sd.status AS status, " +
       "sd.waived AS waived, d.name AS deck_name " +
       "FROM signup_documents sd JOIN signups s ON s.id = sd.signup_id " +
       "JOIN decks d ON d.id = s.deck_id " +
-      "WHERE sd.id = ? AND sd.signup_id = ? AND d.edition = ?",
+      `${q.whereClause()}`,
   )
-    .bind(docId, signupId, c.var.user.edition)
+    .bind(...q.binds)
     .first<DocRow>();
 }
 
@@ -725,14 +751,18 @@ async function reloadDoc(
   signupId: string,
   docId: string,
 ): Promise<SignupDocumentView | null> {
+  const q = scoped(scopeOf(c.var.user));
+  const joins = q.viaParent("signup_documents", "sd");
+  q.and("sd.id = ?", docId).and("sd.signup_id = ?", signupId);
   const row = await c.env.DB.prepare(
     "SELECT sd.id AS doc_id, sd.signup_id AS signup_id, sd.name AS name, sd.note AS note, " +
       "sd.status AS status, sd.waived AS waived, sd.waived_reason AS waived_reason, " +
       "sd.verified_at AS verified_at, rd.mandatory AS mandatory, sd.sort_order AS sort_order " +
-      "FROM signup_documents sd LEFT JOIN required_documents rd ON rd.id = sd.required_document_id " +
-      "WHERE sd.id = ? AND sd.signup_id = ?",
+      `FROM signup_documents sd ${joins} ` +
+      "LEFT JOIN required_documents rd ON rd.id = sd.required_document_id " +
+      `${q.whereClause()}`,
   )
-    .bind(docId, signupId)
+    .bind(...q.binds)
     .first<SignupDocRow>();
   return row ? toDocumentView(row) : null;
 }
@@ -749,18 +779,23 @@ async function reloadDoc(
  */
 signupConfig.post("/signups/:signupId/documents/verify-all", async (c) => {
   const signupId = c.req.param("signupId");
+  const sq = scoped(scopeOf(c.var.user)).on("d").and("s.id = ?", signupId);
   const signup = await c.env.DB.prepare(
     "SELECT s.id AS id, d.name AS deck_name FROM signups s JOIN decks d ON d.id = s.deck_id " +
-      "WHERE s.id = ? AND d.edition = ?",
+      `${sq.whereClause()}`,
   )
-    .bind(signupId, c.var.user.edition)
+    .bind(...sq.binds)
     .first<{ id: string; deck_name: string }>();
   if (!signup) return c.json({ error: "not_found" }, 404);
 
+  const dq = scoped(scopeOf(c.var.user));
+  const dJoins = dq.viaParent("signup_documents", "sd");
+  dq.and("sd.signup_id = ?", signupId);
   const { results } = await c.env.DB.prepare(
-    "SELECT id, status, waived FROM signup_documents WHERE signup_id = ? ORDER BY sort_order, rowid",
+    `SELECT sd.id, sd.status, sd.waived FROM signup_documents sd ${dJoins} ${dq.whereClause()} ` +
+      "ORDER BY sd.sort_order, sd.rowid",
   )
-    .bind(signupId)
+    .bind(...dq.binds)
     .all<{ id: string; status: DocumentStatus; waived: number }>();
 
   const movable = results.filter(
@@ -793,6 +828,23 @@ signupConfig.post("/signups/:signupId/documents/verify-all", async (c) => {
 // Seat capacity (incubator)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * One cohort's seat numbers, scoped through its programme — `TENANT_OWNER`'s
+ * path for `cohorts`. The id comes off a deck in a record already proved to be
+ * this workspace's, so the bind alone is sound; the join is what makes the
+ * statement say so rather than depend on the frame above it.
+ */
+async function loadCohortSeats(c: Context<AppEnv>, cohortId: string) {
+  const q = scoped(scopeOf(c.var.user));
+  const joins = q.viaParent("cohorts", "ch");
+  q.and("ch.id = ?", cohortId);
+  return c.env.DB.prepare(
+    `SELECT ch.id, ch.name, ch.seat_capacity, ch.seats_filled FROM cohorts ch ${joins} ${q.whereClause()}`,
+  )
+    .bind(...q.binds)
+    .first<{ id: string; name: string; seat_capacity: number; seats_filled: number }>();
+}
+
 /** `s-suseat` is not in the VC rail — serving it would be a phantom capability. */
 function requireIncubator(c: Context<AppEnv>): Response | null {
   return c.var.user.edition === "incubator"
@@ -816,20 +868,21 @@ interface SeatRowDb {
 }
 
 /**
- * Every active cohort of the edition, whether or not it has a seat count —
+ * Every active cohort of the workspace, whether or not it has a seat count —
  * because every cohort HAS a capacity, and a table that listed only the
  * configured ones would hide the cohort an admin most needs to configure. The
  * row label is the prototype's "Accelerator · Cohort 8": programme, then batch.
  */
 async function loadSeatRows(c: Context<AppEnv>): Promise<SeatRowView[]> {
+  const q = scoped(scopeOf(c.var.user)).on("p").andRaw("ch.active = 1").andRaw("p.active = 1");
   const { results } = await c.env.DB.prepare(
-    "SELECT c.id AS cohort_id, c.name AS cohort_name, p.id AS program_id, p.name AS program_name, " +
-      "c.seat_capacity AS seat_capacity, c.seats_filled AS seats_filled " +
-      "FROM cohorts c JOIN programs p ON p.id = c.program_id " +
-      "WHERE p.edition = ? AND c.active = 1 AND p.active = 1 " +
-      "ORDER BY p.sort_order, p.name, c.sort_order, c.name",
+    "SELECT ch.id AS cohort_id, ch.name AS cohort_name, p.id AS program_id, p.name AS program_name, " +
+      "ch.seat_capacity AS seat_capacity, ch.seats_filled AS seats_filled " +
+      "FROM cohorts ch JOIN programs p ON p.id = ch.program_id " +
+      `${q.whereClause()} ` +
+      "ORDER BY p.sort_order, p.name, ch.sort_order, ch.name",
   )
-    .bind(c.var.user.edition)
+    .bind(...q.binds)
     .all<SeatRowDb>();
   return results.map((r) => {
     const row = {
@@ -853,16 +906,20 @@ async function loadSeatRows(c: Context<AppEnv>): Promise<SeatRowView[]> {
 
 /** The sign-ups the seatless callout counts, with enough to allocate from. */
 async function loadSeatless(c: Context<AppEnv>) {
+  const q = scoped(scopeOf(c.var.user))
+    .on("d")
+    .andRaw("s.seatless = 1")
+    .andRaw("s.seat_allocated_at IS NULL");
   const { results } = await c.env.DB.prepare(
     "SELECT s.id AS signup_id, d.name AS startup, s.status AS status, " +
       "co.id AS cohort_id, co.name AS cohort_name, p.name AS program_name " +
       "FROM signups s JOIN decks d ON d.id = s.deck_id " +
       "LEFT JOIN cohorts co ON co.id = d.cohort_id " +
       "LEFT JOIN programs p ON p.id = d.program_id " +
-      "WHERE d.edition = ? AND s.seatless = 1 AND s.seat_allocated_at IS NULL " +
+      `${q.whereClause()} ` +
       "ORDER BY s.completed_at DESC, s.id",
   )
-    .bind(c.var.user.edition)
+    .bind(...q.binds)
     .all<{
       signup_id: string;
       startup: string;
@@ -978,17 +1035,22 @@ signupConfig.put("/seats", async (c) => {
  * holding no seat, which is the invisibility F0011 exists to end.
  */
 async function reconcileSeatless(c: Context<AppEnv>): Promise<void> {
+  // A blind UPDATE over `signups` with the workspace reached through the deck
+  // subquery — which is where the predicate has to go, because `signups` has no
+  // key of its own. Without the tenant half this re-flags every customer's
+  // seatless sign-ups whenever one admin edits one capacity table.
+  const q = scoped(scopeOf(c.var.user)).on("d");
   await c.env.DB.prepare(
     "UPDATE signups SET seatless = 1 " +
       "WHERE seat_allocated_at IS NULL " +
       "  AND status IN ('completed', 'onboarded') " +
-      "  AND deck_id IN (SELECT id FROM decks WHERE edition = ?) " +
+      `  AND deck_id IN (SELECT d.id FROM decks d ${q.whereClause()}) ` +
       "  AND NOT EXISTS (" +
-      "    SELECT 1 FROM decks d JOIN cohorts co ON co.id = d.cohort_id " +
-      "    WHERE d.id = signups.deck_id AND co.seats_filled < co.seat_capacity" +
+      "    SELECT 1 FROM decks d2 JOIN cohorts co ON co.id = d2.cohort_id " +
+      "    WHERE d2.id = signups.deck_id AND co.seats_filled < co.seat_capacity" +
       "  )",
   )
-    .bind(c.var.user.edition)
+    .bind(...q.binds)
     .run();
 }
 
@@ -1009,12 +1071,13 @@ signupConfig.post("/signups/:signupId/complete", async (c) => {
   const wrong = requireIncubator(c);
   if (wrong) return wrong;
   const signupId = c.req.param("signupId");
+  const sq = scoped(scopeOf(c.var.user)).on("d").and("s.id = ?", signupId);
   const row = await c.env.DB.prepare(
     "SELECT s.id AS id, s.status AS status, s.seat_allocated_at AS seat_allocated_at, " +
       "d.name AS startup, d.cohort_id AS cohort_id " +
-      "FROM signups s JOIN decks d ON d.id = s.deck_id WHERE s.id = ? AND d.edition = ?",
+      `FROM signups s JOIN decks d ON d.id = s.deck_id ${sq.whereClause()}`,
   )
-    .bind(signupId, c.var.user.edition)
+    .bind(...sq.binds)
     .first<{
       id: string;
       status: string;
@@ -1027,11 +1090,7 @@ signupConfig.post("/signups/:signupId/complete", async (c) => {
     return c.json({ error: "illegal_transition", from: row.status, to: "completed" }, 400);
   }
 
-  const cohort = row.cohort_id
-    ? await c.env.DB.prepare("SELECT id, name, seat_capacity, seats_filled FROM cohorts WHERE id = ?")
-        .bind(row.cohort_id)
-        .first<{ id: string; name: string; seat_capacity: number; seats_filled: number }>()
-    : null;
+  const cohort = row.cohort_id ? await loadCohortSeats(c, row.cohort_id) : null;
   const free = cohort !== null && cohort.seats_filled < cohort.seat_capacity;
 
   // Two statements rather than one bound flag, so `seat_allocated_at` is
@@ -1078,12 +1137,13 @@ signupConfig.post("/signups/:signupId/seat", async (c) => {
   const wrong = requireIncubator(c);
   if (wrong) return wrong;
   const signupId = c.req.param("signupId");
+  const sq = scoped(scopeOf(c.var.user)).on("d").and("s.id = ?", signupId);
   const row = await c.env.DB.prepare(
     "SELECT s.id AS id, s.status AS status, s.seat_allocated_at AS seat_allocated_at, " +
       "d.name AS startup, d.cohort_id AS cohort_id " +
-      "FROM signups s JOIN decks d ON d.id = s.deck_id WHERE s.id = ? AND d.edition = ?",
+      `FROM signups s JOIN decks d ON d.id = s.deck_id ${sq.whereClause()}`,
   )
-    .bind(signupId, c.var.user.edition)
+    .bind(...sq.binds)
     .first<{
       id: string;
       status: string;
@@ -1107,11 +1167,7 @@ signupConfig.post("/signups/:signupId/seat", async (c) => {
       row.cohort_id,
     ),
   ]);
-  const cohort = await c.env.DB.prepare(
-    "SELECT name, seat_capacity, seats_filled FROM cohorts WHERE id = ?",
-  )
-    .bind(row.cohort_id)
-    .first<{ name: string; seat_capacity: number; seats_filled: number }>();
+  const cohort = await loadCohortSeats(c, row.cohort_id);
   const over = cohort !== null && cohort.seats_filled > cohort.seat_capacity;
 
   await auditConfig(
@@ -1153,11 +1209,23 @@ function toFundView(r: FundRowDb): FundRowView {
   };
 }
 
+/**
+ * The VC edition's fund table — **no longer keyed on a literal.**
+ *
+ * This read was `WHERE edition = 'vc'`, the shape §2 B14 singles out: a literal
+ * is worse than a bound parameter because there is not even a variable to
+ * re-point. The route is already behind `requireVc`, so the caller's own scope
+ * carries `edition = 'vc'` and the literal was never doing work the session
+ * could not do — it was only hiding the missing half of the key.
+ */
 async function loadFundRows(c: Context<AppEnv>): Promise<FundRowView[]> {
+  const q = scoped(scopeOf(c.var.user)).on("p").andRaw("p.active = 1");
   const { results } = await c.env.DB.prepare(
-    "SELECT id, name, fund_size, fund_allocated, capital_deployed, fund_unutilised " +
-      "FROM programs WHERE edition = 'vc' AND active = 1 ORDER BY sort_order, name",
-  ).all<FundRowDb>();
+    "SELECT p.id, p.name, p.fund_size, p.fund_allocated, p.capital_deployed, p.fund_unutilised " +
+      `FROM programs p ${q.whereClause()} ORDER BY p.sort_order, p.name`,
+  )
+    .bind(...q.binds)
+    .all<FundRowDb>();
   return results.map(toFundView);
 }
 
@@ -1235,12 +1303,13 @@ signupConfig.put("/fund", async (c) => {
   });
   if (changed.length > 0) {
     await c.env.DB.batch(
-      changed.map((p) =>
-        c.env.DB.prepare(
+      changed.map((p) => {
+        const q = scoped(scopeOf(c.var.user)).on("programs").and("id = ?", p.programId);
+        return c.env.DB.prepare(
           "UPDATE programs SET fund_allocated = ?, capital_deployed = ?, fund_unutilised = ? " +
-            "WHERE id = ? AND edition = 'vc'",
-        ).bind(p.allotted, p.deployed, p.unutilised, p.programId),
-      ),
+            `${q.whereClause()}`,
+        ).bind(p.allotted, p.deployed, p.unutilised, ...q.binds);
+      }),
     );
     await auditConfig(
       c,

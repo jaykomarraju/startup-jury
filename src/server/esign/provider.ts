@@ -30,6 +30,7 @@
  */
 
 import type { Env } from "../types";
+import { insertScope, scoped, type TenantScope } from "../../shared/tenant";
 import {
   ESIGN_PROVIDER_LABELS,
   type ESignProvider,
@@ -152,11 +153,36 @@ interface OutboxRow {
   created_at: string;
 }
 
-async function findByDedupeKey(env: Env, key: string): Promise<OutboxRow | null> {
+/**
+ * The dedupe lookup, scoped.
+ *
+ * `esign_outbox` holds only NULLABLE foreign keys, so no join can scope it and
+ * `0086` gave it a direct `tenant_id` — see `listAttempts` in `./store.ts` for
+ * the full argument. It has no `edition` column, hence `onTenantOnly`.
+ *
+ * **The UNIQUE index behind the key is still tenant-blind**
+ * (`idx_esign_outbox_dedupe ON esign_outbox (dedupe_key) WHERE dedupe_key IS NOT
+ * NULL`), and `0099` re-cut `notifications`' dedupe but not this one. In
+ * practice no collision is reachable: both keys this module mints are
+ * `<kind>:<signups.id>` and a sign-up id is a UUID, which is why §2 A8 names
+ * `email_outbox`'s `monthly_usage_summary:${edition}:${month}` as the dangerous
+ * one and calls every id-derived key safe. If a tenant-blind key is ever added,
+ * the scoped read here turns what would have been a SILENT cross-tenant
+ * `deduped: true` — one customer's envelope suppressing another's — into a
+ * `UNIQUE constraint failed` on the insert. Loud, and recorded for integration
+ * in `docs/parity-requests/T1-ESIGN.md`.
+ */
+async function findByDedupeKey(
+  env: Env,
+  scope: TenantScope,
+  key: string,
+): Promise<OutboxRow | null> {
+  const q = scoped(scope).onTenantOnly("x").and("x.dedupe_key = ?", key);
   return env.DB.prepare(
-    "SELECT id, status, provider_reference, error, created_at FROM esign_outbox WHERE dedupe_key = ?",
+    "SELECT x.id, x.status, x.provider_reference, x.error, x.created_at " +
+      `FROM esign_outbox x ${q.whereClause()}`,
   )
-    .bind(key)
+    .bind(...q.binds)
     .first<OutboxRow>();
 }
 
@@ -187,12 +213,13 @@ function hydrate(attempt: ESignAttempt, row: OutboxRow): ESignRecord {
  */
 export async function recordESignAttempt(
   env: Env,
+  scope: TenantScope,
   attempt: ESignAttempt,
   now: () => string = () => new Date().toISOString(),
   client: ESignClient | null = null,
 ): Promise<ESignRecord> {
   if (attempt.dedupeKey) {
-    const existing = await findByDedupeKey(env, attempt.dedupeKey);
+    const existing = await findByDedupeKey(env, scope, attempt.dedupeKey);
     if (existing) return hydrate(attempt, existing);
   }
 
@@ -227,14 +254,21 @@ export async function recordESignAttempt(
     providerReference = `stub:${attempt.provider.toLowerCase()}:${id.slice(6, 14)}`;
   }
 
+  // The write side, where a forgotten key is silent: `esign_outbox.tenant_id`
+  // carries `DEFAULT 't_default'` (SQLite offers no other way to backfill a NOT
+  // NULL column), so an unbound tenant would file this attempt against the FIRST
+  // customer and return a perfectly ordinary record. `insertScope` is what makes
+  // that unforgettable.
+  const t = insertScope(scope, { tenantOnly: true });
   try {
     await env.DB.prepare(
-      "INSERT INTO esign_outbox (id, signup_id, agreement_id, kind, provider, sig_type, " +
+      `INSERT INTO esign_outbox (id, ${t.columns}, signup_id, agreement_id, kind, provider, sig_type, ` +
         "recipients_json, document_name, status, provider_reference, error, dedupe_key, created_at) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        `VALUES (?, ${t.placeholders}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         id,
+        ...t.binds,
         attempt.signupId,
         attempt.agreementId,
         attempt.kind,
@@ -253,7 +287,7 @@ export async function recordESignAttempt(
     // The only expected failure is the dedupe UNIQUE index losing a race with a
     // concurrent run. Return the row that won rather than surfacing a 500.
     if (attempt.dedupeKey) {
-      const existing = await findByDedupeKey(env, attempt.dedupeKey);
+      const existing = await findByDedupeKey(env, scope, attempt.dedupeKey);
       if (existing) return hydrate(attempt, existing);
     }
     throw err;

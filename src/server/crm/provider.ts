@@ -21,6 +21,7 @@
  */
 
 import type { Env } from "../types";
+import { insertScope, scoped, type TenantScope } from "../../shared/tenant";
 import type { Edition } from "../../shared/roles";
 import type { CrmOperation, CrmProvider, CrmSyncStatus } from "../../shared/crm";
 import { emitNotification } from "../email/outbox";
@@ -28,7 +29,10 @@ import { emitNotification } from "../email/outbox";
 /** What a sync attempt would carry. Never a credential. */
 export interface CrmSyncAttempt {
   connectionId: string;
-  edition: Edition;
+  // `edition` was a field here and is now read off the `TenantScope` the caller
+  // passes, so a row cannot be written with an edition that disagrees with the
+  // workspace it is filed under — the two were separately supplied and could
+  // drift. `CrmSyncRecord` re-exposes it below for the callers that echo it.
   provider: CrmProvider;
   operation: CrmOperation;
   /** 'pull' for inbound deals, 'push' for outbound scores. */
@@ -47,6 +51,8 @@ export interface CrmSyncAttempt {
 }
 
 export interface CrmSyncRecord extends CrmSyncAttempt {
+  /** The workspace's edition, taken from the scope the attempt was recorded under. */
+  edition: Edition;
   id: string;
   status: CrmSyncStatus;
   createdAt: string;
@@ -139,6 +145,7 @@ const ADAPTERS: Partial<Record<CrmProvider, (credential: string) => CrmClient>> 
  */
 export async function recordSyncAttempt(
   env: Env,
+  scope: TenantScope,
   attempt: CrmSyncAttempt,
   connection: { credentialRef: string | null },
   now: () => string = () => new Date().toISOString(),
@@ -192,14 +199,19 @@ export async function recordSyncAttempt(
     }
   }
 
+  // `crm_sync_log.tenant_id` carries `DEFAULT 't_default'`, so a forgotten bind
+  // files this row against the first customer and returns a perfectly ordinary
+  // record. `insertScope` supplies the edition too, which is why the field is
+  // gone from `CrmSyncAttempt`.
+  const t = insertScope(scope);
   await env.DB.prepare(
-    "INSERT INTO crm_sync_log (id, connection_id, edition, provider, direction, operation, status, deck_id, record_count, payload_json, error, created_at) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    `INSERT INTO crm_sync_log (id, ${t.columns}, connection_id, provider, direction, operation, status, deck_id, record_count, payload_json, error, created_at) ` +
+      `VALUES (?, ${t.placeholders}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
+      ...t.binds,
       attempt.connectionId,
-      attempt.edition,
       attempt.provider,
       attempt.direction,
       attempt.operation,
@@ -216,11 +228,12 @@ export async function recordSyncAttempt(
   // ("Last sync: 4 Jun 2026 · 11:42 am · 3 deals pulled"). A skipped attempt is
   // not a sync and must not move the timestamp.
   if (status !== "skipped") {
+    const q = scoped(scope).on("crm_connections").and("id = ?", attempt.connectionId);
     await env.DB.prepare(
       "UPDATE crm_connections SET last_sync_at = ?, last_sync_count = ?, last_error = ?, " +
-        "status = CASE WHEN ? = 'failed' THEN 'error' ELSE status END, updated_at = ? WHERE id = ?",
+        `status = CASE WHEN ? = 'failed' THEN 'error' ELSE status END, updated_at = ? ${q.whereClause()}`,
     )
-      .bind(createdAt, recordCount, error, status, createdAt, attempt.connectionId)
+      .bind(createdAt, recordCount, error, status, createdAt, ...q.binds)
       .run();
   }
 
@@ -231,9 +244,16 @@ export async function recordSyncAttempt(
   // makes correct — neither alerts. Keyed on the log row, so every distinct
   // failure is heard once and a retry of the same call is a new attempt.
   if (status === "failed") {
+    // CROSS-SESSION: `emitNotification` lives in `src/server/email/**`, which is
+    // T1-PEOPLE's. Its recipient query is §2 B22 —
+    // `SELECT … FROM users WHERE edition = ?` — so until that session widens it,
+    // a CRM failure here still fans out to every customer's admins. The edition
+    // passed is this workspace's; the tenant it needs is `scope.tenantId`, and
+    // the signature has no parameter for one yet. Recorded in
+    // `docs/parity-requests/T1-ESIGN.md`.
     await emitNotification(env, {
       event: "crm_sync_failed",
-      edition: attempt.edition,
+      edition: scope.edition,
       title: `CRM sync failed — ${attempt.provider}`,
       body:
         `The ${attempt.operation.replace(/_/g, " ")} sync to ${attempt.provider} failed.\n\n` +
@@ -245,5 +265,5 @@ export async function recordSyncAttempt(
     });
   }
 
-  return { ...attempt, id, status, createdAt, error, recordCount };
+  return { ...attempt, edition: scope.edition, id, status, createdAt, error, recordCount };
 }

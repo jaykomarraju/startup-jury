@@ -2,9 +2,18 @@ import { SELF, env } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
 import { evaluateDeck, type RawEvaluation } from "../../src/server/ai/evaluate";
 import { runNoResponseSweep } from "../../src/server/scheduled";
+// T1-PEOPLE — `runNoResponseSweep` takes a WORKSPACE now, not an edition: the cron
+// has no session, so `scheduled.ts` enumerates `organizations` and hands one scope
+// per pass. Every seeded row backfilled to `DEFAULT_TENANT_ID` (`0083`-`0100`), so
+// these cases name the same workspace they always meant.
+import { DEFAULT_TENANT_ID } from "../../src/shared/tenant";
+
+const INC: TenantScope = { tenantId: DEFAULT_TENANT_ID, edition: "incubator" };
+const VC: TenantScope = { tenantId: DEFAULT_TENANT_ID, edition: "vc" };
 import { screeningStatus, type ScreeningDeck } from "../../src/shared/deckStats";
 import { QUERY_RESPONSE_WORKING_DAYS } from "../../src/shared/queries";
 import type { Env } from "../../src/server/types";
+import type { TenantScope } from "../../src/shared/tenant";
 
 /**
  * S2-SERVER — the four server-side halves of the client's screening flow
@@ -599,7 +608,7 @@ describe("the no-response sweep archives a query nobody answered", () => {
     // Comfortably past five WORKING days however the weekend falls.
     await backdate("sc_nr", 20);
 
-    const swept = await runNoResponseSweep(env as Env, "incubator");
+    const swept = await runNoResponseSweep(env as Env, INC);
     expect(swept.map((s) => s.deckId)).toContain("sc_nr");
 
     const view = (await deck("sc_nr", cookie)) as Row & { exitNote?: string; exitAction?: string };
@@ -623,7 +632,7 @@ describe("the no-response sweep archives a query nobody answered", () => {
       .bind("sc_nr_answered")
       .run();
 
-    const swept = await runNoResponseSweep(env as Env, "incubator");
+    const swept = await runNoResponseSweep(env as Env, INC);
     expect(swept.map((s) => s.deckId)).not.toContain("sc_nr_answered");
     expect((await deck("sc_nr_answered", cookie)).statusId).not.toBe("archived");
   });
@@ -636,7 +645,7 @@ describe("the no-response sweep archives a query nobody answered", () => {
     // One working day is inside a five-working-day window under any weekend.
     await backdate("sc_nr_fresh", 1);
 
-    expect((await runNoResponseSweep(env as Env, "incubator")).map((s) => s.deckId)).not.toContain("sc_nr_fresh");
+    expect((await runNoResponseSweep(env as Env, INC)).map((s) => s.deckId)).not.toContain("sc_nr_fresh");
     expect((await deck("sc_nr_fresh", cookie)).statusId).not.toBe("archived");
     expect(QUERY_RESPONSE_WORKING_DAYS).toBe(5);
   });
@@ -651,7 +660,7 @@ describe("the no-response sweep archives a query nobody answered", () => {
     // evaluated by the jury. The rule is about an unanswered clarification.
     await env.DB.prepare("UPDATE decks SET status = 'jury_evaluation' WHERE id = ?").bind("sc_nr_moved").run();
 
-    expect((await runNoResponseSweep(env as Env, "incubator")).map((s) => s.deckId)).not.toContain("sc_nr_moved");
+    expect((await runNoResponseSweep(env as Env, INC)).map((s) => s.deckId)).not.toContain("sc_nr_moved");
     expect((await deck("sc_nr_moved", cookie)).statusId).toBe("jury_evaluation");
   });
 
@@ -662,10 +671,10 @@ describe("the no-response sweep archives a query nobody answered", () => {
     await raiseQuery("sc_nr_twice", cookie);
     await backdate("sc_nr_twice", 20);
 
-    expect((await runNoResponseSweep(env as Env, "incubator")).map((s) => s.deckId)).toContain("sc_nr_twice");
+    expect((await runNoResponseSweep(env as Env, INC)).map((s) => s.deckId)).toContain("sc_nr_twice");
     // `archived` is outside SWEEPABLE_STAGES, so the deck cannot be archived
     // twice and the daily cron is safe to run on a quiet database.
-    expect((await runNoResponseSweep(env as Env, "incubator")).map((s) => s.deckId)).not.toContain("sc_nr_twice");
+    expect((await runNoResponseSweep(env as Env, INC)).map((s) => s.deckId)).not.toContain("sc_nr_twice");
   });
 
   it("does NOT archive a deck whose query was never actually composed", async () => {
@@ -683,7 +692,7 @@ describe("the no-response sweep archives a query nobody answered", () => {
     expect(sent.status).toBe(200);
     await backdate("sc_nr_uncomposed", 30);
 
-    expect((await runNoResponseSweep(env as Env, "incubator")).map((s) => s.deckId)).not.toContain(
+    expect((await runNoResponseSweep(env as Env, INC)).map((s) => s.deckId)).not.toContain(
       "sc_nr_uncomposed",
     );
     expect((await deck("sc_nr_uncomposed", cookie)).statusId).not.toBe("archived");
@@ -693,7 +702,7 @@ describe("the no-response sweep archives a query nobody answered", () => {
     // T1-PEOPLE's note lives on the sweep itself: this runs with no session and
     // therefore no tenant, so edition scoping is the only scoping it has today
     // and a tenant key threads through the same parameter.
-    const vc = await runNoResponseSweep(env as Env, "vc");
+    const vc = await runNoResponseSweep(env as Env, VC);
     for (const s of vc) {
       const row = await env.DB.prepare("SELECT edition FROM decks WHERE id = ?")
         .bind(s.deckId)

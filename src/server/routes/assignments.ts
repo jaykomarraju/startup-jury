@@ -26,6 +26,8 @@ import { buildAssignmentEmail, sendEmail } from "../email/outbox";
 import { ASSIGNEE_PAIRS_SQL, clearAssignments, upsertAssignment } from "../decks/assignments";
 // F-FOUL — rows 8 and 12. Column-only here, and the reason is in the module.
 import { decksWithoutFileKey } from "../decks/deckFile";
+// T1-DECKS — T0's one scope helper.
+import { scopeOf, scoped } from "../../shared/tenant";
 
 export const assignments = new Hono<AppEnv>();
 assignments.use("*", requireAuth, denyMentor);
@@ -63,26 +65,44 @@ assignments.get(
   async (c) => {
     const { id: viewerId, edition, role } = c.var.user;
     const db = c.env.DB;
+    const qd = scoped(scopeOf(c.var.user))
+      .on("d")
+      .and(`d.status IN (${placeholders(ASSIGNABLE_STAGES.length)})`, ...ASSIGNABLE_STAGES);
     const decks = (
       await db
-        .prepare(`SELECT id FROM decks WHERE edition = ? AND status IN (${placeholders(ASSIGNABLE_STAGES.length)})`)
-        .bind(edition, ...ASSIGNABLE_STAGES)
+        .prepare(`SELECT d.id FROM decks d ${qd.whereClause()}`)
+        .bind(...qd.binds)
         .all<{ id: string }>()
     ).results.map((r) => r.id);
     if (decks.length === 0) return c.json({ decks: {} });
 
+    const qs = scoped(scopeOf(c.var.user))
+      .on("d")
+      .on("p")
+      .andRaw("s.evaluator_kind = 'ai'")
+      .andRaw("p.active = 1")
+      .and(`d.status IN (${placeholders(ASSIGNABLE_STAGES.length)})`, ...ASSIGNABLE_STAGES);
     const scores = (
       await db
         .prepare(
+          // `scores` already joins its owner `decks`, so the scope goes on `d`
+          // rather than through `viaParent` (which would emit a second JOIN).
+          // `parameters` is tenant-keyed in its own right and gets its own.
           "SELECT s.deck_id, p.key, p.informational, p.role_scope, s.value FROM scores s " +
             "JOIN parameters p ON p.id = s.parameter_id JOIN decks d ON d.id = s.deck_id " +
-            `WHERE s.evaluator_kind = 'ai' AND p.active = 1 AND d.edition = ? AND d.status IN (${placeholders(ASSIGNABLE_STAGES.length)}) ` +
-            "ORDER BY p.sort_order",
+            `${qs.whereClause()} ORDER BY p.sort_order`,
         )
-        .bind(edition, ...ASSIGNABLE_STAGES)
+        .bind(...qs.binds)
         .all<{ deck_id: string; key: string; informational: number; role_scope: string | null; value: number }>()
     ).results;
 
+    // Both the deck and the evaluator are scoped: `ASSIGNEE_PAIRS_SQL` is a UNION
+    // over two unscoped tables, so without `u` on the predicate a pair whose deck
+    // is ours and whose evaluator is not would still print that person's name.
+    const qa = scoped(scopeOf(c.var.user))
+      .on("d")
+      .on("u")
+      .and(`d.status IN (${placeholders(ASSIGNABLE_STAGES.length)})`, ...ASSIGNABLE_STAGES);
     const assignees = (
       await db
         .prepare(
@@ -91,9 +111,9 @@ assignments.get(
             `FROM (${ASSIGNEE_PAIRS_SQL}) ap JOIN users u ON u.id = ap.evaluator_id ` +
             "JOIN decks d ON d.id = ap.deck_id " +
             "LEFT JOIN deck_assignments da ON da.deck_id = ap.deck_id AND da.evaluator_id = ap.evaluator_id " +
-            `WHERE d.edition = ? AND d.status IN (${placeholders(ASSIGNABLE_STAGES.length)}) ORDER BY u.name`,
+            `${qa.whereClause()} ORDER BY u.name`,
         )
-        .bind(edition, ...ASSIGNABLE_STAGES)
+        .bind(...qa.binds)
         .all<{ deck_id: string; id: string; name: string; role: string; due_at: string | null; submitted: number }>()
     ).results;
 
@@ -103,10 +123,15 @@ assignments.get(
     const isEvaluator = isAssignableEvaluator(edition, role);
     const submittedByViewer = new Set(
       (
-        await db
-          .prepare("SELECT deck_id FROM evaluations WHERE evaluator_id = ?")
-          .bind(viewerId)
-          .all<{ deck_id: string }>()
+        await (() => {
+          const qv = scoped(scopeOf(c.var.user));
+          const join = qv.viaParent("evaluations", "e");
+          qv.and("e.evaluator_id = ?", viewerId);
+          return db
+            .prepare(`SELECT e.deck_id FROM evaluations e ${join} ${qv.whereClause()}`)
+            .bind(...qv.binds)
+            .all<{ deck_id: string }>();
+        })()
       ).results.map((r) => r.deck_id),
     );
 
@@ -160,21 +185,33 @@ assignments.post(
     }
 
     // ── Validate EVERYTHING before writing anything (F0211) ────────────────────
+    // ── BOTH ID LISTS COME FROM THE REQUEST BODY ────────────────────────────
+    // This route is the one place in T1-DECKS' files where a caller NAMES up to 100
+    // decks and 25 people outright. Scoped by `edition` alone it would have
+    // assigned another customer's decks to another customer's evaluators — and then
+    // emailed them, which is the §2 B22 shape: a leak that leaves the building. The
+    // `missing` / `invalid` checks below already answer 404 and 400 for ids that do
+    // not resolve, so scoping these two reads is the whole fix.
+    const qdk = scoped(scopeOf(c.var.user))
+      .on("d")
+      .and(`d.id IN (${placeholders(deckIds.length)})`, ...deckIds);
     const decks = (
       await db
-        .prepare(`SELECT id, name, status, assigned_to FROM decks WHERE edition = ? AND id IN (${placeholders(deckIds.length)})`)
-        .bind(edition, ...deckIds)
+        .prepare(`SELECT d.id, d.name, d.status, d.assigned_to FROM decks d ${qdk.whereClause()}`)
+        .bind(...qdk.binds)
         .all<{ id: string; name: string; status: string; assigned_to: string | null }>()
     ).results;
     const missing = deckIds.filter((id) => !decks.some((d) => d.id === id));
     if (missing.length) return c.json({ error: "not_found", deckIds: missing }, 404);
 
+    const qmb = scoped(scopeOf(c.var.user))
+      .on("u")
+      .andRaw("u.active = 1")
+      .and(`u.id IN (${placeholders(assigneeIds.length)})`, ...assigneeIds);
     const members = (
       await db
-        .prepare(
-          `SELECT id, name, initials, role, email FROM users WHERE edition = ? AND active = 1 AND id IN (${placeholders(assigneeIds.length)})`,
-        )
-        .bind(edition, ...assigneeIds)
+        .prepare(`SELECT u.id, u.name, u.initials, u.role, u.email FROM users u ${qmb.whereClause()}`)
+        .bind(...qmb.binds)
         .all<{ id: string; name: string; initials: string; role: string; email: string | null }>()
     ).results;
     const invalid = assigneeIds.filter((id) => {
@@ -368,13 +405,20 @@ export interface MyAssignment {
 
 assignments.get("/mine", async (c) => {
   const { id: viewerId } = c.var.user;
+  // `deck_assignments` is owned through its deck. The `evaluator_id = <viewer>`
+  // bind already makes this the caller's own allotment, so the owner join is the
+  // belt — but it is also what stops a row surviving a future widening of this
+  // route's predicate.
+  const qm = scoped(scopeOf(c.var.user));
+  const mJoin = qm.viaParent("deck_assignments", "da");
+  qm.and("da.evaluator_id = ?", viewerId);
   const rows = (
     await c.env.DB.prepare(
       "SELECT da.deck_id, da.assigned_at, da.due_at, u.name AS assigned_by_name " +
-        "FROM deck_assignments da LEFT JOIN users u ON u.id = da.assigned_by " +
-        "WHERE da.evaluator_id = ? ORDER BY da.assigned_at DESC",
+        `FROM deck_assignments da ${mJoin} LEFT JOIN users u ON u.id = da.assigned_by ` +
+        `${qm.whereClause()} ORDER BY da.assigned_at DESC`,
     )
-      .bind(viewerId)
+      .bind(...qm.binds)
       .all<{ deck_id: string; assigned_at: string; due_at: string | null; assigned_by_name: string | null }>()
   ).results;
   const out: MyAssignment[] = rows.map((r) => ({

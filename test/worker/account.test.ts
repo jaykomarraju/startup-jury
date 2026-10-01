@@ -1,5 +1,5 @@
 import { SELF, env } from "cloudflare:test";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import type { AccountOrderView } from "../../src/shared/accountOrder";
 
 /**
@@ -511,5 +511,249 @@ describe("orders — priced from the published catalogue, charged nothing", () =
     const c = await login(ADMIN);
     const text = await (await req("GET", "/api/account", c)).text();
     expect(text).not.toMatch(PER_DECK);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T1-COMMERCE · TENANT ISOLATION
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// §2 B18: `GET /api/account` was scoped by `account.ts:208` — `o.edition = ?` —
+// over **order history and receipt documents**, and §2 A6 names its catalogue
+// read as a leak as well. The catalogue is NOT one: `pricing_versions` is one of
+// §3's eight platform-global tables and must never gain a tenant key, so the
+// cases below assert that the catalogue still crosses (one book, product-wide)
+// while everything commercial does not.
+//
+// ── THE MARKER TAKES ONE HOP, AND THAT IS NOT AN ACCIDENT ──────────────────
+//
+// `account_orders` has no free-text column of its own: `intent_id` is both its
+// primary key and a foreign key to `billing_payment_intents`, so the order IS its
+// intent and the only visible string is `plan_name` one table away. A probe that
+// put a marker on `account_orders` would have nothing to put it in. That is why
+// the fixture seeds BOTH rows and why `ORDER_SELECT`'s JOIN now matches the
+// workspace on both sides.
+
+const AX = "t_ax_account";
+const AX_MARK = "AXTENANT";
+const AX_ADMIN = "ax.admin@axtenant.test";
+/** A third customer, in the `vc` edition — see the POST /orders case for why. */
+const AY = "t_ay_account";
+const AY_ADMIN = "ay.admin@aytenant.test";
+
+/** The outermost frame: isolated storage pops a per-describe `beforeAll`. */
+beforeAll(async () => {
+  await env.DB.prepare(
+    "INSERT INTO organizations (id, name, slug, status) VALUES (?, ?, 'ax-account', 'active') " +
+      "ON CONFLICT (id) DO NOTHING",
+  )
+    .bind(AX, `${AX_MARK} Accelerator`)
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO users (id, tenant_id, name, email, role, edition, initials, password_hash) " +
+      "SELECT 'ax_admin', ?, ?, ?, 'admin', 'incubator', 'AX', password_hash FROM users WHERE email = ?",
+  )
+    .bind(AX, `${AX_MARK} Admin`, AX_ADMIN, ADMIN)
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO billing_payment_intents (id, tenant_id, edition, purpose, plan_name, currency, " +
+      "subtotal_minor, tax_minor, total_minor, gst_rate_pct) " +
+      "VALUES ('ax_pi', ?, 'incubator', 'enterprise', ?, 'INR', 1000, 180, 1180, 18)",
+  )
+    .bind(AX, `${AX_MARK} annual plan`)
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO account_orders (intent_id, tenant_id, edition, account_type, plan_group, " +
+      "payment_method, taxed) VALUES ('ax_pi', ?, 'incubator', 'organization', 'enterprise', 'upi', 1)",
+  )
+    .bind(AX)
+    .run();
+
+  await env.DB.prepare(
+    "INSERT INTO organizations (id, name, slug, status) VALUES (?, 'AYTENANT Fund', 'ay-account', 'active') " +
+      "ON CONFLICT (id) DO NOTHING",
+  )
+    .bind(AY)
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO users (id, tenant_id, name, email, role, edition, initials, password_hash) " +
+      "SELECT 'ay_admin', ?, 'AYTENANT Admin', ?, 'admin', 'vc', 'AY', password_hash FROM users WHERE email = ?",
+  )
+    .bind(AY, AY_ADMIN, ADMIN)
+    .run();
+});
+
+describe("tenancy — My account shows one customer their own orders", () => {
+  it("the fixture really landed, so nothing below passes for the wrong reason", async () => {
+    const row = await env.DB.prepare("SELECT count(*) n FROM account_orders WHERE tenant_id = ?")
+      .bind(AX)
+      .first<{ n: number }>();
+    expect(row!.n, "tenant B has no order — every case below is vacuous").toBe(1);
+    expect(await login(AX_ADMIN), "tenant B's admin cannot sign in").toBeTruthy();
+  });
+
+  it("GET / lists each customer only their own orders", async () => {
+    const theirs = await (
+      await SELF.fetch(`${BASE}/api/account`, { headers: { cookie: await login(AX_ADMIN) } })
+    ).json<{ orders: AccountOrderView[] }>();
+    expect(theirs.orders.map((o) => o.id)).toEqual(["ax_pi"]);
+
+    const ours = await (
+      await SELF.fetch(`${BASE}/api/account`, { headers: { cookie: await login(ADMIN) } })
+    ).text();
+    expect(ours, "§2 B18 — tenant B's order history crossed into tenant A").not.toContain(AX_MARK);
+  });
+
+  it("a receipt and its pro-forma cannot be fetched across customers", async () => {
+    // The id is known and the row exists; only the scope keeps it out. A 404 here
+    // rather than a 403 is correct — tenant A has no business learning that an
+    // order with this id exists at all.
+    const ours = await login(ADMIN);
+    expect((await SELF.fetch(`${BASE}/api/account/orders/ax_pi`, { headers: { cookie: ours } })).status).toBe(404);
+    expect(
+      (await SELF.fetch(`${BASE}/api/account/orders/ax_pi/document`, { headers: { cookie: ours } })).status,
+    ).toBe(404);
+    // And tenant B's own admin can fetch both, so the 404s above are the scope and
+    // not a broken route.
+    const theirs = await login(AX_ADMIN);
+    expect((await SELF.fetch(`${BASE}/api/account/orders/ax_pi`, { headers: { cookie: theirs } })).status).toBe(200);
+    const doc = await SELF.fetch(`${BASE}/api/account/orders/ax_pi/document`, {
+      headers: { cookie: theirs },
+    });
+    expect(doc.status).toBe(200);
+    expect(await doc.text()).toContain(AX_MARK);
+  });
+
+  it("a second customer's profile opens pre-filled and unsaved, not holding the first one's", async () => {
+    // `account_profiles` is one of the five tables `0094`'s transitional
+    // `UNIQUE (edition)` still blocks, so tenant B cannot be GIVEN a profile row —
+    // which makes this the one assertion available, and it is the right one: a
+    // profile read that was scoped by `edition` alone would hand tenant B the
+    // organisation name, business type, city and contact block that the
+    // incubator-edition blocks above saved for tenant A.
+    const res = await SELF.fetch(`${BASE}/api/account`, {
+      headers: { cookie: await login(AX_ADMIN) },
+    });
+    const body = await res.json<{
+      saved: boolean;
+      profile: { workEmail: string; org: unknown };
+    }>();
+    expect(body.saved).toBe(false);
+    expect(body.profile.org).toBeNull();
+    expect(body.profile.workEmail).toBe(AX_ADMIN);
+  });
+
+  it("the price catalogue still crosses, because one book serves the whole product", async () => {
+    // The deliberate NON-isolation, asserted so a later sweep cannot "finish the
+    // job" by scoping `pricing_versions` without this test objecting. §3 measured
+    // five independent reasons, and `0100`'s integrity assertion fails the
+    // migration chain if a tenant key appears on any of the eight.
+    const read = async (email: string) =>
+      (
+        await (
+          await SELF.fetch(`${BASE}/api/account`, { headers: { cookie: await login(email) } })
+        ).json<{ profile: unknown }>()
+      ) as Record<string, unknown>;
+    const theirs = await read(AX_ADMIN);
+    const ours = await read(ADMIN);
+    // Both customers are offered the same plans — whatever the catalogue holds,
+    // it holds identically for each of them.
+    expect(JSON.stringify(theirs.plans ?? null)).toBe(JSON.stringify(ours.plans ?? null));
+    const row = await env.DB.prepare(
+      "SELECT count(*) n FROM pragma_table_info('pricing_versions') WHERE name = 'tenant_id'",
+    ).first<{ n: number }>();
+    expect(row!.n, "pricing_versions must NOT be tenant-scoped — plan_multitenancy.md §3").toBe(0);
+  });
+});
+
+describe("tenancy — the profile upsert, and the refusal that replaces an overwrite", () => {
+  it("a second customer's save in an OCCUPIED edition is refused, and the first customer's row survives", async () => {
+    // ══ THE CORRECTION THIS SESSION MAKES, OBSERVED THROUGH THE ROUTE ═══════
+    //
+    // `PUT /profile`'s two upserts targeted `ON CONFLICT (edition)`. `0094` widened
+    // the PRIMARY KEY to `(tenant_id, edition)` and left `UNIQUE (edition)` standing
+    // as the transitional index `account_profiles__pre_tenant_key`, so that target
+    // kept resolving — to THE OTHER CUSTOMER'S ROW. Measured in D1 in
+    // `billing.test.ts`'s `ON CONFLICT` block: the old target writes the second
+    // customer's organisation name, business type, city, country and whole contact
+    // block INTO the first customer's row, keeps `tenant_id = 't_default'`, adds no
+    // row, and answers 200.
+    //
+    // Named against the widened key it is refused instead, which is the error
+    // `0094`'s header intended and the reason `account_profiles` sits in
+    // `BLOCKED_BY_TRANSITIONAL_KEY`. A 500 is the honest answer while that index
+    // stands: there is nothing the handler could do that would be correct.
+    const before = await env.DB.prepare(
+      "SELECT tenant_id, org_name, city FROM account_profiles WHERE edition = 'incubator'",
+    ).first<{ tenant_id: string; org_name: string | null; city: string | null }>();
+    expect(before, "tenant A must hold the incubator profile, or this proves nothing").toBeTruthy();
+    expect(before!.tenant_id).toBe("t_default");
+
+    // The ORGANISATION branch — the first of this session's three `ON CONFLICT`
+    // sites, and the one whose silent overwrite destroyed the most: eleven
+    // organisation-details fields plus the whole contact block.
+    const res = await req("PUT", "/api/account/profile", await login(AX_ADMIN), {
+      ...INDIVIDUAL,
+      accountType: "organization",
+      workEmail: AX_ADMIN,
+      org: { ...ORG, name: `${AX_MARK} Foundation` },
+    });
+    expect(res.status, await res.text()).toBe(500);
+
+    const after = await env.DB.prepare(
+      "SELECT tenant_id, org_name, city FROM account_profiles WHERE edition = 'incubator'",
+    ).first<{ tenant_id: string; org_name: string | null; city: string | null }>();
+    expect(after, "tenant A's commercial record was destroyed by another customer's save").toEqual(
+      before,
+    );
+    const rows = await env.DB.prepare(
+      "SELECT count(*) n FROM account_profiles WHERE edition = 'incubator'",
+    ).first<{ n: number }>();
+    expect(rows!.n).toBe(1);
+  });
+
+  it("POST /orders files the order AND its intent under the buying customer", async () => {
+    // The silent half. `account_orders.tenant_id` and
+    // `billing_payment_intents.tenant_id` both carry `DEFAULT 't_default'`
+    // (`0086:31,33`), so an INSERT naming no tenant answers 200, writes two rows,
+    // and files the second customer's purchase against the first. Nothing in the
+    // response says so, which is why this reads the rows.
+    //
+    // ── WHY THIS ONE CUSTOMER IS IN THE **vc** EDITION, STATED PLAINLY ──────
+    // Placing an order needs a profile (`account_required`), and the case above is
+    // the proof that a second customer cannot get one in an edition tenant A
+    // already occupies. The `vc` slot is free in this file — nothing here saves a
+    // vc profile — so `t_ay` can hold it and walk the whole wizard.
+    //
+    // That makes this pair differ in BOTH halves of the workspace key, so it is
+    // **not** a test that reads isolate; the same-edition pair above is. What it
+    // does prove, and what nothing else can, is that the two INSERTs bind the
+    // tenant they were handed rather than falling through to the column default.
+    const cookie = await login(AY_ADMIN);
+    const saved = await req("PUT", "/api/account/profile", cookie, INDIVIDUAL);
+    expect(saved.status, await saved.text()).toBe(200);
+    const profileRow = await env.DB.prepare(
+      "SELECT tenant_id FROM account_profiles WHERE edition = 'vc'",
+    ).first<{ tenant_id: string }>();
+    expect(profileRow!.tenant_id).toBe(AY);
+
+    const res = await req("POST", "/api/account/orders", cookie, {
+      planCode: "pack_50",
+      currency: "INR",
+      paymentMethod: "upi",
+    });
+    const payload = await res.text();
+    expect(res.status, payload).toBe(200);
+    const { order } = JSON.parse(payload) as { order: AccountOrderView };
+    const row = await env.DB.prepare(
+      "SELECT o.tenant_id AS o_tenant, i.tenant_id AS i_tenant FROM account_orders o " +
+        "JOIN billing_payment_intents i ON i.id = o.intent_id WHERE o.intent_id = ?",
+    )
+      .bind(order.id)
+      .first<{ o_tenant: string; i_tenant: string }>();
+    expect(row!.o_tenant).toBe(AY);
+    expect(row!.i_tenant).toBe(AY);
+    // And it did NOT land in the default tenant, which is the failure being ruled out.
+    expect(row!.o_tenant).not.toBe("t_default");
   });
 });

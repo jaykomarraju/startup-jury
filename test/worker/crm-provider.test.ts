@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 import { recordSyncAttempt, resolveCrmClient, secretFor } from "../../src/server/crm/provider";
 import { writeBackDeckScore, capHeadroom, pulledThisMonth } from "../../src/server/crm/sync";
 import type { Env } from "../../src/server/types";
+import { DEFAULT_TENANT_ID, type TenantScope } from "../../src/shared/tenant";
 
 /**
  * W3-D — the provider interface and its recording stub (§1.3), tested directly.
@@ -15,9 +16,18 @@ import type { Env } from "../../src/server/types";
  * This file lives under the WORKER tsconfig, not test/unit: the module imports
  * `Env`, which needs @cloudflare/workers-types. Storage is isolated per FILE,
  * not per test, so every fixture uses its own connection row.
+ *
+ * TENANCY (T1-ESIGN): `recordSyncAttempt`, `writeBackDeckScore` and
+ * `pulledThisMonth` all take a `TenantScope`, and `edition` has left
+ * `CrmSyncAttempt` — it now comes off the scope, so the row's workspace and its
+ * edition cannot be supplied separately and disagree. The last two cases in this
+ * file are the negative controls.
  */
 
 const E = () => env as unknown as Env;
+
+const VC: TenantScope = { tenantId: DEFAULT_TENANT_ID, edition: "vc" };
+const INC: TenantScope = { tenantId: DEFAULT_TENANT_ID, edition: "incubator" };
 
 /**
  * `crm_connections` is UNIQUE (edition, provider) and `0037` seeds all eight
@@ -105,9 +115,9 @@ describe("recordSyncAttempt", () => {
 
     const record = await recordSyncAttempt(
       E(),
+      VC,
       {
         connectionId: id,
-        edition: "vc",
         provider: "hubspot",
         operation: "pull_deals",
         direction: "pull",
@@ -135,9 +145,9 @@ describe("recordSyncAttempt", () => {
     const id = await seedConnection("crm_vc_pipedrive");
     await recordSyncAttempt(
       E(),
+      VC,
       {
         connectionId: id,
-        edition: "vc",
         provider: "pipedrive",
         operation: "pull_deals",
         direction: "pull",
@@ -159,9 +169,9 @@ describe("recordSyncAttempt", () => {
     const id = await seedConnection("crm_vc_custom");
     const record = await recordSyncAttempt(
       E(),
+      VC,
       {
         connectionId: id,
-        edition: "vc",
         provider: "custom",
         operation: "write_back_score",
         direction: "push",
@@ -188,8 +198,7 @@ describe("writeBackDeckScore (F0180)", () => {
     await env.DB.prepare("UPDATE crm_connections SET status = 'inactive' WHERE edition = 'incubator'").run();
     const id = await seedConnection("crm_inc_hubspot", { status: "live", write_back_scores: 1 });
 
-    const record = await writeBackDeckScore(E(), {
-      edition: "incubator",
+    const record = await writeBackDeckScore(E(), INC, {
       deckId: "deck_1",
       externalId: "0061x00000ABC",
       fields: { aiScore: 8.2, signal: "Strong" },
@@ -213,8 +222,7 @@ describe("writeBackDeckScore (F0180)", () => {
       write_back_scores: 1,
       score_writeback_field: null,
     });
-    const record = await writeBackDeckScore(E(), {
-      edition: "incubator",
+    const record = await writeBackDeckScore(E(), INC, {
       deckId: "deck_2",
       fields: { aiScore: 5 },
     });
@@ -226,7 +234,7 @@ describe("writeBackDeckScore (F0180)", () => {
   it("returns null — and writes nothing — when the edition has no live write-back connection", async () => {
     await env.DB.prepare("UPDATE crm_connections SET write_back_scores = 0 WHERE edition = 'incubator'").run();
     const before = await env.DB.prepare("SELECT COUNT(*) AS n FROM crm_sync_log").first<{ n: number }>();
-    expect(await writeBackDeckScore(E(), { edition: "incubator", deckId: "d", fields: {} })).toBeNull();
+    expect(await writeBackDeckScore(E(), INC, { deckId: "d", fields: {} })).toBeNull();
     const after = await env.DB.prepare("SELECT COUNT(*) AS n FROM crm_sync_log").first<{ n: number }>();
     expect(after!.n).toBe(before!.n);
   });
@@ -265,6 +273,103 @@ describe("the monthly cap", () => {
       .bind(id)
       .run();
 
-    expect(await pulledThisMonth(E(), id, now)).toBe(5);
+    expect(await pulledThisMonth(E(), INC, id, now)).toBe(5);
+  });
+
+  /**
+   * NEGATIVE CONTROL for the cap, which is the one aggregate in this file.
+   *
+   * §11: "Aggregates are the dangerous shape, not the lists… a `COUNT(*)` or an
+   * `AVG(score)` that leaks returns a perfectly ordinary-looking number." The
+   * cap is worse than ordinary — it is the only spend guard on auto-pulled decks
+   * (F0179), so a leak here lets one customer's pulls eat another's budget, and
+   * there is nothing in any response to read it off.
+   *
+   * Asserted by VALUE, because there is no marker in a sum: the other tenant's
+   * row carries 100, so an unscoped `SUM` answers 102 and a scoped one answers 2.
+   * Deleting `.on("l")` from `pulledThisMonth` turns this red.
+   */
+  it("never counts another customer's pulls against this workspace's cap", async () => {
+    const id = await seedConnection("crm_inc_salesforce");
+    const now = new Date("2026-09-15T10:00:00Z");
+    await env.DB.prepare(
+      "INSERT INTO organizations (id, name, slug, status) VALUES (?, ?, ?, 'active') ON CONFLICT (id) DO NOTHING",
+    )
+      .bind("t_cap_probe", "Cap Probe", "cap-probe")
+      .run();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO crm_sync_log (id, tenant_id, connection_id, edition, provider, direction, operation, status, record_count, created_at) " +
+          "VALUES ('crmtest_cap_mine', ?, ?, 'incubator', 'salesforce', 'pull', 'pull_deals', 'recorded', 2, '2026-09-04T09:00:00Z')",
+      ).bind(DEFAULT_TENANT_ID, id),
+      // Same connection id, same month, same operation — EVERYTHING the old
+      // predicate matched on. Only the tenant differs.
+      env.DB.prepare(
+        "INSERT INTO crm_sync_log (id, tenant_id, connection_id, edition, provider, direction, operation, status, record_count, created_at) " +
+          "VALUES ('crmtest_cap_theirs', ?, ?, 'incubator', 'salesforce', 'pull', 'pull_deals', 'recorded', 100, '2026-09-05T09:00:00Z')",
+      ).bind("t_cap_probe", id),
+    ]);
+
+    const unscoped = await env.DB.prepare(
+      "SELECT COALESCE(SUM(record_count), 0) AS n FROM crm_sync_log WHERE connection_id = ? " +
+        "AND operation = 'pull_deals' AND status IN ('recorded', 'sent') AND substr(created_at, 1, 7) = '2026-09'",
+    )
+      .bind(id)
+      .first<{ n: number }>();
+    // The probe asserts itself first: if the two numbers ever coincide, this
+    // case has stopped being able to detect a leak.
+    expect(unscoped!.n).toBe(102);
+    expect(await pulledThisMonth(E(), INC, id, now)).toBe(2);
+    expect(await pulledThisMonth(E(), { tenantId: "t_cap_probe", edition: "incubator" }, id, now)).toBe(100);
+  });
+});
+
+describe("tenancy · the outbound write-back", () => {
+  /**
+   * NEGATIVE CONTROL for §2 B22's shape — the leak that leaves the building.
+   *
+   * `writeBackDeckScore` picks the workspace's live write-back connection with
+   * `LIMIT 1`. Its predicate named only the edition, so with two customers it
+   * would have picked whichever row the table happened to hold first and pushed
+   * one customer's evaluation score into ANOTHER customer's CRM, with no row in
+   * any response to notice it by.
+   *
+   * The fixture makes the wrong answer the LIKELY one rather than a coin toss:
+   * this workspace's only live write-back connection is switched off, so an
+   * unscoped `LIMIT 1` has nothing of ours to find and must reach for theirs.
+   * Correct behaviour is `null` — no connection, nothing written.
+   */
+  it("will not push this workspace's score through another customer's connection", async () => {
+    await env.DB.prepare(
+      "INSERT INTO organizations (id, name, slug, status) VALUES (?, ?, ?, 'active') ON CONFLICT (id) DO NOTHING",
+    )
+      .bind("t_wb_probe", "WB Probe", "wb-probe")
+      .run();
+    await env.DB.prepare(
+      "UPDATE crm_connections SET status = 'inactive', write_back_scores = 0 WHERE edition = 'incubator'",
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO crm_connections (id, tenant_id, edition, provider, status, write_back_scores, score_writeback_field, base_url) " +
+        "VALUES ('crm_other_hubspot', ?, 'incubator', 'hubspot', 'live', 1, 'Their_Score__c', 'https://their-crm.example.com')",
+    )
+      .bind("t_wb_probe")
+      .run();
+
+    const before = await env.DB.prepare("SELECT COUNT(*) AS n FROM crm_sync_log").first<{ n: number }>();
+    expect(await writeBackDeckScore(E(), INC, { deckId: "deck_1", fields: { aiScore: 9 } })).toBeNull();
+    const after = await env.DB.prepare("SELECT COUNT(*) AS n FROM crm_sync_log").first<{ n: number }>();
+    expect(after!.n).toBe(before!.n);
+
+    // And the control on the control: the row IS reachable — from its owner.
+    const theirs = await writeBackDeckScore(
+      E(),
+      { tenantId: "t_wb_probe", edition: "incubator" },
+      { deckId: "deck_1", fields: { aiScore: 9 } },
+    );
+    expect(theirs?.status).toBe("recorded");
+    expect(theirs?.connectionId).toBe("crm_other_hubspot");
+
+    await env.DB.prepare("DELETE FROM crm_sync_log WHERE connection_id = 'crm_other_hubspot'").run();
+    await env.DB.prepare("DELETE FROM crm_connections WHERE id = 'crm_other_hubspot'").run();
   });
 });

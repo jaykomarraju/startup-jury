@@ -607,3 +607,133 @@ describe("calls — decided rows (F0627, the reading agreed with W9-B in §9)", 
     expect(decided.map((d) => d.deckId)).toEqual(["vc_deck_medgrid"]);
   });
 });
+
+// ── Tenancy (T1-FLOW) ────────────────────────────────────────────────────────
+//
+// `calls`, `call_participants`, `call_outcomes` and `call_schedulers` all carry
+// NO workspace key — they are §5b proxy tables, owned by `decks`. So every
+// refusal below rests on the `JOIN decks` carrying `tenant_id` as well as
+// `edition`, and the second customer here is in the SAME edition on purpose:
+// `edition` has two values, so it cannot tell two customers apart (§2).
+//
+// §2 B11's stake is why these are routes and not just queries: the response
+// holds **participant email addresses**, and `POST /:id/invite` MAILS them.
+
+const OTHER_TENANT = "t_calls_other";
+
+// Idempotent: worker-test storage is per FILE, so this runs several times.
+async function seedOtherTenantCall(): Promise<void> {
+  await env.DB.prepare(
+    "INSERT INTO organizations (id, name, slug, status) VALUES (?, 'Other Co', 'calls-other-co', 'active') " +
+      "ON CONFLICT (id) DO NOTHING",
+  )
+    .bind(OTHER_TENANT)
+    .run();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO decks (id, tenant_id, edition, name, status) " +
+      "VALUES ('deck_other_tenant', ?, 'incubator', 'OtherCo Startup', 'shortlisted')",
+  )
+    .bind(OTHER_TENANT)
+    .run();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO calls (id, deck_id, kind, scheduled_at, title, status, ics_uid, duration_minutes) " +
+      "VALUES ('call_other_tenant', 'deck_other_tenant', 'intro', '2099-03-01T09:00:00.000Z', " +
+      "'OtherCo intro call', 'scheduled', 'call_other_tenant@startup-jury', 30)",
+  ).run();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO call_participants (id, call_id, user_id, email, name, kind) " +
+      "VALUES ('cpt_other_tenant', 'call_other_tenant', NULL, 'founder@otherco.example', 'OtherCo Founder', 'founder')",
+  ).run();
+}
+
+describe("calls — tenancy (T1-FLOW)", () => {
+  it("a scheduler's listing excludes another customer's calls, schedulers and participants", async () => {
+    await seedOtherTenantCall();
+    const pm = await login(INC_PM);
+    const res = await get("/api/calls?kind=intro", pm);
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain("call_other_tenant");
+    expect(text).not.toContain("OtherCo intro call");
+    // The address is the part that must not travel (§2 B11).
+    expect(text).not.toContain("founder@otherco.example");
+  });
+
+  it("another customer's call is a 404 on every per-call route, including the .ics", async () => {
+    await seedOtherTenantCall();
+    const pm = await login(INC_PM);
+    expect((await get("/api/calls/call_other_tenant/ics", pm)).status).toBe(404);
+    expect((await get("/api/calls/call_other_tenant/prompts", pm)).status).toBe(404);
+    expect((await req("POST", "/api/calls/call_other_tenant/invite", pm)).status).toBe(404);
+    expect(
+      (await req("PATCH", "/api/calls/call_other_tenant", pm, { title: "Hijacked" })).status,
+    ).toBe(404);
+
+    const row = await env.DB.prepare("SELECT title, ics_sequence FROM calls WHERE id = 'call_other_tenant'")
+      .first<{ title: string; ics_sequence: number }>();
+    expect(row!.title, "another customer's call was renamed").toBe("OtherCo intro call");
+    expect(row!.ics_sequence, "another customer's invite was re-issued").toBe(0);
+  });
+
+  it("refuses to schedule, delegate or decide on another customer's deck", async () => {
+    await seedOtherTenantCall();
+    const pm = await login(INC_PM);
+    expect(
+      (
+        await req("POST", "/api/calls", pm, {
+          deckId: "deck_other_tenant",
+          kind: "intro",
+          scheduledAt: "2099-04-01T09:00:00.000Z",
+          participants: [],
+        })
+      ).status,
+    ).toBe(404);
+    // The incubator PM IS a scheduler role, so `canScheduleCalls` lets them past
+    // and the refusal has to come from the deck lookup — which is the predicate
+    // under test. A 403 here would mean the role gate answered and this case
+    // never reached the workspace check.
+    expect(
+      (
+        await req("PUT", "/api/calls/scheduler", pm, {
+          deckId: "deck_other_tenant",
+          kind: "intro",
+          userId: null,
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await req("PUT", "/api/calls/outcome", pm, {
+          deckId: "deck_other_tenant",
+          kind: "intro",
+          outcome: null,
+        })
+      ).status,
+    ).not.toBe(200);
+
+    const n = await env.DB.prepare(
+      "SELECT count(*) n FROM calls WHERE deck_id = 'deck_other_tenant'",
+    ).first<{ n: number }>();
+    expect(n!.n, "a call was booked on another customer's deck").toBe(1);
+  });
+
+  it("the directory lists only the caller's own workspace", async () => {
+    await env.DB.prepare(
+      "INSERT INTO organizations (id, name, slug, status) VALUES (?, 'Other Co', 'calls-other-co', 'active') " +
+        "ON CONFLICT (id) DO NOTHING",
+    )
+      .bind(OTHER_TENANT)
+      .run();
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO users (id, tenant_id, name, email, role, edition, initials, password_hash) " +
+        "VALUES ('u_other_tenant', ?, 'OtherCo Manager', 'manager@otherco.example', 'program_manager', " +
+        "'incubator', 'OM', 'x')",
+    )
+      .bind(OTHER_TENANT)
+      .run();
+    const pm = await login(INC_PM);
+    const text = await (await get("/api/calls/directory", pm)).text();
+    expect(text).not.toContain("manager@otherco.example");
+    expect(text).not.toContain("OtherCo Manager");
+  });
+});

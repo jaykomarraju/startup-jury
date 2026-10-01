@@ -12,10 +12,27 @@
 // the team records what it finds while testing. Both routers filter on the
 // category, so neither can ever see the other's rows.
 
+// ── T1-COMMERCE · tenancy ───────────────────────────────────────────────────
+// §2 B20 calls `/api/tickets`, `/api/issues` and `/api/messages` "the exact
+// surface the client's tenancy sentence is about. Today every ticket sits in one
+// flat edition-keyed pool with no upstream." `tickets` and `messages` are two of
+// the 28 tenant-owned tables, so every statement below binds the WORKSPACE —
+// `(tenant_id, edition)` — through T0's one helper.
+//
+// The help-clip router at the bottom is deliberately NOT scoped: it streams
+// product documentation out of R2, identical for every role, every edition and
+// every customer. Its own header already says there is nothing per-user to check
+// beyond holding a session, and that is a statement about tenancy too.
+//
+// The two-queue split stays exactly as it was. `tickets.category` separates the
+// customer-facing support queue from the internal issue log, and that predicate is
+// orthogonal to the tenant one: a scope says WHOSE rows, a category says WHICH
+// queue, and both still apply to every statement.
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
+import { scopeOf, scoped, insertScope } from "../../shared/tenant";
 
 /** Issue workflow states. `in_progress` is the "someone is on it" middle step. */
 const ISSUE_STATUSES = ["open", "in_progress", "closed"] as const;
@@ -30,15 +47,20 @@ async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
 const tickets = new Hono<AppEnv>();
 tickets.use("*", requireAuth);
 
-/** GET /api/tickets — every ticket in the edition (admin-only Tickets screen). */
+/** GET /api/tickets — every ticket in the workspace (admin-only Tickets screen). */
 tickets.get("/", requireRole("admin"), async (c) => {
+  // The LEFT JOIN also matches the workspace: `u.name` is rendered as the
+  // ticket's `creator`, so a `created_by` pointing at another customer's user
+  // would print that person's name on this screen. Column-to-column, no bind.
+  const q = scoped(scopeOf(c.var.user)).on("t").andRaw("t.category = 'support'");
   const rows = (
     await c.env.DB.prepare(
       "SELECT t.id, t.subject, t.body, t.status, t.billing_routed, t.created_at, u.name AS creator " +
-        "FROM tickets t LEFT JOIN users u ON u.id = t.created_by " +
-        "WHERE t.edition = ? AND t.category = 'support' ORDER BY t.created_at DESC",
+        "FROM tickets t LEFT JOIN users u " +
+        "ON u.id = t.created_by AND u.tenant_id = t.tenant_id AND u.edition = t.edition " +
+        `${q.whereClause()} ORDER BY t.created_at DESC`,
     )
-      .bind(c.var.user.edition)
+      .bind(...q.binds)
       .all<{
         id: string;
         subject: string;
@@ -72,11 +94,19 @@ tickets.post("/", async (c) => {
   const billingRouted =
     body.billing === true || /\b(billing|credit|invoice|payment|refund)\b/i.test(`${subject} ${text}`);
   const id = `tkt_${crypto.randomUUID()}`;
+  // ── THE SILENT HALF OF THE WAVE, AND THIS IS THE ROUTE THAT NAMES IT ──────
+  // `test/worker/tenant-scope.test.ts`'s layer 3 measured this INSERT on
+  // 2026-09-30: it named no tenant, so `tickets.tenant_id`'s `DEFAULT 't_default'`
+  // (`0084:62`) took effect and a second customer's ticket was filed against the
+  // FIRST customer — with a 200, a row, and nothing in the response to notice.
+  // Unlike a missing read predicate, no negative control can see that; only the
+  // write assertion can. `insertScope` is why the column cannot be forgotten.
+  const t = insertScope(scopeOf(c.var.user));
   await c.env.DB.prepare(
-    "INSERT INTO tickets (id, edition, subject, body, status, created_by, billing_routed, category) " +
-      "VALUES (?, ?, ?, ?, 'open', ?, ?, 'support')",
+    `INSERT INTO tickets (id, ${t.columns}, subject, body, status, created_by, billing_routed, category) ` +
+      `VALUES (?, ${t.placeholders}, ?, ?, 'open', ?, ?, 'support')`,
   )
-    .bind(id, c.var.user.edition, subject, text || null, c.var.user.id, billingRouted ? 1 : 0)
+    .bind(id, ...t.binds, subject, text || null, c.var.user.id, billingRouted ? 1 : 0)
     .run();
   return c.json({ ok: true, id, billingRouted });
 });
@@ -85,10 +115,16 @@ tickets.post("/", async (c) => {
 tickets.post("/:id/status", requireRole("admin"), async (c) => {
   const body = await readBody<{ status: string }>(c);
   const status = body.status === "closed" ? "closed" : "open";
-  const res = await c.env.DB.prepare(
-    "UPDATE tickets SET status = ? WHERE id = ? AND edition = ? AND category = 'support'",
-  )
-    .bind(status, c.req.param("id"), c.var.user.edition)
+  // An UPDATE is where an insufficient predicate stops being a read leak and
+  // becomes a cross-tenant WRITE: `WHERE id = ? AND edition = ?` would have let an
+  // administrator close another customer's ticket, and `meta.changes === 1` would
+  // have reported it as a success.
+  const q = scoped(scopeOf(c.var.user))
+    .on("tickets")
+    .and("tickets.id = ?", c.req.param("id"))
+    .andRaw("tickets.category = 'support'");
+  const res = await c.env.DB.prepare(`UPDATE tickets SET status = ? ${q.whereClause()}`)
+    .bind(status, ...q.binds)
     .run();
   if (res.meta.changes !== 1) return c.json({ error: "not_found" }, 404);
   return c.json({ ok: true, status });
@@ -126,11 +162,30 @@ interface IssueRow {
   assignee_id: string | null;
 }
 
+/**
+ * The issue log's FROM clause, with no WHERE.
+ *
+ * It used to end `WHERE t.edition = ? AND t.category = 'issue'`, and three call
+ * sites appended their own ` AND …` and bound `edition` first by hand. That shape
+ * is exactly what §11 warns a 211-site sweep gets wrong: the predicate and its
+ * bind live in different expressions, so adding a second scope column means
+ * remembering to add a second bind, in the right position, at every call site.
+ * The builder owns both now, and `issueScope()` below is the one place the
+ * workspace and the category are stated together.
+ *
+ * Both LEFT JOINs match the workspace too — `c.name` and `a.name` are rendered as
+ * `creator` and `assignee`, so a drifted `created_by` or `assignee_id` would print
+ * another customer's staff name in the log.
+ */
 const ISSUE_SELECT =
   "SELECT t.id, t.subject, t.body, t.status, t.severity, t.area, t.resolution, t.created_at, " +
   "t.updated_at, t.assignee_id, c.name AS creator, a.name AS assignee FROM tickets t " +
-  "LEFT JOIN users c ON c.id = t.created_by LEFT JOIN users a ON a.id = t.assignee_id " +
-  "WHERE t.edition = ? AND t.category = 'issue'";
+  "LEFT JOIN users c ON c.id = t.created_by AND c.tenant_id = t.tenant_id AND c.edition = t.edition " +
+  "LEFT JOIN users a ON a.id = t.assignee_id AND a.tenant_id = t.tenant_id AND a.edition = t.edition ";
+
+/** The workspace, and the queue. Every issue statement starts here. */
+const issueScope = (c: Context<AppEnv>) =>
+  scoped(scopeOf(c.var.user)).on("t").andRaw("t.category = 'issue'");
 
 function toIssueView(t: IssueRow) {
   return {
@@ -154,11 +209,15 @@ issues.get("/", async (c) => {
   const denied = denyFounder(c);
   if (denied) return denied;
   const status = c.req.query("status");
-  const filtered = (ISSUE_STATUSES as readonly string[]).includes(status ?? "");
-  const sql = `${ISSUE_SELECT}${filtered ? " AND t.status = ?" : ""} ORDER BY t.created_at DESC`;
-  const stmt = c.env.DB.prepare(sql);
+  const q = issueScope(c);
+  // The filter is a FRAGMENT AND ITS BIND, added together — which is the whole
+  // reason this is a builder and not a string. The old form branched on `filtered`
+  // twice, once for the SQL and once for the binds, and the two could drift.
+  if ((ISSUE_STATUSES as readonly string[]).includes(status ?? "")) q.and("t.status = ?", status);
   const rows = (
-    await (filtered ? stmt.bind(c.var.user.edition, status) : stmt.bind(c.var.user.edition)).all<IssueRow>()
+    await c.env.DB.prepare(`${ISSUE_SELECT}${q.whereClause()} ORDER BY t.created_at DESC`)
+      .bind(...q.binds)
+      .all<IssueRow>()
   ).results;
   return c.json({ issues: rows.map(toIssueView) });
 });
@@ -177,14 +236,16 @@ issues.post("/", async (c) => {
   const text = typeof body.body === "string" ? body.body.trim() : "";
   const id = `iss_${crypto.randomUUID()}`;
   const ts = new Date().toISOString();
+  const t = insertScope(scopeOf(c.var.user));
   await c.env.DB.prepare(
-    "INSERT INTO tickets (id, edition, subject, body, status, created_by, billing_routed, category, " +
-      "severity, area, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, 0, 'issue', ?, ?, ?, ?)",
+    `INSERT INTO tickets (id, ${t.columns}, subject, body, status, created_by, billing_routed, category, ` +
+      `severity, area, created_at, updated_at) VALUES (?, ${t.placeholders}, ?, ?, 'open', ?, 0, 'issue', ?, ?, ?, ?)`,
   )
-    .bind(id, c.var.user.edition, subject, text || null, c.var.user.id, severity, area || null, ts, ts)
+    .bind(id, ...t.binds, subject, text || null, c.var.user.id, severity, area || null, ts, ts)
     .run();
-  const row = await c.env.DB.prepare(`${ISSUE_SELECT} AND t.id = ?`)
-    .bind(c.var.user.edition, id)
+  const q = issueScope(c).and("t.id = ?", id);
+  const row = await c.env.DB.prepare(`${ISSUE_SELECT}${q.whereClause()}`)
+    .bind(...q.binds)
     .first<IssueRow>();
   return c.json({ ok: true, issue: row ? toIssueView(row) : null });
 });
@@ -220,10 +281,15 @@ issues.patch("/:id", requireRole("admin"), async (c) => {
     binds.push(body.area.trim() || null);
   }
   if ("assigneeId" in body) {
-    // Assigning to someone outside the edition would silently orphan the issue.
+    // Assigning to someone outside the WORKSPACE would silently orphan the issue —
+    // and under tenancy it is worse than orphaning: `edition` alone would have let
+    // an administrator assign their own issue to another customer's employee, whose
+    // name then renders as `assignee` on this log. The existing guard was already
+    // the right shape; it just needed the other half of the key.
     if (body.assigneeId) {
-      const owner = await c.env.DB.prepare("SELECT id FROM users WHERE id = ? AND edition = ?")
-        .bind(body.assigneeId, c.var.user.edition)
+      const ownerQ = scoped(scopeOf(c.var.user)).on("u").and("u.id = ?", body.assigneeId);
+      const owner = await c.env.DB.prepare(`SELECT u.id FROM users u ${ownerQ.whereClause()}`)
+        .bind(...ownerQ.binds)
         .first<{ id: string }>();
       if (!owner) return c.json({ error: "invalid_assignee" }, 400);
     }
@@ -239,15 +305,22 @@ issues.patch("/:id", requireRole("admin"), async (c) => {
   sets.push("updated_at = ?");
   binds.push(new Date().toISOString());
 
-  const res = await c.env.DB.prepare(
-    `UPDATE tickets SET ${sets.join(", ")} WHERE id = ? AND edition = ? AND category = 'issue'`,
-  )
-    .bind(...binds, c.req.param("id"), c.var.user.edition)
+  // Triage is a WRITE, so an insufficient predicate here closes, re-severs or
+  // re-assigns another customer's issue and reports `changes === 1` doing it. The
+  // `sets` binds come FIRST and the scope's second, which is the bind-order rule
+  // `src/shared/tenant.ts` states: head binds, then `q.binds`.
+  const q = scoped(scopeOf(c.var.user))
+    .on("tickets")
+    .and("tickets.id = ?", c.req.param("id"))
+    .andRaw("tickets.category = 'issue'");
+  const res = await c.env.DB.prepare(`UPDATE tickets SET ${sets.join(", ")} ${q.whereClause()}`)
+    .bind(...binds, ...q.binds)
     .run();
   if (res.meta.changes !== 1) return c.json({ error: "not_found" }, 404);
 
-  const row = await c.env.DB.prepare(`${ISSUE_SELECT} AND t.id = ?`)
-    .bind(c.var.user.edition, c.req.param("id"))
+  const readQ = issueScope(c).and("t.id = ?", c.req.param("id"));
+  const row = await c.env.DB.prepare(`${ISSUE_SELECT}${readQ.whereClause()}`)
+    .bind(...readQ.binds)
     .first<IssueRow>();
   return c.json({ ok: true, issue: row ? toIssueView(row) : null });
 });
@@ -261,30 +334,32 @@ messages.use("*", requireAuth);
  *  - `team`: a shared team channel — everyone in the edition sees every message.
  *  - `admin`: private to the admins — an admin/superuser sees the whole inbox,
  *    while other roles see only the messages they themselves sent to admin. */
+const MESSAGE_SELECT =
+  "SELECT m.id, m.body, m.to_scope, m.created_at, u.name AS sender FROM messages m " +
+  "LEFT JOIN users u ON u.id = m.from_id AND u.tenant_id = m.tenant_id AND u.edition = m.edition ";
+
 messages.get("/", async (c) => {
   const user = c.var.user;
-  const scope = c.req.query("scope") === "team" ? "team" : "admin";
+  // NAME COLLISION, deliberately resolved rather than left to the reader: this
+  // route's own `scope` query parameter is the MESSAGE channel ('admin' | 'team'),
+  // which has nothing to do with a tenant scope. The channel keeps the name it has
+  // in the API and the client; the workspace is `workspace` here.
+  const channel = c.req.query("scope") === "team" ? "team" : "admin";
+  const workspace = scopeOf(user);
   const isAdmin = user.role === "admin" || user.role === "superuser";
   // `team` is a broadcast (all rows); `admin` is an inbox admins see in full but
-  // other roles see only their own sent messages.
-  const sharedView = scope === "team" || isAdmin;
-  const rows = sharedView
-    ? (
-        await c.env.DB.prepare(
-          "SELECT m.id, m.body, m.to_scope, m.created_at, u.name AS sender FROM messages m " +
-            "LEFT JOIN users u ON u.id = m.from_id WHERE m.edition = ? AND m.to_scope = ? ORDER BY m.created_at DESC",
-        )
-          .bind(user.edition, scope)
-          .all<{ id: string; body: string; to_scope: string; created_at: string; sender: string | null }>()
-      ).results
-    : (
-        await c.env.DB.prepare(
-          "SELECT m.id, m.body, m.to_scope, m.created_at, u.name AS sender FROM messages m " +
-            "LEFT JOIN users u ON u.id = m.from_id WHERE m.edition = ? AND m.to_scope = ? AND m.from_id = ? ORDER BY m.created_at DESC",
-        )
-          .bind(user.edition, scope, user.id)
-          .all<{ id: string; body: string; to_scope: string; created_at: string; sender: string | null }>()
-      ).results;
+  // other roles see only their own sent messages. Both arms are now scoped to the
+  // workspace first — the per-user arm was never a tenant boundary, because
+  // `m.from_id = ?` happens to exclude another customer's rows only as long as the
+  // id it binds is the caller's own.
+  const sharedView = channel === "team" || isAdmin;
+  const q = scoped(workspace).on("m").and("m.to_scope = ?", channel);
+  if (!sharedView) q.and("m.from_id = ?", user.id);
+  const rows = (
+    await c.env.DB.prepare(`${MESSAGE_SELECT}${q.whereClause()} ORDER BY m.created_at DESC`)
+      .bind(...q.binds)
+      .all<{ id: string; body: string; to_scope: string; created_at: string; sender: string | null }>()
+  ).results;
   return c.json({
     messages: rows.map((m) => ({
       id: m.id,
@@ -305,10 +380,11 @@ messages.post("/", async (c) => {
   const text = typeof body.body === "string" ? body.body.trim() : "";
   if (!text) return c.json({ error: "body_required" }, 400);
   const id = `msg_${crypto.randomUUID()}`;
+  const t = insertScope(scopeOf(c.var.user));
   await c.env.DB.prepare(
-    "INSERT INTO messages (id, edition, from_id, to_scope, body) VALUES (?, ?, ?, ?, ?)",
+    `INSERT INTO messages (id, ${t.columns}, from_id, to_scope, body) VALUES (?, ${t.placeholders}, ?, ?, ?)`,
   )
-    .bind(id, c.var.user.edition, c.var.user.id, toScope, text)
+    .bind(id, ...t.binds, c.var.user.id, toScope, text)
     .run();
   return c.json({ ok: true, id });
 });

@@ -129,11 +129,21 @@ export async function markEvalTerminal(
   reason: string,
   now: () => string = () => new Date().toISOString(),
 ): Promise<TerminalResult> {
+  // `tenant_id` is selected for the refund below: the credit must go back to the
+  // customer it was taken from. §2 B24-30 — "credit refunds charged to an edition,
+  // not a customer, so tenant A's failed evaluation refunds a balance tenant B
+  // draws on". This module has no session, so the deck row IS the scope.
   const deck = await env.DB.prepare(
-    "SELECT id, edition, status, ai_credit_refunded FROM decks WHERE id = ?",
+    "SELECT id, tenant_id, edition, status, ai_credit_refunded FROM decks WHERE id = ?",
   )
     .bind(deckId)
-    .first<{ id: string; edition: string; status: string; ai_credit_refunded: number }>();
+    .first<{
+      id: string;
+      tenant_id: string;
+      edition: string;
+      status: string;
+      ai_credit_refunded: number;
+    }>();
   // The deck was deleted (or already scored) — nothing to mark, nothing to refund.
   if (!deck || deck.status !== "pending_ai") return { marked: false, refunded: false };
 
@@ -147,7 +157,11 @@ export async function markEvalTerminal(
     .bind(deckId)
     .run();
   const refunded = claim.meta.changes === 1;
-  if (refunded) await refundCredits(env, deck.edition as Edition, 1);
+  if (refunded) {
+    await refundCredits(env, { tenantId: deck.tenant_id, edition: deck.edition as Edition }, 1, {
+      deckId,
+    });
+  }
 
   return { marked: true, refunded };
 }

@@ -32,8 +32,10 @@
  */
 import { Hono } from "hono";
 import type { AppEnv, Env } from "../types";
-import type { Edition } from "../../shared/roles";
 import { requireAuth, requireTask } from "../auth/middleware";
+// T1-COMMERCE — T0-SCHEMA's one scope helper. A workspace is `(tenant_id, edition)`
+// and `scopeOf()` reads both halves off the session, never off the request.
+import { scopeOf, scoped, insertScope, type TenantScope } from "../../shared/tenant";
 import { recordAudit } from "../audit/log";
 import { recordPaymentIntent, paymentConfigured, type IntentPurpose } from "../billing/provider";
 import { formatMinor } from "../../shared/plans";
@@ -114,17 +116,42 @@ function toProfile(r: ProfileRow): AccountProfile {
   };
 }
 
-async function readProfile(env: Env, edition: Edition): Promise<AccountProfile | null> {
-  const row = await env.DB.prepare("SELECT * FROM account_profiles WHERE edition = ?")
-    .bind(edition)
+/**
+ * The commercial record for one workspace.
+ *
+ * ── THE PLAN CORRECTION THAT LANDS HERE ────────────────────────────────────
+ * §5c said `account_profiles` "should be keyed by `tenant_id` ALONE — they are the
+ * commercial record". `0094` could not apply that reading: a read-only check of the
+ * deployed database found `incubator 1, vc 1` — the one existing customer holds TWO
+ * commercial records, one per workspace — so a `PRIMARY KEY (tenant_id)` gives two
+ * backfilled rows one key and the restoring INSERT dies on a UNIQUE violation. The
+ * table is `(tenant_id, edition)`, and `0094` notes this is the `0038` shape: the
+ * table is EMPTY in the seed and in every test database, so a `tenant_id`-only key
+ * would have been green on `npm test` and failed mid-chain on the production apply.
+ *
+ * So the scope here carries BOTH columns — `.on()`, not `.onTenantOnly()`. The
+ * helper's own `onTenantOnly` doc says the same thing and cites this migration.
+ */
+async function readProfile(env: Env, scope: TenantScope): Promise<AccountProfile | null> {
+  const q = scoped(scope).on("p");
+  const row = await env.DB.prepare(`SELECT p.* FROM account_profiles p ${q.whereClause()}`)
+    .bind(...q.binds)
     .first<ProfileRow>();
   return row ? toProfile(row) : null;
 }
 
-/** The signed-in user's own details, so the Account screen opens filled in. */
-async function prefill(env: Env, userId: string): Promise<AccountProfile> {
-  const row = await env.DB.prepare("SELECT email, name, title FROM users WHERE id = ?")
-    .bind(userId)
+/**
+ * The signed-in user's own details, so the Account screen opens filled in.
+ *
+ * Scoped even though `userId` is always the caller's own id: `users.id` is globally
+ * unique, so this cannot cross today — but an unscoped `WHERE id = ?` on `users` is
+ * the exact shape that becomes a leak the moment a caller passes an id it did not
+ * get from its own session, and the predicate costs one bind.
+ */
+async function prefill(env: Env, scope: TenantScope, userId: string): Promise<AccountProfile> {
+  const q = scoped(scope).on("u").and("u.id = ?", userId);
+  const row = await env.DB.prepare(`SELECT u.email, u.name, u.title FROM users u ${q.whereClause()}`)
+    .bind(...q.binds)
     .first<{ email: string; name: string; title: string | null }>();
   const [first, ...rest] = (row?.name ?? "").trim().split(/\s+/);
   return {
@@ -145,6 +172,15 @@ async function prefill(env: Env, userId: string): Promise<AccountProfile> {
  * a private `livePublished`; it is `W4-D`'s file and does not export it, so the
  * read is repeated here rather than edited there (§9 records the one-word export
  * that would remove this copy).
+ *
+ * **DELIBERATELY UNSCOPED, and it must stay that way.** `pricing_versions` is one
+ * of §3's eight PLATFORM-GLOBAL tables: one catalogue serves the whole product,
+ * `CREATE UNIQUE INDEX pricing_versions_one_published ON pricing_versions (status)
+ * WHERE status = 'published'` enforces exactly one live book product-wide, and
+ * `0100`'s integrity assertion fails the migration chain if a sweep "finishes the
+ * job" by scoping these. §2 A6 names this read as a leak; the leak is the GATE on
+ * the write side (closed by `pricing-owner.test.ts`), not the absence of a tenant
+ * key on the read.
  */
 async function publishedBook(env: Env): Promise<PublishedPriceBook | null> {
   const row = await env.DB.prepare(
@@ -176,11 +212,19 @@ interface OrderRow {
   taxed: number;
 }
 
+/**
+ * An order IS its intent — `account_orders.intent_id` is both its primary key and
+ * its foreign key — so the JOIN also matches the workspace. Both tables carry
+ * `tenant_id`, the condition is column-to-column and binds nothing, and an
+ * `intent_id` that ever drifted across customers would otherwise put another
+ * customer's plan name, amount and payment status on this receipt.
+ */
 const ORDER_SELECT =
   "SELECT i.id, i.plan_code, i.plan_name, i.units, i.currency, i.subtotal_minor, i.tax_minor, " +
   "i.total_minor, i.gst_rate_pct, i.status, i.checkout_url, i.created_at, o.plan_group, o.period, " +
   "o.period_months, o.payment_method, o.account_type, o.taxed " +
-  "FROM account_orders o JOIN billing_payment_intents i ON i.id = o.intent_id ";
+  "FROM account_orders o JOIN billing_payment_intents i " +
+  "ON i.id = o.intent_id AND i.tenant_id = o.tenant_id AND i.edition = o.edition ";
 
 function toOrder(r: OrderRow): AccountOrderView {
   return {
@@ -205,23 +249,34 @@ function toOrder(r: OrderRow): AccountOrderView {
   };
 }
 
-async function loadOrder(env: Env, edition: Edition, id: string): Promise<AccountOrderView | null> {
-  const row = await env.DB.prepare(`${ORDER_SELECT}WHERE o.edition = ? AND o.intent_id = ?`)
-    .bind(edition, id)
+async function loadOrder(
+  env: Env,
+  scope: TenantScope,
+  id: string,
+): Promise<AccountOrderView | null> {
+  const q = scoped(scope).on("o").and("o.intent_id = ?", id);
+  const row = await env.DB.prepare(`${ORDER_SELECT}${q.whereClause()}`)
+    .bind(...q.binds)
     .first<OrderRow>();
   return row ? toOrder(row) : null;
 }
 
 account.get("/", async (c) => {
-  const { edition, id } = c.var.user;
-  const saved = await readProfile(c.env, edition);
+  const { id } = c.var.user;
+  // §2 B18 measured this route as leaking order history and receipts across
+  // customers. The MARKER that reaches it is `billing_payment_intents.plan_name`
+  // one hop away: `account_orders` carries no free-text column of its own, so the
+  // order's identity is its intent's.
+  const scope = scopeOf(c.var.user);
+  const saved = await readProfile(c.env, scope);
+  const listQ = scoped(scope).on("o");
   const orders = await c.env.DB.prepare(
-    `${ORDER_SELECT}WHERE o.edition = ? ORDER BY o.created_at DESC, o.rowid DESC LIMIT 5`,
+    `${ORDER_SELECT}${listQ.whereClause()} ORDER BY o.created_at DESC, o.rowid DESC LIMIT 5`,
   )
-    .bind(edition)
+    .bind(...listQ.binds)
     .all<OrderRow>();
   return c.json({
-    profile: saved ?? (await prefill(c.env, id)),
+    profile: saved ?? (await prefill(c.env, scope, id)),
     saved: saved !== null,
     orders: (orders.results ?? []).map(toOrder),
     paymentConfigured: paymentConfigured(c.env),
@@ -233,7 +288,8 @@ account.get("/", async (c) => {
 const text = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
 
 account.put("/profile", async (c) => {
-  const { edition, id } = c.var.user;
+  const { id } = c.var.user;
+  const scope = scopeOf(c.var.user);
   const body = ((await c.req.json().catch(() => null)) ?? {}) as Record<string, unknown>;
 
   const errors = validateAccountFields({
@@ -263,7 +319,33 @@ account.put("/profile", async (c) => {
     }
   }
 
-  const before = await readProfile(c.env, edition);
+  const before = await readProfile(c.env, scope);
+  // ══ ON CONFLICT 1 AND 2 OF THE 9 THAT BLOCK INTEGRATION ═══════════════════
+  //
+  // Both upserts below targeted `ON CONFLICT (edition)`, which `0094` left
+  // resolvable on purpose — it widened the PRIMARY KEY to `(tenant_id, edition)`
+  // and kept the old key as the transitional unique index
+  // `account_profiles__pre_tenant_key`, so T0 could merge green.
+  //
+  // ── WHAT THE OLD TARGET ACTUALLY DOES, MEASURED ───────────────────────────
+  // `0094`'s header expects it to fail with "ON CONFLICT clause does not match any
+  // PRIMARY KEY or UNIQUE constraint". It does not fail. The transitional index is
+  // a matching unique constraint, so the statement runs — and on SQLite 3.51,
+  // against this exact shape, a second customer's save is a **cross-tenant
+  // destructive overwrite that answers 200**: the handler writes the second
+  // customer's organisation name, business type, city, country and the whole
+  // contact block into the FIRST customer's row, the row keeps
+  // `tenant_id = 't_default'`, no new row appears, and `readProfile` then reads it
+  // back and reports success. The commercial record of the customer who was
+  // already there is simply gone.
+  //
+  // Naming the widened key converts that into the loud `UNIQUE constraint failed:
+  // account_profiles.edition` that `0094` intended — verified both directions:
+  // tenant A's own save still updates in place, tenant B's insert is refused. That
+  // refusal is why `account_profiles` stays in `BLOCKED_BY_TRANSITIONAL_KEY`.
+  // **The transitional index is NOT dropped here**; 0101-0108 does that once all
+  // nine upserts name the widened key.
+  const t = insertScope(scope);
   const accountValues = [
     accountType,
     text(body.workEmail)!.toLowerCase(),
@@ -281,11 +363,11 @@ account.put("/profile", async (c) => {
         ? null
         : Number(orgBody.associates);
     await c.env.DB.prepare(
-      "INSERT INTO account_profiles (edition, account_type, work_email, first_name, last_name, phone_dial, " +
+      `INSERT INTO account_profiles (${t.columns}, account_type, work_email, first_name, last_name, phone_dial, ` +
         "phone, designation, organization_name, org_kind, org_name, business_type, employees, associates, " +
         "city, country, contact_name, contact_designation, contact_dial, contact_phone, contact_email, " +
-        "updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) " +
-        "ON CONFLICT (edition) DO UPDATE SET account_type = excluded.account_type, work_email = excluded.work_email, " +
+        `updated_by, updated_at) VALUES (${t.placeholders}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) ` +
+        "ON CONFLICT (tenant_id, edition) DO UPDATE SET account_type = excluded.account_type, work_email = excluded.work_email, " +
         "first_name = excluded.first_name, last_name = excluded.last_name, phone_dial = excluded.phone_dial, " +
         "phone = excluded.phone, designation = excluded.designation, organization_name = excluded.organization_name, " +
         "org_kind = excluded.org_kind, org_name = excluded.org_name, business_type = excluded.business_type, " +
@@ -296,7 +378,7 @@ account.put("/profile", async (c) => {
         "updated_by = excluded.updated_by, updated_at = excluded.updated_at",
     )
       .bind(
-        edition,
+        ...t.binds,
         ...accountValues,
         orgBody.kind,
         text(orgBody.name),
@@ -317,19 +399,19 @@ account.put("/profile", async (c) => {
     // An individual save leaves any organisation details already on file alone:
     // switching the account type back and forth must not throw them away.
     await c.env.DB.prepare(
-      "INSERT INTO account_profiles (edition, account_type, work_email, first_name, last_name, phone_dial, " +
+      `INSERT INTO account_profiles (${t.columns}, account_type, work_email, first_name, last_name, phone_dial, ` +
         "phone, designation, organization_name, updated_by, updated_at) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) " +
-        "ON CONFLICT (edition) DO UPDATE SET account_type = excluded.account_type, work_email = excluded.work_email, " +
+        `VALUES (${t.placeholders}, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) ` +
+        "ON CONFLICT (tenant_id, edition) DO UPDATE SET account_type = excluded.account_type, work_email = excluded.work_email, " +
         "first_name = excluded.first_name, last_name = excluded.last_name, phone_dial = excluded.phone_dial, " +
         "phone = excluded.phone, designation = excluded.designation, organization_name = excluded.organization_name, " +
         "updated_by = excluded.updated_by, updated_at = excluded.updated_at",
     )
-      .bind(edition, ...accountValues, id)
+      .bind(...t.binds, ...accountValues, id)
       .run();
   }
 
-  const after = (await readProfile(c.env, edition))!;
+  const after = (await readProfile(c.env, scope))!;
   await recordAudit(c, {
     category: "billing",
     action: before ? "account_profile_updated" : "account_profile_created",
@@ -338,7 +420,9 @@ account.put("/profile", async (c) => {
       (after.accountType === "organization" && after.org ? ` · ${after.org.name}` : ""),
     detail: { accountType: after.accountType },
     targetType: "account_profiles",
-    targetId: edition,
+    // The row's identity is the PAIR now (`0094`), so `targetId: edition` named a
+    // row that two customers would share.
+    targetId: `${scope.tenantId}:${scope.edition}`,
   });
   return c.json({ ok: true, profile: after });
 });
@@ -352,7 +436,8 @@ const PURPOSE: Record<AccountOrderView["group"], IntentPurpose> = {
 };
 
 account.post("/orders", async (c) => {
-  const { edition, id: actorId } = c.var.user;
+  const { id: actorId } = c.var.user;
+  const scope = scopeOf(c.var.user);
   // Only these three keys are read. Anything else a client sends — a card
   // number, a CVV, a UPI ID — is never touched, logged or stored (§1.2).
   const body = ((await c.req.json().catch(() => null)) ?? {}) as Record<string, unknown>;
@@ -369,7 +454,7 @@ account.post("/orders", async (c) => {
   const quantity = typeof body.quantity === "number" ? body.quantity : undefined;
   const extraCredits = typeof body.extraCredits === "number" ? body.extraCredits : undefined;
 
-  const profile = await readProfile(c.env, edition);
+  const profile = await readProfile(c.env, scope);
   if (!profile) return c.json({ error: "account_required" }, 409);
 
   const book = await publishedBook(c.env);
@@ -384,7 +469,8 @@ account.post("/orders", async (c) => {
   }
 
   const intent = await recordPaymentIntent(c.env, {
-    edition,
+    tenantId: scope.tenantId,
+    edition: scope.edition,
     purpose: PURPOSE[quote.group],
     planCode: quote.plan.code,
     planName: quote.plan.name,
@@ -395,14 +481,19 @@ account.post("/orders", async (c) => {
     actorId,
   });
 
+  // The write side, where the failure is silent: `account_orders.tenant_id` carries
+  // `DEFAULT 't_default'` (`0086:31`), so an INSERT that simply omitted the column
+  // would answer 200 and file the second customer's order against the first.
+  // `insertScope` is what makes the column impossible to forget.
+  const orderT = insertScope(scope);
   await c.env.DB.prepare(
-    "INSERT INTO account_orders (intent_id, edition, account_type, plan_group, period, period_months, " +
+    `INSERT INTO account_orders (intent_id, ${orderT.columns}, account_type, plan_group, period, period_months, ` +
       "payment_method, taxed, price_version, created_by, created_at) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      `VALUES (?, ${orderT.placeholders}, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       intent.id,
-      edition,
+      ...orderT.binds,
       profile.accountType,
       quote.group,
       quote.plan.period,
@@ -434,7 +525,7 @@ account.post("/orders", async (c) => {
     targetId: intent.id,
   });
 
-  const order = (await loadOrder(c.env, edition, intent.id))!;
+  const order = (await loadOrder(c.env, scope, intent.id))!;
   return c.json({
     ok: true,
     order,
@@ -452,7 +543,7 @@ account.post("/orders", async (c) => {
 // ── The receipt and its document ─────────────────────────────────────────────
 
 account.get("/orders/:id", async (c) => {
-  const order = await loadOrder(c.env, c.var.user.edition, c.req.param("id"));
+  const order = await loadOrder(c.env, scopeOf(c.var.user), c.req.param("id"));
   if (!order) return c.json({ error: "not_found" }, 404);
   return c.json(order);
 });
@@ -470,10 +561,10 @@ const escapeHtml = (s: string): string =>
  * issued from a confirmed payment, which no build today can produce.
  */
 account.get("/orders/:id/document", async (c) => {
-  const edition = c.var.user.edition;
-  const order = await loadOrder(c.env, edition, c.req.param("id"));
+  const scope = scopeOf(c.var.user);
+  const order = await loadOrder(c.env, scope, c.req.param("id"));
   if (!order) return c.json({ error: "not_found" }, 404);
-  const profile = await readProfile(c.env, edition);
+  const profile = await readProfile(c.env, scope);
   const registration = (await publishedBook(c.env))?.tax.gstRegistration ?? null;
 
   const billedTo =

@@ -2,6 +2,13 @@ import { SELF, env } from "cloudflare:test";
 import { beforeAll, describe, it, expect } from "vitest";
 import { writeSeatGrants, seatCapacity } from "../../src/server/seats/ledger";
 import type { SeatOrder, SeatPurchaseResult, SeatsView } from "../../src/shared/seats";
+// T1-PEOPLE — the seat ledger takes a WORKSPACE now, not an edition. `seatCapacity`
+// is the aggregate `tenant-scope.test.ts` probes by value ("seat capacity must not
+// sum across customers"), and `writeSeatGrants` is the write that would otherwise
+// land in `t_default` by column default.
+import { DEFAULT_TENANT_ID, type TenantScope } from "../../src/shared/tenant";
+
+const VC_WS: TenantScope = { tenantId: DEFAULT_TENANT_ID, edition: "vc" };
 
 /**
  * W6-C — `/api/seats`: the PURCHASED seat (F0111), enforced and sold.
@@ -370,7 +377,7 @@ describe("the super-user nomination gate", () => {
 describe("writeSeatGrants", () => {
   it("records a pending checkout's seats without raising capacity or the purchased total", async () => {
     const E = env as unknown as import("../../src/server/types").Env;
-    const capBefore = await seatCapacity(E, "vc");
+    const capBefore = await seatCapacity(E, VC_WS);
     const seatsBefore = await purchasedSeats("vc");
     const intent = `pi_pending_${crypto.randomUUID()}`;
     await env.DB.prepare(
@@ -383,9 +390,9 @@ describe("writeSeatGrants", () => {
       lines: [{ tier: "standard", name: "Standard", quantity: 3, unitMinor: 0, amountMinor: 0, period: "month" }],
       seats: 3,
     } as unknown as SeatOrder;
-    const granted = await writeSeatGrants(E, { edition: "vc", order, intentId: intent, actorId: "vc_admin", status: "pending" });
+    const granted = await writeSeatGrants(E, { scope: VC_WS, order, intentId: intent, actorId: "vc_admin", status: "pending" });
     expect(granted).toEqual({ standard: 0, pro: 0, premium: 0 });
-    expect(await seatCapacity(E, "vc")).toEqual(capBefore);
+    expect(await seatCapacity(E, VC_WS)).toEqual(capBefore);
     expect(await purchasedSeats("vc")).toBe(seatsBefore);
     const row = await env.DB.prepare("SELECT status FROM seat_grants WHERE intent_id = ?").bind(intent).first<{ status: string }>();
     expect(row?.status).toBe("pending");

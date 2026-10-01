@@ -21,9 +21,11 @@ import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { getStage } from "../../pipeline";
 import { parseMissingFields } from "../../shared/intake";
+import { scoped, type TenantScope } from "../../shared/tenant";
 import {
   verifyResubmitToken,
   markTokenUsed,
+  tokenScope,
   type ResubmitTokenRow,
   type TokenFailure,
 } from "../resubmit";
@@ -66,30 +68,57 @@ interface DeckRow {
   uploaded_by: string | null;
 }
 
-async function loadDeck(env: AppEnv["Bindings"], deckId: string): Promise<DeckRow | null> {
+/**
+ * The deck this token opens — **inside the token's own workspace**.
+ *
+ * The scope is the one half of this route that is not about the founder. A
+ * resubmit token is a bearer credential on tenant-owned data, so "which deck"
+ * and "whose deck" have to be one question: a token whose `tenant_id` does not
+ * match its deck's answers 404 here, exactly as a revoked or forged one does.
+ * `mintResubmitToken` makes that mismatch unconstructible by deriving the
+ * token's workspace from the deck; this is the other end of the same guard, and
+ * it fails CLOSED — a mis-filed credential opens nothing rather than opening
+ * another customer's record.
+ */
+async function loadDeck(
+  env: AppEnv["Bindings"],
+  deckId: string,
+  scope: TenantScope,
+): Promise<DeckRow | null> {
+  const q = scoped(scope).on("d").and("d.id = ?", deckId);
   return env.DB.prepare(
-    "SELECT id, edition, name, sector, stage, city, status, complete, content_version, " +
-      "missing_fields, founder, uploaded_by FROM decks WHERE id = ?",
+    "SELECT d.id, d.edition, d.name, d.sector, d.stage, d.city, d.status, d.complete, " +
+      `d.content_version, d.missing_fields, d.founder, d.uploaded_by FROM decks d ${q.whereClause()}`,
   )
-    .bind(deckId)
+    .bind(...q.binds)
     .first<DeckRow>();
 }
 
 /** The founder-visible view of a deck. Never includes scores or evaluator data. */
 async function deckPayload(env: AppEnv["Bindings"], deck: DeckRow, token: ResubmitTokenRow) {
+  const scope = tokenScope(token);
+  // `deck_extractions` and `deck_versions` carry no workspace key — both are
+  // §5b proxy tables owned by `decks` — so the predicate comes from
+  // `TENANT_OWNER` rather than from the `deck_id` bind standing alone.
+  const sq = scoped(scope);
+  const sJoins = sq.viaParent("deck_extractions", "x");
+  sq.and("x.deck_id = ?", deck.id).andRaw("x.missing = 1");
   const sections = (
     await env.DB.prepare(
-      "SELECT label, heading, text FROM deck_extractions WHERE deck_id = ? AND missing = 1 ORDER BY sort_order",
+      `SELECT x.label, x.heading, x.text FROM deck_extractions x ${sJoins} ${sq.whereClause()} ORDER BY x.sort_order`,
     )
-      .bind(deck.id)
+      .bind(...sq.binds)
       .all<{ label: string; heading: string | null; text: string | null }>()
   ).results;
 
+  const vq = scoped(scope);
+  const vJoins = vq.viaParent("deck_versions", "v");
+  vq.and("v.deck_id = ?", deck.id);
   const versions = (
     await env.DB.prepare(
-      "SELECT version, file_name, note, created_at FROM deck_versions WHERE deck_id = ? ORDER BY version DESC",
+      `SELECT v.version, v.file_name, v.note, v.created_at FROM deck_versions v ${vJoins} ${vq.whereClause()} ORDER BY v.version DESC`,
     )
-      .bind(deck.id)
+      .bind(...vq.binds)
       .all<{ version: number; file_name: string | null; note: string | null; created_at: string }>()
   ).results;
 
@@ -131,7 +160,7 @@ resubmit.get("/:token", async (c) => {
       FAILURE_STATUS[check.reason],
     );
   }
-  const deck = await loadDeck(c.env, check.token.deck_id);
+  const deck = await loadDeck(c.env, check.token.deck_id, tokenScope(check.token));
   // The deck was deleted after the link went out (ON DELETE CASCADE normally
   // takes the token with it, so this is belt-and-braces).
   if (!deck) {
@@ -168,7 +197,7 @@ resubmit.post("/:token", async (c) => {
     );
   }
 
-  const deck = await loadDeck(c.env, token.deck_id);
+  const deck = await loadDeck(c.env, token.deck_id, tokenScope(token));
   if (!deck) {
     return c.json({ error: "invalid_token", message: FAILURE_MESSAGE.invalid_token }, 404);
   }
@@ -210,7 +239,7 @@ resubmit.post("/:token", async (c) => {
   await markTokenUsed(c.env, token.id);
 
   // Re-read: the evaluation just rewrote status / complete / missing_fields.
-  const updated = (await loadDeck(c.env, deck.id)) ?? deck;
+  const updated = (await loadDeck(c.env, deck.id, tokenScope(token))) ?? deck;
   return c.json({
     ok: true,
     version: added.version,

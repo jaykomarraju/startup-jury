@@ -29,8 +29,12 @@
  */
 import { Hono } from "hono";
 import type { AppEnv } from "../types";
-import type { Edition } from "../../shared/roles";
 import { requireAuth, requireTask } from "../auth/middleware";
+// T1-COMMERCE — T0-SCHEMA's one scope helper. `scopeOf(user)` takes the WORKSPACE
+// off the session and never off the request, which is what keeps §2's one piece of
+// good news true: not one of the 211 existing predicates takes its key from the
+// browser, and a `scopeOf(c.req.query())` would not compile.
+import { scopeOf, scoped, insertScope, type TenantScope } from "../../shared/tenant";
 // The Billing audit category — the same one W3-C's `recordCreditMovement` writes.
 import { changedFragment, recordAudit } from "../audit/log";
 import { LOW_CREDIT_THRESHOLD } from "../../shared/notifications";
@@ -119,30 +123,35 @@ async function readCatalogue(
 // ── GET / — everything the section renders ───────────────────────────────────
 
 billing.get("/", async (c) => {
-  const edition = c.var.user.edition;
+  const { edition } = c.var.user;
+  // §2 B16 measured this one route as leaking invoices, subscriptions and payment
+  // intents across customers. Every number below is now a workspace read; `tax` and
+  // `plans` are the two that are NOT, and must not be — `pricing_settings` and
+  // `price_plans` are platform-global (§3).
+  const scope = scopeOf(c.var.user);
   const now = new Date();
 
   // A paid purchase with no document is a gap a customer notices at audit time.
   // Idempotent, and a no-op on every request after the first.
-  await issueMissingInvoices(c.env, edition);
+  await issueMissingInvoices(c.env, scope);
 
-  const subscription = await readSubscription(c.env, edition, now);
+  const subscription = await readSubscription(c.env, scope, now);
   const tax = await readTaxSettings(c.env);
-  const usage = await usageTotals(c.env, edition, subscription.cycle, now);
+  const usage = await usageTotals(c.env, scope, subscription.cycle, now);
 
   const view: CreditsBillingView = {
     edition,
-    balance: await readBalance(c.env, edition),
-    purchased: await purchasedTotal(c.env, edition),
+    balance: await readBalance(c.env, scope),
+    purchased: await purchasedTotal(c.env, scope),
     usedThisMonth: usage.usedThisMonth,
     usedThisCycle: usage.usedThisCycle,
     lowCreditThreshold: LOW_CREDIT_THRESHOLD,
     subscription,
     tax,
-    ledger: await listLedger(c.env, edition, 50),
-    invoices: await listInvoices(c.env, edition),
+    ledger: await listLedger(c.env, scope, 50),
+    invoices: await listInvoices(c.env, scope),
     plans: await readCatalogue(c, subscription.currency),
-    intents: await listIntents(c.env, edition, 10),
+    intents: await listIntents(c.env, scope, 10),
     paymentConfigured: paymentConfigured(c.env),
   };
   return c.json(view);
@@ -158,7 +167,7 @@ async function readBody<T>(c: { req: { json: () => Promise<unknown> } }): Promis
 }
 
 billing.put("/subscription", async (c) => {
-  const edition: Edition = c.var.user.edition;
+  const scope: TenantScope = scopeOf(c.var.user);
   const body = await readBody<{
     billingEmail: string | null;
     gstin: string | null;
@@ -166,7 +175,7 @@ billing.put("/subscription", async (c) => {
     billingPeriod: "month" | "year";
   }>(c);
 
-  const before = await readSubscription(c.env, edition);
+  const before = await readSubscription(c.env, scope);
 
   const billingEmail =
     body.billingEmail === undefined ? before.billingEmail : body.billingEmail || null;
@@ -191,15 +200,51 @@ billing.put("/subscription", async (c) => {
     return c.json({ error: "invalid_billing_period" }, 400);
   }
 
+  // ══ ON CONFLICT 3 of the 9 THAT BLOCK INTEGRATION ═════════════════════════
+  //
+  // `0095` widened this table's PRIMARY KEY from `(edition)` to
+  // `(tenant_id, edition)` and left the old key standing as the transitional
+  // unique index `billing_subscriptions__pre_tenant_key`, so that this upsert's
+  // `ON CONFLICT (edition)` kept resolving and T0 could merge green.
+  //
+  // ── MEASURED, AND WORSE THAN `0095`'s HEADER PREDICTED ────────────────────
+  // That header says the old target "stops resolving ... with 'ON CONFLICT clause
+  // does not match any PRIMARY KEY or UNIQUE constraint'". It does not: the
+  // transitional index IS a matching unique constraint, so the statement runs. What
+  // it then does, measured on SQLite 3.51 against exactly this shape — widened PK
+  // plus a standing `UNIQUE (edition)` — is far worse than an error:
+  //
+  //   INSERT INTO ap (tenant_id, edition, v) VALUES ('t_zz','incubator','tenantB')
+  //     ON CONFLICT (edition) DO UPDATE SET v = excluded.v;
+  //   → t_default|incubator|tenantB      (one row, still tenant A's, now B's data)
+  //
+  // The second customer's billing email, GSTIN and cycle are written INTO THE FIRST
+  // CUSTOMER'S ROW, the row keeps `tenant_id = 't_default'`, no new row appears, and
+  // the handler answers 200. A cross-tenant destructive write that reports success —
+  // the silent half of §11's write-side warning, in the one table that carries a
+  // customer's tax identity.
+  //
+  // Naming the widened key is what converts that into the loud failure `0095`
+  // intended. Same measurement, target corrected:
+  //
+  //   ... ON CONFLICT (tenant_id, edition) DO UPDATE ...
+  //   → tenant A's own upsert still updates in place (verified);
+  //     tenant B's insert fails with `UNIQUE constraint failed: ap.edition`
+  //
+  // which is the correct error for "integration has not dropped the transitional
+  // index yet", and the reason `billing_subscriptions` stays in
+  // `BLOCKED_BY_TRANSITIONAL_KEY`. **The index is NOT dropped here** — 0101–0108
+  // does that, once all nine upserts name the widened key.
+  const t = insertScope(scope);
   await c.env.DB.prepare(
-    "INSERT INTO billing_subscriptions (edition, plan_label, seats, billing_period, cycle_anchor, " +
-      "billing_email, gstin, updated_at) VALUES (?, ?, 0, ?, ?, ?, ?, datetime('now')) " +
-      "ON CONFLICT (edition) DO UPDATE SET billing_period = excluded.billing_period, " +
+    `INSERT INTO billing_subscriptions (${t.columns}, plan_label, seats, billing_period, cycle_anchor, ` +
+      `billing_email, gstin, updated_at) VALUES (${t.placeholders}, ?, 0, ?, ?, ?, ?, datetime('now')) ` +
+      "ON CONFLICT (tenant_id, edition) DO UPDATE SET billing_period = excluded.billing_period, " +
       "cycle_anchor = excluded.cycle_anchor, billing_email = excluded.billing_email, " +
       "gstin = excluded.gstin, updated_at = datetime('now')",
   )
     .bind(
-      edition,
+      ...t.binds,
       before.planLabel,
       billingPeriod,
       cycleAnchor,
@@ -208,7 +253,7 @@ billing.put("/subscription", async (c) => {
     )
     .run();
 
-  const after = await readSubscription(c.env, edition);
+  const after = await readSubscription(c.env, scope);
   const changes = [
     changedFragment("billing email", before.billingEmail, after.billingEmail, (v) => v ?? "none"),
     changedFragment("GSTIN", before.gstin, after.gstin, (v) => v ?? "none"),
@@ -222,7 +267,9 @@ billing.put("/subscription", async (c) => {
       summary: `Billing details updated — ${changes.join("; ")}`,
       detail: { changes },
       targetType: "billing_subscriptions",
-      targetId: edition,
+      // The row's identity is now the PAIR, so the audit target has to be the
+      // pair: `targetId: edition` named a row that two customers would share.
+      targetId: `${scope.tenantId}:${scope.edition}`,
     });
   }
   return c.json({ ok: true, subscription: after });
@@ -239,7 +286,7 @@ const PURPOSE_OF_GROUP: Record<PlanGroup, IntentPurpose | null> = {
 };
 
 billing.post("/purchase", async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const body = await readBody<{ planCode: string; quantity: number }>(c);
 
   const planCode = typeof body.planCode === "string" ? body.planCode : "";
@@ -250,7 +297,7 @@ billing.post("/purchase", async (c) => {
     return c.json({ error: "invalid_quantity" }, 400);
   }
 
-  const subscription = await readSubscription(c.env, edition);
+  const subscription = await readSubscription(c.env, scope);
   const tax = await readTaxSettings(c.env);
   const plan = (await readCatalogue(c, subscription.currency)).find((p) => p.code === planCode);
   if (!plan) return c.json({ error: "unknown_plan" }, 404);
@@ -263,7 +310,8 @@ billing.post("/purchase", async (c) => {
   const money = priceBreakdown(stated, tax, plan.currency);
 
   const intent = await recordPaymentIntent(c.env, {
-    edition,
+    tenantId: scope.tenantId,
+    edition: scope.edition,
     purpose,
     planCode: plan.code,
     planName: plan.name,
@@ -310,7 +358,7 @@ billing.post("/purchase", async (c) => {
 // ── Invoices ─────────────────────────────────────────────────────────────────
 
 billing.get("/invoices/:id", async (c) => {
-  const invoice = await loadInvoice(c.env, c.var.user.edition, c.req.param("id"));
+  const invoice = await loadInvoice(c.env, scopeOf(c.var.user), c.req.param("id"));
   if (!invoice) return c.json({ error: "not_found" }, 404);
   return c.json(invoice);
 });
@@ -365,13 +413,21 @@ ${tax.inclusive ? "Prices are inclusive of GST." : "GST added at checkout."}</p>
  * already prints, and §1.3's rule about vendors on this lane is the same rule.
  */
 billing.get("/invoices/:id/document", async (c) => {
-  const edition = c.var.user.edition;
-  const invoice = await loadInvoice(c.env, edition, c.req.param("id"));
+  const { edition } = c.var.user;
+  const scope = scopeOf(c.var.user);
+  const invoice = await loadInvoice(c.env, scope, c.req.param("id"));
   if (!invoice) return c.json({ error: "not_found" }, 404);
-  const subscription = await readSubscription(c.env, edition);
+  const subscription = await readSubscription(c.env, scope);
   const tax = await readTaxSettings(c.env);
-  const org = await c.env.DB.prepare("SELECT branding_json FROM org_settings WHERE edition = ?")
-    .bind(edition)
+  // The customer's own trading name goes on their tax invoice, so an unscoped read
+  // here would print one customer's branding on another's GST document. `org_settings`
+  // is T1-CONFIG's table; the statement is in this file, so the predicate is this
+  // session's (§11 — the FILE's owner scopes the statement).
+  const orgQ = scoped(scope).on("o");
+  const org = await c.env.DB.prepare(
+    `SELECT o.branding_json FROM org_settings o ${orgQ.whereClause()}`,
+  )
+    .bind(...orgQ.binds)
     .first<{ branding_json: string | null }>();
   let name = edition === "vc" ? "Investor workspace" : "Incubator workspace";
   try {

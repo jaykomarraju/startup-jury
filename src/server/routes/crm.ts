@@ -22,8 +22,8 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
-import type { Edition } from "../../shared/roles";
 import { requireAuth, requireTask } from "../auth/middleware";
+import { scoped, scopeOf, type TenantScope } from "../../shared/tenant";
 // W3-C — the prototype's own first two Config rows are CRM rows ("Updated
 // Salesforce filter rule trigger value…", "CRM sync write-back enabled…").
 import { auditConfig } from "../audit/events";
@@ -61,26 +61,33 @@ crm.use("*", requireAuth);
 // revoked. The role list is unchanged; the task is ANDed onto it.
 crm.use("*", requireTask("adminconsole", "admin"));
 
-/** Resolve `:provider` against the caller's edition. 400 unknown, 404 missing. */
+/**
+ * Resolve `:provider` against the caller's WORKSPACE. 400 unknown, 404 missing.
+ *
+ * This is the one gate the five write routes below share, so scoping it scopes
+ * them: a provider row belonging to another customer is a 404 here, exactly as
+ * an unknown provider already was, and none of the handlers ever sees its id.
+ */
 async function resolve(
   c: Context<AppEnv>,
-): Promise<{ row: ConnectionRow; edition: Edition } | Response> {
+): Promise<{ row: ConnectionRow; scope: TenantScope } | Response> {
   const provider = c.req.param("provider");
   if (!isCrmProvider(provider)) return c.json({ error: "unknown_provider" }, 400);
-  const edition = c.var.user.edition;
-  const row = await loadConnection(c.env, edition, provider as CrmProvider);
+  const scope = scopeOf(c.var.user);
+  const row = await loadConnection(c.env, scope, provider as CrmProvider);
   if (!row) return c.json({ error: "not_found" }, 404);
-  return { row, edition };
+  return { row, scope };
 }
 
 async function connectionsResponse(c: Context<AppEnv>) {
-  const edition = c.var.user.edition;
-  return c.json({ edition, connections: await listConnections(c.env, edition) });
+  const scope = scopeOf(c.var.user);
+  return c.json({ edition: scope.edition, connections: await listConnections(c.env, scope) });
 }
 
 /**
- * GET /api/crm — all four providers for the caller's edition with their status,
- * settings, filter rules and field mappings. Never a credential.
+ * GET /api/crm — all four providers for the caller's WORKSPACE with their
+ * status, settings, filter rules and field mappings. Never a credential, and —
+ * since T1-ESIGN — never another customer's connection.
  */
 crm.get("/", async (c) => connectionsResponse(c));
 
@@ -88,7 +95,7 @@ crm.get("/", async (c) => connectionsResponse(c));
 crm.get("/:provider/log", async (c) => {
   const found = await resolve(c);
   if (found instanceof Response) return found;
-  return c.json({ entries: await listSyncLog(c.env, found.row.id) });
+  return c.json({ entries: await listSyncLog(c.env, found.scope, found.row.id) });
 });
 
 const trimmed = (v: unknown): string | null => {
@@ -147,10 +154,14 @@ crm.post("/:provider/connect", async (c) => {
     return c.json({ error: "invalid_credential_ref" }, 400);
   }
 
+  // `resolve()` already proved this row is the caller's, so the predicate is
+  // belt and braces — but a `WHERE id = ?` that writes a CREDENTIAL REFERENCE is
+  // the last statement in this file that should depend on a check one frame up.
+  const uq = scoped(found.scope).on("crm_connections").and("id = ?", row.id);
   await c.env.DB.prepare(
     "UPDATE crm_connections SET status = 'live', base_url = ?, webhook_path = ?, " +
       "credential_ref = ?, credential_hint = ?, credential_set_at = ?, " +
-      "connected_at = COALESCE(connected_at, ?), last_error = NULL, updated_at = ? WHERE id = ?",
+      `connected_at = COALESCE(connected_at, ?), last_error = NULL, updated_at = ? ${uq.whereClause()}`,
   )
     .bind(
       trimmed(body.baseUrl) ?? row.base_url,
@@ -160,7 +171,7 @@ crm.post("/:provider/connect", async (c) => {
       credential ? now : row.credential_set_at,
       now,
       now,
-      row.id,
+      ...uq.binds,
     )
     .run();
 
@@ -184,11 +195,12 @@ crm.post("/:provider/disconnect", async (c) => {
   if (found instanceof Response) return found;
 
   const now = new Date().toISOString();
+  const uq = scoped(found.scope).on("crm_connections").and("id = ?", found.row.id);
   await c.env.DB.prepare(
     "UPDATE crm_connections SET status = 'inactive', credential_ref = NULL, credential_hint = NULL, " +
-      "credential_set_at = NULL, connected_at = NULL, last_error = NULL, updated_at = ? WHERE id = ?",
+      `credential_set_at = NULL, connected_at = NULL, last_error = NULL, updated_at = ? ${uq.whereClause()}`,
   )
-    .bind(now, found.row.id)
+    .bind(now, ...uq.binds)
     .run();
 
   await auditConfig(
@@ -280,13 +292,14 @@ crm.put("/:provider", async (c) => {
         400,
       );
     }
-    await replaceMappings(c.env, row.id, result.mappings);
+    await replaceMappings(c.env, found.scope, row.id, result.mappings);
   }
 
+  const uq = scoped(found.scope).on("crm_connections").and("id = ?", row.id);
   await c.env.DB.prepare(
     "UPDATE crm_connections SET base_url = ?, webhook_path = ?, sync_direction = ?, sync_schedule = ?, " +
       "trigger_field = ?, trigger_value = ?, monthly_deck_cap = ?, score_writeback_field = ?, " +
-      "auto_approve_within_cap = ?, write_back_scores = ?, updated_at = ? WHERE id = ?",
+      `auto_approve_within_cap = ?, write_back_scores = ?, updated_at = ? ${uq.whereClause()}`,
   )
     .bind(
       has("baseUrl") ? trimmed(body.baseUrl) : row.base_url,
@@ -300,7 +313,7 @@ crm.put("/:provider", async (c) => {
       autoApprove ? 1 : 0,
       writeBackScores ? 1 : 0,
       new Date().toISOString(),
-      row.id,
+      ...uq.binds,
     )
     .run();
 
@@ -338,8 +351,7 @@ crm.post("/:provider/sync", async (c) => {
   const found = await resolve(c);
   if (found instanceof Response) return found;
 
-  const { record, limit, used } = await runPull(c.env, found.row);
-  const edition = c.var.user.edition;
+  const { record, limit, used } = await runPull(c.env, found.scope, found.row);
   return c.json({
     attempt: {
       id: record.id,
@@ -351,7 +363,7 @@ crm.post("/:provider/sync", async (c) => {
       createdAt: record.createdAt,
     },
     cap: { limit, usedThisMonth: used, monthlyDeckCap: found.row.monthly_deck_cap },
-    connections: await listConnections(c.env, edition),
+    connections: await listConnections(c.env, found.scope),
   });
 });
 

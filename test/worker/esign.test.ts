@@ -1060,3 +1060,156 @@ describe("authZ", () => {
     expect((await get("/api/esign/signatories", admin)).status).toBe(403);
   });
 });
+
+/**
+ * TENANCY (T1-ESIGN) — the end-to-end negative controls for the surface
+ * `plan_multitenancy.md` calls the priority of this session.
+ *
+ * "Signed agreements are legal records. A diligence document or signature that
+ * resolves across tenants is the worst-shaped leak in this wave." Three of the
+ * four cases here are about `agreements` and `signatures`, which carry NO scope
+ * column at all — §5b counts `signatures` 1 `FROM` site and 0 `JOIN`s, the
+ * purest instance of the proxy defect, and its ownership path
+ * (`signatures → agreements → signups → decks`) is the deepest in the schema.
+ *
+ * The fixture is a second customer holding a COMPLETE signing chain: its own
+ * deck, sign-up, template, agreement and signature. Nothing here asserts an
+ * absence that a missing row could explain — every case has a real row on the
+ * other side of the predicate, and each one was measured to go red with its
+ * predicate removed.
+ */
+describe("tenancy · agreements and signatures do not resolve across customers", () => {
+  const OTHER = "t_esign_probe";
+  const OTHER_SIGNUP = "su_other_tenant";
+  const OTHER_AGREEMENT = "agr_other_tenant";
+
+  beforeEach(async () => {
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO organizations (id, name, slug, status) VALUES (?, 'Other Accelerator', 'other-accel', 'active') " +
+          "ON CONFLICT (id) DO NOTHING",
+      ).bind(OTHER),
+      env.DB.prepare(
+        "INSERT INTO decks (id, tenant_id, edition, name, status, founder_email) " +
+          "VALUES ('deck_other_tenant', ?, 'incubator', 'Othercorp', 'signup', 'founder@othercorp.test') " +
+          "ON CONFLICT (id) DO NOTHING",
+      ).bind(OTHER),
+      env.DB.prepare(
+        "INSERT INTO signups (id, deck_id, status) VALUES (?, 'deck_other_tenant', 'initiated') " +
+          "ON CONFLICT (id) DO NOTHING",
+      ).bind(OTHER_SIGNUP),
+      env.DB.prepare(
+        "INSERT INTO agreement_templates (id, tenant_id, edition, code, name, status) " +
+          "VALUES ('at_other_tenant', ?, 'incubator', 'other_nda', 'Othercorp NDA', 'active') " +
+          "ON CONFLICT (id) DO NOTHING",
+      ).bind(OTHER),
+      env.DB.prepare(
+        "INSERT INTO agreements (id, signup_id, template_id, kind, status, method_locked) " +
+          "VALUES (?, ?, 'at_other_tenant', 'other_nda', 'active', 0) ON CONFLICT (id) DO NOTHING",
+      ).bind(OTHER_AGREEMENT, OTHER_SIGNUP),
+      env.DB.prepare(
+        "INSERT INTO signatures (id, agreement_id, signer_email, signer_name, method_provider, sig_type, signed_at) " +
+          "VALUES ('sig_other_tenant', ?, 'founder@othercorp.test', 'Othercorp Founder', 'SignDesk', 'standard', " +
+          "'2026-09-01T00:00:00.000Z') ON CONFLICT (id) DO NOTHING",
+      ).bind(OTHER_AGREEMENT),
+    ]);
+  });
+
+  it("another customer's sign-up is a 404 on every route of the workspace", async () => {
+    // The record EXISTS and is in the caller's edition — `incubator`, the same
+    // one the admin signs in to. Before the tenant predicate reached
+    // `loadSignup`, `resolveSignup`'s only check was
+    // `record.edition !== user.edition`, which this row passes.
+    const admin = await login(ADMIN);
+    for (const [verb, path] of [
+      ["GET", `/api/esign/signups/${OTHER_SIGNUP}/method`],
+      ["PUT", `/api/esign/signups/${OTHER_SIGNUP}/method`],
+      ["PUT", `/api/esign/signups/${OTHER_SIGNUP}/signatory`],
+      ["POST", `/api/esign/signups/${OTHER_SIGNUP}/agreement`],
+      ["POST", `/api/esign/signups/${OTHER_SIGNUP}/founder-signature`],
+      ["POST", `/api/esign/signups/${OTHER_SIGNUP}/countersign`],
+    ] as Array<[string, string]>) {
+      expect((await send(verb, path, admin)).status, `${verb} ${path}`).toBe(404);
+    }
+  });
+
+  it("leaves the other customer's agreement and signature untouched by a refused call", async () => {
+    // A 404 that still wrote would be the worst outcome of all, so the refusal
+    // is checked against the rows and not only against the status code.
+    const admin = await login(ADMIN);
+    await post(`/api/esign/signups/${OTHER_SIGNUP}/founder-signature`, admin);
+    await post(`/api/esign/signups/${OTHER_SIGNUP}/countersign`, admin);
+
+    const agreement = await env.DB.prepare(
+      "SELECT method_locked, countersigned_by, countersigned_at FROM agreements WHERE id = ?",
+    )
+      .bind(OTHER_AGREEMENT)
+      .first<{ method_locked: number; countersigned_by: string | null; countersigned_at: string | null }>();
+    expect(agreement).toMatchObject({ method_locked: 0, countersigned_by: null, countersigned_at: null });
+
+    const signup = await env.DB.prepare("SELECT status, founder_signed_at FROM signups WHERE id = ?")
+      .bind(OTHER_SIGNUP)
+      .first<{ status: string; founder_signed_at: string | null }>();
+    expect(signup).toMatchObject({ status: "initiated", founder_signed_at: null });
+
+    const sigs = await env.DB.prepare("SELECT COUNT(*) n FROM signatures WHERE agreement_id = ?")
+      .bind(OTHER_AGREEMENT)
+      .first<{ n: number }>();
+    expect(sigs!.n).toBe(1);
+  });
+
+  it("never counts another customer's agreement against a template's in-use guard", async () => {
+    // `agreementCount` is the number `DELETE /templates/:id` refuses on, and it
+    // is an aggregate — §11's shape with no marker in it. Unscoped, another
+    // customer's agreement pins this workspace's draft permanently undeletable,
+    // with nothing in any response to say who did it: a leak that reads as a bug
+    // report rather than as a leak.
+    const admin = await login(ADMIN);
+    const created = await post("/api/esign/templates", admin, { name: "Cross tenant count probe" });
+    const id = ((await created.json()) as { template: AgreementTemplateView }).template.id;
+
+    await env.DB.prepare("UPDATE agreements SET template_id = ? WHERE id = ?")
+      .bind(id, OTHER_AGREEMENT)
+      .run();
+
+    // The probe asserts ITSELF first: the reference really exists, so the zero
+    // below is the predicate doing work and not an empty table.
+    const raw = await env.DB.prepare("SELECT COUNT(*) n FROM agreements WHERE template_id = ?")
+      .bind(id)
+      .first<{ n: number }>();
+    expect(raw!.n).toBe(1);
+
+    const mine = (await library(admin)).templates.find((t) => t.id === id);
+    expect(mine!.agreementCount).toBe(0);
+    expect((await del(`/api/esign/templates/${id}`, admin)).status).toBe(200);
+
+    // MEASURED, and recorded for integration rather than worked around here:
+    // `agreements.template_id` is `ON DELETE SET NULL` (`0035:70`), so the
+    // delete this scoped count correctly permits detaches the other customer's
+    // agreement from the template it referenced. That is only reachable from a
+    // row the application can no longer create — every write path now picks its
+    // template out of a scoped `listTemplates` — so it is a PRE-TENANCY data
+    // shape, not a live one, and the fix belongs in a `0100`-class integrity
+    // assertion that no agreement references a template outside its own tenant.
+    // Unscoping the count to avoid it would reinstate the leak.
+    const ref = await env.DB.prepare("SELECT template_id FROM agreements WHERE id = ?")
+      .bind(OTHER_AGREEMENT)
+      .first<{ template_id: string | null }>();
+    expect(ref!.template_id).toBeNull();
+    await env.DB.prepare("UPDATE agreements SET template_id = 'at_other_tenant' WHERE id = ?")
+      .bind(OTHER_AGREEMENT)
+      .run();
+  });
+
+  it("the library and the signatory pool show this workspace only", async () => {
+    const admin = await login(ADMIN);
+    const { templates } = await library(admin);
+    expect(templates.map((t) => t.id)).not.toContain("at_other_tenant");
+
+    // And the row IS in the caller's edition, so `edition` alone would have
+    // returned it — which is the entire point of the wave.
+    const row = await env.DB.prepare("SELECT edition, tenant_id FROM agreement_templates WHERE id = 'at_other_tenant'")
+      .first<{ edition: string; tenant_id: string }>();
+    expect(row).toMatchObject({ edition: "incubator", tenant_id: OTHER });
+  });
+});

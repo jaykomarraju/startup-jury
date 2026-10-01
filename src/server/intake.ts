@@ -7,6 +7,11 @@
 import type { Env } from "./types";
 import type { Edition } from "../shared/roles";
 import { getStage } from "../pipeline";
+// T1-DECKS — every function below took `edition: Edition` and nothing else, so with
+// a second customer each one reached across the tenancy line. `TenantScope` replaces
+// that parameter rather than being added beside it: an `edition` left in the
+// signature is an `edition` somebody keeps passing.
+import { scoped, type TenantScope } from "../shared/tenant";
 import {
   resolveIntakeSector,
   classifyIntake,
@@ -40,18 +45,31 @@ function isClosed(edition: Edition, status: string): boolean {
   return stage.kind === "exit" || stage.terminal === true;
 }
 
-/** Load the decks a new submission in `edition` is matched against. */
+/**
+ * Load the decks a new submission in this WORKSPACE is matched against.
+ *
+ * This read is the duplicate detector's whole input, and it was scoped by `edition`
+ * alone. With a second customer it would have reported another customer's startup as
+ * a duplicate of this one — by name, with the founder's details behind the match —
+ * and `intakeFlagStatement` below would then have written that deck's id into
+ * `decks.related_deck_id`, a foreign key pointing across the tenancy line.
+ */
 export async function loadIntakeCandidates(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   excludeDeckId?: string,
 ): Promise<IntakeCandidate[]> {
+  const { edition } = scope;
+  const q = scoped(scope).on("d").and("d.id != ?", excludeDeckId ?? "");
   const rows = (
     await env.DB.prepare(
-      "SELECT id, name, founder, founder_email, founder_phone, stage, status, cohort_id, created_at " +
-        "FROM decks WHERE edition = ? AND id != ? ORDER BY created_at DESC LIMIT ?",
+      "SELECT d.id, d.name, d.founder, d.founder_email, d.founder_phone, d.stage, d.status, " +
+        `d.cohort_id, d.created_at FROM decks d ${q.whereClause()} ` +
+        "ORDER BY d.created_at DESC LIMIT ?",
     )
-      .bind(edition, excludeDeckId ?? "", CANDIDATE_LIMIT)
+      // CANDIDATE_LIMIT is a TAIL bind: it sits after the WHERE clause in the
+      // statement, which is the bind-order rule in `src/shared/tenant.ts`.
+      .bind(...q.binds, CANDIDATE_LIMIT)
       .all<CandidateRow>()
   ).results;
 
@@ -70,15 +88,15 @@ export async function loadIntakeCandidates(
 }
 
 /**
- * Classify one submission against the edition's existing decks. Soft alerts only —
+ * Classify one submission against this WORKSPACE's existing decks. Soft alerts only —
  * the caller stores the flag and surfaces it; nothing is ever blocked.
  */
 export async function detectIntakeFlags(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   subject: IntakeSubject,
 ): Promise<IntakeClassification> {
-  const candidates = await loadIntakeCandidates(env, edition, subject.selfId ?? undefined);
+  const candidates = await loadIntakeCandidates(env, scope, subject.selfId ?? undefined);
   return classifyIntake(subject, candidates);
 }
 
@@ -109,7 +127,7 @@ export interface IntakeContext {
  */
 export async function resolveIntakeContext(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   input: IntakeContext,
 ): Promise<{ programId: string | undefined; cohortId: string | undefined; sector: string | undefined }> {
   const clean = (v: string | undefined) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
@@ -117,10 +135,16 @@ export async function resolveIntakeContext(
   let cohortId = clean(input.cohortId);
 
   if (cohortId) {
+    // `cohorts` is owned through `programs`; the join is already written, so the
+    // scope goes on `p`. The docstring above already refuses a programme from the
+    // other EDITION for a reason that reads identically one tenant over: a deck
+    // tagged to a programme the caller cannot see vanishes from every
+    // programme-scoped screen.
+    const qc = scoped(scope).on("p").and("c.id = ?", cohortId);
     const cohort = await env.DB.prepare(
-      "SELECT c.program_id FROM cohorts c JOIN programs p ON p.id = c.program_id WHERE c.id = ? AND p.edition = ?",
+      `SELECT c.program_id FROM cohorts c JOIN programs p ON p.id = c.program_id ${qc.whereClause()}`,
     )
-      .bind(cohortId, edition)
+      .bind(...qc.binds)
       .first<{ program_id: string }>();
     if (!cohort || (programId && cohort.program_id !== programId)) cohortId = undefined;
     else programId = cohort.program_id;
@@ -128,8 +152,9 @@ export async function resolveIntakeContext(
 
   let programSector: string | null = null;
   if (programId) {
-    const program = await env.DB.prepare("SELECT sector FROM programs WHERE id = ? AND edition = ?")
-      .bind(programId, edition)
+    const qpg = scoped(scope).on("p").and("p.id = ?", programId);
+    const program = await env.DB.prepare(`SELECT p.sector FROM programs p ${qpg.whereClause()}`)
+      .bind(...qpg.binds)
       .first<{ sector: string | null }>();
     if (!program) {
       programId = undefined;
@@ -139,9 +164,10 @@ export async function resolveIntakeContext(
     }
   }
 
+  const qsec = scoped(scope).on("s").andRaw("s.active = 1");
   const sectors = (
-    await env.DB.prepare("SELECT name FROM sectors WHERE edition = ? AND active = 1 ORDER BY sort_order, name")
-      .bind(edition)
+    await env.DB.prepare(`SELECT s.name FROM sectors s ${qsec.whereClause()} ORDER BY s.sort_order, s.name`)
+      .bind(...qsec.binds)
       .all<{ name: string }>()
   ).results.map((r) => r.name);
 

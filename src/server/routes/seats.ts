@@ -29,6 +29,10 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import { requireAuth, requireTask } from "../auth/middleware";
+// T1-PEOPLE — T0's one scope helper. `scopeOf` takes the PRINCIPAL and nothing
+// else, which is what keeps §2's one piece of good news true: 211 predicates
+// already bind a workspace key and not one of them takes it from the browser.
+import { scopeOf, scoped } from "../../shared/tenant";
 import { recordAudit } from "../audit/log";
 import { creatableStaffRoles } from "../../shared/roles";
 import { PLAN_LABELS, formatMinor } from "../../shared/plans";
@@ -69,14 +73,14 @@ async function readBody(c: Context<AppEnv>): Promise<Record<string, unknown>> {
 // ── GET / ────────────────────────────────────────────────────────────────────
 
 seats.get("/", async (c) => {
-  const { edition, id } = c.var.user;
-  return c.json(await readSeatsView(c.env, edition, id));
+  return c.json(await readSeatsView(c.env, scopeOf(c.var.user), c.var.user.id));
 });
 
 // ── POST /members — a member is only ever created into a seat that exists ────
 
 seats.post("/members", async (c) => {
   const { edition, id: viewerId } = c.var.user;
+  const scope = scopeOf(c.var.user);
   const body = await readBody(c);
 
   const tier = body.tier;
@@ -88,7 +92,7 @@ seats.post("/members", async (c) => {
     return c.json({ error: "invalid_role" }, 400);
   }
 
-  const holders = await seatHolders(c.env, edition);
+  const holders = await seatHolders(c.env, scope);
   // `#su-superbox`: "Nominate a super user above to start adding team members."
   // Every workspace this application creates has exactly one, and W4-A's
   // transfer-ownership keeps it that way — so this refusal guards an invariant
@@ -100,7 +104,7 @@ seats.post("/members", async (c) => {
     );
   }
 
-  const summary = await readSeatSummary(c.env, edition);
+  const summary = await readSeatSummary(c.env, scope);
   const refusal = seatRefusal(summary, tier);
   if (refusal) return c.json(refusal, 409);
 
@@ -129,8 +133,14 @@ seats.post("/members", async (c) => {
     return c.json(created, forwarded.status as 400 | 403 | 409 | 500);
   }
 
-  await c.env.DB.prepare("UPDATE users SET plan_tier = ? WHERE id = ? AND edition = ?")
-    .bind(tier, created.user.id, edition)
+  // The id came back from `POST /api/users`, which created the row in THIS
+  // workspace — but the predicate says so anyway. An `id`-only UPDATE on `users`
+  // is the shape §6 calls the most dangerous in the codebase once tenancy exists,
+  // and "the id can only have come from here" is an argument that survives exactly
+  // until somebody reuses the handler.
+  const assign = scoped(scope).on("users").and("users.id = ?", created.user.id);
+  await c.env.DB.prepare(`UPDATE users SET plan_tier = ? ${assign.whereClause()}`)
+    .bind(tier, ...assign.binds)
     .run();
   await recordAudit(c, {
     category: "team",
@@ -144,19 +154,23 @@ seats.post("/members", async (c) => {
   return c.json({
     ...created,
     user: { ...created.user, tier },
-    seats: await readSeatsView(c.env, edition, viewerId),
+    seats: await readSeatsView(c.env, scope, viewerId),
   });
 });
 
 // ── PUT /members/:id/tier — the per-member plan toggle ───────────────────────
 
 seats.put("/members/:id/tier", async (c) => {
-  const { edition, id: viewerId, role: viewerRole } = c.var.user;
+  const { id: viewerId, role: viewerRole } = c.var.user;
+  const scope = scopeOf(c.var.user);
   const body = await readBody(c);
   const tier = body.tier;
   if (!isSeatTier(tier)) return c.json({ error: "invalid_tier" }, 400);
 
-  const holders = await seatHolders(c.env, edition);
+  // The target is found INSIDE the scoped holder list rather than by a bare id
+  // lookup, so another customer's member is a 404 and not a 403 — the route never
+  // confirms that the id exists somewhere on the platform.
+  const holders = await seatHolders(c.env, scope);
   const target = holders.find((h) => h.id === c.req.param("id"));
   if (!target) return c.json({ error: "not_found" }, 404);
   // The account owner's row is immutable to everyone but its owner — the rule
@@ -165,12 +179,13 @@ seats.put("/members/:id/tier", async (c) => {
     return c.json({ error: "immutable_superuser" }, 403);
   }
 
-  const refusal = tierMoveRefusal(await readSeatSummary(c.env, edition), target.plan_tier, tier);
+  const refusal = tierMoveRefusal(await readSeatSummary(c.env, scope), target.plan_tier, tier);
   if (refusal) return c.json(refusal, 409);
 
   if (target.plan_tier !== tier) {
-    await c.env.DB.prepare("UPDATE users SET plan_tier = ? WHERE id = ? AND edition = ?")
-      .bind(tier, target.id, edition)
+    const move = scoped(scope).on("users").and("users.id = ?", target.id);
+    await c.env.DB.prepare(`UPDATE users SET plan_tier = ? ${move.whereClause()}`)
+      .bind(tier, ...move.binds)
       .run();
     await recordAudit(c, {
       category: "team",
@@ -181,21 +196,30 @@ seats.put("/members/:id/tier", async (c) => {
       targetId: target.id,
     });
   }
-  return c.json({ ok: true, seats: await readSeatsView(c.env, edition, viewerId) });
+  return c.json({ ok: true, seats: await readSeatsView(c.env, scope, viewerId) });
 });
 
 // ── POST /purchase — records an order; takes no card and charges nothing ─────
 
 seats.post("/purchase", async (c) => {
   const { edition, id: viewerId } = c.var.user;
+  const scope = scopeOf(c.var.user);
   const body = await readBody(c);
 
-  const [subscription, book] = await Promise.all([readSubscription(c.env, edition), readPublishedBook(c.env)]);
+  // `readPublishedBook` is the one call here that takes NO scope, and that is
+  // correct rather than an omission: the catalogue is one of §3's eight
+  // platform-global tables. The other two take the workspace — the subscription
+  // this order is priced against, and the intent it is recorded as.
+  const [subscription, book] = await Promise.all([
+    readSubscription(c.env, scope),
+    readPublishedBook(c.env),
+  ]);
   const currency = subscription.currency;
   const order = seatOrder(body.quantities, seatPricesFromBook(book, currency), taxSettingsFromBook(book), currency);
   if (isSeatOrderError(order)) return c.json(order, 400);
 
   const intent = await recordPaymentIntent(c.env, {
+    tenantId: scope.tenantId,
     edition,
     purpose: "seat",
     // One order may span tiers, so it names no single catalogue plan.
@@ -213,9 +237,9 @@ seats.post("/purchase", async (c) => {
   // confirms; a failed one provisions nothing at all. See §8 Q65.
   const granted =
     intent.status === "recorded"
-      ? await writeSeatGrants(c.env, { edition, order, intentId: intent.id, actorId: viewerId, status: "granted" })
+      ? await writeSeatGrants(c.env, { scope, order, intentId: intent.id, actorId: viewerId, status: "granted" })
       : intent.status === "redirected"
-        ? await writeSeatGrants(c.env, { edition, order, intentId: intent.id, actorId: viewerId, status: "pending" })
+        ? await writeSeatGrants(c.env, { scope, order, intentId: intent.id, actorId: viewerId, status: "pending" })
         : { standard: 0, pro: 0, premium: 0 };
 
   await recordAudit(c, {
@@ -236,7 +260,7 @@ seats.post("/purchase", async (c) => {
     intent: { id: intent.id, status: intent.status, checkoutUrl: intent.checkoutUrl },
     order,
     seatsGranted: granted,
-    seats: await readSeatsView(c.env, edition, viewerId),
+    seats: await readSeatsView(c.env, scope, viewerId),
     message:
       intent.status === "redirected"
         ? "Continue on the payment provider's own page to complete this purchase. Your seats are added once it confirms."

@@ -20,8 +20,40 @@
 // that. The UNIQUE index on `email_outbox.dedupe_key` closes the concurrent-run
 // race that a plain read-then-write check would leave open.
 
+// ── T1-PEOPLE, tenancy wave: THE TWO WORST FINDINGS IN §2 ARE BOTH IN THIS FILE ─
+//
+// §2 B22 is the only leak in the whole table that LEAVES THE BUILDING. The
+// fan-out below selected its recipients with `SELECT ... FROM users WHERE
+// edition = ? AND active = 1 AND <roles>` — no tenant — so one customer's deck
+// event emailed every other customer's admins and PMs, with the startup's name in
+// the subject line. Not a screen somebody has to open: mail, already sent.
+//
+// §2 A8 is the other, and `migrations/0086_tenant_id_commerce.sql` records the
+// plan correction it forced: §5b calls `email_outbox` "scoped by proxy", but
+// `deck_id` and `query_id` are BOTH nullable (a `signup_invite` has no deck, an
+// `account_invite` has neither), so no join can scope this table. It carries a
+// DIRECT tenant key, and these are its three `FROM` sites with zero `JOIN`s —
+// §5b's own purest example of its own warning.
+//
+// ── WHY `scope` IS OPTIONAL, WHICH IS NOT THE SAME AS BEING FORGOTTEN ────────
+// `sendEmail` has 7 call sites and `emitNotification` 10, spread across files
+// owned by FIVE different sessions (`ai/evaluate.ts`, `routes/pipeline.ts`,
+// `routes/decks.ts`, `routes/assignments.ts` → T1-DECKS; `routes/calls.ts`,
+// `resubmit.ts` → T1-FLOW; `config/autoQuery.ts` → T1-CONFIG; `crm/provider.ts`
+// → T1-ESIGN; `routes/auth.ts` → T0). A REQUIRED field would be the right design
+// and is what `PaymentIntentAttempt.tenantId` does — but it would not compile in
+// nine files this session does not own, and §11's gate forbids merging red.
+//
+// So the tenant is RESOLVED rather than defaulted (`resolveTenant` below): the
+// caller's scope when it gives one, else the deck the message is about — which
+// covers every unscoped producer that names a deck, and therefore closes B22 for
+// them without editing their files — and only then `DEFAULT_TENANT_ID`, with a
+// `console.warn` naming the kind so the remaining cases are visible in logs
+// rather than silent. `test/worker/tenant-scope.test.ts` carries the matching
+// PENDING case, which fails the day a caller starts passing a scope.
 import type { Env } from "../types";
 import type { Edition, Role } from "../../shared/roles";
+import { DEFAULT_TENANT_ID, scoped, type TenantScope } from "../../shared/tenant";
 import { isMentor } from "../../shared/roles";
 import { describeMissingFields, type IntakeField } from "../../shared/intake";
 import { withResponseLink } from "../../shared/queries";
@@ -65,6 +97,15 @@ export interface EmailAttachment {
 
 export interface OutboundEmail {
   kind: EmailKind;
+  /**
+   * The workspace this message belongs to — `scopeOf(user)`, or a scope built
+   * from the row a cron job is processing.
+   *
+   * OPTIONAL only because nine call sites live in four other T1 sessions' files;
+   * see the module header. When it is absent the tenant is resolved from `deckId`
+   * and, failing that, defaulted loudly. Pass it.
+   */
+  scope?: TenantScope;
   toEmail: string;
   toName?: string | null;
   subject: string;
@@ -117,15 +158,77 @@ interface OutboxRow {
   created_at: string;
   provider_id: string | null;
   error: string | null;
+  tenant_id: string;
 }
 
-/** Look up a previously recorded message by its dedupe key. */
+/**
+ * Look up a previously recorded message by its dedupe key.
+ *
+ * ── DELIBERATELY NOT TENANT-SCOPED, AND THE REASON IS THE INDEX ─────────────
+ * `idx_outbox_dedupe ON email_outbox (dedupe_key)` (`0017:49`) is GLOBALLY unique
+ * and T1-PEOPLE has no migration slot to re-cut it — `0099` re-cut the matching
+ * index on `notifications` to `(tenant_id, dedupe_key)` but left this one, and
+ * `0101`-`0108` are integration's headroom. A lookup scoped to the caller's tenant
+ * while the constraint it guards is global would be strictly worse than this: the
+ * read would miss another tenant's row, the INSERT would then hit the unique index,
+ * and a dedupe that is meant to be a no-op would surface as a thrown write. Loud,
+ * but loud in the wrong place.
+ *
+ * So the lookup matches the index, and the KEY STRINGS are what carry the tenant —
+ * which is exactly what `0099`'s header asks this session for. The `tenant_id`
+ * column is selected so that a key which somehow still collides across customers
+ * says so in the log rather than silently returning the other customer's row id and
+ * status to the caller.
+ */
 async function findByDedupeKey(env: Env, key: string): Promise<OutboxRow | null> {
   return env.DB.prepare(
-    "SELECT id, status, created_at, provider_id, error FROM email_outbox WHERE dedupe_key = ?",
+    "SELECT id, status, created_at, provider_id, error, tenant_id FROM email_outbox WHERE dedupe_key = ?",
   )
     .bind(key)
     .first<OutboxRow>();
+}
+
+/**
+ * Whose workspace does this message belong to?
+ *
+ * Three answers, in descending order of authority, and the order is the whole
+ * design:
+ *
+ *   1. the caller's own `scope` — the only answer that is certainly right;
+ *   2. the TENANT OF THE DECK the message is about. Every producer that names a
+ *      `deckId` gets a correct tenant from this arm without its file changing,
+ *      which is what closes §2 B22 for `ai/evaluate.ts`, `routes/pipeline.ts`,
+ *      `routes/decks.ts`, `routes/assignments.ts`, `routes/calls.ts`,
+ *      `resubmit.ts` and `config/autoQuery.ts` ahead of their sessions;
+ *   3. `DEFAULT_TENANT_ID`, with a warning. Identical to today's behaviour while
+ *      one customer exists, and visible in logs the moment a second does. The
+ *      callers that land here are the ones with neither a scope nor a deck —
+ *      `crm_sync_failed` (`crm/provider.ts`) and `invite_accepted`
+ *      (`routes/auth.ts`) — and both are named in `docs/parity-requests/`.
+ *
+ * It does NOT fall back to the recipient's own `users` row. That was the shape
+ * `GET /api/notifications/outbox` used before this wave (a `COALESCE` over a
+ * `LEFT JOIN users ON u.email = o.to_email`), and under `UNIQUE (tenant_id,
+ * email)` an address can now belong to two customers — so the recipient resolves
+ * to a SET, not a tenant, and picking one of them is guessing.
+ */
+async function resolveTenant(
+  env: Env,
+  args: { scope?: TenantScope; deckId?: string | null },
+  what: string,
+): Promise<string> {
+  if (args.scope) return args.scope.tenantId;
+  if (args.deckId) {
+    const row = await env.DB.prepare("SELECT tenant_id FROM decks WHERE id = ?")
+      .bind(args.deckId)
+      .first<{ tenant_id: string }>();
+    if (row?.tenant_id) return row.tenant_id;
+  }
+  console.warn(
+    `email/outbox: no tenant for ${what} — falling back to ${DEFAULT_TENANT_ID}. ` +
+      "Pass `scope` at the call site (plan_multitenancy.md §2 A8/B22).",
+  );
+  return DEFAULT_TENANT_ID;
 }
 
 function hydrate(email: OutboundEmail, row: OutboxRow): SentEmail {
@@ -166,10 +269,12 @@ export async function sendEmail(
   email: OutboundEmail,
   now: () => string = () => new Date().toISOString(),
 ): Promise<SentEmail> {
+  const tenantId = await resolveTenant(env, email, `${email.kind} → ${email.toEmail}`);
+
   // Idempotency: a keyed message is sent at most once.
   if (email.dedupeKey) {
     const existing = await findByDedupeKey(env, email.dedupeKey);
-    if (existing) return hydrate(email, existing);
+    if (existing) return hydrate(email, warnIfCrossTenant(existing, tenantId, email));
   }
 
   const id = `mail_${crypto.randomUUID()}`;
@@ -203,12 +308,18 @@ export async function sendEmail(
   }
 
   try {
+    // `tenant_id` is named EXPLICITLY rather than left to the column's
+    // `DEFAULT 't_default'`. The default exists only because `0086` had no other
+    // way to backfill a NOT NULL column on a populated table; relying on it is the
+    // silent half of this wave — a 200, a row, and the second customer's mail
+    // audited against the first.
     await env.DB.prepare(
-      "INSERT INTO email_outbox (id, deck_id, query_id, kind, to_email, to_name, subject, body, status, created_at, error, provider_id, dedupe_key) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO email_outbox (id, tenant_id, deck_id, query_id, kind, to_email, to_name, subject, body, status, created_at, error, provider_id, dedupe_key) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
       .bind(
         id,
+        tenantId,
         email.deckId ?? null,
         email.queryId ?? null,
         email.kind,
@@ -229,12 +340,38 @@ export async function sendEmail(
     // concurrent run. Return the row that won rather than surfacing a 500.
     if (email.dedupeKey) {
       const existing = await findByDedupeKey(env, email.dedupeKey);
-      if (existing) return hydrate(email, existing);
+      if (existing) return hydrate(email, warnIfCrossTenant(existing, tenantId, email));
     }
     throw err;
   }
 
   return { ...email, id, status, createdAt, providerId, error };
+}
+
+/**
+ * A dedupe hit that belongs to ANOTHER customer is §2 A8 happening, and this is
+ * the detector for it.
+ *
+ * Every key in the codebase is id-derived — deck id, query id, call id, user id,
+ * all globally unique — except the monthly digest's, which was
+ * `monthly_usage_summary:${edition}:${month}` and is now tenant-first
+ * (`scheduled.ts`). So this should never fire. It is here because "should never"
+ * is what A8 was: the key string was tenant-blind, and the only thing standing
+ * between two customers and a swallowed digest was a `:${user.id}` suffix composed
+ * two functions away in this file. A collision is not corrected here — the global
+ * unique index means the row genuinely cannot be written twice — but it stops being
+ * invisible, which is the half that made A8 "the worst possible time to find out".
+ */
+function warnIfCrossTenant(row: OutboxRow, tenantId: string, email: OutboundEmail): OutboxRow {
+  if (row.tenant_id !== tenantId) {
+    console.error(
+      `email/outbox: dedupe key ${JSON.stringify(email.dedupeKey)} is held by tenant ` +
+        `${row.tenant_id} but this ${email.kind} belongs to ${tenantId} — the message was ` +
+        "SWALLOWED as a duplicate of another customer's (plan_multitenancy.md §2 A8). " +
+        "The key needs a tenant component.",
+    );
+  }
+  return row;
 }
 
 /**
@@ -617,20 +754,31 @@ interface PrefRow {
  */
 export async function resolveNotificationPreferences(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   event: NotificationEvent,
   userIds: string[],
 ): Promise<(userId: string, channel: NotificationChannel) => boolean> {
   const fallback = NOTIFICATION_DEFAULTS[event];
   if (userIds.length === 0) return () => fallback;
 
-  const placeholders = userIds.map(() => "?").join(", ");
+  // The WORKSPACE DEFAULT row is why this needs the tenant and not only the ids.
+  // A per-user row is keyed by a globally unique `user_id` and so was already
+  // safe; the `user_id IS NULL` default is keyed by `(edition, event_key, channel)`
+  // alone, so unscoped it let one customer's notification policy decide whether
+  // another customer's staff were mailed. `0099` re-cut both partial unique indexes
+  // as `(tenant_id, edition, ...)` for exactly this row.
+  const q = scoped(scope)
+    .on("np")
+    .and("np.event_key = ?", event)
+    .and(
+      `(np.user_id IS NULL OR np.user_id IN (${userIds.map(() => "?").join(", ")}))`,
+      ...userIds,
+    );
   const rows = (
     await env.DB.prepare(
-      "SELECT user_id, channel, enabled FROM notification_preferences " +
-        `WHERE edition = ? AND event_key = ? AND (user_id IS NULL OR user_id IN (${placeholders}))`,
+      `SELECT np.user_id, np.channel, np.enabled FROM notification_preferences np ${q.whereClause()}`,
     )
-      .bind(edition, event, ...userIds)
+      .bind(...q.binds)
       .all<PrefRow>()
   ).results;
 
@@ -648,6 +796,16 @@ export async function resolveNotificationPreferences(
 export interface NotificationInput {
   event: NotificationEvent;
   edition: Edition;
+  /**
+   * The workspace the event happened in. OPTIONAL for the same reason as
+   * `OutboundEmail.scope` — ten call sites across five sessions — and resolved the
+   * same way when absent (`resolveTenant`: the deck, then a warned default).
+   *
+   * `edition` stays REQUIRED and separate: it is also the product variant, and
+   * `AUDIENCE` below is dimensioned on its two values (§5c). A scope carries both
+   * halves; when one is given, `edition` must agree with it.
+   */
+  scope?: TenantScope;
   /** The alert's one line — the in-app title and the email subject. */
   title: string;
   /** The email body and the bell's second line. Defaults to `title`. */
@@ -702,18 +860,41 @@ export async function emitNotification(
     const roles = AUDIENCE[input.event][input.edition];
     const extra = [...new Set((input.alsoNotify ?? []).filter((id): id is string => Boolean(id)))];
 
-    const rolePlaceholders = roles.map(() => "?").join(", ");
-    const extraPlaceholders = extra.map(() => "?").join(", ");
-    const where =
-      extra.length > 0
-        ? `(role IN (${rolePlaceholders}) OR id IN (${extraPlaceholders}))`
-        : `role IN (${rolePlaceholders})`;
+    // ── §2 B22. THE ONE LEAK IN THE TABLE THAT LEAVES THE BUILDING ──────────
+    // This statement was `WHERE edition = ? AND active = 1 AND <roles>`, and it
+    // chooses who receives mail. With two customers on one edition — which is every
+    // customer, because `edition` has two values and `CHECK (edition IN
+    // ('incubator','vc'))` is asserted in 25 places — one customer's deck event
+    // emailed EVERY other customer's admins and programme managers, with the
+    // startup's name in the subject. Nobody has to open a screen for that leak to
+    // have happened.
+    //
+    // The scope is resolved rather than required (module header), and the resolution
+    // means a producer that names a deck is already correct: the deck's own
+    // `tenant_id` decides the audience. The `alsoNotify` ids are globally unique,
+    // but they are inside the same scoped predicate on purpose — a named extra
+    // recipient at another customer is not a recipient, and an `OR id IN (...)`
+    // outside the scope would be a hole the size of the one above.
+    const scope: TenantScope = input.scope ?? {
+      tenantId: await resolveTenant(env, input, `notification ${input.event}`),
+      edition: input.edition,
+    };
+    const q = scoped(scope)
+      .on("u")
+      .andRaw("u.active = 1")
+      .and(
+        extra.length > 0
+          ? `(u.role IN (${roles.map(() => "?").join(", ")}) OR u.id IN (${extra
+              .map(() => "?")
+              .join(", ")}))`
+          : `u.role IN (${roles.map(() => "?").join(", ")})`,
+        ...roles,
+        ...extra,
+      );
 
     const recipients = (
-      await env.DB.prepare(
-        `SELECT id, name, email, role FROM users WHERE edition = ? AND active = 1 AND ${where}`,
-      )
-        .bind(input.edition, ...roles, ...extra)
+      await env.DB.prepare(`SELECT u.id, u.name, u.email, u.role FROM users u ${q.whereClause()}`)
+        .bind(...q.binds)
         .all<RecipientRow>()
     ).results
       // A named extra recipient could be anyone; a mentor holds no screens and
@@ -725,7 +906,7 @@ export async function emitNotification(
 
     const enabled = await resolveNotificationPreferences(
       env,
-      input.edition,
+      scope,
       input.event,
       recipients.map((u) => u.id),
     );
@@ -737,6 +918,9 @@ export async function emitNotification(
           env,
           {
             kind: `alert_${input.event}`,
+            // Resolved once above and passed down, so `sendEmail` does not repeat
+            // the deck lookup once per recipient.
+            scope,
             toEmail: user.email,
             toName: user.name,
             subject: input.title,
@@ -749,7 +933,7 @@ export async function emitNotification(
         if (!sent.deduped) result.emails += 1;
       }
       if (enabled(user.id, "in_app")) {
-        result.inApp += await insertInAppNotification(env, input, user.id, body, now);
+        result.inApp += await insertInAppNotification(env, input, scope, user.id, body, now);
       }
     }
   } catch (err) {
@@ -763,16 +947,23 @@ export async function emitNotification(
 async function insertInAppNotification(
   env: Env,
   input: NotificationInput,
+  scope: TenantScope,
   userId: string,
   body: string,
   now: () => string,
 ): Promise<number> {
+  // `INSERT OR IGNORE` resolves against `idx_notifications_dedupe`, which `0099`
+  // re-cut as `(tenant_id, dedupe_key)` — so the tenant bind is what makes the
+  // `OR IGNORE` mean "this customer already has this alert" rather than "somebody
+  // does". Unlike `email_outbox`'s index, this one is already tenant-scoped, so a
+  // tenant-blind key here would be silently dropped by the OTHER customer's row.
   const res = await env.DB.prepare(
-    "INSERT OR IGNORE INTO notifications (id, edition, user_id, event_key, title, body, link, deck_id, created_at, dedupe_key) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT OR IGNORE INTO notifications (id, tenant_id, edition, user_id, event_key, title, body, link, deck_id, created_at, dedupe_key) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   )
     .bind(
       `ntf_${crypto.randomUUID()}`,
+      scope.tenantId,
       input.edition,
       userId,
       input.event,

@@ -24,6 +24,11 @@ import { detectIntakeFlags } from "../intake";
 import { emitNotification } from "../email/outbox";
 import { notifyIncompleteDeck } from "../resubmit";
 import type { Env } from "../types";
+// T1-DECKS — the scope helper. This module has NO session: it runs from the queue
+// consumer and from `POST /decks/:id/rescore`. `TenantPrincipal` is satisfied by
+// "any row carrying the two columns", which is exactly how a queue consumer is
+// meant to build a scope — from the row it is processing. See `src/shared/tenant.ts`.
+import { scopeOf, scoped } from "../../shared/tenant";
 
 const DEFAULT_MODEL = "claude-sonnet-5";
 
@@ -775,6 +780,16 @@ export const callAnthropic: ModelCaller = async (req) => {
 
 interface DeckRow {
   id: string;
+  /**
+   * The CUSTOMER this deck belongs to. Selected because every configuration read
+   * below it — the rubric, the band text, the AI system prompt, the criteria
+   * version — was scoped by `edition` ALONE, and `edition` has two values. With a
+   * second customer each of those `.first()` calls would have taken whichever row
+   * matched the edition, so a deck would have been scored against another
+   * customer's rubric and another customer's prompt. No response leaks; the
+   * EVALUATION is wrong, which is worse, because the number looks ordinary.
+   */
+  tenant_id: string;
   edition: Edition;
   status: string;
   r2_key: string | null;
@@ -881,13 +896,17 @@ export async function evaluateDeck(
   const now = opts.now ?? (() => new Date().toISOString());
   const notify = opts.notify ?? notifyIncompleteDeck;
 
+  // The deck lookup itself is deliberately UNSCOPED: there is no session here, and
+  // the deck id arrives from the queue message or from an already-scoped route. The
+  // row it returns is what every scoped statement below derives its scope from.
   const deck = await env.DB.prepare(
-    "SELECT id, edition, status, r2_key, content_version, name, name_auto, sector, stage, city, " +
+    "SELECT id, tenant_id, edition, status, r2_key, content_version, name, name_auto, sector, stage, city, " +
       "founder, founder_email, founder_phone, cohort_id, uploaded_by FROM decks WHERE id = ?",
   )
     .bind(deckId)
     .first<DeckRow>();
   if (!deck) throw new Error(`deck not found: ${deckId}`);
+  const scope = scopeOf({ tenantId: deck.tenant_id, edition: deck.edition });
 
   // ── AI pre-scoring switch (admin console → Scoring framework) ─────────────
   // "AI reads and scores every deck before jury sees it". Off means OFF: no R2
@@ -901,11 +920,13 @@ export async function evaluateDeck(
 
   if (!deck.r2_key) throw new Error(`deck has no R2 key: ${deckId}`);
 
+  const qp = scoped(scope).on("p").andRaw("p.active = 1");
   const params = (
     await env.DB.prepare(
-      "SELECT id, key, name, weight, informational, prompt FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
+      "SELECT p.id, p.key, p.name, p.weight, p.informational, p.prompt " +
+        `FROM parameters p ${qp.whereClause()} ORDER BY p.sort_order`,
     )
-      .bind(deck.edition)
+      .bind(...qp.binds)
       .all<{ id: string; key: string; name: string; weight: number; informational: number; prompt: string | null }>()
   ).results.map((p) => ({
     id: p.id,
@@ -915,19 +936,24 @@ export async function evaluateDeck(
     informational: p.informational === 1,
     prompt: p.prompt,
   }));
+  const qb = scoped(scope).on("p").andRaw("p.active = 1");
   const bands = (
     await env.DB.prepare(
       "SELECT b.parameter_id, b.band_index, b.band_label, b.band_name, b.description " +
         "FROM parameter_rubric_bands b JOIN parameters p ON p.id = b.parameter_id " +
-        "WHERE p.edition = ? AND p.active = 1",
+        qb.whereClause(),
     )
-      .bind(deck.edition)
+      .bind(...qb.binds)
       .all<ParameterBandRow>()
   ).results;
+  // `org_settings` holds this customer's AI system prompt. Its primary key was
+  // `edition` and is now `(tenant_id, edition)` — a `.first()` on the edition alone
+  // would have handed this deck whichever customer's prompt the query found first.
+  const qo = scoped(scope).on("os");
   const org = await env.DB.prepare(
-    "SELECT ai_system_prompt, criteria_version FROM org_settings WHERE edition = ?",
+    `SELECT os.ai_system_prompt, os.criteria_version FROM org_settings os ${qo.whereClause()}`,
   )
-    .bind(deck.edition)
+    .bind(...qo.binds)
     .first<{ ai_system_prompt: string | null; criteria_version: number | null }>();
 
   const object = await env.DECKS.get(deck.r2_key);
@@ -1004,7 +1030,7 @@ export async function evaluateDeck(
 
   // Soft duplicate / returning-company alert, re-run now that the extraction has
   // filled in the founder's identity (a bulk upload had only a filename before).
-  const intake = await detectIntakeFlags(env, deck.edition, {
+  const intake = await detectIntakeFlags(env, scope, {
     ...details,
     name: deck.name ?? "",
     fundingStage: deck.stage,

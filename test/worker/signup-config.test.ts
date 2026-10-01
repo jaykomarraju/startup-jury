@@ -1351,3 +1351,177 @@ describe("the audit trail", () => {
     });
   });
 });
+
+// ── Tenancy (T1-FLOW) ────────────────────────────────────────────────────────
+//
+// §2 B13: "document checklists, **fund size and allocation**, seat capacity".
+// `required_documents` is tenant-OWNED (`0085`); `signups`, `signup_documents`
+// and `cohorts` are proxy-scoped through `TENANT_OWNER`. The fund table is the
+// one that carried a LITERAL — `WHERE edition = 'vc'`, the shape §2 B14 singles
+// out in `diligence.ts` because there is not even a variable to re-point.
+//
+// Every second customer below shares the caller's EDITION, which is the point:
+// there are two edition values, so `edition` cannot separate two customers.
+
+const SC_OTHER = "t_sc_other";
+
+/** Idempotent, and seeded inside each test — the per-test restore above wipes children. */
+async function seedOtherTenantConsole(): Promise<void> {
+  await env.DB.prepare(
+    "INSERT INTO organizations (id, name, slug, status) VALUES (?, 'Other Co', 'sc-other-co', 'active') " +
+      "ON CONFLICT (id) DO NOTHING",
+  )
+    .bind(SC_OTHER)
+    .run();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO programs (id, tenant_id, edition, name, fund_size, fund_allocated, active, sort_order) " +
+      "VALUES ('prog_sc_other_inc', ?, 'incubator', 'OtherCo Accelerator', NULL, NULL, 1, 98)",
+  )
+    .bind(SC_OTHER)
+    .run();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO programs (id, tenant_id, edition, name, fund_size, fund_allocated, capital_deployed, active, sort_order) " +
+      "VALUES ('prog_sc_other_vc', ?, 'vc', 'OtherCo Fund I', 500, 400, 100, 1, 98)",
+  )
+    .bind(SC_OTHER)
+    .run();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO cohorts (id, program_id, name, seat_capacity, seats_filled) " +
+      "VALUES ('coh_sc_other', 'prog_sc_other_inc', 'OtherCo Batch 1', 10, 2)",
+  ).run();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO decks (id, tenant_id, edition, name, status, cohort_id, program_id) " +
+      "VALUES ('deck_sc_other', ?, 'incubator', 'OtherCo Startup', 'signup', 'coh_sc_other', 'prog_sc_other_inc')",
+  )
+    .bind(SC_OTHER)
+    .run();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO signups (id, deck_id, status) VALUES ('su_sc_other', 'deck_sc_other', 'progress')",
+  ).run();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO signup_documents (id, signup_id, required_document_id, name, status, sort_order) " +
+      "VALUES ('sd_sc_other', 'su_sc_other', NULL, 'OtherCo board resolution', 'submitted', 1)",
+  ).run();
+}
+
+describe("signup-config — tenancy (T1-FLOW)", () => {
+  it("the documents payload shows neither another customer's checklist nor their document sets", async () => {
+    await seedOtherTenantConsole();
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO required_documents (id, tenant_id, edition, name, mandatory, active, sort_order) " +
+        "VALUES ('rd_sc_other', ?, 'incubator', 'OtherCo secret document', 1, 1, 97)",
+    )
+      .bind(SC_OTHER)
+      .run();
+    const admin = await login(ADMIN);
+    const text = await (await get("/api/signup-config/documents", admin)).text();
+    expect(text).not.toContain("OtherCo secret document");
+    expect(text).not.toContain("OtherCo board resolution");
+    expect(text).not.toContain("OtherCo Startup");
+    // And their programme is not a scope the caller may select.
+    expect(
+      (await get("/api/signup-config/documents?programId=prog_sc_other_inc", admin)).status,
+    ).toBe(400);
+  });
+
+  it("the lifecycle verbs refuse another customer's record, and write nothing", async () => {
+    await seedOtherTenantConsole();
+    const admin = await login(ADMIN);
+    expect(
+      (
+        await send(
+          "PATCH",
+          "/api/signup-config/signups/su_sc_other/documents/sd_sc_other",
+          admin,
+          { status: "verified" },
+        )
+      ).status,
+    ).toBe(404);
+    expect(
+      (await send("POST", "/api/signup-config/signups/su_sc_other/documents/verify-all", admin))
+        .status,
+    ).toBe(404);
+    expect((await send("POST", "/api/signup-config/signups/su_sc_other/complete", admin)).status).toBe(404);
+    expect((await send("POST", "/api/signup-config/signups/su_sc_other/seat", admin)).status).toBe(404);
+
+    const doc = await env.DB.prepare("SELECT status FROM signup_documents WHERE id = 'sd_sc_other'")
+      .first<{ status: string }>();
+    expect(doc!.status, "another customer's document was verified").toBe("submitted");
+    const su = await env.DB.prepare(
+      "SELECT status, seatless, seat_allocated_at FROM signups WHERE id = 'su_sc_other'",
+    ).first<{ status: string; seatless: number; seat_allocated_at: string | null }>();
+    expect(su!.status).toBe("progress");
+    expect(su!.seat_allocated_at).toBeNull();
+  });
+
+  it("the seat table excludes another customer's cohorts and will not save over them", async () => {
+    await seedOtherTenantConsole();
+    const admin = await login(ADMIN);
+    const text = await (await get("/api/signup-config/seats", admin)).text();
+    expect(text).not.toContain("OtherCo Batch 1");
+    expect(text).not.toContain("coh_sc_other");
+
+    // `unknown_cohort`, not a silent write: the row is validated against the
+    // caller's own scoped `loadSeatRows`.
+    expect(
+      (
+        await send("PUT", "/api/signup-config/seats", admin, {
+          rows: [{ cohortId: "coh_sc_other", capacity: 1, filled: 99 }],
+        })
+      ).status,
+    ).toBe(400);
+    const coh = await env.DB.prepare(
+      "SELECT seat_capacity, seats_filled FROM cohorts WHERE id = 'coh_sc_other'",
+    ).first<{ seat_capacity: number; seats_filled: number }>();
+    expect(coh!.seat_capacity, "another customer's capacity was rewritten").toBe(10);
+    expect(coh!.seats_filled).toBe(2);
+  });
+
+  it("a seat-capacity save does not re-flag another customer's sign-ups as seatless", async () => {
+    // `reconcileSeatless` is a blind `UPDATE signups` whose only scope is the
+    // deck subquery. Unscoped, one admin editing one capacity table re-derives
+    // the flag for every customer on the platform.
+    await seedOtherTenantConsole();
+    await env.DB.prepare(
+      "UPDATE signups SET status = 'completed', seatless = 0, seat_allocated_at = NULL WHERE id = 'su_sc_other'",
+    ).run();
+    await env.DB.prepare("UPDATE cohorts SET seat_capacity = 2, seats_filled = 2 WHERE id = 'coh_sc_other'").run();
+
+    const admin = await login(ADMIN);
+    const res = await send("PUT", "/api/signup-config/seats", admin, {
+      rows: [{ cohortId: CLIMATE_COHORT, capacity: 21, filled: 18 }],
+    });
+    expect(res.status).toBe(200);
+
+    const su = await env.DB.prepare("SELECT seatless FROM signups WHERE id = 'su_sc_other'")
+      .first<{ seatless: number }>();
+    expect(su!.seatless, "another customer's sign-up was re-flagged seatless").toBe(0);
+  });
+
+  it("the fund table is the caller's workspace, not every customer in the edition", async () => {
+    await seedOtherTenantConsole();
+    const vc = await login(VC_ADMIN);
+    const res = await get("/api/signup-config/fund", vc);
+    expect(res.status).toBe(200);
+    const payload = (await res.json()) as {
+      rows: { programId: string; allotted: number | null }[];
+      totals: { allotted: number; deployed: number };
+    };
+    expect(payload.rows.some((r) => r.programId === "prog_sc_other_vc")).toBe(false);
+    // The totals are the §11 aggregate shape: a leak here is an ordinary-looking
+    // number, with no name in it for a marker sweep to find.
+    expect(payload.totals.allotted, "another customer's ₹400 Cr is in this total").toBeLessThan(400);
+
+    expect(
+      (
+        await send("PUT", "/api/signup-config/fund", vc, {
+          rows: [{ programId: "prog_sc_other_vc", allotted: 1, deployed: 1, unutilised: 0 }],
+        })
+      ).status,
+    ).toBe(400);
+    const prog = await env.DB.prepare(
+      "SELECT fund_allocated FROM programs WHERE id = 'prog_sc_other_vc'",
+    ).first<{ fund_allocated: number }>();
+    expect(prog!.fund_allocated, "another customer's fund allocation was rewritten").toBe(400);
+  });
+});

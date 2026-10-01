@@ -19,11 +19,22 @@
 //     into a listing of every deal the firm is talking to. The one write they
 //     have (W7-F §9, §8 Q103) is closing out — or reopening — a call they are ON:
 //     `status` only, `completed` ⇄ `scheduled`, nothing else.
+//
+// TENANCY (T1-FLOW). Not one of this router's five tables carries a workspace
+// key: `calls`, `call_participants`, `call_outcomes` and `call_schedulers` are
+// all §5b proxy tables, owned by `decks` — `call_participants` at two hops,
+// through `calls`. So every predicate here comes from `TENANT_OWNER` via
+// `viaParent`, or from the `JOIN decks` the statement already had with the
+// customer added alongside the edition. §2 B11 is specific about why this
+// router matters more than its size suggests: it holds **participant email
+// addresses**, and `POST /:id/invite` SENDS MAIL to them. A missing predicate
+// here is a leak that leaves the building.
 
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv, Env } from "../types";
 import { denyMentor, requireAuth } from "../auth/middleware";
+import { scopeOf, scoped, type TenantScope } from "../../shared/tenant";
 import {
   CALL_KIND_LABELS,
   CALL_KINDS_BY_EDITION,
@@ -53,7 +64,9 @@ interface CallRow {
   deck_id: string;
   deck_name: string;
   deck_status: string;
-  edition: string;
+  /** The owning customer, read off the deck — `calls` has no key of its own. */
+  tenant_id: string;
+  edition: Edition;
   kind: string;
   scheduled_at: string | null;
   duration_minutes: number;
@@ -80,11 +93,23 @@ interface ParticipantRow {
 }
 
 const CALL_SELECT =
-  "SELECT c.id, c.deck_id, d.name AS deck_name, d.status AS deck_status, d.edition, c.kind, " +
+  "SELECT c.id, c.deck_id, d.name AS deck_name, d.status AS deck_status, d.tenant_id, d.edition, c.kind, " +
   "c.scheduled_at, c.duration_minutes, c.title, c.location, c.remarks, c.ics_uid, c.ics_sequence, " +
   "c.status, c.organizer_id, u.name AS organizer_name, u.email AS organizer_email, " +
   "c.created_at, c.updated_at FROM calls c JOIN decks d ON d.id = c.deck_id " +
   "LEFT JOIN users u ON u.id = c.organizer_id";
+
+/**
+ * The workspace a loaded call belongs to.
+ *
+ * `CALL_SELECT` carries `d.tenant_id` so the row itself satisfies
+ * `TenantPrincipal` — which is what lets the outbound paths (`announceCall`,
+ * `dispatchInvite`) scope their own reads from the row they are mailing about
+ * rather than from a session they may not be holding.
+ */
+function rowScope(row: CallRow): TenantScope {
+  return scopeOf({ tenantId: row.tenant_id, edition: row.edition });
+}
 
 export interface CallParticipantView {
   id: string;
@@ -157,15 +182,32 @@ function toCallView(
   };
 }
 
-async function loadParticipants(env: Env, callIds: string[]): Promise<ParticipantRow[]> {
+/**
+ * The attendees of some calls — **scoped two hops**, `call_participants → calls
+ * → decks`, which is the path `TENANT_OWNER` holds for this table.
+ *
+ * The `call_id IN (…)` bind is not wrong on its own: every caller's ids come
+ * from a scoped read one frame up. But this is the single read in the router
+ * that returns the participants' EMAIL ADDRESSES, and §5b counted 43 reads of
+ * tenant-owned data with nothing in the statement naming the owner. This one
+ * names it.
+ */
+async function loadParticipants(
+  env: Env,
+  callIds: string[],
+  scope: TenantScope,
+): Promise<ParticipantRow[]> {
   if (callIds.length === 0) return [];
   const placeholders = callIds.map(() => "?").join(", ");
+  const q = scoped(scope);
+  const joins = q.viaParent("call_participants", "p");
+  q.andRaw(`p.call_id IN (${placeholders})`);
   return (
     await env.DB.prepare(
-      `SELECT id, call_id, user_id, email, name, kind FROM call_participants ` +
-        `WHERE call_id IN (${placeholders}) ORDER BY CASE kind WHEN 'organizer' THEN 0 WHEN 'team' THEN 1 ELSE 2 END, name`,
+      `SELECT p.id, p.call_id, p.user_id, p.email, p.name, p.kind FROM call_participants p ${joins} ` +
+        `${q.whereClause()} ORDER BY CASE p.kind WHEN 'organizer' THEN 0 WHEN 'team' THEN 1 ELSE 2 END, p.name`,
     )
-      .bind(...callIds)
+      .bind(...q.binds, ...callIds)
       .all<ParticipantRow>()
   ).results;
 }
@@ -253,8 +295,11 @@ const DELEGATE_SQL =
  * calls they were delegated to schedule.
  */
 function visibilityClause(role: string, userId: string): { sql: string; binds: string[] } {
-  if (role === "founder") return { sql: " AND d.uploaded_by = ?", binds: [userId] };
-  return { sql: ` AND (${ON_CALL_SQL} OR ${DELEGATE_SQL})`, binds: [userId, userId, userId] };
+  // A bare fragment with no leading `AND`: it is handed to `ScopeBuilder.and()`
+  // together with its binds, which is the one rule — a predicate and its binds
+  // cannot drift apart if they are added in the same call.
+  if (role === "founder") return { sql: "d.uploaded_by = ?", binds: [userId] };
+  return { sql: `(${ON_CALL_SQL} OR ${DELEGATE_SQL})`, binds: [userId, userId, userId] };
 }
 
 /** Who the caller is to the calls router: a scheduler, and/or a delegate on some (deck, kind). */
@@ -266,12 +311,12 @@ interface CallerScope {
 
 async function callerScope(c: Context<AppEnv>): Promise<CallerScope> {
   const user = c.var.user;
+  const q = scoped(scopeOf(user)).on("d").and("s.user_id = ?", user.id);
   const rows = (
     await c.env.DB.prepare(
-      "SELECT s.deck_id, s.kind FROM call_schedulers s JOIN decks d ON d.id = s.deck_id " +
-        "WHERE s.user_id = ? AND d.edition = ?",
+      `SELECT s.deck_id, s.kind FROM call_schedulers s JOIN decks d ON d.id = s.deck_id ${q.whereClause()}`,
     )
-      .bind(user.id, user.edition)
+      .bind(...q.binds)
       .all<{ deck_id: string; kind: string }>()
   ).results;
   return {
@@ -284,8 +329,11 @@ function mayManage(scope: CallerScope, deckId: string, kind: string): boolean {
   return scope.scheduler || scope.delegated.has(`${deckId}:${kind}`);
 }
 
-async function userEmail(env: Env, userId: string): Promise<string | null> {
-  const row = await env.DB.prepare("SELECT email FROM users WHERE id = ?").bind(userId).first<{ email: string }>();
+async function userEmail(env: Env, userId: string, scope: TenantScope): Promise<string | null> {
+  const q = scoped(scope).on("u").and("u.id = ?", userId);
+  const row = await env.DB.prepare(`SELECT u.email FROM users u ${q.whereClause()}`)
+    .bind(...q.binds)
+    .first<{ email: string }>();
   return row?.email?.toLowerCase() ?? null;
 }
 
@@ -320,18 +368,20 @@ export interface DecidedCallView {
   decidedAt: string;
 }
 
-async function decidedDecks(env: Env, edition: Edition, kind: CallKind): Promise<DecidedCallView[]> {
+async function decidedDecks(env: Env, scope: TenantScope, kind: CallKind): Promise<DecidedCallView[]> {
+  const edition = scope.edition;
   const decision = callDecision(edition, kind);
   if (!decision) return [];
   const marks = decision.stages.map(() => "?").join(", ");
+  const q = scoped(scope).on("d");
   const rows = (
     await env.DB.prepare(
       "SELECT e.id, e.deck_id, e.action, e.to_stage, e.created_at FROM pipeline_events e " +
         "JOIN decks d ON d.id = e.deck_id " +
-        `WHERE d.edition = ? AND e.from_stage IN (${marks}) AND e.to_stage NOT IN (${marks}) ` +
+        `${q.whereClause()} AND e.from_stage IN (${marks}) AND e.to_stage NOT IN (${marks}) ` +
         `AND d.status NOT IN (${marks}) ORDER BY e.created_at DESC, e.id DESC`,
     )
-      .bind(edition, ...decision.stages, ...decision.stages, ...decision.stages)
+      .bind(...q.binds, ...decision.stages, ...decision.stages, ...decision.stages)
       .all<{ id: string; deck_id: string; action: string; to_stage: string; created_at: string }>()
   ).results;
   const transitions = getPipeline(edition).transitions;
@@ -378,6 +428,7 @@ function decidingRoles(edition: Edition, stages: readonly string[]): Set<string>
 calls.get("/", async (c) => {
   const user = c.var.user;
   const edition = user.edition as Edition;
+  const workspace = scopeOf(user);
   const scope = await callerScope(c);
   const scheduler = scope.scheduler;
   const deckId = c.req.query("deckId");
@@ -385,42 +436,35 @@ calls.get("/", async (c) => {
   const kind = rawKind && isCallKind(rawKind) ? rawKind : null;
   const mineOnly = c.req.query("mine") === "1";
 
-  let sql = `${CALL_SELECT} WHERE d.edition = ?`;
-  const binds: (string | number)[] = [user.edition];
-  if (deckId) {
-    sql += " AND c.deck_id = ?";
-    binds.push(deckId);
-  }
-  if (kind) {
-    sql += " AND c.kind = ?";
-    binds.push(kind);
-  }
+  // The builder owns the whole WHERE, so a predicate added here cannot lose its
+  // bind — which is the mistake a 56-mention sweep makes.
+  const q = scoped(workspace).on("d");
+  if (deckId) q.and("c.deck_id = ?", deckId);
+  if (kind) q.and("c.kind = ?", kind);
   if (!scheduler || mineOnly) {
     const clause = visibilityClause(user.role, user.id);
-    sql += clause.sql;
-    binds.push(...clause.binds);
+    q.and(clause.sql, ...clause.binds);
   }
-  sql += " ORDER BY c.scheduled_at IS NULL, c.scheduled_at ASC, c.created_at DESC";
+  const sql =
+    `${CALL_SELECT} ${q.whereClause()} ` +
+    "ORDER BY c.scheduled_at IS NULL, c.scheduled_at ASC, c.created_at DESC";
 
-  const rows = (await c.env.DB.prepare(sql).bind(...binds).all<CallRow>()).results;
-  const participants = await loadParticipants(c.env, rows.map((r) => r.id));
-  const email = await userEmail(c.env, user.id);
+  const rows = (await c.env.DB.prepare(sql).bind(...q.binds).all<CallRow>()).results;
+  const participants = await loadParticipants(c.env, rows.map((r) => r.id), workspace);
+  const email = await userEmail(c.env, user.id, workspace);
 
-  let schedulerSql =
+  // The delegation roster. `u` is scoped as well as `d`: the assignee is a
+  // member of the same workspace by construction, and saying so here means a
+  // mis-tenanted `call_schedulers` row cannot name a stranger.
+  const sq = scoped(workspace).on("d").on("u");
+  if (kind) sq.and("s.kind = ?", kind);
+  if (!scheduler) sq.and("s.user_id = ?", user.id);
+  const schedulerSql =
     "SELECT s.deck_id, s.kind, s.user_id, u.name AS user_name, u.role, s.assigned_at FROM call_schedulers s " +
-    "JOIN decks d ON d.id = s.deck_id JOIN users u ON u.id = s.user_id WHERE d.edition = ?";
-  const schedulerBinds: string[] = [user.edition];
-  if (kind) {
-    schedulerSql += " AND s.kind = ?";
-    schedulerBinds.push(kind);
-  }
-  if (!scheduler) {
-    schedulerSql += " AND s.user_id = ?";
-    schedulerBinds.push(user.id);
-  }
+    `JOIN decks d ON d.id = s.deck_id JOIN users u ON u.id = s.user_id ${sq.whereClause()}`;
   const schedulers: CallSchedulerView[] = (
     await c.env.DB.prepare(schedulerSql)
-      .bind(...schedulerBinds)
+      .bind(...sq.binds)
       .all<{ deck_id: string; kind: string; user_id: string; user_name: string; role: string; assigned_at: string }>()
   ).results.map((r) => ({
     deckId: r.deck_id,
@@ -438,16 +482,18 @@ calls.get("/", async (c) => {
     scheduler ? list : list.filter((x) => visibleDecks.has(x.deckId));
 
   const decision = kind ? callDecision(edition, kind) : undefined;
-  const decided = kind ? narrow(await decidedDecks(c.env, edition, kind)) : [];
+  const decided = kind ? narrow(await decidedDecks(c.env, workspace, kind)) : [];
+  const oq = scoped(workspace).on("d");
+  if (kind) oq.and("o.kind = ?", kind);
   const outcomes =
     kind && decision
       ? narrow(
           (
             await c.env.DB.prepare(
               "SELECT o.deck_id, o.outcome, o.set_at FROM call_outcomes o JOIN decks d ON d.id = o.deck_id " +
-                `WHERE d.edition = ? AND o.kind = ? AND d.status IN (${decision.stages.map(() => "?").join(", ")})`,
+                `${oq.whereClause()} AND d.status IN (${decision.stages.map(() => "?").join(", ")})`,
             )
-              .bind(edition, kind, ...decision.stages)
+              .bind(...oq.binds, ...decision.stages)
               .all<{ deck_id: string; outcome: string; set_at: string }>()
           ).results.map((r) => ({ deckId: r.deck_id, outcome: r.outcome, setAt: r.set_at })),
         )
@@ -494,20 +540,25 @@ calls.put("/scheduler", async (c) => {
   if (!("userId" in body) || (body.userId !== null && typeof body.userId !== "string")) {
     return c.json({ error: "user_required" }, 400);
   }
-  const deck = await c.env.DB.prepare("SELECT id FROM decks WHERE id = ? AND edition = ?")
-    .bind(deckId, edition)
+  const dq = scoped(scopeOf(user)).on("d").and("d.id = ?", deckId);
+  const deck = await c.env.DB.prepare(`SELECT d.id FROM decks d ${dq.whereClause()}`)
+    .bind(...dq.binds)
     .first<{ id: string }>();
   if (!deck) return c.json({ error: "not_found" }, 404);
 
   if (body.userId === null) {
+    // `(deck_id, kind)` needs no workspace half: the deck it names was just
+    // proved to be this workspace's, and `call_schedulers` is scoped BY that
+    // deck — it is one of the two ON CONFLICT keys the plan says to leave alone.
     await c.env.DB.prepare("DELETE FROM call_schedulers WHERE deck_id = ? AND kind = ?").bind(deckId, kind).run();
     return c.json({ ok: true, scheduler: null });
   }
 
+  const aq = scoped(scopeOf(user)).on("u").and("u.id = ?", body.userId).andRaw("u.active = 1");
   const assignee = await c.env.DB.prepare(
-    "SELECT id, name, role FROM users WHERE id = ? AND edition = ? AND active = 1",
+    `SELECT u.id, u.name, u.role FROM users u ${aq.whereClause()}`,
   )
-    .bind(body.userId, edition)
+    .bind(...aq.binds)
     .first<{ id: string; name: string; role: string }>();
   if (!assignee) return c.json({ error: "invalid_user" }, 400);
   if (assignee.role === "founder" || assignee.role === MENTOR_ROLE) return c.json({ error: "invalid_user" }, 400);
@@ -559,8 +610,9 @@ calls.put("/outcome", async (c) => {
   }
   if (!decidingRoles(edition, decision.stages).has(user.role)) return c.json({ error: "forbidden" }, 403);
 
-  const deck = await c.env.DB.prepare("SELECT id, status FROM decks WHERE id = ? AND edition = ?")
-    .bind(deckId, edition)
+  const dq = scoped(scopeOf(user)).on("d").and("d.id = ?", deckId);
+  const deck = await c.env.DB.prepare(`SELECT d.id, d.status FROM decks d ${dq.whereClause()}`)
+    .bind(...dq.binds)
     .first<{ id: string; status: string }>();
   if (!deck) return c.json({ error: "not_found" }, 404);
   if (!decision.stages.includes(deck.status)) return c.json({ error: "not_at_stage" }, 409);
@@ -584,7 +636,7 @@ calls.put("/outcome", async (c) => {
  * scheduler can tick participants instead of typing addresses.
  *
  * Deliberately NOT `GET /api/users` (admin-only, and it exposes the account
- * management surface): this is a name+email+role read, scoped to the edition,
+ * management surface): this is a name+email+role read, scoped to the workspace,
  * available to exactly the roles that are allowed to schedule — and to anyone
  * delegated a call, who needs the same roster to book it. Founders are
  * excluded — the founder is invited by their deck's contact email, not picked
@@ -594,28 +646,29 @@ calls.get("/directory", async (c) => {
   const user = c.var.user;
   const scope = await callerScope(c);
   if (!scope.scheduler && scope.delegated.size === 0) return c.json({ error: "forbidden" }, 403);
+  const q = scoped(scopeOf(user)).on("u").andRaw("u.active = 1").andRaw("u.role != 'founder'");
   const rows = (
     await c.env.DB.prepare(
-      "SELECT id, name, email, role FROM users WHERE edition = ? AND active = 1 AND role != 'founder' ORDER BY name",
+      `SELECT u.id, u.name, u.email, u.role FROM users u ${q.whereClause()} ORDER BY u.name`,
     )
-      .bind(user.edition)
+      .bind(...q.binds)
       .all<{ id: string; name: string; email: string; role: string }>()
   ).results;
   return c.json({ people: rows });
 });
 
-/** Load one call, edition-scoped, with the caller's visibility applied. */
+/** Load one call, workspace-scoped, with the caller's visibility applied. */
 async function loadVisibleCall(c: Context<AppEnv>, id: string): Promise<CallRow | null> {
   const user = c.var.user;
   const scheduler = canScheduleCalls(user.edition as Edition, user.role);
-  let sql = `${CALL_SELECT} WHERE c.id = ? AND d.edition = ?`;
-  const binds: string[] = [id, user.edition];
+  const q = scoped(scopeOf(user)).on("d").and("c.id = ?", id);
   if (!scheduler) {
     const clause = visibilityClause(user.role, user.id);
-    sql += clause.sql;
-    binds.push(...clause.binds);
+    q.and(clause.sql, ...clause.binds);
   }
-  return c.env.DB.prepare(sql).bind(...binds).first<CallRow>();
+  return c.env.DB.prepare(`${CALL_SELECT} ${q.whereClause()}`)
+    .bind(...q.binds)
+    .first<CallRow>();
 }
 
 /**
@@ -661,8 +714,10 @@ calls.post("/", async (c) => {
     return c.json({ error: "kind_not_in_edition" }, 400);
   }
 
-  const deck = await c.env.DB.prepare("SELECT id, name, status FROM decks WHERE id = ? AND edition = ?")
-    .bind(deckId, edition)
+  const workspace = scopeOf(user);
+  const dq = scoped(workspace).on("d").and("d.id = ?", deckId);
+  const deck = await c.env.DB.prepare(`SELECT d.id, d.name, d.status FROM decks d ${dq.whereClause()}`)
+    .bind(...dq.binds)
     .first<{ id: string; name: string; status: string }>();
   if (!deck) return c.json({ error: "not_found" }, 404);
 
@@ -684,7 +739,7 @@ calls.post("/", async (c) => {
     ? participants
     : [
         {
-          email: (await organizerEmail(c.env, user.id)) ?? `${user.id}@startup-jury.invalid`,
+          email: (await organizerEmail(c.env, user.id, workspace)) ?? `${user.id}@startup-jury.invalid`,
           name: user.name,
           userId: user.id,
           kind: "organizer" as const,
@@ -746,9 +801,9 @@ calls.post("/", async (c) => {
 
   await c.env.DB.batch(stmts);
 
-  const invited = body.sendInvite === true ? await dispatchInvite(c, id) : { sent: 0 };
+  const invited = body.sendInvite === true ? await dispatchInvite(c, id, workspace) : { sent: 0 };
   const row = await loadVisibleCall(c, id);
-  const parts = await loadParticipants(c.env, [id]);
+  const parts = await loadParticipants(c.env, [id], workspace);
   // A draft with no slot yet is not a scheduled call — nothing to announce.
   if (row?.scheduled_at) await announceCall(c, row, false);
   return c.json({
@@ -765,9 +820,10 @@ function isCompletionOnly(body: Record<string, unknown>): body is { status: "com
   return keys.length === 1 && keys[0] === "status" && (body.status === "completed" || body.status === "scheduled");
 }
 
-async function organizerEmail(env: Env, userId: string): Promise<string | null> {
-  const row = await env.DB.prepare("SELECT email FROM users WHERE id = ?")
-    .bind(userId)
+async function organizerEmail(env: Env, userId: string, scope: TenantScope): Promise<string | null> {
+  const q = scoped(scope).on("u").and("u.id = ?", userId);
+  const row = await env.DB.prepare(`SELECT u.email FROM users u ${q.whereClause()}`)
+    .bind(...q.binds)
     .first<{ email: string }>();
   return row?.email ?? null;
 }
@@ -779,6 +835,7 @@ async function organizerEmail(env: Env, userId: string): Promise<string | null> 
  */
 calls.patch("/:id", async (c) => {
   const user = c.var.user;
+  const workspace = scopeOf(user);
   const scope = await callerScope(c);
   const id = c.req.param("id");
   const existing = await loadVisibleCall(c, id);
@@ -800,7 +857,12 @@ calls.patch("/:id", async (c) => {
     if (!existing || user.role === "founder" || !isCompletionOnly(body as Record<string, unknown>)) {
       return c.json({ error: "forbidden" }, 403);
     }
-    const onCall = isOnCall(existing.id, await loadParticipants(c.env, [existing.id]), user.id, await userEmail(c.env, user.id));
+    const onCall = isOnCall(
+      existing.id,
+      await loadParticipants(c.env, [existing.id], workspace),
+      user.id,
+      await userEmail(c.env, user.id, workspace),
+    );
     if (!onCall) return c.json({ error: "forbidden" }, 403);
     if (existing.status !== "scheduled" && existing.status !== "completed") {
       return c.json({ error: "not_scheduled" }, 409);
@@ -880,9 +942,9 @@ calls.patch("/:id", async (c) => {
   }
   await c.env.DB.batch(stmts);
 
-  const invited = body.sendInvite === true ? await dispatchInvite(c, id) : { sent: 0 };
+  const invited = body.sendInvite === true ? await dispatchInvite(c, id, workspace) : { sent: 0 };
   const row = await loadVisibleCall(c, id);
-  const parts = await loadParticipants(c.env, [id]);
+  const parts = await loadParticipants(c.env, [id], workspace);
   // Only a genuine move of the slot is a reschedule. Editing a title or
   // cancelling is neither of the two things the alert's label names.
   const moved = row?.scheduled_at && row.scheduled_at !== existing.scheduled_at;
@@ -954,7 +1016,7 @@ calls.get("/:id/prompts", async (c) => {
 calls.get("/:id/ics", async (c) => {
   const row = await loadVisibleCall(c, c.req.param("id"));
   if (!row) return c.json({ error: "not_found" }, 404);
-  const parts = await loadParticipants(c.env, [row.id]);
+  const parts = await loadParticipants(c.env, [row.id], rowScope(row));
   const body = icsFor(row, parts, c.env.EMAIL_FROM?.trim() || FALLBACK_ORGANIZER);
   return new Response(body, {
     headers: {
@@ -1004,11 +1066,27 @@ async function announceCall(
   });
 }
 
-/** Compose + send one invite per participant, with the .ics attached. */
-async function dispatchInvite(c: Context<AppEnv>, callId: string): Promise<{ sent: number }> {
-  const row = await c.env.DB.prepare(`${CALL_SELECT} WHERE c.id = ?`).bind(callId).first<CallRow>();
+/**
+ * Compose + send one invite per participant, with the .ics attached.
+ *
+ * Scoped even though every caller validated the call first. §2 B22 is the
+ * reason: this is the one path in the router that leaves the Worker, and an
+ * outbound leak cannot be noticed in a response body. The read was
+ * `WHERE c.id = ?` with no workspace predicate at all — safe only because the
+ * check happened a frame up, which is the exact property §5b says breaks
+ * together.
+ */
+async function dispatchInvite(
+  c: Context<AppEnv>,
+  callId: string,
+  scope: TenantScope,
+): Promise<{ sent: number }> {
+  const q = scoped(scope).on("d").and("c.id = ?", callId);
+  const row = await c.env.DB.prepare(`${CALL_SELECT} ${q.whereClause()}`)
+    .bind(...q.binds)
+    .first<CallRow>();
   if (!row) return { sent: 0 };
-  const parts = await loadParticipants(c.env, [callId]);
+  const parts = await loadParticipants(c.env, [callId], scope);
   if (parts.length === 0) return { sent: 0 };
 
   const ics = icsFor(row, parts, c.env.EMAIL_FROM?.trim() || FALLBACK_ORGANIZER);
@@ -1082,7 +1160,7 @@ calls.post("/:id/invite", async (c) => {
   if (!scope.scheduler && !(row && mayManage(scope, row.deck_id, row.kind))) return c.json({ error: "forbidden" }, 403);
   if (!row) return c.json({ error: "not_found" }, 404);
   if (!row.scheduled_at) return c.json({ error: "not_scheduled" }, 409);
-  const { sent } = await dispatchInvite(c, row.id);
+  const { sent } = await dispatchInvite(c, row.id, rowScope(row));
   return c.json({ ok: true, invited: sent });
 });
 

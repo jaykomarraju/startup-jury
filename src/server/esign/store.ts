@@ -7,11 +7,30 @@
  * Every table is W1-B's (`migrations/0034`, `0035`) except `esign_outbox` and
  * three columns, which are `migrations/0049`'s — the file header says exactly
  * which and why.
+ *
+ * ── TENANCY (T1-ESIGN) ──────────────────────────────────────────────────────
+ *
+ * Every function that took an `Edition` now takes a `TenantScope`, and every
+ * statement here binds the workspace through `src/shared/tenant.ts`. Two shapes
+ * appear:
+ *
+ *   · `agreement_templates`, `authorised_signatories`, `programs`, `users` and
+ *     `esign_outbox` carry `tenant_id` themselves — `scoped(scope).on(alias)`.
+ *   · `agreements` and `signatures` carry NO scope column. `plan_multitenancy.md`
+ *     §5b counts `signatures` 1 `FROM` site / 0 `JOIN`s and names
+ *     `signatures → agreements → signups → decks` the deepest ownership path in
+ *     the schema. Those reach their owner through `viaParent`, and the UPDATEs —
+ *     which cannot carry a JOIN in SQLite — through `ownedSignup()` below.
+ *
+ * A signed agreement is a legal record, so the writes are scoped too and not
+ * merely the reads: `recordSignature` REFUSES an agreement outside the caller's
+ * workspace rather than writing a signature nobody can account for.
  */
 
 import type { Env } from "../types";
 import type { Edition, Role } from "../../shared/roles";
 import { ROLES_BY_EDITION, roleLabel } from "../../shared/roles";
+import { insertScope, scoped, type TenantScope } from "../../shared/tenant";
 import {
   DEFAULT_SIGNING_METHOD,
   describeAssignment,
@@ -35,6 +54,27 @@ import {
   type TemplateStatus,
 } from "../../shared/agreements";
 
+/**
+ * The ownership predicate for a statement that cannot carry a `JOIN`.
+ *
+ * SQLite's `UPDATE` has no `FROM`, so the eight writes against `signups` and
+ * `agreements` cannot use `ScopeBuilder.viaParent`. They correlate instead: the
+ * row's sign-up must hang off a deck in the caller's workspace.
+ *
+ * `correlate` is the expression naming the `signups.id` to test — `signups.id`
+ * for a write on the sign-up itself, `agreements.signup_id` for one on the
+ * agreement. It is authored at every call site, never taken from a request.
+ */
+function ownedSignup(scope: TenantScope, correlate: string): { sql: string; binds: unknown[] } {
+  const q = scoped(scope).on("own_d");
+  return {
+    sql:
+      `EXISTS (SELECT 1 FROM signups own_s JOIN decks own_d ON own_d.id = own_s.deck_id ` +
+      `WHERE own_s.id = ${correlate} AND ${q.where})`,
+    binds: q.binds,
+  };
+}
+
 // ── Templates ────────────────────────────────────────────────────────────────
 
 interface TemplateRow {
@@ -52,24 +92,25 @@ interface TemplateRow {
 }
 
 /**
- * The whole library for one edition, each template with its fields, programme
+ * The whole library for one workspace, each template with its fields, programme
  * map and flow. Four small queries rather than one join, because a join over
  * three one-to-many children would need de-duplicating in JS anyway and the
  * library is a handful of rows.
  */
 export async function listTemplates(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
 ): Promise<AgreementTemplateView[]> {
+  const q = scoped(scope).on("t");
   const rows = (
     await env.DB.prepare(
-      "SELECT id, edition, code, name, file_name, file_url, version, status, stage, created_at, updated_at " +
-        "FROM agreement_templates WHERE edition = ? ORDER BY " +
+      "SELECT t.id, t.edition, t.code, t.name, t.file_name, t.file_url, t.version, t.status, t.stage, " +
+        `t.created_at, t.updated_at FROM agreement_templates t ${q.whereClause()} ORDER BY ` +
         // The prototype lists active first, then drafts, then retired at 60 %
         // opacity at the bottom (`suList` renders SU_TPL in that order).
-        "CASE status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, name",
+        "CASE t.status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, t.name",
     )
-      .bind(edition)
+      .bind(...q.binds)
       .all<TemplateRow>()
   ).results;
   if (rows.length === 0) return [];
@@ -85,12 +126,16 @@ export async function listTemplates(
       .all<{ template_id: string; key: string; label: string; sample: string | null }>()
   ).results;
 
+  // The programme a template is mapped to is scoped in its own right: a
+  // cross-tenant `agreement_template_programs` row would otherwise put another
+  // customer's fund name in this response through the join to `programs`.
+  const pq = scoped(scope).on("p").and(`m.template_id IN (${marks})`, ...ids);
   const programs = (
     await env.DB.prepare(
       `SELECT m.template_id, m.program_id, p.name FROM agreement_template_programs m ` +
-        `JOIN programs p ON p.id = m.program_id WHERE m.template_id IN (${marks}) ORDER BY p.sort_order, p.name`,
+        `JOIN programs p ON p.id = m.program_id ${pq.whereClause()} ORDER BY p.sort_order, p.name`,
     )
-      .bind(...ids)
+      .bind(...pq.binds)
       .all<{ template_id: string; program_id: string; name: string }>()
   ).results;
 
@@ -102,11 +147,21 @@ export async function listTemplates(
       .all<{ template_id: string; step_index: number; actor_role: string; action: string }>()
   ).results;
 
+  // `agreementCount` is §11's dangerous shape — a `COUNT(*)` with no marker in
+  // it — AND it is load-bearing: `DELETE /templates/:id` refuses a template this
+  // number says is in use. `agreements` carries no scope column, so it is
+  // counted through its owner (`agreements → signups → decks`). Unscoped, one
+  // customer's agreement could pin another customer's draft permanently
+  // undeletable, and nothing in the response would say why.
+  const aq = scoped(scope);
+  const aJoins = aq.viaParent("agreements", "a");
+  aq.and(`a.template_id IN (${marks})`, ...ids);
   const used = (
     await env.DB.prepare(
-      `SELECT template_id, COUNT(*) n FROM agreements WHERE template_id IN (${marks}) GROUP BY template_id`,
+      `SELECT a.template_id, COUNT(*) n FROM agreements a ${aJoins} ${aq.whereClause()} ` +
+        "GROUP BY a.template_id",
     )
-      .bind(...ids)
+      .bind(...aq.binds)
       .all<{ template_id: string; n: number }>()
   ).results;
 
@@ -136,31 +191,33 @@ export async function listTemplates(
 
 export async function loadTemplate(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   id: string,
 ): Promise<AgreementTemplateView | null> {
   // Read through the list so one shape is built in one place; the library is
-  // small enough that the extra rows cost nothing measurable.
-  const all = await listTemplates(env, edition);
+  // small enough that the extra rows cost nothing measurable. It is also what
+  // makes every `loadTemplate` caller tenant-scoped for free — the router's
+  // 404-on-missing becomes a 404 for another customer's template id.
+  const all = await listTemplates(env, scope);
   return all.find((t) => t.id === id) ?? null;
 }
 
 /** The programme / fund toggles the "Applies to" card offers. */
 export async function listProgrammes(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
 ): Promise<ProgrammeOptionView[]> {
+  const q = scoped(scope).on("p").andRaw("p.active = 1");
   return (
     await env.DB.prepare(
-      "SELECT id, name FROM programs WHERE edition = ? AND active = 1 ORDER BY sort_order, name",
+      `SELECT p.id, p.name FROM programs p ${q.whereClause()} ORDER BY p.sort_order, p.name`,
     )
-      .bind(edition)
+      .bind(...q.binds)
       .all<ProgrammeOptionView>()
   ).results;
 }
 
 export interface NewTemplate {
-  edition: Edition;
   name: string;
   code: string;
   stage: TemplateStage;
@@ -173,14 +230,24 @@ export interface NewTemplate {
  * with the prototype's default single field and three-step flow, so the editor
  * has something to open on.
  */
-export async function createTemplate(env: Env, t: NewTemplate): Promise<string> {
+export async function createTemplate(
+  env: Env,
+  scope: TenantScope,
+  t: NewTemplate,
+): Promise<string> {
   const id = `at_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
+  // `insertScope` rather than two hand-written binds: `agreement_templates` is
+  // one of the eleven tables `0096` REBUILT, so its `tenant_id` is NOT NULL with
+  // no default and a forgotten bind is a loud error rather than a row quietly
+  // filed under the first customer. Keeping the write-side helper here anyway is
+  // what makes the other, defaulted tables in this file safe by the same habit.
+  const t0 = insertScope(scope);
   await env.DB.prepare(
-    "INSERT INTO agreement_templates (id, edition, code, name, file_name, file_url, version, status, stage, created_at, updated_at) " +
-      "VALUES (?, ?, ?, ?, NULL, NULL, 'v1', 'draft', ?, ?, ?)",
+    `INSERT INTO agreement_templates (id, ${t0.columns}, code, name, file_name, file_url, version, status, stage, created_at, updated_at) ` +
+      `VALUES (?, ${t0.placeholders}, ?, ?, NULL, NULL, 'v1', 'draft', ?, ?, ?)`,
   )
-    .bind(id, t.edition, t.code, t.name, t.stage, now, now)
+    .bind(id, ...t0.binds, t.code, t.name, t.stage, now, now)
     .run();
   await replaceFields(env, id, t.fields);
   await replaceFlow(env, id, t.flow);
@@ -199,10 +266,20 @@ export interface TemplatePatch {
 
 export async function updateTemplate(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   id: string,
   patch: TemplatePatch,
 ): Promise<void> {
+  // The ownership check is SEPARATE from the UPDATE and comes first, because the
+  // three child writes below are keyed on `template_id` alone and cannot be
+  // scoped themselves. Without this, an `UPDATE … WHERE tenant_id = ?` that
+  // matched nothing would still fall through and `replaceFields` would DELETE
+  // another customer's merge fields — a scoped statement followed by three
+  // unscoped ones, which is exactly the shape §5b calls safe-because-the-check-
+  // happened-above-them and therefore the shape that breaks together.
+  const owns = await ownsTemplate(env, scope, id);
+  if (!owns) return;
+
   const sets: string[] = [];
   const binds: unknown[] = [];
   if (patch.name !== undefined) {
@@ -223,15 +300,25 @@ export async function updateTemplate(
   }
   sets.push("updated_at = ?");
   binds.push(new Date().toISOString());
+  const q = scoped(scope).on("agreement_templates").and("id = ?", id);
   await env.DB.prepare(
-    `UPDATE agreement_templates SET ${sets.join(", ")} WHERE id = ? AND edition = ?`,
+    `UPDATE agreement_templates SET ${sets.join(", ")} ${q.whereClause()}`,
   )
-    .bind(...binds, id, edition)
+    .bind(...binds, ...q.binds)
     .run();
 
   if (patch.fields) await replaceFields(env, id, patch.fields);
   if (patch.flow) await replaceFlow(env, id, patch.flow);
-  if (patch.programIds) await replaceProgrammes(env, edition, id, patch.programIds);
+  if (patch.programIds) await replaceProgrammes(env, scope, id, patch.programIds);
+}
+
+/** Is this template id the caller's workspace's? The guard every child write needs. */
+async function ownsTemplate(env: Env, scope: TenantScope, id: string): Promise<boolean> {
+  const q = scoped(scope).on("t").and("t.id = ?", id);
+  const row = await env.DB.prepare(`SELECT 1 n FROM agreement_templates t ${q.whereClause()}`)
+    .bind(...q.binds)
+    .first<{ n: number }>();
+  return row !== null;
 }
 
 /**
@@ -265,16 +352,17 @@ async function replaceFlow(env: Env, templateId: string, flow: FlowStep[]): Prom
 }
 
 /**
- * Programme ids are filtered against the caller's edition before they are
- * written, so a request cannot map an incubator template onto a VC fund by id.
+ * Programme ids are filtered against the caller's WORKSPACE before they are
+ * written, so a request cannot map an incubator template onto a VC fund by id —
+ * nor onto another customer's fund, which is the same defect one dimension out.
  */
 async function replaceProgrammes(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   templateId: string,
   programIds: string[],
 ): Promise<void> {
-  const valid = new Set((await listProgrammes(env, edition)).map((p) => p.id));
+  const valid = new Set((await listProgrammes(env, scope)).map((p) => p.id));
   const keep = programIds.filter((id) => valid.has(id));
   const stmts = [
     env.DB.prepare("DELETE FROM agreement_template_programs WHERE template_id = ?").bind(templateId),
@@ -290,21 +378,24 @@ async function replaceProgrammes(
 /** Record an uploaded source file against the template. */
 export async function setTemplateFile(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   id: string,
   file: { name: string; key: string },
 ): Promise<void> {
+  const q = scoped(scope).on("agreement_templates").and("id = ?", id);
   await env.DB.prepare(
-    "UPDATE agreement_templates SET file_name = ?, file_url = ?, updated_at = ? WHERE id = ? AND edition = ?",
+    `UPDATE agreement_templates SET file_name = ?, file_url = ?, updated_at = ? ${q.whereClause()}`,
   )
-    .bind(file.name, file.key, new Date().toISOString(), id, edition)
+    .bind(file.name, file.key, new Date().toISOString(), ...q.binds)
     .run();
 }
 
-export async function deleteTemplate(env: Env, edition: Edition, id: string): Promise<void> {
-  // The three child tables all cascade on `template_id` (`migrations/0035`).
-  await env.DB.prepare("DELETE FROM agreement_templates WHERE id = ? AND edition = ?")
-    .bind(id, edition)
+export async function deleteTemplate(env: Env, scope: TenantScope, id: string): Promise<void> {
+  // The three child tables all cascade on `template_id` (`migrations/0035`), so
+  // scoping the parent scopes the cascade with it.
+  const q = scoped(scope).on("agreement_templates").and("id = ?", id);
+  await env.DB.prepare(`DELETE FROM agreement_templates ${q.whereClause()}`)
+    .bind(...q.binds)
     .run();
 }
 
@@ -325,32 +416,35 @@ export function summaryOf(t: AgreementTemplateView): string {
  * founder countersigning on the organisation's behalf is a contradiction, and
  * the prototype's role list stops at the internal roles.
  */
-export async function loadSignatoryPool(env: Env, edition: Edition): Promise<SignatoryPool> {
+export async function loadSignatoryPool(env: Env, scope: TenantScope): Promise<SignatoryPool> {
+  const gq = scoped(scope).on("a");
   const grants = (
     await env.DB.prepare(
-      "SELECT role, user_id, enabled FROM authorised_signatories WHERE edition = ?",
+      `SELECT a.role, a.user_id, a.enabled FROM authorised_signatories a ${gq.whereClause()}`,
     )
-      .bind(edition)
+      .bind(...gq.binds)
       .all<{ role: string | null; user_id: string | null; enabled: number }>()
   ).results;
 
-  const roles = ROLES_BY_EDITION[edition]
+  const roles = ROLES_BY_EDITION[scope.edition]
     .filter((r) => r !== "founder")
     .map((role) => ({
       role,
-      label: roleLabel(edition, role),
+      label: roleLabel(scope.edition, role),
       enabled: grants.some((g) => g.role === role && g.enabled === 1),
     }));
 
   // Named individuals: everyone with a user grant row, plus every active staff
   // member, so "Add individual" has a list to add from. Deleted users
   // (`0044.deleted_at`) and founders are out.
+  const uq = scoped(scope)
+    .on("u")
+    .andRaw("u.role <> 'founder' AND u.role <> 'mentor' AND u.active = 1 AND u.deleted_at IS NULL");
   const users = (
     await env.DB.prepare(
-      "SELECT id, name, role FROM users WHERE edition = ? AND role <> 'founder' AND role <> 'mentor' " +
-        "AND active = 1 AND deleted_at IS NULL ORDER BY name",
+      `SELECT u.id, u.name, u.role FROM users u ${uq.whereClause()} ORDER BY u.name`,
     )
-      .bind(edition)
+      .bind(...uq.binds)
       .all<{ id: string; name: string; role: string }>()
   ).results;
 
@@ -360,39 +454,71 @@ export async function loadSignatoryPool(env: Env, edition: Edition): Promise<Sig
       userId: u.id,
       name: u.name,
       role: u.role as Role,
-      roleLabel: roleLabel(edition, u.role as Role),
+      roleLabel: roleLabel(scope.edition, u.role as Role),
       enabled: grants.some((g) => g.user_id === u.id && g.enabled === 1),
     })),
   };
 }
 
-/** Toggle one grant. Rows are created on demand so the seed need not be total. */
+/**
+ * **TWO OF THE NINE `ON CONFLICT` SITES THE TENANCY WAVE HAD TO WIDEN.**
+ *
+ * `0099_tenant_index_pass.sql` did NOT drop `authorised_signatories`' two
+ * original partial uniques; it ADDED the tenant-scoped pair beside them, under
+ * new names, precisely so these two upserts kept resolving while T0 merged. The
+ * widening here is the other half of that transaction, and integration drops the
+ * legacy pair from the declared headroom (`0101`–`0108`) once it has landed.
+ *
+ * **The `WHERE` clause is part of the key, not decoration.** A partial index can
+ * only be an `ON CONFLICT` target when the statement repeats its predicate
+ * verbatim, so `WHERE role IS NOT NULL` and `WHERE user_id IS NOT NULL` survive
+ * the widening unchanged — they are what make the two constraints
+ * non-overlapping on a table whose own `CHECK` says exactly one of the columns
+ * is set.
+ *
+ * Measured against the materialised chain (2026-09-30), with BOTH index pairs
+ * standing as they do today:
+ *
+ *   · same tenant, widened target → upserts correctly, updating the existing row
+ *     and keeping its original id;
+ *   · a SECOND tenant → `UNIQUE constraint failed: authorised_signatories.edition,
+ *     authorised_signatories.role`. That is the legacy index refusing, loudly and
+ *     by name. It is the correct error for "integration has not run yet", not a
+ *     defect in this code: dropping the two legacy indexes makes the same insert
+ *     succeed, verified.
+ *
+ * The id gains the tenant for the same reason the index did — it is the PRIMARY
+ * KEY, and two customers granting the same role would otherwise collide on it.
+ * Rows seeded before tenancy keep their shorter ids; the upsert resolves on the
+ * index, not on the id, so nothing needs rewriting.
+ */
 export async function setRoleGrant(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   role: Role,
   enabled: boolean,
 ): Promise<void> {
+  const t = insertScope(scope);
   await env.DB.prepare(
-    "INSERT INTO authorised_signatories (id, edition, role, user_id, enabled) VALUES (?, ?, ?, NULL, ?) " +
-      // The UNIQUE partial index on (edition, role) is what makes the upsert work.
-      "ON CONFLICT (edition, role) WHERE role IS NOT NULL DO UPDATE SET enabled = excluded.enabled",
+    `INSERT INTO authorised_signatories (id, ${t.columns}, role, user_id, enabled) VALUES (?, ${t.placeholders}, ?, NULL, ?) ` +
+      "ON CONFLICT (tenant_id, edition, role) WHERE role IS NOT NULL DO UPDATE SET enabled = excluded.enabled",
   )
-    .bind(`as_${edition}_role_${role}`, edition, role, enabled ? 1 : 0)
+    .bind(`as_${scope.tenantId}_${scope.edition}_role_${role}`, ...t.binds, role, enabled ? 1 : 0)
     .run();
 }
 
 export async function setUserGrant(
   env: Env,
-  edition: Edition,
+  scope: TenantScope,
   userId: string,
   enabled: boolean,
 ): Promise<void> {
+  const t = insertScope(scope);
   await env.DB.prepare(
-    "INSERT INTO authorised_signatories (id, edition, role, user_id, enabled) VALUES (?, ?, NULL, ?, ?) " +
-      "ON CONFLICT (edition, user_id) WHERE user_id IS NOT NULL DO UPDATE SET enabled = excluded.enabled",
+    `INSERT INTO authorised_signatories (id, ${t.columns}, role, user_id, enabled) VALUES (?, ${t.placeholders}, NULL, ?, ?) ` +
+      "ON CONFLICT (tenant_id, edition, user_id) WHERE user_id IS NOT NULL DO UPDATE SET enabled = excluded.enabled",
   )
-    .bind(`as_${edition}_user_${userId}`, edition, userId, enabled ? 1 : 0)
+    .bind(`as_${scope.tenantId}_${scope.edition}_user_${userId}`, ...t.binds, userId, enabled ? 1 : 0)
     .run();
 }
 
@@ -423,14 +549,28 @@ export interface SignupRecord {
   status: SignupStatus;
 }
 
-export async function loadSignup(env: Env, signupId: string): Promise<SignupRecord | null> {
+/**
+ * The sign-up record, and the only place the router learns a sign-up exists.
+ *
+ * `signups` has no scope column of its own; it is reached through its deck, and
+ * this statement already carried the join, so the whole widening is one `.on("d")`
+ * — which is also why scoping HERE scopes the eight routes above it. A record in
+ * another customer's workspace comes back `null` and the router answers 404,
+ * the same shape it already used for another edition.
+ */
+export async function loadSignup(
+  env: Env,
+  scope: TenantScope,
+  signupId: string,
+): Promise<SignupRecord | null> {
+  const q = scoped(scope).on("d").and("s.id = ?", signupId);
   const row = await env.DB.prepare(
     "SELECT s.id, s.deck_id, d.name deck_name, d.edition, d.program_id, d.uploaded_by, d.founder_email, s.status, " +
       "s.signing_provider, s.sig_type, s.in_app, s.wet_ink, s.authorised_signatory_user_id, " +
       "s.authorised_signatory_role, s.founder_signed_at " +
-      "FROM signups s JOIN decks d ON d.id = s.deck_id WHERE s.id = ?",
+      `FROM signups s JOIN decks d ON d.id = s.deck_id ${q.whereClause()}`,
   )
-    .bind(signupId)
+    .bind(...q.binds)
     .first<SignupRow>();
   if (!row) return null;
   return {
@@ -487,13 +627,23 @@ export function methodLine(view: SigningMethodView): string {
 
 export async function saveSigningMethod(
   env: Env,
+  scope: TenantScope,
   signupId: string,
   method: { provider: ESignProvider; sigType: SignatureType; inApp: boolean; wetInk: boolean },
 ): Promise<void> {
+  const own = ownedSignup(scope, "signups.id");
   await env.DB.prepare(
-    "UPDATE signups SET signing_provider = ?, sig_type = ?, in_app = ?, wet_ink = ? WHERE id = ?",
+    "UPDATE signups SET signing_provider = ?, sig_type = ?, in_app = ?, wet_ink = ? " +
+      `WHERE id = ? AND ${own.sql}`,
   )
-    .bind(method.provider, method.sigType, method.inApp ? 1 : 0, method.wetInk ? 1 : 0, signupId)
+    .bind(
+      method.provider,
+      method.sigType,
+      method.inApp ? 1 : 0,
+      method.wetInk ? 1 : 0,
+      signupId,
+      ...own.binds,
+    )
     .run();
 }
 
@@ -505,52 +655,75 @@ export async function saveSigningMethod(
  */
 export async function saveAssignment(
   env: Env,
+  scope: TenantScope,
   signupId: string,
   assignment: SignatoryAssignment,
 ): Promise<void> {
+  const own = ownedSignup(scope, "signups.id");
   await env.DB.prepare(
-    "UPDATE signups SET authorised_signatory_role = ?, authorised_signatory_user_id = ? WHERE id = ?",
+    "UPDATE signups SET authorised_signatory_role = ?, authorised_signatory_user_id = ? " +
+      `WHERE id = ? AND ${own.sql}`,
   )
-    .bind(assignment.role, assignment.userId, signupId)
+    .bind(assignment.role, assignment.userId, signupId, ...own.binds)
     .run();
 }
 
 /** Record the founder's signature — the act that locks the method. */
 export async function markFounderSigned(
   env: Env,
+  scope: TenantScope,
   signupId: string,
   at: string,
 ): Promise<void> {
+  const ownSignup = ownedSignup(scope, "signups.id");
+  const ownAgreement = ownedSignup(scope, "agreements.signup_id");
   await env.DB.batch([
     // `progress` is 0034's "founder has acted" state; a record already further
     // along keeps the status it has.
     env.DB.prepare(
-      "UPDATE signups SET founder_signed_at = ?, status = CASE WHEN status = 'initiated' THEN 'progress' ELSE status END WHERE id = ?",
-    ).bind(at, signupId),
+      "UPDATE signups SET founder_signed_at = ?, status = CASE WHEN status = 'initiated' THEN 'progress' ELSE status END " +
+        `WHERE id = ? AND ${ownSignup.sql}`,
+    ).bind(at, signupId, ...ownSignup.binds),
     // Every agreement on this sign-up freezes with it.
-    env.DB.prepare("UPDATE agreements SET method_locked = 1 WHERE signup_id = ?").bind(signupId),
+    env.DB.prepare(
+      `UPDATE agreements SET method_locked = 1 WHERE signup_id = ? AND ${ownAgreement.sql}`,
+    ).bind(signupId, ...ownAgreement.binds),
   ]);
 }
 
 export async function markCountersigned(
   env: Env,
+  scope: TenantScope,
   signupId: string,
   userId: string,
   at: string,
 ): Promise<void> {
+  const ownAgreement = ownedSignup(scope, "agreements.signup_id");
+  const ownSignup = ownedSignup(scope, "signups.id");
   await env.DB.batch([
     env.DB.prepare(
-      "UPDATE agreements SET countersigned_by = ?, countersigned_at = ? WHERE signup_id = ? AND countersigned_at IS NULL",
-    ).bind(userId, at, signupId),
+      "UPDATE agreements SET countersigned_by = ?, countersigned_at = ? " +
+        `WHERE signup_id = ? AND countersigned_at IS NULL AND ${ownAgreement.sql}`,
+    ).bind(userId, at, signupId, ...ownAgreement.binds),
     env.DB.prepare(
-      "UPDATE signups SET status = 'completed', completed_at = ? WHERE id = ? AND status IN ('initiated', 'progress')",
-    ).bind(at, signupId),
+      "UPDATE signups SET status = 'completed', completed_at = ? " +
+        `WHERE id = ? AND status IN ('initiated', 'progress') AND ${ownSignup.sql}`,
+    ).bind(at, signupId, ...ownSignup.binds),
   ]);
 }
 
-export async function countAgreements(env: Env, signupId: string): Promise<number> {
-  const row = await env.DB.prepare("SELECT COUNT(*) n FROM agreements WHERE signup_id = ?")
-    .bind(signupId)
+export async function countAgreements(
+  env: Env,
+  scope: TenantScope,
+  signupId: string,
+): Promise<number> {
+  const q = scoped(scope);
+  const joins = q.viaParent("agreements", "a");
+  q.and("a.signup_id = ?", signupId);
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) n FROM agreements a ${joins} ${q.whereClause()}`,
+  )
+    .bind(...q.binds)
     .first<{ n: number }>();
   return row?.n ?? 0;
 }
@@ -570,12 +743,20 @@ export interface AgreementRow {
   countersigned_at: string | null;
 }
 
-export async function loadAgreement(env: Env, signupId: string): Promise<AgreementRow | null> {
+export async function loadAgreement(
+  env: Env,
+  scope: TenantScope,
+  signupId: string,
+): Promise<AgreementRow | null> {
+  const q = scoped(scope);
+  const joins = q.viaParent("agreements", "a");
+  q.and("a.signup_id = ?", signupId);
   return env.DB.prepare(
-    "SELECT id, signup_id, template_id, kind, template_url, merge_values_json, status, method_locked, " +
-      "countersigned_by, countersigned_at FROM agreements WHERE signup_id = ? ORDER BY created_at LIMIT 1",
+    "SELECT a.id, a.signup_id, a.template_id, a.kind, a.template_url, a.merge_values_json, a.status, " +
+      `a.method_locked, a.countersigned_by, a.countersigned_at FROM agreements a ${joins} ` +
+      `${q.whereClause()} ORDER BY a.created_at LIMIT 1`,
   )
-    .bind(signupId)
+    .bind(...q.binds)
     .first<AgreementRow>();
 }
 
@@ -611,22 +792,35 @@ export function applicableTemplate(
  */
 export async function prepareAgreement(
   env: Env,
+  scope: TenantScope,
   record: SignupRecord,
   template: AgreementTemplateView,
   mergeValues: Record<string, string>,
 ): Promise<AgreementRow> {
-  const existing = await loadAgreement(env, record.row.id);
+  const existing = await loadAgreement(env, scope, record.row.id);
   if (existing) {
     // Merge values stay editable until the founder signs — that is what "Fill
-    // blanks" is, and the lock is the same one the method has.
+    // blanks" is, and the lock is the same one the method has. The id came from
+    // the scoped read directly above, so the UPDATE's `WHERE id = ?` is already
+    // a workspace row; the ownership predicate is repeated anyway because the
+    // whole point of §5b's proxy bucket is that the two statements break
+    // together the day somebody moves one of them.
     if (existing.method_locked === 0) {
-      await env.DB.prepare("UPDATE agreements SET merge_values_json = ? WHERE id = ?")
-        .bind(JSON.stringify(mergeValues), existing.id)
+      const own = ownedSignup(scope, "agreements.signup_id");
+      await env.DB.prepare(
+        `UPDATE agreements SET merge_values_json = ? WHERE id = ? AND ${own.sql}`,
+      )
+        .bind(JSON.stringify(mergeValues), existing.id, ...own.binds)
         .run();
-      return (await loadAgreement(env, record.row.id))!;
+      return (await loadAgreement(env, scope, record.row.id))!;
     }
     return existing;
   }
+  // `agreements` carries no tenant column — it is scoped through
+  // `signup_id → signups → decks`. Neither value here comes off a request:
+  // `record` was loaded by the scoped `loadSignup` and `template` was chosen out
+  // of a scoped `listTemplates`, so the row lands in the caller's workspace by
+  // construction and there is no column to bind.
   const id = `agr_${crypto.randomUUID()}`;
   await env.DB.prepare(
     "INSERT INTO agreements (id, signup_id, template_id, kind, template_url, merge_values_json, status, method_locked) " +
@@ -642,12 +836,30 @@ export async function prepareAgreement(
       record.row.founder_signed_at === null ? 0 : 1,
     )
     .run();
-  return (await loadAgreement(env, record.row.id))!;
+  return (await loadAgreement(env, scope, record.row.id))!;
 }
 
-/** Record one signature against an agreement. */
+/**
+ * Record one signature against an agreement.
+ *
+ * **This is the write the wave's priority sentence is about.** A signature is a
+ * legal record and `signatures` carries no scope column at all — §5b counts it 1
+ * `FROM` site and 0 `JOIN`s, the purest instance of the defect. So this refuses
+ * rather than writes: if the agreement named is not reachable from the caller's
+ * workspace through `signatures → agreements → signups → decks`, nothing is
+ * inserted and the call throws.
+ *
+ * Throwing is deliberate and is the opposite of what the read side does. A read
+ * that finds nothing is an ordinary 404 — the row may simply not exist. A
+ * signature addressed at another customer's agreement is not an ordinary
+ * outcome, and the two live callers both resolved the agreement through
+ * `loadAgreement` one frame up, so this can only fire if that frame is ever
+ * removed. A silent no-op there would leave a countersigned agreement with no
+ * signature row and no complaint.
+ */
 export async function recordSignature(
   env: Env,
+  scope: TenantScope,
   args: {
     agreementId: string;
     signerUserId: string | null;
@@ -659,6 +871,20 @@ export async function recordSignature(
     at: string;
   },
 ): Promise<void> {
+  const own = scoped(scope);
+  const ownJoins = own.viaParent("agreements", "a");
+  own.and("a.id = ?", args.agreementId);
+  const owned = await env.DB.prepare(
+    `SELECT 1 n FROM agreements a ${ownJoins} ${own.whereClause()}`,
+  )
+    .bind(...own.binds)
+    .first<{ n: number }>();
+  if (!owned) {
+    throw new Error(
+      `tenant scope: refusing to sign agreement ${args.agreementId}, which is not in this workspace`,
+    );
+  }
+
   await env.DB.prepare(
     "INSERT INTO signatures (id, agreement_id, signer_user_id, signer_email, signer_name, " +
       "method_provider, sig_type, provider_reference, signed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -677,34 +903,58 @@ export async function recordSignature(
     .run();
 }
 
+/**
+ * The signatures on one agreement — signer names and email addresses, which is
+ * why it is scoped through all three hops rather than trusted to the id.
+ */
 export async function listSignatures(
   env: Env,
+  scope: TenantScope,
   agreementId: string,
 ): Promise<Array<{ signerName: string | null; signerEmail: string | null; signedAt: string | null }>> {
+  const q = scoped(scope);
+  const joins = q.viaParent("signatures", "sg");
+  q.and("sg.agreement_id = ?", agreementId);
   return (
     await env.DB.prepare(
-      "SELECT signer_name signerName, signer_email signerEmail, signed_at signedAt FROM signatures " +
-        "WHERE agreement_id = ? ORDER BY created_at",
+      "SELECT sg.signer_name signerName, sg.signer_email signerEmail, sg.signed_at signedAt " +
+        `FROM signatures sg ${joins} ${q.whereClause()} ORDER BY sg.created_at`,
     )
-      .bind(agreementId)
+      .bind(...q.binds)
       .all<{ signerName: string | null; signerEmail: string | null; signedAt: string | null }>()
   ).results;
 }
 
 // ── The stub's audit trail ───────────────────────────────────────────────────
 
+/**
+ * **`esign_outbox` is the plan correction this session owns.**
+ *
+ * §5b classified it "scoped by proxy", but both of its foreign keys are NULLABLE
+ * by design — `0049`'s own comment: "an attempt may precede the `agreements` row
+ * (a method preview) and a voided envelope may outlive its sign-up". A join
+ * through a nullable reference drops exactly the rows that have no parent, which
+ * is to say the rows a proxy scope was supposed to cover. There is no parent to
+ * scope it through, so `0086` gave it a DIRECT tenant key instead and
+ * `TENANT_KEYED_TABLES` lists it.
+ *
+ * It has no `edition` column, so `onTenantOnly` is correct here and `.on()` would
+ * not compile a valid statement.
+ */
 export async function listAttempts(
   env: Env,
+  scope: TenantScope,
   signupId: string,
   limit = 20,
 ): Promise<ESignAttemptView[]> {
+  const q = scoped(scope).onTenantOnly("x").and("x.signup_id = ?", signupId);
   const rows = (
     await env.DB.prepare(
-      "SELECT id, signup_id, agreement_id, kind, provider, sig_type, recipients_json, document_name, " +
-        "status, provider_reference, error, created_at FROM esign_outbox WHERE signup_id = ? " +
-        "ORDER BY created_at DESC, id DESC LIMIT ?",
+      "SELECT x.id, x.signup_id, x.agreement_id, x.kind, x.provider, x.sig_type, x.recipients_json, " +
+        "x.document_name, x.status, x.provider_reference, x.error, x.created_at " +
+        `FROM esign_outbox x ${q.whereClause()} ORDER BY x.created_at DESC, x.id DESC LIMIT ?`,
     )
-      .bind(signupId, limit)
+      .bind(...q.binds, limit)
       .all<{
         id: string;
         signup_id: string | null;

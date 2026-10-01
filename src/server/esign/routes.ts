@@ -28,6 +28,12 @@
  * §1.3 — no vendor SDK, no credential, no network call. Every signature act
  * records an `esign_outbox` row through `./provider.ts` and reports
  * `status='recorded'`, never 'sent'.
+ *
+ * TENANCY (T1-ESIGN): every call into `./store.ts` and `./provider.ts` now
+ * carries `scopeOf(c.var.user)` in place of the bare edition. The scope is taken
+ * from the SESSION and never from a parameter — `scopeOf` takes a
+ * `TenantPrincipal`, so `scopeOf(c.req.query())` would not compile, which is the
+ * property §2 notes is true of all 211 existing predicates and has to stay true.
  */
 
 import { Hono } from "hono";
@@ -36,6 +42,7 @@ import type { AppEnv } from "../types";
 import type { Role } from "../../shared/roles";
 import { ROLES_BY_EDITION } from "../../shared/roles";
 import { requireAuth, requireRole, requireTask } from "../auth/middleware";
+import { scoped, scopeOf } from "../../shared/tenant";
 import { auditConfig } from "../audit/events";
 import { changedFragment } from "../audit/log";
 import {
@@ -135,13 +142,13 @@ function codeFrom(name: string): string {
 
 /** GET /api/esign/templates — the library, plus the programme toggles. */
 esign.get("/templates", async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const [templates, programmes] = await Promise.all([
-    listTemplates(c.env, edition),
-    listProgrammes(c.env, edition),
+    listTemplates(c.env, scope),
+    listProgrammes(c.env, scope),
   ]);
   return c.json({
-    edition,
+    edition: scope.edition,
     programmes,
     templates: templates.map((t) => ({ ...t, summary: templateSummary(t) })),
   });
@@ -157,42 +164,42 @@ interface CreateBody {
  * starting shape: one `startup` / `company` field and the three-step flow.
  */
 esign.post("/templates", async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const body = await c.req.json<CreateBody>().catch(() => ({}) as CreateBody);
   const name = trimmed(body.name) ?? "New agreement";
   const stage: TemplateStage = isTemplateStage(body.stage) ? body.stage : "on_signup";
 
-  // `agreement_templates` is UNIQUE (edition, code); a second "New agreement"
-  // must not 500.
-  const existing = await listTemplates(c.env, edition);
+  // `agreement_templates` is UNIQUE (tenant_id, edition, code) since `0096`; a
+  // second "New agreement" must not 500, and the uniqueness it dodges is now
+  // per workspace, so two customers may each hold a `new_agreement`.
+  const existing = await listTemplates(c.env, scope);
   const base = codeFrom(name);
   let code = base;
   for (let n = 2; existing.some((t) => t.code === code); n++) code = `${base}_${n}`;
 
   const firstField: MergeField =
-    edition === "vc"
+    scope.edition === "vc"
       ? { key: "company", label: "Company legal name", sample: null }
       : { key: "startup", label: "Startup name", sample: null };
 
-  const id = await createTemplate(c.env, {
-    edition,
+  const id = await createTemplate(c.env, scope, {
     name,
     code,
     stage,
     fields: [firstField],
-    flow: defaultFlow(edition),
+    flow: defaultFlow(scope.edition),
   });
   await auditConfig(c, "agreement_template_created", `Agreement template created: ${name}`, {
     targetType: "agreement_template",
     targetId: id,
   });
-  const template = await loadTemplate(c.env, edition, id);
+  const template = await loadTemplate(c.env, scope, id);
   return c.json({ template }, 201);
 });
 
 /** GET /api/esign/templates/:id */
 esign.get("/templates/:id", async (c) => {
-  const template = await loadTemplate(c.env, c.var.user.edition, c.req.param("id"));
+  const template = await loadTemplate(c.env, scopeOf(c.var.user), c.req.param("id"));
   if (!template) return c.json({ error: "not_found" }, 404);
   return c.json({ template, summary: templateSummary(template) });
 });
@@ -213,9 +220,9 @@ interface TemplateBody {
  * is why the merge-field and flow rules are validated here rather than per card.
  */
 esign.put("/templates/:id", async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const id = c.req.param("id");
-  const before = await loadTemplate(c.env, edition, id);
+  const before = await loadTemplate(c.env, scope, id);
   if (!before) return c.json({ error: "not_found" }, 404);
 
   const body = await c.req.json<TemplateBody>().catch(() => ({}) as TemplateBody);
@@ -238,7 +245,7 @@ esign.put("/templates/:id", async (c) => {
   if (Array.isArray(body.flow)) {
     const raw: FlowStep[] = [];
     for (const s of body.flow) {
-      if (!isFlowActor(edition, s.actor)) return c.json({ error: "unknown_actor" }, 400);
+      if (!isFlowActor(scope.edition, s.actor)) return c.json({ error: "unknown_actor" }, 400);
       if (!isFlowAction(s.action)) return c.json({ error: "unknown_action" }, 400);
       raw.push({ actor: s.actor, action: s.action });
     }
@@ -262,7 +269,7 @@ esign.put("/templates/:id", async (c) => {
     ? body.programIds.filter((v): v is string => typeof v === "string")
     : undefined;
 
-  await updateTemplate(c.env, edition, id, {
+  await updateTemplate(c.env, scope, id, {
     name: name ?? undefined,
     version: trimmed(body.version) ?? undefined,
     status: isTemplateStatus(body.status) ? body.status : undefined,
@@ -272,7 +279,7 @@ esign.put("/templates/:id", async (c) => {
     flow,
   });
 
-  const after = await loadTemplate(c.env, edition, id);
+  const after = await loadTemplate(c.env, scope, id);
   // The prototype's Audit log carries config rows in exactly this voice
   // ("Area weight updated: Team & execution 10% → 12%").
   const parts = [
@@ -301,19 +308,19 @@ esign.put("/templates/:id", async (c) => {
  * Active.
  */
 esign.post("/templates/:id/version", async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const id = c.req.param("id");
-  const template = await loadTemplate(c.env, edition, id);
+  const template = await loadTemplate(c.env, scope, id);
   if (!template) return c.json({ error: "not_found" }, 404);
   const version = nextVersionLabel(template.version);
-  await updateTemplate(c.env, edition, id, { version, status: "draft" });
+  await updateTemplate(c.env, scope, id, { version, status: "draft" });
   await auditConfig(
     c,
     "agreement_template_versioned",
     `Agreement template new version: ${template.name} ${template.version} → ${version} (Draft)`,
     { targetType: "agreement_template", targetId: id },
   );
-  return c.json({ template: await loadTemplate(c.env, edition, id) });
+  return c.json({ template: await loadTemplate(c.env, scope, id) });
 });
 
 /**
@@ -326,20 +333,20 @@ esign.post("/templates/:id/retire", async (c) => setStatus(c, "retired"));
 esign.post("/templates/:id/restore", async (c) => setStatus(c, "draft"));
 
 async function setStatus(c: Context<AppEnv>, status: "retired" | "draft") {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   // `?? ""` because these two helpers take a bare `Context<AppEnv>`, which does
   // not carry the route's path type; the id is always present at the call site.
   const id = c.req.param("id") ?? "";
-  const template = await loadTemplate(c.env, edition, id);
+  const template = await loadTemplate(c.env, scope, id);
   if (!template) return c.json({ error: "not_found" }, 404);
-  await updateTemplate(c.env, edition, id, { status });
+  await updateTemplate(c.env, scope, id, { status });
   await auditConfig(
     c,
     status === "retired" ? "agreement_template_retired" : "agreement_template_restored",
     `Agreement template ${status === "retired" ? "retired" : "restored as Draft"}: ${template.name}`,
     { targetType: "agreement_template", targetId: id },
   );
-  return c.json({ template: await loadTemplate(c.env, edition, id) });
+  return c.json({ template: await loadTemplate(c.env, scope, id) });
 }
 
 /**
@@ -354,13 +361,13 @@ async function setStatus(c: Context<AppEnv>, status: "retired" | "draft") {
  * deliberate addition in the plan's §8.
  */
 esign.delete("/templates/:id", async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const id = c.req.param("id");
-  const template = await loadTemplate(c.env, edition, id);
+  const template = await loadTemplate(c.env, scope, id);
   if (!template) return c.json({ error: "not_found" }, 404);
   if (template.status !== "draft") return c.json({ error: "not_a_draft" }, 409);
   if (template.agreementCount > 0) return c.json({ error: "template_in_use" }, 409);
-  await deleteTemplate(c.env, edition, id);
+  await deleteTemplate(c.env, scope, id);
   await auditConfig(c, "agreement_template_deleted", `Unused draft template deleted: ${template.name}`, {
     targetType: "agreement_template",
     targetId: id,
@@ -384,9 +391,9 @@ const MAX_SOURCE_BYTES = 10 * 1024 * 1024;
  * which is the whole point of keeping a retired template "for audit".
  */
 esign.post("/templates/:id/file", async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const id = c.req.param("id");
-  const template = await loadTemplate(c.env, edition, id);
+  const template = await loadTemplate(c.env, scope, id);
   if (!template) return c.json({ error: "not_found" }, 404);
 
   const form = await c.req.formData().catch(() => null);
@@ -401,24 +408,28 @@ esign.post("/templates/:id/file", async (c) => {
   await c.env.DECKS.put(key, await file.arrayBuffer(), {
     httpMetadata: { contentType: file.type },
   });
-  await setTemplateFile(c.env, edition, id, { name: safeName, key });
+  await setTemplateFile(c.env, scope, id, { name: safeName, key });
   await auditConfig(
     c,
     "agreement_template_file_uploaded",
     `Agreement template file uploaded: ${template.name} ${template.version} — ${safeName}`,
     { targetType: "agreement_template", targetId: id },
   );
-  return c.json({ template: await loadTemplate(c.env, edition, id) });
+  return c.json({ template: await loadTemplate(c.env, scope, id) });
 });
 
 /** GET /api/esign/templates/:id/file — stream the stored source back. */
 esign.get("/templates/:id/file", async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const id = c.req.param("id");
+  // The one statement this router issues directly. Scoped like every other: an
+  // R2 key is unguessable, but it is reached through this row, so the row is
+  // what has to be the caller's.
+  const q = scoped(scope).on("t").and("t.id = ?", id);
   const row = await c.env.DB.prepare(
-    "SELECT file_name, file_url FROM agreement_templates WHERE id = ? AND edition = ?",
+    `SELECT t.file_name, t.file_url FROM agreement_templates t ${q.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...q.binds)
     .first<{ file_name: string | null; file_url: string | null }>();
   if (!row) return c.json({ error: "not_found" }, 404);
   if (!row.file_url) return c.json({ error: "no_file" }, 404);
@@ -441,8 +452,8 @@ esign.get("/templates/:id/file", async (c) => {
  * the one route that exercises `substituteMergeFields` over real input.
  */
 esign.post("/templates/:id/preview", async (c) => {
-  const edition = c.var.user.edition;
-  const template = await loadTemplate(c.env, edition, c.req.param("id"));
+  const scope = scopeOf(c.var.user);
+  const template = await loadTemplate(c.env, scope, c.req.param("id"));
   if (!template) return c.json({ error: "not_found" }, 404);
   const body = await c.req
     .json<{ text?: unknown; values?: unknown }>()
@@ -464,9 +475,9 @@ esign.post("/templates/:id/preview", async (c) => {
 
 /** GET /api/esign/signatories — the pool, and the picker it projects to. */
 esign.get("/signatories", async (c) => {
-  const edition = c.var.user.edition;
-  const pool = await loadSignatoryPool(c.env, edition);
-  return c.json({ edition, pool, options: assignableOptions(pool) });
+  const scope = scopeOf(c.var.user);
+  const pool = await loadSignatoryPool(c.env, scope);
+  return c.json({ edition: scope.edition, pool, options: assignableOptions(pool) });
 });
 
 interface SignatoriesBody {
@@ -479,23 +490,23 @@ interface SignatoriesBody {
  * section sends only what moved.
  */
 esign.put("/signatories", async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const body = await c.req.json<SignatoriesBody>().catch(() => ({}) as SignatoriesBody);
-  const before = await loadSignatoryPool(c.env, edition);
+  const before = await loadSignatoryPool(c.env, scope);
 
-  const validRoles = new Set<string>(ROLES_BY_EDITION[edition].filter((r) => r !== "founder"));
+  const validRoles = new Set<string>(ROLES_BY_EDITION[scope.edition].filter((r) => r !== "founder"));
   for (const [role, enabled] of Object.entries(body.roles ?? {})) {
     if (!validRoles.has(role)) return c.json({ error: "unknown_role", message: role }, 400);
-    await setRoleGrant(c.env, edition, role as Role, enabled === true);
+    await setRoleGrant(c.env, scope, role as Role, enabled === true);
   }
 
   const validUsers = new Set(before.users.map((u) => u.userId));
   for (const [userId, enabled] of Object.entries(body.users ?? {})) {
     if (!validUsers.has(userId)) return c.json({ error: "unknown_user", message: userId }, 400);
-    await setUserGrant(c.env, edition, userId, enabled === true);
+    await setUserGrant(c.env, scope, userId, enabled === true);
   }
 
-  const after = await loadSignatoryPool(c.env, edition);
+  const after = await loadSignatoryPool(c.env, scope);
   const moved = [
     ...after.roles
       .filter((r) => before.roles.find((b) => b.role === r.role)?.enabled !== r.enabled)
@@ -507,11 +518,11 @@ esign.put("/signatories", async (c) => {
   if (moved.length) {
     await auditConfig(c, "signatories_changed", `Authorised signatories: ${moved.join(", ")}`, {
       targetType: "authorised_signatories",
-      targetId: edition,
+      targetId: scope.edition,
       detail: { before, after },
     });
   }
-  return c.json({ edition, pool: after, options: assignableOptions(after) });
+  return c.json({ edition: scope.edition, pool: after, options: assignableOptions(after) });
 });
 
 // ── The signing method, per record ───────────────────────────────────────────
@@ -530,14 +541,19 @@ async function resolveSignup(c: Context<AppEnv>, opts: { founderMayRead: boolean
   if (user.role === "founder" && !opts.founderMayRead) {
     return c.json({ error: "forbidden" }, 403);
   }
-  const record = await loadSignup(c.env, c.req.param("signupId") ?? "");
+  const scope = scopeOf(user);
+  // The workspace check now happens IN the statement rather than after it:
+  // `loadSignup` joins the deck and binds `(tenant_id, edition)`, so another
+  // customer's record is a `null` here and never a loaded row compared in JS.
+  // The old `record.edition !== user.edition` line was that comparison, and the
+  // predicate subsumes it — `.on("d")` binds the edition too.
+  const record = await loadSignup(c.env, scope, c.req.param("signupId") ?? "");
   if (!record) return c.json({ error: "not_found" }, 404);
-  if (record.edition !== user.edition) return c.json({ error: "not_found" }, 404);
   // Founder isolation: their own record only.
   if (user.role === "founder" && record.row.uploaded_by !== user.id) {
     return c.json({ error: "not_found" }, 404);
   }
-  return record;
+  return { ...record, scope };
 }
 
 /**
@@ -551,14 +567,14 @@ async function resolveSignup(c: Context<AppEnv>, opts: { founderMayRead: boolean
 esign.get("/signups/:signupId/method", async (c) => {
   const found = await resolveSignup(c, { founderMayRead: true });
   if (found instanceof Response) return found;
-  const pool = await loadSignatoryPool(c.env, found.edition);
+  const pool = await loadSignatoryPool(c.env, found.scope);
   const view = signingMethodView(found, pool);
   return c.json({
     method: view,
     options: assignableOptions(pool),
     providerLabel: ESIGN_PROVIDER_LABELS[view.provider],
     sigTypeLabel: SIGNATURE_TYPE_SHORT[view.sigType],
-    attempts: c.var.user.role === "founder" ? [] : await listAttempts(c.env, found.row.id),
+    attempts: c.var.user.role === "founder" ? [] : await listAttempts(c.env, found.scope, found.row.id),
   });
 });
 
@@ -612,9 +628,9 @@ esign.put("/signups/:signupId/method", async (c) => {
     );
   }
 
-  const pool = await loadSignatoryPool(c.env, found.edition);
+  const pool = await loadSignatoryPool(c.env, found.scope);
   const before = signingMethodView(found, pool);
-  await saveSigningMethod(c.env, found.row.id, {
+  await saveSigningMethod(c.env, found.scope, found.row.id, {
     provider: body.provider,
     sigType: body.sigType,
     inApp,
@@ -636,7 +652,7 @@ esign.put("/signups/:signupId/method", async (c) => {
     );
   }
 
-  const refreshed = await loadSignup(c.env, found.row.id);
+  const refreshed = await loadSignup(c.env, found.scope, found.row.id);
   return c.json({ method: signingMethodView(refreshed!, pool) });
 });
 
@@ -662,7 +678,7 @@ esign.put("/signups/:signupId/signatory", async (c) => {
   }
 
   const body = await c.req.json<AssignBody>().catch(() => ({}) as AssignBody);
-  const pool = await loadSignatoryPool(c.env, found.edition);
+  const pool = await loadSignatoryPool(c.env, found.scope);
   const options = assignableOptions(pool);
 
   let assignment: SignatoryAssignment;
@@ -680,7 +696,7 @@ esign.put("/signups/:signupId/signatory", async (c) => {
     assignment = UNASSIGNED;
   }
 
-  await saveAssignment(c.env, found.row.id, assignment);
+  await saveAssignment(c.env, found.scope, found.row.id, assignment);
   await auditConfig(
     c,
     "signatory_assigned",
@@ -689,7 +705,7 @@ esign.put("/signups/:signupId/signatory", async (c) => {
       : `Countersignatory cleared for ${found.row.deck_name}`,
     { targetType: "signup", targetId: found.row.id, deckId: found.row.deck_id },
   );
-  const refreshed = await loadSignup(c.env, found.row.id);
+  const refreshed = await loadSignup(c.env, found.scope, found.row.id);
   return c.json({ method: signingMethodView(refreshed!, pool) });
 });
 
@@ -714,7 +730,7 @@ esign.post("/signups/:signupId/agreement", async (c) => {
     );
   }
 
-  const templates = await listTemplates(c.env, found.edition);
+  const templates = await listTemplates(c.env, found.scope);
   const template = applicableTemplate(templates, {
     programId: found.row.program_id,
     stage: "on_signup",
@@ -750,7 +766,7 @@ esign.post("/signups/:signupId/agreement", async (c) => {
   }
   const missing = template.fields.filter((f) => !values[f.key]?.trim()).map((f) => f.key);
 
-  const agreement = await prepareAgreement(c.env, found, template, values);
+  const agreement = await prepareAgreement(c.env, found.scope, found, template, values);
   return c.json({
     agreement: {
       id: agreement.id,
@@ -781,7 +797,7 @@ esign.post("/signups/:signupId/agreement", async (c) => {
 esign.post("/signups/:signupId/founder-signature", async (c) => {
   const found = await resolveSignup(c, { founderMayRead: true });
   if (found instanceof Response) return found;
-  const pool = await loadSignatoryPool(c.env, found.edition);
+  const pool = await loadSignatoryPool(c.env, found.scope);
 
   if (found.row.founder_signed_at !== null) {
     return c.json({ method: signingMethodView(found, pool), alreadySigned: true });
@@ -795,17 +811,17 @@ esign.post("/signups/:signupId/founder-signature", async (c) => {
 
   // The founder cannot sign a document nobody raised, so raise it here if the
   // team has not — with no merge values, which is what `missing` then reports.
-  let agreement = await loadAgreement(c.env, found.row.id);
+  let agreement = await loadAgreement(c.env, found.scope, found.row.id);
   if (!agreement) {
-    const template = applicableTemplate(await listTemplates(c.env, found.edition), {
+    const template = applicableTemplate(await listTemplates(c.env, found.scope), {
       programId: found.row.program_id,
       stage: "on_signup",
     });
-    if (template) agreement = await prepareAgreement(c.env, found, template, {});
+    if (template) agreement = await prepareAgreement(c.env, found.scope, found, template, {});
   }
 
-  await markFounderSigned(c.env, found.row.id, at);
-  const attempt = await recordESignAttempt(c.env, {
+  await markFounderSigned(c.env, found.scope, found.row.id, at);
+  const attempt = await recordESignAttempt(c.env, found.scope, {
     kind: "founder_signature",
     signupId: found.row.id,
     agreementId: agreement?.id ?? null,
@@ -816,7 +832,7 @@ esign.post("/signups/:signupId/founder-signature", async (c) => {
     dedupeKey: `founder_signature:${found.row.id}`,
   });
   if (agreement) {
-    await recordSignature(c.env, {
+    await recordSignature(c.env, found.scope, {
       agreementId: agreement.id,
       // A founder signer is identified by email, not by a users row
       // (`migrations/0035`'s own comment on `signatures`).
@@ -830,7 +846,7 @@ esign.post("/signups/:signupId/founder-signature", async (c) => {
     });
   }
 
-  const refreshed = await loadSignup(c.env, found.row.id);
+  const refreshed = await loadSignup(c.env, found.scope, found.row.id);
   return c.json({
     method: signingMethodView(refreshed!, pool),
     agreementId: agreement?.id ?? null,
@@ -851,7 +867,7 @@ esign.post("/signups/:signupId/countersign", async (c) => {
   const found = await resolveSignup(c, { founderMayRead: false });
   if (found instanceof Response) return found;
   const user = c.var.user;
-  const pool = await loadSignatoryPool(c.env, found.edition);
+  const pool = await loadSignatoryPool(c.env, found.scope);
 
   if (found.row.founder_signed_at === null) {
     return c.json(
@@ -869,9 +885,9 @@ esign.post("/signups/:signupId/countersign", async (c) => {
 
   const view = signingMethodView(found, pool);
   const at = new Date().toISOString();
-  const agreement = await loadAgreement(c.env, found.row.id);
-  await markCountersigned(c.env, found.row.id, user.id, at);
-  const attempt = await recordESignAttempt(c.env, {
+  const agreement = await loadAgreement(c.env, found.scope, found.row.id);
+  await markCountersigned(c.env, found.scope, found.row.id, user.id, at);
+  const attempt = await recordESignAttempt(c.env, found.scope, {
     kind: "countersign",
     signupId: found.row.id,
     agreementId: agreement?.id ?? null,
@@ -882,7 +898,7 @@ esign.post("/signups/:signupId/countersign", async (c) => {
     dedupeKey: `countersign:${found.row.id}`,
   });
   if (agreement) {
-    await recordSignature(c.env, {
+    await recordSignature(c.env, found.scope, {
       agreementId: agreement.id,
       signerUserId: user.id,
       signerEmail: null,
@@ -900,11 +916,11 @@ esign.post("/signups/:signupId/countersign", async (c) => {
     { targetType: "signup", targetId: found.row.id, deckId: found.row.deck_id },
   );
 
-  const refreshed = await loadSignup(c.env, found.row.id);
+  const refreshed = await loadSignup(c.env, found.scope, found.row.id);
   return c.json({
     method: signingMethodView(refreshed!, pool),
-    agreements: await countAgreements(c.env, found.row.id),
-    signatures: agreement ? await listSignatures(c.env, agreement.id) : [],
+    agreements: await countAgreements(c.env, found.scope, found.row.id),
+    signatures: agreement ? await listSignatures(c.env, found.scope, agreement.id) : [],
     attempt: { ...attempt, note: describeAttempt(attempt) },
   });
 });

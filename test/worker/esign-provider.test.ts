@@ -11,6 +11,7 @@ import {
   type ESignClient,
 } from "../../src/server/esign/provider";
 import type { Env } from "../../src/server/types";
+import { DEFAULT_TENANT_ID, type TenantScope } from "../../src/shared/tenant";
 
 /**
  * W5-B — the e-signature provider interface and its recording stub (§1.3),
@@ -30,9 +31,15 @@ import type { Env } from "../../src/server/types";
  * This file lives under the WORKER tsconfig, not test/unit: the module imports
  * `Env`. Storage is shared across the file, so each test uses its own sign-up
  * or none at all.
+ *
+ * TENANCY (T1-ESIGN): `recordESignAttempt` takes a `TenantScope` second. The
+ * last case in this file is the negative control for it.
  */
 
 const E = () => env as unknown as Env;
+
+/** The workspace every seeded row belongs to. */
+const SCOPE: TenantScope = { tenantId: DEFAULT_TENANT_ID, edition: "incubator" };
 
 /** A live record (`0034` back-fills it) to hang attempts off. */
 const SIGNUP = "su_inc_deck_meera_signup";
@@ -73,7 +80,7 @@ describe("resolveESignClient", () => {
 
 describe("recordESignAttempt", () => {
   it("records rather than sends, with a recognisable stub reference", async () => {
-    const record = await recordESignAttempt(E(), {
+    const record = await recordESignAttempt(E(), SCOPE, {
       kind: "envelope_create",
       signupId: SIGNUP,
       agreementId: null,
@@ -109,6 +116,7 @@ describe("recordESignAttempt", () => {
     const client = stubClient();
     const record = await recordESignAttempt(
       E(),
+      SCOPE,
       {
         kind: "envelope_create",
         signupId: SIGNUP,
@@ -140,6 +148,7 @@ describe("recordESignAttempt", () => {
     });
     const record = await recordESignAttempt(
       E(),
+      SCOPE,
       {
         kind: "envelope_create",
         signupId: SIGNUP,
@@ -173,6 +182,7 @@ describe("recordESignAttempt", () => {
     });
     const record = await recordESignAttempt(
       E(),
+      SCOPE,
       {
         kind: "envelope_create",
         signupId: SIGNUP,
@@ -207,8 +217,8 @@ describe("recordESignAttempt", () => {
       documentName: "Once only",
       dedupeKey: "test:dedupe-once",
     };
-    const first = await recordESignAttempt(E(), attempt);
-    const second = await recordESignAttempt(E(), attempt);
+    const first = await recordESignAttempt(E(), SCOPE, attempt);
+    const second = await recordESignAttempt(E(), SCOPE, attempt);
     expect(second.id).toBe(first.id);
     expect(second.deduped).toBe(true);
     const n = await env.DB.prepare(
@@ -227,9 +237,52 @@ describe("recordESignAttempt", () => {
       recipients: [],
       documentName: "Twice",
     };
-    const a = await recordESignAttempt(E(), attempt);
-    const b = await recordESignAttempt(E(), attempt);
+    const a = await recordESignAttempt(E(), SCOPE, attempt);
+    const b = await recordESignAttempt(E(), SCOPE, attempt);
     expect(b.id).not.toBe(a.id);
     expect(b.deduped).toBeUndefined();
+  });
+
+  /**
+   * THE NEGATIVE CONTROL for the tenant key on `esign_outbox`.
+   *
+   * `esign_outbox` is the table §5b classified "scoped by proxy" and T0 gave a
+   * DIRECT key instead, because both its foreign keys are nullable and no join
+   * can reach an owner. So the only thing standing between two customers' signing
+   * audit trails is the bind this case asserts.
+   *
+   * It fails if the `tenant_id` bind is dropped from the INSERT (the row would
+   * land under `t_default`'s default and the second assertion would see 2), and
+   * it fails if `onTenantOnly` is dropped from `findByDedupeKey` (the scoped
+   * count would see both rows).
+   */
+  it("files an attempt under the scope it was given, and no other tenant's", async () => {
+    await env.DB.prepare(
+      "INSERT INTO organizations (id, name, slug, status) VALUES (?, ?, ?, 'active') ON CONFLICT (id) DO NOTHING",
+    )
+      .bind("t_xo_probe", "XO Probe", "xo-probe")
+      .run();
+    const other: TenantScope = { tenantId: "t_xo_probe", edition: "incubator" };
+
+    const attempt = {
+      kind: "void" as const,
+      // NULL on purpose: the no-parent case is the whole reason this table has a
+      // key of its own, so the probe has to exercise it.
+      signupId: null,
+      agreementId: null,
+      provider: "SignDesk" as const,
+      sigType: "standard" as const,
+      recipients: [],
+      documentName: "xo-tenant-probe.pdf",
+    };
+    const mine = await recordESignAttempt(E(), SCOPE, attempt);
+    const theirs = await recordESignAttempt(E(), other, attempt);
+
+    const owners = await env.DB.prepare(
+      "SELECT id, tenant_id FROM esign_outbox WHERE document_name = 'xo-tenant-probe.pdf' ORDER BY tenant_id",
+    ).all<{ id: string; tenant_id: string }>();
+    expect(owners.results.map((r) => r.tenant_id)).toEqual([DEFAULT_TENANT_ID, "t_xo_probe"]);
+    expect(owners.results.find((r) => r.id === mine.id)!.tenant_id).toBe(DEFAULT_TENANT_ID);
+    expect(owners.results.find((r) => r.id === theirs.id)!.tenant_id).toBe("t_xo_probe");
   });
 });
