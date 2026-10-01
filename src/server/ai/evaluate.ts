@@ -1189,8 +1189,12 @@ export async function evaluateDeck(
         edition: scope.edition,
         deckName: effectiveName ?? "your pitch deck",
         founderName: details.founder ?? null,
+        // The two fields the 1-Oct gate reads, and both are the MERGED values
+        // this evaluation just wrote to the deck — so the trigger decides on the
+        // same contact state the Dashboard will render, not on the row as it was
+        // before the run. `uploadedBy` is gone: it existed only to supply the
+        // fallback recipient that mailed the uploading analyst as the founder.
         founderEmail: details.founderEmail ?? null,
-        uploadedBy: deck.uploaded_by,
         missingFields,
       },
       now,

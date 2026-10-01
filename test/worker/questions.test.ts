@@ -336,6 +336,32 @@ describe("the producer — GET /api/questions/draft/:deckId", () => {
     ).run();
   });
 
+  it("reports `triggered: false` when there is no founder to write to", async () => {
+    // 1-Oct-2026, tester issue 4. This flag used to come from
+    // `shouldAutoClarify`, which saw only the toggle and the area count. The real
+    // trigger had grown two more refusals it could not see — no deliverable
+    // address, and every area being a `detail` — so the Query screen promised a
+    // letter the evaluation had already declined to send. It now asks
+    // `autoClarifyBlock`, which is the predicate `maybeAutoClarify` is itself
+    // built from, so the two cannot drift.
+    const admin = await login(ADMIN);
+    const deck = await weakDeck();
+
+    // The deck is weak and reachable: the AI would write.
+    const before = (await (await get(`/api/questions/draft/${deck.id}`, admin)).json()) as Draft;
+    expect(before.autoClarification).toBe(true);
+    expect(before.triggered, "a weak, reachable deck is the positive control").toBe(true);
+
+    // Take the address away and nothing else.
+    await env.DB.prepare("UPDATE decks SET founder_email = NULL WHERE id = ?").bind(deck.id).run();
+    const after = (await (await get(`/api/questions/draft/${deck.id}`, admin)).json()) as Draft;
+    expect(after.triggered, "no deliverable address, so the AI will not write").toBe(false);
+    // The toggle is untouched, and a human still gets the draft — the flag is
+    // about the AUTOMATIC decision only, which is what the sibling case pins.
+    expect(after.autoClarification).toBe(true);
+    expect(after.message).toBe(before.message);
+  });
+
   it("stops asking about an area whose questions were all deleted", async () => {
     const admin = await login(ADMIN);
     const deck = await weakDeck();

@@ -523,6 +523,99 @@ describe("Evaluate — the prototype's toolbar, columns and status vocabulary", 
   });
 });
 
+// ── Oct-2026 issue 3 — the report drew on top of the workbench ───────────────
+//
+// "Any evaluation report is smudged with an override of two reports." The
+// report opens from inside the workbench and the two guards on EvaluatePage
+// were independent, so both `fixed inset-0 z-50` surfaces were mounted, both
+// backdrops were painted and both `aria-modal` dialogs were tabbable at once.
+//
+// These tests are about the INVARIANT — one surface at a time — not about the
+// click path that happened to expose it, because no specific two-deck path was
+// ever reproduced. The invariant holds whatever the trigger.
+
+describe("Evaluate — the workbench and the consolidated report are mutually exclusive", () => {
+  /** Open the workbench on TaxPilot, with the report server double armed. */
+  async function openWorkbench() {
+    vi.mocked(getDeckReport).mockImplementation(fakeReport("jury"));
+    mountEvaluate();
+    const list = await screen.findByRole("list", { name: "Decks to evaluate" });
+    fireEvent.click(within(list).getByText("TaxPilot"));
+    return screen.findByRole("dialog", { name: "Evaluate TaxPilot" });
+  }
+
+  it("opening the report leaves exactly one dialog on screen, and it is the report", async () => {
+    const workbench = await openWorkbench();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+
+    fireEvent.click(within(workbench).getByRole("button", { name: /Evaluation report/ }));
+
+    const dialogs = await waitFor(() => {
+      const found = screen.getAllByRole("dialog");
+      expect(found).toHaveLength(1);
+      return found;
+    });
+    expect(dialogs[0]).toHaveAttribute("aria-label", "Evaluation report — TaxPilot");
+    // The workbench is gone from the accessibility tree and from the tab order
+    // — not merely painted under something — so the keyboard cannot reach the
+    // layer beneath the report.
+    expect(screen.queryByRole("dialog", { name: "Evaluate TaxPilot" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Submit my evaluation" })).not.toBeInTheDocument();
+  });
+
+  it("the workbench is hidden, not unmounted: EvalScorecard's own state survives the round trip", async () => {
+    const workbench = await openWorkbench();
+    // `ParamRow`'s row expansion is local to EvalScorecard and this page does
+    // not mirror it. An evaluator opens the report to settle a score, so this
+    // is the state an unmount would have thrown away mid-task.
+    const expander = within(workbench).getByRole("button", { name: "Remarks for Traction & Validation" });
+    fireEvent.click(expander);
+    expect(expander).toHaveAttribute("aria-expanded", "true");
+    fireEvent.change(within(workbench).getByLabelText("My score for Team & Execution Capability"), {
+      target: { value: "7" },
+    });
+
+    fireEvent.click(within(workbench).getByRole("button", { name: /Evaluation report/ }));
+    const report = await screen.findByRole("dialog", { name: "Evaluation report — TaxPilot" });
+    // Still in the document, just not rendered — that is the whole point.
+    expect(workbench).toBeInTheDocument();
+    expect(workbench.closest("[hidden]")).not.toBeNull();
+
+    fireEvent.click(within(report).getByRole("button", { name: "Done" }));
+    const back = await screen.findByRole("dialog", { name: "Evaluate TaxPilot" });
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(within(back).getByRole("button", { name: "Remarks for Traction & Validation" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(within(back).getByLabelText("My score for Team & Execution Capability")).toHaveValue(7);
+  });
+
+  it("the screen behind an open overlay is inert, so Tab cannot reach the deck list", async () => {
+    vi.mocked(getDeckReport).mockImplementation(fakeReport("jury"));
+    mountEvaluate();
+    const list = await screen.findByRole("list", { name: "Decks to evaluate" });
+    // Nothing open: the list is the live surface.
+    expect(list.closest("[inert]")).toBeNull();
+
+    fireEvent.click(within(list).getByText("TaxPilot"));
+    const workbench = await screen.findByRole("dialog", { name: "Evaluate TaxPilot" });
+    expect(list.closest("[inert]")).not.toBeNull();
+
+    // And it stays inert once the report replaces the workbench — the status
+    // selects and the jury table's sparkline are what used to be reachable,
+    // and the sparkline opens a SECOND deck's report.
+    fireEvent.click(within(workbench).getByRole("button", { name: /Evaluation report/ }));
+    const report = await screen.findByRole("dialog", { name: "Evaluation report — TaxPilot" });
+    expect(list.closest("[inert]")).not.toBeNull();
+
+    fireEvent.click(within(report).getByRole("button", { name: "Done" }));
+    await screen.findByRole("dialog", { name: "Evaluate TaxPilot" });
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(list.closest("[inert]")).toBeNull());
+  });
+});
+
 // ── §9 (c) — authoring the delta and threshold on the org's scale ────────────
 
 describe("Scoring framework authors the delta and threshold on the org's scale", () => {

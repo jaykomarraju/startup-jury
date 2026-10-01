@@ -3,13 +3,14 @@ import { Link } from "react-router-dom";
 import { DeckPdfViewer } from "../../components";
 import {
   FLAG_SIGNAL_LABELS,
-  INTAKE_STATUS_LABELS,
   STAGED_ISSUE_LABELS,
   creditsLabel,
   formatBytes,
-  intakeStatusOf,
+  uploadDeckStatus,
   type BatchCostPreview,
   type FlagSignal,
+  type UploadStatusContext,
+  type UploadStatusTone,
 } from "../../../shared/uploadReview";
 import { StagedSlides } from "./stagedPdf";
 import type { StagedDeck } from "./types";
@@ -60,10 +61,15 @@ export function isUploadable(d: StagedDeck): boolean {
  * An uploaded deck whose parameters may be flagged for the founder. Since row 2
  * this fires only for a deck the AI ITSELF landed at `incomplete` — the
  * automation the client is invoking — and for no deck the operator declared.
+ *
+ * WHICH incomplete is the screening spec's, not this screen's: `flaggable` is
+ * the deck axis, because asking a founder to clarify evaluation parameters is
+ * the answer to "the AI could not read your deck" and not to "we are missing
+ * your phone number", which is an Edit. See `UploadDeckStatus.flaggable`.
  */
-export function isFlaggable(d: StagedDeck): boolean {
-  if (!d.deckId) return false;
-  return d.deck ? intakeStatusOf(d.deck) === "incomplete" : false;
+export function isFlaggable(d: StagedDeck, ctx: UploadStatusContext): boolean {
+  if (!d.deckId || !d.deck) return false;
+  return uploadDeckStatus(d.deck, ctx).flaggable;
 }
 
 function matchesFilter(d: StagedDeck, f: ReviewFilter): boolean {
@@ -94,6 +100,15 @@ export interface ReviewScreenProps {
   sendError: string | null;
   /** The editable AI-extracted details for an uploaded deck (issue 12). */
   renderDetails: (deck: StagedDeck) => ReactNode;
+  /** The gate and the edition every status word on this screen is read under. */
+  statusCtx: UploadStatusContext;
+  /**
+   * Issues 2 and 12 — a fully successful batch leaves for the Dashboard, so the
+   * only way to be standing here afterwards is a batch that partly failed. The
+   * operator stays so the failures stay visible, and the way ON becomes the
+   * Dashboard rather than the upload step they already finished with.
+   */
+  showDashboard: boolean;
 }
 
 export function ReviewScreen(props: ReviewScreenProps) {
@@ -233,20 +248,29 @@ export function ReviewScreen(props: ReviewScreenProps) {
           {props.error && <div className="mt-0.5 text-signal-flagged">{props.error}</div>}
         </div>
         <div className="flex gap-2">
-          <Link
-            to="/app/alldecks"
-            className="rounded-[7px] border border-stone-dk bg-surface px-4 py-2 text-[12px] text-fg-2 hover:bg-offwhite"
-          >
-            Cancel
-          </Link>
+          {/* Cancel is the way out BEFORE a batch; once one has run and left
+              failures behind, the way out is the Dashboard and "Cancel" would
+              name the wrong thing for the decks that did upload. */}
+          {!props.showDashboard && (
+            <Link to="/app/alldecks" className={BTN_SECONDARY}>
+              Cancel
+            </Link>
+          )}
           <button
             type="button"
             onClick={props.onUpload}
             disabled={selected === 0 || props.busy || preview.shortfall > 0}
-            className="flex items-center gap-[7px] rounded-[7px] bg-olive px-[22px] py-[9px] text-[12.5px] font-semibold text-white hover:bg-olive-dk disabled:pointer-events-none disabled:opacity-40"
+            // Demoted to a retry once the Dashboard is the primary: the failed
+            // decks stay ticked, so this is still how they are tried again.
+            className={props.showDashboard ? BTN_SECONDARY : BTN_PRIMARY}
           >
             {props.busy ? "Uploading…" : "Upload selected decks"}
           </button>
+          {props.showDashboard && (
+            <Link to="/app/alldecks" className={BTN_PRIMARY}>
+              Go to dashboard →
+            </Link>
+          )}
         </div>
       </div>
     </section>
@@ -279,16 +303,32 @@ function Check({
 
 const BADGE = "rounded-[20px] px-1.5 py-px text-[9.5px]";
 
+const BTN_PRIMARY =
+  "flex items-center gap-[7px] rounded-[7px] bg-olive px-[22px] py-[9px] text-[12.5px] font-semibold text-white hover:bg-olive-dk disabled:pointer-events-none disabled:opacity-40";
+const BTN_SECONDARY =
+  "flex items-center gap-[7px] rounded-[7px] border border-stone-dk bg-surface px-4 py-2 text-[12px] text-fg-2 hover:bg-offwhite disabled:pointer-events-none disabled:opacity-40";
+
+/** The row badge's colours, by the tone `uploadDeckStatus` gives the word. */
+const BADGE_TONES: Record<UploadStatusTone, string> = {
+  good: "bg-green-lt text-green",
+  warn: "bg-warn-lt text-warn",
+  muted: "bg-stone text-fg-muted",
+};
+
 function DeckRow({
   deck: d,
   active,
   onSelect,
   onToggle,
+  statusCtx,
 }: { deck: StagedDeck; active: boolean } & ReviewScreenProps) {
-  const status = d.deck ? intakeStatusOf(d.deck) : null;
+  const status = d.deck ? uploadDeckStatus(d.deck, statusCtx) : null;
   const flagged = Object.keys(d.flags).length;
+  // The word is NOT lower-cased any more: "Incomplete contact details" is the
+  // client's own string, and lower-casing turned "Awaiting AI evaluation" into
+  // "awaiting ai evaluation".
   const meta = d.deckId
-    ? `${d.fileName} · ${status ? INTAKE_STATUS_LABELS[status].toLowerCase() : "uploaded"}`
+    ? `${d.fileName} · ${status ? status.label : "uploaded"}`
     : d.uploadError
       ? `${d.fileName} · not uploaded`
       : `${d.fileName} · not yet analysed`;
@@ -316,10 +356,15 @@ function DeckRow({
           {(d.issues.length > 0 || d.intakeFlag || d.uploadError) && (
             <span className={`${BADGE} bg-warn-lt font-medium text-warn`}>⚠ Review</span>
           )}
-          {d.deckId && status === "complete" && <span className={`${BADGE} bg-green-lt font-medium text-green`}>Complete</span>}
-          {d.deckId && status === "incomplete" && (
-            <span className={`${BADGE} bg-warn-lt font-medium text-warn`}>
-              Incomplete{flagged ? ` · ${flagged} area${flagged === 1 ? "" : "s"}` : ""}
+          {/* The words were HARDCODED here rather than read from the map, which
+              is why issue 5 survived a vocabulary change in one place. There is
+              one badge now, and it says whatever the status says. A deck still
+              with the AI has no verdict to badge — the meta line above already
+              says so. */}
+          {status && !status.awaiting && (
+            <span className={`${BADGE} font-medium ${BADGE_TONES[status.tone]}`} data-testid="up-row-status">
+              {status.label}
+              {flagged ? ` · ${flagged} area${flagged === 1 ? "" : "s"}` : ""}
             </span>
           )}
           {d.sentToQuery && <span className={`${BADGE} bg-green-lt font-medium text-green`}>Sent to Query</span>}
@@ -330,14 +375,8 @@ function DeckRow({
 }
 
 function Preview({ deck: d, ...props }: { deck: StagedDeck } & ReviewScreenProps) {
-  const status = d.deck ? intakeStatusOf(d.deck) : null;
-  const statusText = d.deckId
-    ? status
-      ? INTAKE_STATUS_LABELS[status]
-      : "Uploaded"
-    : d.issues.length
-      ? "Refused"
-      : "Ready";
+  const status = d.deck ? uploadDeckStatus(d.deck, props.statusCtx) : null;
+  const statusText = d.deckId ? (status ? status.label : "Uploaded") : d.issues.length ? "Refused" : "Ready";
   const warn = d.issues.length
     ? `Review suggested — ${d.issues.map((i) => STAGED_ISSUE_LABELS[i]).join("; ")}.`
     : d.uploadError
@@ -363,11 +402,7 @@ function Preview({ deck: d, ...props }: { deck: StagedDeck } & ReviewScreenProps
         <div className="mt-2.5 flex flex-wrap gap-2">
           <Meta label="File size" value={formatBytes(d.size)} />
           <Meta label="Slides" value={d.slides === null ? "—" : String(d.slides)} />
-          <Meta
-            label="Status"
-            value={statusText}
-            tone={status === "incomplete" || d.issues.length ? "amber" : "green"}
-          />
+          <Meta label="Status" value={statusText} tone={status?.tone === "warn" || d.issues.length ? "amber" : "green"} />
         </div>
       </div>
 
@@ -384,7 +419,12 @@ function Preview({ deck: d, ...props }: { deck: StagedDeck } & ReviewScreenProps
         <p className="mb-2.5 rounded-[7px] border border-stone-dk bg-surface px-3 py-2 text-[11.5px] text-fg-2">{aiNote(d)}</p>
       )}
 
-      {isFlaggable(d) && props.canQuery && <FlagPanel deck={d} {...props} />}
+      {/* `sentToQuery` keeps the panel — and so its "✓ Sent to Query" — on
+          screen after the send. Raising a query latches the deck into the
+          client's `Incomplete, Queried` sink, which is no longer flaggable, so
+          without this the operator's own confirmation would vanish under the
+          next AI poll. */}
+      {(isFlaggable(d, props.statusCtx) || d.sentToQuery) && props.canQuery && <FlagPanel deck={d} {...props} />}
       {queryNeedsUpload && props.canQuery && (
         <p className="mb-2.5 text-[11px] text-fg-muted">
           Parameters are flagged, and the founder queried, once a deck is uploaded — a query needs the deck on file.

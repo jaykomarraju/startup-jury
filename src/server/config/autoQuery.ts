@@ -17,6 +17,27 @@
  * The question TEXT is the shared default message today. `W2-C` owns the
  * curated question bank and replaces `questionsFor` with a bank read; the
  * trigger, the gating and the de-duplication stay here.
+ *
+ * ── 1-Oct-2026 · the trigger fired on everything ──────────────────────────
+ * Measured against production: all ELEVEN decks the tester uploaded carried a
+ * `queries` row at `email_status = 'sent'` with a fully composed letter and no
+ * reply — including the five whose contact details were complete and the six
+ * whose were not. Two causes, both here, neither tested (`grep maybeAutoClarify
+ * test/` returned nothing):
+ *
+ *   · every missing CONTACT column arrived as an "area", so a blank phone
+ *     number alone raised a letter asking the founder about their own phone
+ *     number (`clarifiableAreas`);
+ *   · nothing asked whether there was a founder to mail, and the recipient fell
+ *     back through the UPLOADER to `founder@portal.local`, so the usual outcome
+ *     of a staff upload was mailing the analyst as the founder
+ *     (`clarificationRecipient`).
+ *
+ * Those `queries` rows are what latched the tester's Dashboard: a row with
+ * `queried = true` collapses an `incomplete` deck's status to "queried", whose
+ * active-action whitelist is empty — so Edit and Archive, which the spec DOES
+ * grant it, were unreachable. The latch is `DashboardPage`'s; the rows were
+ * ours.
  */
 import {
   areasNeedingResponse,
@@ -24,7 +45,7 @@ import {
   type BankArea,
   type ResponseArea,
 } from "../../shared/queries";
-import type { IntakeField } from "../../shared/intake";
+import { isValidEmail, type IntakeField } from "../../shared/intake";
 import { isWeakSignal } from "../../shared/scoring";
 import { buildQueryEmail, sendEmail } from "../email/outbox";
 import { scoped, type TenantScope } from "../../shared/tenant";
@@ -52,18 +73,105 @@ export interface AutoClarifyInput {
   tenantId: string;
   deckName: string;
   founderName: string | null;
+  /**
+   * The founder's own address, as the evaluation merged it (form value first,
+   * extraction second). **The only address this module will mail**, and the
+   * reason `uploadedBy` is no longer here: see `autoClarifyBlock`.
+   */
   founderEmail: string | null;
-  uploadedBy: string | null;
   /** Required intake columns the evaluation could not fill. */
-  missingFields: IntakeField[];
+  missingFields: readonly IntakeField[];
 }
+
+/** Why no clarification was raised — everything except the de-duplication. */
+export type AutoClarifyBlock = "disabled" | "no_contact" | "no_weak_signal";
 
 export interface AutoClarifyResult {
   /** True when a query row was created and an email handed to the outbox. */
   triggered: boolean;
-  reason?: "disabled" | "no_weak_signal" | "already_open";
+  reason?: AutoClarifyBlock | "already_open";
   queryId?: string;
   areas?: ResponseArea[];
+}
+
+/**
+ * The areas worth putting to a founder — everything the deck needs answered
+ * EXCEPT the founder's own contact columns.
+ *
+ * `areasNeedingResponse` emits one `detail` area per absent intake column, and
+ * that is right for the Query screen's "Parameters needing response" list — but
+ * it must not be what FIRES a letter. A blank phone number was enough to
+ * compose "Dear Founder, thank you for…" and mail it, which is both the wrong
+ * question (we are asking the founder for the address we are asking at) and
+ * the wrong letter: a deck missing intake columns already gets
+ * `notifyIncompleteDeck`'s resubmit mail from the same evaluation. So the
+ * contact gaps are dropped from the trigger AND from the letter, and the
+ * clarification is what the toggle says it is — weak or missing SIGNAL.
+ *
+ * Stated honestly: inside `maybeAutoClarify` this filter is now defence in
+ * depth, because `no_contact` already requires an empty `missingFields` and
+ * `detail` areas are derived from nothing else. It is load-bearing in
+ * `autoClarifyBlock`, which callers reach with a deck's areas and no contact
+ * gate of their own — `routes/questions.ts` being the one that must.
+ */
+export function clarifiableAreas(areas: readonly ResponseArea[]): ResponseArea[] {
+  return areas.filter((a) => a.kind !== "detail");
+}
+
+export interface AutoClarifyGate {
+  autoClarification: boolean;
+  founderEmail: string | null;
+  missingFields: readonly IntakeField[];
+  areas: readonly ResponseArea[];
+}
+
+/**
+ * Does the automatic clarification fire? **This is the authoritative predicate**
+ * (1-Oct-2026, tester issue 4) — `shouldAutoClarify` in `src/shared/queries.ts`
+ * answers the same question for the Query screen's `triggered` flag and knows
+ * only about the toggle and the area count, so it says yes where this says no.
+ * Closing that is one import in `src/server/routes/questions.ts`; see
+ * `docs/parity-requests/OCT1-AUTOQUERY.md`.
+ *
+ * `no_contact` is the client's own "Contact complete?" branch, which his
+ * decision tree answers with *Query disabled* — and the tester's words for it
+ * were "you cannot send any Email Query too if contact details are not
+ * available". Both halves are checked because they fail differently: an absent
+ * or unusable `founderEmail` means there is nobody to mail, and a non-empty
+ * `missingFields` means the deck is in his INCOMPLETE CONTACT state, where the
+ * founder is being asked to complete their details, not to defend a score.
+ *
+ * **This is stricter than the manual route** (`POST /decks/:id/queries`, which
+ * refuses on reachability alone), and the asymmetry is the point. A deck with an
+ * incomplete contact block has already had `notifyIncompleteDeck`'s resubmit
+ * letter out of the SAME evaluation; a second automatic letter a second later,
+ * about overlapping things, is precisely the eleven-for-eleven noise the tester
+ * reported. An operator who opens the Query screen and composes by hand is a
+ * person deciding, and keeps the looser rule.
+ */
+export function autoClarifyBlock(gate: AutoClarifyGate): AutoClarifyBlock | null {
+  if (!gate.autoClarification) return "disabled";
+  if (!clarificationRecipient(gate)) return "no_contact";
+  if (clarifiableAreas(gate.areas).length === 0) return "no_weak_signal";
+  return null;
+}
+
+/**
+ * The one address a clarification may go to, or null.
+ *
+ * There is no fallback on purpose. The chain this replaces was
+ * `founderEmail ?? uploader?.email ?? "founder@portal.local"`, whose COMMON
+ * outcome was the staff analyst who uploaded the deck receiving "Dear Founder,
+ * thank you for submitting…" about a company they do not run — and whose other
+ * outcome was a letter addressed to a domain that does not exist. A deck we
+ * cannot reach the founder of is not queried at all.
+ */
+export function clarificationRecipient(
+  gate: Pick<AutoClarifyGate, "founderEmail" | "missingFields">,
+): string | null {
+  const email = gate.founderEmail?.trim() ?? "";
+  if (gate.missingFields.length > 0) return null;
+  return isValidEmail(email) ? email : null;
 }
 
 /**
@@ -153,7 +261,8 @@ async function questionsFor(
 
 /**
  * Create and send one clarification query for a freshly evaluated deck, when
- * the org has the toggle on and the deck actually has weak or missing signal.
+ * the org has the toggle on, the founder is REACHABLE, and the deck actually has
+ * weak or missing signal.
  *
  * Never throws: a clarification failure must not fail (and so re-drive) an
  * evaluation that was scored perfectly well — the same contract the Incomplete
@@ -169,12 +278,23 @@ export async function maybeAutoClarify(
   const settings = await scoringSettingsFor(env, scope);
   if (!settings.autoClarification) return { triggered: false, reason: "disabled" };
 
+  // Asked BEFORE the two weak-area reads, not after: on the six production decks
+  // sitting at `incomplete` this is the entire answer, and composing a letter we
+  // have nowhere to send is work that ends in a `queries` row claiming
+  // `email_status = 'sent'`. The three gates below are `autoClarifyBlock`'s, in
+  // its order, built from its own two helpers so the pure predicate and this
+  // path cannot drift.
+  const recipient = clarificationRecipient(input);
+  if (!recipient) return { triggered: false, reason: "no_contact" };
+
   const { weak, sections } = await weakAreasFor(env, scope, input.deckId);
-  const areas = areasNeedingResponse({
-    missingFields: input.missingFields,
-    missingSections: sections,
-    weakAreas: weak,
-  });
+  const areas = clarifiableAreas(
+    areasNeedingResponse({
+      missingFields: input.missingFields,
+      missingSections: sections,
+      weakAreas: weak,
+    }),
+  );
   if (areas.length === 0) return { triggered: false, reason: "no_weak_signal" };
 
   const open = await env.DB.prepare(
@@ -193,37 +313,25 @@ export async function maybeAutoClarify(
     .bind(queryId, input.deckId, questions, ts)
     .run();
 
-  // SCOPED at T1 integration, and the reason it was not is worth keeping: while
-  // `input.tenantId` was optional, a predicate here would have bound
-  // `DEFAULT_TENANT_ID` for any caller that omitted it, failed to find a SECOND
-  // customer's uploader, and silently fallen back to `founder@portal.local` —
-  // mailing the clarification letter into a void. That argument died with the
-  // optional marker.
-  //
-  // It is defence in depth rather than a leak closed: `uploadedBy` comes off the
-  // deck being evaluated, so the id already names a row in the right workspace.
-  // What the predicate buys is that a WRONG id cannot resolve — it fails to find
-  // anybody instead of finding a stranger whose address this letter is then
-  // addressed to, which is the shape of mistake a `users` lookup by bare id makes.
-  const uploader = input.uploadedBy
-    ? await (async () => {
-        const q = scoped(scope).onTenantOnly("u").and("u.id = ?", input.uploadedBy!);
-        return env.DB.prepare(`SELECT u.email, u.name FROM users u ${q.whereClause()}`)
-          .bind(...q.binds)
-          .first<{ email: string; name: string }>();
-      })()
-    : null;
+  // THE UPLOADER LOOKUP IS GONE, and what it was for is the defect. It resolved
+  // `uploadedBy` to a `users` row so the address and the greeting could fall back
+  // to it — so a staff bulk upload mailed the analyst as if they were the
+  // founder. T1 integration scoped that lookup to stop it finding a STRANGER;
+  // 1-Oct removes the question. `clarificationRecipient` has already proved that
+  // `founderEmail` is usable and that no intake column is missing, which means
+  // `founderName` is present too (`missingIntakeFields` reports `founder`), so
+  // there is nothing left for a fallback to cover.
   const { subject, body } = buildQueryEmail({
     deckName: input.deckName,
-    founderName: input.founderName ?? uploader?.name ?? null,
+    founderName: input.founderName,
     questions,
   });
   await sendEmail(
     env,
     {
       kind: "founder_query",
-      toEmail: input.founderEmail ?? uploader?.email ?? "founder@portal.local",
-      toName: input.founderName ?? uploader?.name ?? null,
+      toEmail: recipient,
+      toName: input.founderName,
       subject,
       body,
       deckId: input.deckId,

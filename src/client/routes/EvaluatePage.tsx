@@ -552,7 +552,21 @@ export function EvaluatePage() {
         </>
       }
     >
-      <div className="flex h-full min-h-0 flex-col">
+      {/*
+       * Both overlays below are `aria-modal="true"`, neither traps focus, and
+       * nothing marked the screen behind them inert — so a Tab out of the
+       * workbench landed on the deck list, the status selects and (on the
+       * jury's Assigned table) the sparkline that opens ANOTHER deck's report
+       * over the one already up. `inert` closes that path for whichever overlay
+       * is open.
+       *
+       * Scoped to this panel rather than to `[data-app-shell-frame]`, which is
+       * how the Admin console does it: the console is portalled to <body> and
+       * these two overlays are not, so marking the frame would make them inert
+       * as well. The shell's own top bar and rail therefore stay in the tab
+       * order — see `docs/parity-requests/OCT1-EVALREPORT.md`.
+       */}
+      <div className="flex h-full min-h-0 flex-col" inert={selected !== null || reportFor !== null}>
         {showFilter && (
           <div
             id="ev-filter"
@@ -807,7 +821,34 @@ export function EvaluatePage() {
 
       {/* The evaluator workbench — where a deck is scored. */}
       {selected && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4">
+        /*
+         * Oct-2026 issue 3, "any evaluation report is smudged with an override
+         * of two reports". The consolidated report opens from INSIDE this
+         * workbench (`onOpenReport` below) and the two guards are independent,
+         * so both surfaces were mounted at once — two `fixed inset-0 z-50`
+         * layers, two dim backdrops and two `aria-modal` dialogs drawn over
+         * each other. The two are now mutually exclusive.
+         *
+         * HIDDEN, not unmounted. `values`, `comments`, `remarks` and `aiScores`
+         * live on this page and would survive either way, but `EvalScorecard`
+         * holds its own — which remark rows are expanded, and the rescore
+         * message — and the report is read MID-SCORING, to decide a score. An
+         * unmount would collapse the rows the evaluator had just opened every
+         * time they consulted the report, which is a worse screen than the one
+         * being fixed.
+         *
+         * The HTML attribute, not Tailwind's `hidden` utility: `hidden` and
+         * `flex` are both display utilities and which one wins is a question
+         * about stylesheet order, whereas the attribute is
+         * `display: none !important` in preflight. It also takes the subtree
+         * out of the tab order and the accessibility tree, so the report is the
+         * only dialog on screen and the only one a keyboard can reach — which
+         * is the half of this defect that is not visible.
+         */
+        <div
+          hidden={reportFor !== null}
+          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4"
+        >
           <div className="absolute inset-0 bg-navy/50" onClick={closeDeck} aria-hidden="true" />
           <div
             className="relative my-4 w-full max-w-4xl rounded-xl border border-line bg-surface p-5 pt-11 shadow-xl"
@@ -895,6 +936,14 @@ export function EvaluatePage() {
         </div>
       )}
 
+      {/*
+       * Still at the component's own `z-50`, deliberately. The workbench above
+       * is the only other thing this screen draws at that layer and it is
+       * `hidden` whenever this is up, so there is no tie left to break —
+       * restacking would only move it, and this component is mounted at nine
+       * sites across seven routes (the VC edition among them, which is out of
+       * scope today), so its layer is not EvaluatePage's to choose.
+       */}
       {reportFor && (
         <EvaluationReportModal
           deckId={reportFor.id}

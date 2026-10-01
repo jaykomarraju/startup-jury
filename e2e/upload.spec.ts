@@ -20,15 +20,22 @@ import { enforceWorkerCsp, watchCspViolations } from "./csp-enforce";
 //
 // Nothing here asserts a credit balance: other specs top it up and spend it.
 //
-// R2-UPEVAL — the walkthrough's principal, the incubator program associate, is
-// now one of V3-UP's roles (plan_roles_incubator §2 row `11 · V3-UP`), so the
-// wizard's forward button reads "Evaluate & Go to Dashboard →" for them and the
-// results card offers "Send to Evaluate". Both are asserted in place rather than
-// in a separate test, because the point is that the FLOW did not change with the
-// label: the same walk still reaches review, upload, the results table and Query.
-// The admin's own V3 label and the program manager's unchanged one are pinned in
-// test/client/upload.test.tsx; here the browser proves the PA's new link is not a
-// 403, via the "every link leads somewhere they may go" sweep.
+// 1-Oct-2026 issues 1, 2 and 12 reshaped the END of this walk. The forward
+// button says what it does ("Continue" — it advances to the review step), and a
+// fully successful incubator batch now leaves for the Dashboard: "once upload is
+// successful, we need to go to the dashboard." So the walk is wizard → review →
+// upload → **/app/alldecks**, and the browser's job here is to prove that last
+// arrow, which no jsdom test can.
+//
+// What left with it, and where it went:
+//   · the "Uploaded decks — AI-extracted details" card and its seven columns.
+//     It is no longer on the successful path at all (V3 item 8 deletes it
+//     outright), and it is reachable only behind a partly failed batch, which
+//     needs a server-side refusal this dev server will not produce. Pinned in
+//     test/client/upload.test.tsx, columns and status words together.
+//   · R2-UPEVAL's "Send to Evaluate" link, which lives on that card. The part
+//     only a browser can make — that a PA may actually open /app/evaluate — is
+//     kept by putting the href into the sweep below directly.
 
 const SAMPLE_DECK = fileURLToPath(new URL("../docs/demo-assets/gridbloom-sample-deck.pdf", import.meta.url));
 const NOT_AVAILABLE = "Not available for your role";
@@ -69,10 +76,10 @@ test("a PA uploads a deck, reviews it, reaches Query — and is never shown a co
   await page.getByLabel("Choose a pitch deck").setInputFiles(SAMPLE_DECK);
   await page.getByLabel("Startup name").fill(name);
   await expect(page.getByTestId("up-cost-bar")).toHaveText(/Cost for this deck\s*1 credit/);
-  // R2-UPEVAL: V3-UP reached the program associate, so the forward button reads
-  // "Evaluate & Go to Dashboard →" for them now. The flow behind it is unchanged
-  // — this test proves that by walking the same steps under the new label.
-  await page.getByRole("button", { name: "Evaluate & Go to Dashboard →" }).click();
+  // Issue 1 — the button advances the wizard, and now says so. Neither of the
+  // labels it replaced may come back for this role.
+  await expect(page.getByRole("button", { name: /Go to [Dd]ashboard →$/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Continue" }).click();
 
   // 2 · Review uploaded decks — tick, see the cost in credits, approve.
   await expect(page.getByRole("heading", { name: "Review uploaded decks" })).toBeVisible();
@@ -84,58 +91,29 @@ test("a PA uploads a deck, reviews it, reaches Query — and is never shown a co
   await expect(page.locator("body")).not.toContainText("₹");
   await page.getByRole("button", { name: "Upload selected decks" }).click();
 
-  // The prototype returns to the wizard and reveals "View uploaded details".
-  await expect(page.getByRole("button", { name: "View uploaded details →" })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole("button", { name: "View uploaded details →" }).click();
+  // 3 · issues 2 and 12, in a browser: the batch succeeded, so the operator is
+  // on the Dashboard. Not back at the dropzone they just finished with, and not
+  // on the results card — neither is on this path any more.
+  await page.waitForURL(/\/app\/alldecks/, { timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "View uploaded details →" })).toHaveCount(0);
+  await expect(page.getByTestId("up-results")).toHaveCount(0);
 
-  // 3 · the AI-extracted details table, exact header set.
-  await expect(page.getByRole("heading", { name: "Uploaded decks — AI-extracted details" })).toBeVisible();
-  const table = page.getByTestId("up-results").locator("table");
-  expect(await table.locator("thead th").allTextContents()).toEqual([
-    "Deck",
-    "Founder name",
-    "Email ID",
-    "Phone number",
-    "City",
-    "Sector",
-    "Status",
-  ]);
-  await expect(table.getByRole("row", { name: new RegExp(name) })).toContainText("Awaiting AI");
+  // R2-UPEVAL's link now has no card to sit on for this role, but the question
+  // the sweep answers about it is unchanged: may a PA open the screen it points
+  // at? Put the href in directly and let the sweep below settle it.
+  links.add("/app/evaluate");
 
-  // V3-UP's other half for this role: `Send to Evaluate` on the results card.
-  // Collect the card's links INTO the sweep below — that is what turns "the link
-  // is drawn" into "the link leads somewhere a PA may actually go".
-  await expect(page.getByRole("link", { name: "Send to Evaluate →" })).toBeVisible();
-  for (const href of await bodyLinks(page)) links.add(href);
-  expect([...links]).toContain("/app/evaluate");
-
-  // 4 · back to review — and the browser-level proof of feedback row 2.
+  // 4 · /app/query is a screen this PA may actually open.
   //
-  // S2-UPLOAD deleted the per-row "Mark incomplete" button ("not required since
-  // we have automated this part"). This walk used to CLICK it to open
-  // "Parameters needing response", and that is the only reason the panel opened
-  // here: `isFlaggable` now fires solely for a deck the AI itself landed at
-  // `incomplete`, and this dev server has no ANTHROPIC_API_KEY, so no deck of
-  // this spec's ever leaves `pending_ai`. The panel is therefore UNREACHABLE in
-  // this environment by design, not by regression — asserted below so a future
-  // session does not read its absence as a bug.
-  //
-  // The flag → Send to Query → real query seam moved to
-  // test/client/upload.test.tsx ("raises the founder query end to end"), which
-  // can hand the screen an AI verdict that this server cannot produce;
-  // `POST /api/decks/:id/queries` itself is covered in test/worker/pipeline.test.ts
-  // (both the incubator and the VC arm) and the letter's wording in
-  // test/unit/uploadReview.test.ts. What only a browser can still prove — that
-  // /app/query is a screen this PA may actually open — is kept, by walking
-  // there directly instead of through the panel's "View in Query →".
-  await page.getByRole("button", { name: "← Back to review" }).click();
-  await row.click();
-  await expect(page.getByText(/AI evaluation is queued and will retry/i)).toBeVisible();
-  await expect(page.getByText(/AI key missing or rejected/i)).toBeVisible();
-  await expect(page.getByRole("button", { name: /Mark incomplete/i })).toHaveCount(0);
-  await expect(page.getByTestId("up-flag-panel")).toHaveCount(0);
-  for (const href of await bodyLinks(page)) links.add(href);
-
+  // It used to be reached through "Parameters needing response" → "View in
+  // Query →". S2-UPLOAD deleted the "Mark incomplete" button that opened that
+  // panel ("not required since we have automated this part") and this dev server
+  // has no ANTHROPIC_API_KEY, so no deck of this spec's ever leaves `pending_ai`
+  // and the panel has been unreachable here since. The flag → Send to Query →
+  // real query seam lives in test/client/upload.test.tsx ("raises the founder
+  // query end to end"), `POST /api/decks/:id/queries` in
+  // test/worker/pipeline.test.ts (both editions), and the letter's wording in
+  // test/unit/uploadReview.test.ts.
   await page.goto("/app/query");
   await expect(page.locator("h1").first()).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText(NOT_AVAILABLE)).toHaveCount(0);
@@ -262,7 +240,7 @@ test("a ZIP of decks is expanded in the browser into the review list, costed in 
   page.on("request", (r) => {
     if (r.method() === "POST" && r.url().includes("/api/decks/")) uploads.push(r.url());
   });
-  await page.getByRole("button", { name: "Evaluate & Go to Dashboard →" }).click(); // V3-UP label
+  await page.getByRole("button", { name: "Continue" }).click(); // issue 1 — it advances the wizard
   await expect(page.getByText("2 decks staged")).toBeVisible();
   await expect(page.getByTestId("up-deck-row")).toHaveCount(2);
   await expect(page.getByTestId("up-deck-row").first()).toContainText("14 slides", { timeout: 20_000 });

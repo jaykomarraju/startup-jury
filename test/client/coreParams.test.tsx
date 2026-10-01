@@ -84,6 +84,9 @@ const CFG: FullConfig = {
   additionalEnabled: true,
   thresholdBest: 7,
   thresholdMediocre: 5,
+  // Required on `ConfigSummary` since the AI gate started being served
+  // (2026-10-01, tester issue 7); nothing in this file reads it.
+  aiGateThreshold: 5,
   branding: {},
   creditsBalance: 10,
   coreParams: [],

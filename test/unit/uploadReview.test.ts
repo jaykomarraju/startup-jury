@@ -10,6 +10,8 @@ import {
   provisionalDeckName,
   resultsSummary,
   stagedDeckIssues,
+  uploadDeckStatus,
+  type UploadStatusContext,
 } from "../../src/shared/uploadReview";
 import {
   EXTRACTED_INTAKE_FIELDS,
@@ -139,10 +141,6 @@ describe("staging and results", () => {
     expect(intakeStatusOf({})).toBe("awaiting");
     expect(intakeStatusOf({ statusId: "ai_evaluated", missingFields: [] })).toBe("complete");
     expect(intakeStatusOf({ statusId: "incomplete", missingFields: ["city"] })).toBe("incomplete");
-    expect(resultsSummary(["complete", "incomplete", "awaiting"])).toMatch(
-      /^3 decks uploaded\..*1 deck marked Incomplete — details missing\. 1 still being read by the AI\.$/,
-    );
-    expect(resultsSummary(["complete"])).toMatch(/All details captured\.$/);
   });
 
   it("labels the results table the way the prototype does", () => {
@@ -158,6 +156,115 @@ describe("staging and results", () => {
     expect(letter).toContain("• Traction & Validation (absent)");
     expect(letter).toContain("• Market Size (weak signal)");
     expect(letter).not.toMatch(MONEY);
+  });
+});
+
+// ── The status words (1-Oct-2026 issues 4 and 5) ─────────────────────────────
+
+/**
+ * Issue 5: the tester read "Incomplete" where the spec says "Incomplete contact
+ * details", and the screen could not have said otherwise — `intakeStatusOf`
+ * reads `missingFields` alone, so the two causes of an incomplete deck arrive at
+ * one word. These tests pin the pair APART, which is the whole of the fix, and
+ * pin the gate as the one input that is never defaulted.
+ */
+describe("an uploaded deck's status, in the client's own vocabulary", () => {
+  const INC: UploadStatusContext = { gate: 5, edition: "incubator" };
+  const VC: UploadStatusContext = { gate: 5, edition: "vc" };
+
+  it("names the CONTACT cause when the deck read fine", () => {
+    const s = uploadDeckStatus({ statusId: "ai_evaluated", aiComplete: true, missingFields: ["founderPhone"] }, INC);
+    expect(s.label).toBe("Incomplete contact details");
+    expect(s).toMatchObject({ tone: "warn", contactIncomplete: true, deckIncomplete: false, awaiting: false });
+  });
+
+  it("names the DECK cause when the contacts are complete", () => {
+    const s = uploadDeckStatus({ statusId: "incomplete", aiComplete: false, missingFields: [] }, INC);
+    expect(s.label).toBe("Incomplete decks");
+    expect(s).toMatchObject({ tone: "warn", contactIncomplete: false, deckIncomplete: true });
+  });
+
+  it("says both when both failed, and says neither when neither did", () => {
+    expect(
+      uploadDeckStatus({ statusId: "incomplete", aiComplete: false, missingFields: ["city"] }, INC),
+    ).toMatchObject({ label: "Both incomplete", contactIncomplete: true, deckIncomplete: true });
+    expect(uploadDeckStatus({ statusId: "ai_evaluated", aiComplete: true, missingFields: [] }, INC)).toMatchObject({
+      label: "Complete",
+      tone: "good",
+    });
+  });
+
+  it("has nothing to report before the AI has answered", () => {
+    expect(uploadDeckStatus({}, INC)).toMatchObject({ label: "Awaiting AI evaluation", tone: "muted", awaiting: true });
+    expect(uploadDeckStatus({ statusId: "pending_ai" }, INC)).toMatchObject({ awaiting: true });
+  });
+
+  /**
+   * The gate is the org's `ai_gate_threshold` and is never defaulted here: an
+   * unread gate applies NO rating check, rather than silently applying five.
+   * The two scores are production's own — 4.85 and 5.25 against a gate of 5 —
+   * and 5.0 exactly is Complete, which is C13's `>=`.
+   */
+  it("applies the rating check only once the gate has been read", () => {
+    const scored = { statusId: "ai_evaluated" as const, aiComplete: true, missingFields: [] as never[] };
+    expect(uploadDeckStatus({ ...scored, aiScore: 4.85 }, INC).label).toBe("Below threshold");
+    expect(uploadDeckStatus({ ...scored, aiScore: 5 }, INC).label).toBe("Complete");
+    expect(uploadDeckStatus({ ...scored, aiScore: 5.25 }, INC).label).toBe("Complete");
+    // Gate unknown: the completeness axes still answer, the score does not.
+    const ungated = { gate: null, edition: "incubator" } as const;
+    expect(uploadDeckStatus({ ...scored, aiScore: 4.85 }, ungated).label).toBe("Complete");
+    expect(uploadDeckStatus({ ...scored, aiScore: 4.85, missingFields: ["city"] }, ungated).label).toBe(
+      "Incomplete contact details",
+    );
+  });
+
+  /**
+   * Issue 4's client half. The affordance was armed on `missingFields.length > 0`
+   * — the contact axis — which is the one branch the spec's tree DISABLES Query
+   * on ("Edit, Archive active · Query + Assign disabled"). It belongs on the
+   * deck axis, and on that axis alone: Both incomplete disables it too.
+   */
+  it("arms Send to Query on the deck axis and nowhere else", () => {
+    const flaggable = (deck: Parameters<typeof uploadDeckStatus>[0]) => uploadDeckStatus(deck, INC).flaggable;
+    expect(flaggable({ statusId: "incomplete", aiComplete: false, missingFields: [] })).toBe(true);
+    expect(flaggable({ statusId: "incomplete", aiComplete: false, missingFields: [], contactEditedAt: "2026-10-01" })).toBe(
+      true,
+    );
+    expect(flaggable({ statusId: "ai_evaluated", aiComplete: true, missingFields: ["founderEmail"] })).toBe(false);
+    expect(flaggable({ statusId: "incomplete", aiComplete: false, missingFields: ["city"] })).toBe(false);
+    expect(flaggable({ statusId: "pending_ai" })).toBe(false);
+  });
+
+  /** The VC edition was out of scope on 2026-10-01 — it keeps both the three words and the old arming. */
+  it("leaves the VC edition on the vocabulary it ships today", () => {
+    expect(uploadDeckStatus({ statusId: "ai_evaluated", missingFields: ["city"] }, VC)).toMatchObject({
+      label: "Incomplete",
+      flaggable: true,
+    });
+    expect(uploadDeckStatus({ statusId: "ai_evaluated", missingFields: [] }, VC).label).toBe("Complete");
+    expect(uploadDeckStatus({}, VC).label).toBe("Awaiting AI");
+    // The screening words never reach VC, whatever the deck's columns say.
+    expect(uploadDeckStatus({ statusId: "incomplete", aiComplete: false, missingFields: [] }, VC).label).toBe("Complete");
+  });
+
+  it("counts the two causes separately in the summary banner", () => {
+    const summary = resultsSummary([
+      uploadDeckStatus({ statusId: "ai_evaluated", aiComplete: true, missingFields: [] }, INC),
+      uploadDeckStatus({ statusId: "ai_evaluated", aiComplete: true, missingFields: ["city"] }, INC),
+      uploadDeckStatus({ statusId: "incomplete", aiComplete: false, missingFields: [] }, INC),
+      uploadDeckStatus({}, INC),
+    ]);
+    expect(summary).toMatch(
+      /^4 decks uploaded\..*1 deck with incomplete contact details\. 1 deck the AI could not read\. 1 still being read by the AI\.$/,
+    );
+    // A deck that failed BOTH is counted on both axes — it owes both answers.
+    expect(
+      resultsSummary([uploadDeckStatus({ statusId: "incomplete", aiComplete: false, missingFields: ["city"] }, INC)]),
+    ).toMatch(/1 deck with incomplete contact details\. 1 deck the AI could not read\.$/);
+    expect(
+      resultsSummary([uploadDeckStatus({ statusId: "ai_evaluated", aiComplete: true, missingFields: [] }, INC)]),
+    ).toMatch(/All details captured\.$/);
+    expect(resultsSummary([])).toMatch(/^0 decks uploaded\./);
   });
 });
 

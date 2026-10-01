@@ -29,6 +29,11 @@ import {
   aiWeightFor,
 } from "../../shared/scoring";
 import { RUBRIC_BANDS } from "../../shared/types";
+// 1-Oct — the query guard's contact check. `isValidEmail` is the same test
+// intake derives `decks.missing_fields` with, so "deliverable" means here
+// exactly what it meant when the column was written; `parseMissingFields` only
+// names the gaps back to the caller in the refusal.
+import { isValidEmail, parseMissingFields } from "../../shared/intake";
 import { loadScoringSettings } from "../config/scoringSettings";
 import { getStage, performAction, transitionByAction } from "../../pipeline";
 import { denyMentor, requireAuth, requireRole, requireTask } from "../auth/middleware";
@@ -87,6 +92,8 @@ interface DeckRow {
   status: string;
   founder: string | null;
   founder_email: string | null;
+  /** CSV of the intake columns nobody supplied — the client's "Contact complete?". */
+  missing_fields: string | null;
   assigned_to: string | null;
   uploaded_by: string | null;
   /** Bumped by `addDeckVersion`; keys the per-version notification dedupe. */
@@ -117,8 +124,8 @@ async function loadDeck(c: Context<AppEnv>, id: string): Promise<DeckRow | null>
   // and each of those child statements carries `viaParent` as the second.
   const q = scoped(scopeOf(user)).on("d").and("d.id = ?", id);
   const row = await c.env.DB.prepare(
-    "SELECT d.id, d.edition, d.name, d.status, d.founder, d.founder_email, d.assigned_to, " +
-      `d.uploaded_by, d.content_version FROM decks d ${q.whereClause()}`,
+    "SELECT d.id, d.edition, d.name, d.status, d.founder, d.founder_email, d.missing_fields, " +
+      `d.assigned_to, d.uploaded_by, d.content_version FROM decks d ${q.whereClause()}`,
   )
     .bind(...q.binds)
     .first<DeckRow>();
@@ -824,6 +831,47 @@ pipeline.post(
       return c.json({ error: "invalid_subject" }, 400);
     }
 
+    // ── The contact axis (tester 1-Oct, issue 4) ────────────────────────────
+    // "You cannot send any Email Query too if contact details are not
+    // available." Until now this route validated the LETTER and nothing about
+    // the deck, so a deck with no founder address was emailed to the uploading
+    // analyst, or to `founder@portal.local`. The Upload screen disabling the
+    // button is not the rule; this is.
+    //
+    // **REACHABILITY, not completeness**, and the narrowing is measured rather
+    // than cautious. A first cut refused any deck with a non-empty
+    // `missing_fields` — the client's own "Contact complete? No → Query
+    // disabled" branch — and that reddened `e2e/query.spec.ts` and
+    // `e2e/incubator.spec.ts`, both of which compose a real letter to a deck
+    // whose only gap is a phone or a city. They are right and the branch as
+    // literally drawn is not: the Query screen's own column is "Parameters
+    // needing response" and it lists `Phone (missing detail)` as a thing to ASK
+    // the founder for. Refusing there would delete the screen's purpose. The
+    // contradiction is a §3-class one and is not yet in §3 — it is in the
+    // handoff as a client question. What survives whole is the half the tester
+    // actually hit: with no deliverable address there is nobody to ask.
+    //
+    // The deck axis is deliberately not consulted: `docs/spec_screening_flow.md`
+    // §3 item 1 keeps a deck whose FILE could not be read queryable, and that is
+    // the one state where Send to Query is the only way out.
+    //
+    // INCUBATOR ONLY, and not as a hedge: a VC sourced deal legitimately
+    // carries no founder address at all (eleven of them in the seed, with
+    // `complete = 1` and an empty contact block, because nobody submitted it),
+    // the client took the edition out of scope today, and his screening spec is
+    // the incubator's. The VC arm keeps the fallback chain below verbatim.
+    let founderAddress: string | null = null;
+    if (deck.edition === "incubator") {
+      const email = deck.founder_email?.trim() ?? "";
+      if (!isValidEmail(email)) {
+        return c.json(
+          { error: "contact_incomplete", missingFields: parseMissingFields(deck.missing_fields) },
+          409,
+        );
+      }
+      founderAddress = email;
+    }
+
     const ts = new Date().toISOString();
 
     // RESOLVE the placeholder if there is one, rather than inserting beside it.
@@ -887,7 +935,13 @@ pipeline.post(
       : null;
     // Prefer the founder's own address (captured at intake in Session 5) over
     // the uploader's — a staff bulk upload would otherwise mail the analyst.
-    const toEmail = deck.founder_email ?? uploader?.email ?? "founder@portal.local";
+    //
+    // On the incubator path there is no "otherwise": the 409 above proved the
+    // address deliverable, so `founderAddress` always wins and the rest of this
+    // chain is dead there. It stays for the VC arm, which this wave is not
+    // touching — see `docs/parity-requests/OCT1-AUTOQUERY.md`, which carries it
+    // as the remaining live mint of the placeholder on a query.
+    const toEmail = founderAddress ?? deck.founder_email ?? uploader?.email ?? "founder@portal.local";
     const { token } = await mintResubmitToken(c.env, { deckId: deck.id, edition: deck.edition, toEmail });
     const email = buildQueryEmail({
       deckName: deck.name,

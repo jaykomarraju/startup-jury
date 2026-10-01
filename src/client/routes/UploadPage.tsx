@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   ApiError,
   createQuery,
@@ -28,6 +28,7 @@ import {
   provisionalDeckName,
   stagedDeckIssues,
   type FlagSignal,
+  type UploadStatusContext,
 } from "../../shared/uploadReview";
 import { CreditsBar } from "./upload/CreditsBar";
 import { CrmMethod } from "./upload/CrmMethod";
@@ -73,9 +74,19 @@ const POLL_LIMIT = 150;
  * A founder reaches this route as `founder-upload` and gets `FounderUpload`,
  * which shares none of the staff surfaces (F0302).
  *
+ * 1-Oct-2026 issues 1, 2 and 12 — the forward button no longer claims to go to
+ * the Dashboard (it goes to the review step, so it says "Continue"), and a fully
+ * successful batch now DOES go there: "once upload is successful, we need to go
+ * to the dashboard." A batch with failures stays on the review list instead, so
+ * the failures are visible, with the Dashboard as its primary way on. Both are
+ * gated on the incubator; the VC edition was not rescoped that day.
+ *
  * V3 item 8 — deliberately partial. The v3 panel diff is two hunks: the wizard's
  * forward button becomes "Evaluate & Go to Dashboard →", and `#up-results` is
- * deleted outright. The second half is not buildable as written (Q51): v3 keeps
+ * deleted outright. The FIRST half is now superseded by issue 1 above — the v3
+ * label was the same unkept promise with an extra verb — but v3's reading of
+ * where the flow ends is the one that shipped. The second half is not buildable
+ * as written (Q51): v3 keeps
  * — and rewrites — every line of the results table's JS (`renderUpResults`,
  * `renderResultsHead/Body`, `upSendToEvaluate`, `upEditRows`, `upArchiveRows`)
  * plus ~40 lines of new CSS (`.up-inline-results`, `.up-rt-*`, `.up-stmenu`,
@@ -105,6 +116,7 @@ export function UploadPage() {
 function StaffUpload() {
   const { user } = useAuth();
   const can = usePermissions();
+  const navigate = useNavigate();
   const edition = user?.edition ?? "incubator";
   const role = user?.role ?? "program_associate";
   const [ctx, setCtx] = useActiveContext(edition);
@@ -366,7 +378,19 @@ function StaffUpload() {
       );
     }
     if (uploaded > 0 && failed === 0) {
-      // The prototype returns to the wizard and reveals "View uploaded details".
+      /**
+       * Issues 2 and 12 — the client, 2026-10-01: "once upload is successful, we
+       * need to go to the dashboard." This returned to the WIZARD, which is the
+       * upload step: an operator who had just finished uploading was put back in
+       * front of the dropzone, and the only sign anything had happened was a
+       * notice and a "View uploaded details" button appearing beside it.
+       *
+       * The VC edition was not rescoped today, so it lands where it always has.
+       */
+      if (edition === "incubator") {
+        navigate("/app/alldecks");
+        return;
+      }
       setNotice(`${uploaded} deck${uploaded === 1 ? "" : "s"} uploaded — the AI is reading ${uploaded === 1 ? "it" : "them"} now.`);
       setView("wizard");
     }
@@ -424,8 +448,17 @@ function StaffUpload() {
     try {
       await createQuery(d.deckId, composeUploadQuery(d.deck?.name ?? d.name, flags));
       patch(key, { sentToQuery: true });
-    } catch {
-      setSendError("Couldn't send the query. Try again.");
+    } catch (err) {
+      // A 409 `contact_incomplete` is the server refusing to mail a founder it
+      // cannot reach (`pipeline.ts`, 1-Oct). "Try again" is the one instruction
+      // that can never work for it, so name the thing to fix instead. Every
+      // other failure keeps the retry copy, which is still the right advice.
+      const contact = err instanceof ApiError && err.code === "contact_incomplete";
+      setSendError(
+        contact
+          ? "Add the founder's email address before sending a query — we can't reach them without it."
+          : "Couldn't send the query. Try again.",
+      );
     } finally {
       setSending(null);
     }
@@ -433,6 +466,22 @@ function StaffUpload() {
 
   const uploaded = staged.filter((d) => d.deckId);
   const balance = config?.creditsBalance ?? null;
+  /**
+   * Issue 5 — the words this screen says about an uploaded deck.
+   *
+   * `gate` is `org_scoring_settings.ai_gate_threshold`, read off the config
+   * summary and NOT defaulted here: null means "the summary has not landed yet",
+   * and `uploadDeckStatus` applies no rating check until it has. A constant
+   * beside the setting is the defect that let the Dashboard judge every deck
+   * against a hardcoded 5.0 for a whole wave without anything going red.
+   */
+  const statusCtx: UploadStatusContext = { gate: config?.aiGateThreshold ?? null, edition };
+  /**
+   * Issues 2 and 12 — a batch that partly failed keeps the operator on the
+   * review list, where the failures are, instead of leaving for the Dashboard.
+   * Read off the decks themselves: only an upload attempt sets `uploadError`.
+   */
+  const uploadFailed = staged.some((d) => !!d.uploadError);
   const creditsBar = (
     <CreditsBar
       balance={balance}
@@ -468,6 +517,8 @@ function StaffUpload() {
         onSend={onSend}
         sending={sending}
         sendError={sendError}
+        statusCtx={statusCtx}
+        showDashboard={edition === "incubator" && uploadFailed}
         renderDetails={(d) =>
           canEdit && d.deck ? (
             // Keyed on the stage too, so the fields refill once the AI has read the deck.
@@ -486,6 +537,7 @@ function StaffUpload() {
         uploaded={uploaded}
         workspaceSector={recorded.length ? recorded.join(", ") : null}
         onBack={() => setView("review")}
+        statusCtx={statusCtx}
         showSendToEvaluate={v3Up}
       />
     );
@@ -515,7 +567,12 @@ function StaffUpload() {
       notice={notice}
       onViewDetails={() => setView("results")}
       onReview={goToReview}
-      forwardLabel={v3Up ? "Evaluate & Go to Dashboard →" : undefined}
+      // Issue 1 — the button advances the wizard to the review step, so the
+      // default says "Continue". The VC edition keeps the label it ships today
+      // (out of scope 2026-10-01); V3-UP's "Evaluate & Go to Dashboard →" was
+      // the same false promise with an extra verb and is gone with it. `v3Up`
+      // still gates the Evaluate link on the results card below.
+      forwardLabel={edition === "incubator" ? undefined : "Go to dashboard →"}
     />
   );
 }

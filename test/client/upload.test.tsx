@@ -1,13 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { UploadPage } from "../../src/client/routes/UploadPage";
 import { ResultsScreen, RESULTS_COLUMNS } from "../../src/client/routes/upload/ResultsScreen";
 import { ReviewScreen, isFlaggable, isUploadable } from "../../src/client/routes/upload/ReviewScreen";
 import { AuthContext, type AuthUser } from "../../src/client/auth/AuthProvider";
 import type { StagedDeck } from "../../src/client/routes/upload/types";
+import type { DeckView } from "../../src/client/types";
 import { catalogueFixture } from "../unit/fixtures/accountCatalogue";
 import { PROGRAM_MANAGER_PENDING_Q_P, V3_UP_ROLES, isV3Up } from "../../src/client/routes/upload/v3Up";
+import type { UploadStatusContext } from "../../src/shared/uploadReview";
 
 /**
  * W7-B — the Upload screen.
@@ -30,14 +32,30 @@ vi.mock("../../src/client/routes/upload/stagedPdf", () => ({
 const MONEY = /₹|\$\s?\d|per[- ]deck|\/\s*deck|rupee/i;
 
 /**
- * The wizard's forward button under EITHER label. V3-UP renames it "Evaluate &
- * Go to Dashboard →" for the roles in `V3_UP_ROLES`, and three of the tests
- * below drive it as a PA — who now has that label. Those tests are about what
- * the button LEADS TO, so they must not also pin its wording; the wording
- * itself is pinned per role in the V3 describe. Anchored at both ends, so it
- * matches the two real labels and nothing else.
+ * The wizard's forward button. Issue 1 settled its wording — it advances to the
+ * review step, so it says "Continue" — but the tests that merely need to GET to
+ * the review step still go through this constant rather than the literal, so a
+ * future wording change touches the pin in the issue-1 describe and nothing
+ * else. Anchored, so it cannot also match "Go to dashboard →".
  */
-const FORWARD = /^(?:Evaluate & )?Go to [Dd]ashboard →$/;
+const FORWARD = /^Continue$/;
+
+/**
+ * Where the router is, for the tests that assert a navigation. `UploadPage` is
+ * mounted directly rather than under a route switch, so a `navigate` changes
+ * the location without unmounting the screen — the location is the signal.
+ */
+function Where() {
+  return <span data-testid="where">{useLocation().pathname}</span>;
+}
+
+/**
+ * The status vocabulary the prop-level tests read under — the incubator's, with
+ * the AI screening gate at the migration's own 5.0. `gate: null` is the state
+ * before the config summary lands and is exercised in
+ * `test/unit/uploadReview.test.ts`, not here.
+ */
+const CTX: UploadStatusContext = { gate: 5, edition: "incubator" };
 
 let trialDecks = 3;
 let balance = 42;
@@ -80,7 +98,16 @@ beforeEach(() => {
         });
       }
       if (url === "/api/config/summary") {
-        return json(200, { plan: "pro", creditsBalance: balance, branding: {}, coreParams: [], additionalParams: [] });
+        // `aiGateThreshold` is the AI screening gate the status words are read
+        // against; served here because `ConfigSummary` now requires it.
+        return json(200, {
+          plan: "pro",
+          creditsBalance: balance,
+          aiGateThreshold: 5,
+          branding: {},
+          coreParams: [],
+          additionalParams: [],
+        });
       }
       if (url === "/api/pricing/published") {
         const book = catalogueFixture();
@@ -93,6 +120,16 @@ beforeEach(() => {
       // assert nothing was uploaded assert on the CALLS, so a reachable route
       // does not weaken them.
       if (url === "/api/decks/upload") return json(200, { deckId: "deck_uploaded", evaluated: true });
+      // One request, two outcomes — the partial-failure shape the review screen
+      // now has to keep the operator on (issues 2 and 12).
+      if (url === "/api/decks/bulk") {
+        return json(200, {
+          results: [
+            { file: "Kept.pdf", ok: true, deckId: "deck_uploaded" },
+            { file: "Refused.pdf", ok: false, error: "pdf_too_large" },
+          ],
+        });
+      }
       if (url === "/api/decks") return json(200, { decks: pollDecks });
       if (url === "/api/decks/deck_uploaded/queries") return json(200, { ok: true, queryId: "q_1", emailStatus: "sent" });
       if (url === "/api/parameters") return json(200, { parameters: [{ key: "traction", name: "Traction & Validation", weight: 10 }] });
@@ -119,6 +156,7 @@ function mount(user: AuthUser) {
     <AuthContext.Provider value={{ user, loading: false, login: vi.fn(), logout: vi.fn(), updateUser: vi.fn() }}>
       <MemoryRouter initialEntries={["/app/upload"]}>
         <UploadPage />
+        <Where />
       </MemoryRouter>
     </AuthContext.Provider>,
   );
@@ -312,16 +350,28 @@ describe("Review uploaded decks", () => {
         sending: null,
         sendError: null,
         renderDetails: () => null,
+        statusCtx: CTX,
+        showDashboard: false,
       };
     }
 
+    /**
+     * The deck axis is what arms the panel now (issue 4): `aiComplete: false`
+     * with the founder's four details intact is the client's "Incomplete deck",
+     * whose §1 row is the one that says "Send to Query active".
+     */
+    const UNREADABLE_DECK: DeckView = {
+      id: "deck_1",
+      name: "PayRoute",
+      statusId: "incomplete",
+      aiComplete: false,
+      missingFields: [],
+    };
+
     it("opens for a deck the AI landed at Incomplete, with nothing clicked first", () => {
       const onSend = vi.fn();
-      const props = reviewProps(
-        { deckId: "deck_1", deck: { id: "deck_1", name: "PayRoute", statusId: "ai_evaluated", missingFields: ["founderEmail"] } },
-        onSend,
-      );
-      expect(isFlaggable(props.staged[0])).toBe(true);
+      const props = reviewProps({ deckId: "deck_1", deck: { ...UNREADABLE_DECK } }, onSend);
+      expect(isFlaggable(props.staged[0], CTX)).toBe(true);
       render(
         <MemoryRouter>
           <ReviewScreen {...props} />
@@ -340,7 +390,7 @@ describe("Review uploaded decks", () => {
       const props = reviewProps(
         {
           deckId: "deck_1",
-          deck: { id: "deck_1", name: "PayRoute", statusId: "ai_evaluated", missingFields: ["founderEmail"] },
+          deck: { ...UNREADABLE_DECK },
           flags: { "Traction & Validation": "absent" },
         },
         onSend,
@@ -354,17 +404,24 @@ describe("Review uploaded decks", () => {
       expect(within(panel).getByText("1 parameter flagged · these appear on the founder clarification form")).toBeInTheDocument();
       fireEvent.click(within(panel).getByRole("button", { name: "Send to Query" }));
       expect(onSend).toHaveBeenCalledWith("k");
-      // The row carries the flagged-area count that the deleted button's badge used to.
-      expect(within(screen.getByTestId("up-deck-row")).getByText("Incomplete · 1 area")).toBeInTheDocument();
+      // The row carries the flagged-area count that the deleted button's badge
+      // used to — on the client's own word for the cause, not a bare "Incomplete".
+      expect(within(screen.getByTestId("up-deck-row")).getByText("Incomplete decks · 1 area")).toBeInTheDocument();
     });
 
-    it("stays shut while the AI is still reading, and for a deck it found Complete", () => {
+    /**
+     * The three states that must NOT offer it, and the third is issue 4's: a
+     * deck the AI read whose founder details are missing is an Edit, not a
+     * query. It was the one state the panel DID open in.
+     */
+    it("stays shut while the AI is still reading, for a Complete deck, and for missing contacts", () => {
       for (const deck of [
         { id: "deck_1", name: "PayRoute", statusId: "pending_ai", missingFields: ["founderEmail" as const] },
-        { id: "deck_1", name: "PayRoute", statusId: "ai_evaluated", missingFields: [] },
+        { id: "deck_1", name: "PayRoute", statusId: "ai_evaluated", aiComplete: true, missingFields: [] },
+        { id: "deck_1", name: "PayRoute", statusId: "ai_evaluated", aiComplete: true, missingFields: ["city" as const] },
       ]) {
         const props = reviewProps({ deckId: "deck_1", deck });
-        expect(isFlaggable(props.staged[0])).toBe(false);
+        expect(isFlaggable(props.staged[0], CTX)).toBe(false);
         const { unmount } = render(
           <MemoryRouter>
             <ReviewScreen {...props} />
@@ -401,31 +458,44 @@ describe("Review uploaded decks", () => {
     });
 
     /**
-     * The whole seam, through the real screen: upload → the AI comes back
-     * Incomplete → the panel opens with no operator click → Send to Query
-     * reaches `POST /api/decks/:id/queries` with the composed letter. This is
-     * the path `e2e/upload.spec.ts` and `e2e/vc-intake.spec.ts` walked, and
-     * they walked it by clicking "Mark incomplete" — which is why it is
-     * re-covered here rather than left to a patch on specs that cannot reach
-     * it any more (their dev server has no AI key, so no deck of theirs ever
-     * lands at Incomplete).
+     * The whole seam, through the real screen: upload → the AI comes back with a
+     * deck it could not read → the panel opens with no operator click → Send to
+     * Query reaches `POST /api/decks/:id/queries` with the composed letter. This
+     * is the path `e2e/upload.spec.ts` and `e2e/vc-intake.spec.ts` walked by
+     * clicking "Mark incomplete", which row 2 deleted.
+     *
+     * Walked on a PARTLY FAILED batch, which is deliberate rather than
+     * incidental: since issues 2 and 12 a fully successful incubator batch
+     * leaves for the Dashboard, so the review screen's own flag panel is only
+     * standing in front of an operator when something did not upload. Driving it
+     * any other way would be testing a screen the product no longer shows.
      */
     it("raises the founder query end to end, with no Mark incomplete anywhere in it", async () => {
       pollDecks = [
-        { id: "deck_uploaded", name: "PayRoute", statusId: "ai_evaluated", missingFields: ["founderEmail"] },
+        { id: "deck_uploaded", name: "Kept", statusId: "incomplete", aiComplete: false, missingFields: [] },
       ];
       mount(PA());
       await waitFor(() => expect(screen.getByText("Credits balance — 42 remaining")).toBeInTheDocument());
-      const file = new File([new Uint8Array([37, 80, 68, 70])], "PayRoute.pdf", { type: "application/pdf" });
-      fireEvent.change(screen.getByLabelText("Choose a pitch deck"), { target: { files: [file] } });
-      fireEvent.change(screen.getByLabelText("Startup name"), { target: { value: "PayRoute" } });
-      fireEvent.click(screen.getByRole("button", { name: FORWARD }));
-      fireEvent.click(within(screen.getByTestId("up-deck-row")).getByRole("checkbox", { name: "Select PayRoute" }));
+      fireEvent.click(screen.getByRole("radio", { name: /Bulk upload/ }));
+      fireEvent.change(screen.getByLabelText("Choose a ZIP or several pitch decks"), {
+        target: {
+          files: [
+            new File([new Uint8Array([37, 80, 68, 70])], "Kept.pdf", { type: "application/pdf" }),
+            new File([new Uint8Array([37, 80, 68, 70])], "Refused.pdf", { type: "application/pdf" }),
+          ],
+        },
+      });
+      fireEvent.click(await screen.findByRole("button", { name: FORWARD }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
       fireEvent.click(screen.getByRole("button", { name: "Upload selected decks" }));
-      fireEvent.click(await screen.findByRole("button", { name: "View uploaded details →" }));
-      fireEvent.click(await screen.findByRole("button", { name: "← Back to review" }));
+
+      // One failed, so the operator stays here — and the way on is the Dashboard.
+      expect(await screen.findByText("1 deck could not be uploaded — see the list.")).toBeInTheDocument();
+      expect(screen.getByTestId("where")).toHaveTextContent("/app/upload");
+      expect(screen.getByRole("link", { name: "Go to dashboard →" })).toHaveAttribute("href", "/app/alldecks");
 
       // The AI's verdict alone opens it.
+      fireEvent.click(screen.getAllByTestId("up-deck-row")[0]);
       const panel = await screen.findByTestId("up-flag-panel");
       expect(screen.queryByRole("button", { name: /Mark incomplete/i })).toBeNull();
       fireEvent.click(within(panel).getByRole("checkbox", { name: "Flag Traction & Validation" }));
@@ -438,7 +508,7 @@ describe("Review uploaded decks", () => {
       const posted = calls.find(([u]) => String(u) === "/api/decks/deck_uploaded/queries");
       expect(posted).toBeDefined();
       const { questions } = JSON.parse(String(posted?.[1]?.body)) as { questions: string };
-      expect(questions).toContain("PayRoute");
+      expect(questions).toContain("Kept");
       expect(questions).toContain("• Traction & Validation (absent)");
     });
   });
@@ -481,7 +551,7 @@ describe("Uploaded decks — AI-extracted details", () => {
   it("has exactly the prototype's seven columns", () => {
     render(
       <MemoryRouter>
-        <ResultsScreen uploaded={[]} workspaceSector={null} onBack={() => {}} />
+        <ResultsScreen uploaded={[]} workspaceSector={null} onBack={() => {}} statusCtx={CTX} />
       </MemoryRouter>,
     );
     const headers = screen.getAllByRole("columnheader").map((th) => th.textContent);
@@ -490,12 +560,19 @@ describe("Uploaded decks — AI-extracted details", () => {
     expect(screen.getByTestId("up-results-summary")).toHaveTextContent("No decks uploaded yet.");
   });
 
-  it("marks what the AI could not capture, never the sector, and pills the status", () => {
+  /**
+   * Issue 5, at the level the tester saw it. Row A's PDF read fine and its phone
+   * number is missing; row D's PDF is the thing the AI could not read. Both used
+   * to pill "Incomplete", which is the whole complaint — one word for two
+   * different things to do.
+   */
+  it("marks what the AI could not capture, never the sector, and names which half is incomplete", () => {
     render(
       <MemoryRouter>
         <ResultsScreen
           workspaceSector="FinTech"
           onBack={() => {}}
+          statusCtx={CTX}
           uploaded={[
             uploaded({
               key: "a",
@@ -505,7 +582,8 @@ describe("Uploaded decks — AI-extracted details", () => {
                 founder: "Arjun Pillai",
                 founderEmail: "arjun@taxpilot.in",
                 city: "Chennai",
-                statusId: "incomplete",
+                statusId: "ai_evaluated",
+                aiComplete: true,
                 missingFields: ["founderPhone"],
               },
             }),
@@ -520,10 +598,25 @@ describe("Uploaded decks — AI-extracted details", () => {
                 founderPhone: "+91 98480 21345",
                 city: "Hyderabad",
                 statusId: "ai_evaluated",
+                aiComplete: true,
                 missingFields: [],
               },
             }),
             uploaded({ key: "c", name: "Queued deck", deck: undefined }),
+            uploaded({
+              key: "d",
+              deck: {
+                id: "deck_d",
+                name: "PayRoute",
+                founder: "Meera Sharma",
+                founderEmail: "meera@payroute.in",
+                founderPhone: "+91 98450 12345",
+                city: "Bengaluru",
+                statusId: "incomplete",
+                aiComplete: false,
+                missingFields: [],
+              },
+            }),
           ]}
         />
       </MemoryRouter>,
@@ -531,14 +624,19 @@ describe("Uploaded decks — AI-extracted details", () => {
     const rows = screen.getAllByRole("row").slice(1);
     expect(within(rows[0]).getAllByTestId("up-miss")).toHaveLength(1);
     expect(within(rows[0]).getByText("FinTech")).toBeInTheDocument();
-    expect(within(rows[0]).getByText("Incomplete")).toBeInTheDocument();
+    expect(within(rows[0]).getByText("Incomplete contact details")).toBeInTheDocument();
     // No sector anywhere for this deck, and still no "not captured".
     expect(within(rows[1]).queryAllByTestId("up-miss")).toHaveLength(0);
     expect(within(rows[1]).getByText("Complete")).toBeInTheDocument();
-    expect(within(rows[2]).getByText("Awaiting AI")).toBeInTheDocument();
+    expect(within(rows[2]).getByText("Awaiting AI evaluation")).toBeInTheDocument();
+    // Every contact detail is on file; the DECK is what failed.
+    expect(within(rows[3]).queryAllByTestId("up-miss")).toHaveLength(0);
+    expect(within(rows[3]).getByText("Incomplete decks")).toBeInTheDocument();
     expect(screen.getByTestId("up-results-summary")).toHaveTextContent(
-      "3 decks uploaded. The AI records the founder’s name, email, phone and city from each deck; sector is taken from your setup context. 1 deck marked Incomplete — details missing. 1 still being read by the AI.",
+      "4 decks uploaded. The AI records the founder’s name, email, phone and city from each deck; sector is taken from your setup context. 1 deck with incomplete contact details. 1 deck the AI could not read. 1 still being read by the AI.",
     );
+    // The old word is gone from the screen, not merely joined by a better one.
+    expect(screen.queryByText("Incomplete")).toBeNull();
   });
 });
 
@@ -569,32 +667,13 @@ describe("V3 item 8 — Upload & Evaluate, the half the export supports", () => 
     expect(isV3Up("vc", "admin")).toBe(false);
   });
 
-  it.each([
-    ["the incubator superuser", SU],
-    ["an admin", ADMIN],
-    ["a Program Associate", PA],
-  ])("renames the wizard's forward button for %s", async (_label, who) => {
-    mount(who());
-    expect(await screen.findByRole("button", { name: "Evaluate & Go to Dashboard →" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Go to dashboard →" })).toBeNull();
-  });
-
-  it.each([
-    ["a Program Manager — pending Q-P", PM],
-    ["a VC partner", () => principal("partner", ["upload"], "vc")],
-    ["a VC superuser — the VC edition was not rescoped", () => principal("superuser", ["upload"], "vc")],
-  ])("leaves %s on the unchanged label", async (_label, who) => {
-    mount(who());
-    expect(await screen.findByRole("button", { name: "Go to dashboard →" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Evaluate & Go to Dashboard →" })).toBeNull();
-  });
-
   it("offers Send to Evaluate from the results card — the prototype's only route to that screen", () => {
     render(
       <MemoryRouter>
         <ResultsScreen
           workspaceSector="FinTech"
           onBack={() => {}}
+          statusCtx={CTX}
           showSendToEvaluate
           uploaded={[
             {
@@ -622,13 +701,13 @@ describe("V3 item 8 — Upload & Evaluate, the half the export supports", () => 
   it("offers it to nobody else, and never with an empty batch", () => {
     const { rerender } = render(
       <MemoryRouter>
-        <ResultsScreen uploaded={[]} workspaceSector={null} onBack={() => {}} />
+        <ResultsScreen uploaded={[]} workspaceSector={null} onBack={() => {}} statusCtx={CTX} />
       </MemoryRouter>,
     );
     expect(screen.queryByRole("link", { name: "Send to Evaluate →" })).toBeNull();
     rerender(
       <MemoryRouter>
-        <ResultsScreen uploaded={[]} workspaceSector={null} onBack={() => {}} showSendToEvaluate />
+        <ResultsScreen uploaded={[]} workspaceSector={null} onBack={() => {}} statusCtx={CTX} showSendToEvaluate />
       </MemoryRouter>,
     );
     expect(screen.queryByRole("link", { name: "Send to Evaluate →" })).toBeNull();
@@ -642,14 +721,29 @@ describe("V3 item 8 — Upload & Evaluate, the half the export supports", () => 
    * are the only tests in the file that drive an upload to completion, which is
    * what `POST /api/decks/upload` is mocked for.
    */
-  async function uploadOneDeckAndOpenResults() {
+  /**
+   * Reached the way an incubator operator can still reach it. Issues 2 and 12
+   * send a FULLY successful batch to the Dashboard, so the results card is now
+   * behind a batch that partly failed: the operator stays on the review list,
+   * goes back to the wizard, and "View uploaded details →" is there because
+   * something did upload.
+   */
+  async function uploadDecksAndOpenResults() {
     await waitFor(() => expect(screen.getByText("Credits balance — 42 remaining")).toBeInTheDocument());
-    const deck = new File([new Uint8Array([37, 80, 68, 70])], "PayRoute.pdf", { type: "application/pdf" });
-    fireEvent.change(screen.getByLabelText("Choose a pitch deck"), { target: { files: [deck] } });
-    fireEvent.change(screen.getByLabelText("Startup name"), { target: { value: "PayRoute" } });
-    fireEvent.click(screen.getByRole("button", { name: FORWARD }));
-    fireEvent.click(within(screen.getByTestId("up-deck-row")).getByRole("checkbox", { name: "Select PayRoute" }));
+    fireEvent.click(screen.getByRole("radio", { name: /Bulk upload/ }));
+    fireEvent.change(screen.getByLabelText("Choose a ZIP or several pitch decks"), {
+      target: {
+        files: [
+          new File([new Uint8Array([37, 80, 68, 70])], "Kept.pdf", { type: "application/pdf" }),
+          new File([new Uint8Array([37, 80, 68, 70])], "Refused.pdf", { type: "application/pdf" }),
+        ],
+      },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: FORWARD }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
     fireEvent.click(screen.getByRole("button", { name: "Upload selected decks" }));
+    await screen.findByText("1 deck could not be uploaded — see the list.");
+    fireEvent.click(screen.getByRole("button", { name: "← Back to upload" }));
     fireEvent.click(await screen.findByRole("button", { name: "View uploaded details →" }));
     expect(await screen.findByRole("heading", { name: "Uploaded decks — AI-extracted details" })).toBeInTheDocument();
   }
@@ -659,32 +753,113 @@ describe("V3 item 8 — Upload & Evaluate, the half the export supports", () => 
     ["a Program Associate", PA],
   ])("wires Send to Evaluate through to %s, not just to the superuser", async (_label, who) => {
     mount(who());
-    await uploadOneDeckAndOpenResults();
+    await uploadDecksAndOpenResults();
     expect(screen.getByRole("link", { name: "Send to Evaluate →" })).toHaveAttribute("href", "/app/evaluate");
   });
 
   it("withholds it from a Program Manager while Q-P is open", async () => {
     mount(PM());
-    await uploadOneDeckAndOpenResults();
+    await uploadDecksAndOpenResults();
     expect(screen.queryByRole("link", { name: "Send to Evaluate →" })).toBeNull();
     // The screen still works — only the v3 entry point is absent.
     expect(screen.getByRole("link", { name: "✓ Done" })).toHaveAttribute("href", "/app/alldecks");
   });
 
-  it("keeps the review step and its cost preview — credits are never spent unpreviewed (Q51)", async () => {
-    mount(SU());
-    fireEvent.click(await screen.findByRole("button", { name: "Evaluate & Go to Dashboard →" }));
-    expect(await screen.findByRole("heading", { name: "Review uploaded decks" })).toBeInTheDocument();
-  });
-
   it.each([
+    ["the incubator superuser", SU],
     ["an admin", ADMIN],
     ["a Program Associate", PA],
-  ])("keeps it for %s too — the label changed, the flow did not", async (_label, who) => {
+  ])("keeps the review step and its cost preview for %s — credits are never spent unpreviewed (Q51)", async (_l, who) => {
     mount(who());
-    fireEvent.click(await screen.findByRole("button", { name: "Evaluate & Go to Dashboard →" }));
+    fireEvent.click(await screen.findByRole("button", { name: FORWARD }));
     expect(await screen.findByRole("heading", { name: "Review uploaded decks" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Upload selected decks" })).toBeInTheDocument();
+  });
+});
+
+/**
+ * 1-Oct-2026 issues 1, 2 and 12 — the forward button's label was a promise its
+ * handler never kept, and the batch ended by putting the operator back in front
+ * of the dropzone. The client: "once upload is successful, we need to go to the
+ * dashboard."
+ */
+describe("the end of the upload flow", () => {
+  const SU = () => principal("superuser", ["upload", "query", "adminconsole"]);
+  const VC_PARTNER = () => principal("partner", ["upload"], "vc");
+
+  it.each([
+    ["the incubator superuser", SU],
+    ["an admin", ADMIN],
+    ["a Program Manager", PM],
+    ["a Program Associate", PA],
+  ])("tells %s what the forward button actually does", async (_label, who) => {
+    mount(who());
+    expect(await screen.findByRole("button", { name: "Continue" })).toBeInTheDocument();
+    // Both earlier labels claimed a navigation `onReview` has never performed.
+    expect(screen.queryByRole("button", { name: "Go to dashboard →" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Evaluate & Go to Dashboard →" })).toBeNull();
+  });
+
+  it("leaves the VC edition on the wording it ships today — it was not rescoped", async () => {
+    mount(VC_PARTNER());
+    expect(await screen.findByRole("button", { name: "Go to dashboard →" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+  });
+
+  it("goes to the Dashboard once the batch is uploaded, instead of back to the upload step", async () => {
+    mount(PA());
+    await waitFor(() => expect(screen.getByText("Credits balance — 42 remaining")).toBeInTheDocument());
+    const deck = new File([new Uint8Array([37, 80, 68, 70])], "PayRoute.pdf", { type: "application/pdf" });
+    fireEvent.change(screen.getByLabelText("Choose a pitch deck"), { target: { files: [deck] } });
+    fireEvent.change(screen.getByLabelText("Startup name"), { target: { value: "PayRoute" } });
+    fireEvent.click(screen.getByRole("button", { name: FORWARD }));
+    fireEvent.click(within(screen.getByTestId("up-deck-row")).getByRole("checkbox", { name: "Select PayRoute" }));
+    fireEvent.click(screen.getByRole("button", { name: "Upload selected decks" }));
+
+    await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/app/alldecks"));
+    // Not the wizard with a notice beside the dropzone, which is where it went.
+    expect(screen.queryByRole("button", { name: "View uploaded details →" })).toBeNull();
+    expect(screen.queryByText(/the AI is reading it now/)).toBeNull();
+  });
+
+  it("keeps the VC edition where it lands today", async () => {
+    mount(VC_PARTNER());
+    await waitFor(() => expect(screen.getByText("Credits balance — 42 remaining")).toBeInTheDocument());
+    const deck = new File([new Uint8Array([37, 80, 68, 70])], "Northbeam.pdf", { type: "application/pdf" });
+    fireEvent.change(screen.getByLabelText("Choose a pitch deck"), { target: { files: [deck] } });
+    fireEvent.change(screen.getByLabelText("Startup name"), { target: { value: "Northbeam" } });
+    fireEvent.click(screen.getByRole("button", { name: "Go to dashboard →" }));
+    fireEvent.click(within(screen.getByTestId("up-deck-row")).getByRole("checkbox", { name: "Select Northbeam" }));
+    fireEvent.click(screen.getByRole("button", { name: "Upload selected decks" }));
+
+    expect(await screen.findByRole("button", { name: "View uploaded details →" })).toBeInTheDocument();
+    expect(screen.getByTestId("where")).toHaveTextContent("/app/upload");
+  });
+
+  it("stays on the failures when part of the batch did not upload, and offers the Dashboard", async () => {
+    mount(PA());
+    await waitFor(() => expect(screen.getByText("Credits balance — 42 remaining")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("radio", { name: /Bulk upload/ }));
+    fireEvent.change(screen.getByLabelText("Choose a ZIP or several pitch decks"), {
+      target: {
+        files: [
+          new File([new Uint8Array([37, 80, 68, 70])], "Kept.pdf", { type: "application/pdf" }),
+          new File([new Uint8Array([37, 80, 68, 70])], "Refused.pdf", { type: "application/pdf" }),
+        ],
+      },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: FORWARD }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
+    fireEvent.click(screen.getByRole("button", { name: "Upload selected decks" }));
+
+    expect(await screen.findByText("1 deck could not be uploaded — see the list.")).toBeInTheDocument();
+    expect(screen.getByTestId("where")).toHaveTextContent("/app/upload");
+    expect(screen.getByRole("heading", { name: "Review uploaded decks" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Go to dashboard →" })).toHaveAttribute("href", "/app/alldecks");
+    // The refused deck stays ticked, so the demoted Upload button is a retry.
+    expect(screen.getByRole("button", { name: "Upload selected decks" })).toBeEnabled();
+    // "Cancel" would name the wrong thing for the deck that did upload.
+    expect(screen.queryByRole("link", { name: "Cancel" })).toBeNull();
   });
 });
 
@@ -695,6 +870,7 @@ describe("the founder's Upload", () => {
     expect(screen.queryByTestId("up-credits-bar")).toBeNull();
     expect(screen.queryByText(/credit/i)).toBeNull();
     expect(screen.queryByText(/CRM|Salesforce|Email triage/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Go to dashboard →" })).toBeNull();
     const calls = (fetch as unknown as { mock: { calls: [RequestInfo][] } }).mock.calls.map(([u]) => String(u));
     expect(calls).not.toContain("/api/config/summary");

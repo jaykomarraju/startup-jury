@@ -711,3 +711,158 @@ describe("the no-response sweep archives a query nobody answered", () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5 · The gate is SERVED, and the Assign list consults it (issues 7, 8)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Both halves of one live defect, measured against production on 2026-10-01.
+//
+// § 3 above proves the gate is stored and enforced AT EVALUATION TIME. What it
+// could not see is that nothing downstream ever read it back:
+//
+//   · `GET /api/config/summary` did not carry `aiGateThreshold`, and
+//     `ConfigSummary` did not declare it, so the Dashboard reached for it
+//     through a widening cast whose `typeof === "number"` guard was false on
+//     every response. Every screening verdict on the screen was taken against a
+//     hardcoded 5.0. It LOOKED right, because production holds 5 — the
+//     migration's own default — which is why every test in this file passed
+//     while the setting was being discarded.
+//   · `GET /api/decks?list=assign` never asked the gate at all. Five production
+//     decks scoring 2.66, 3.19, 4.00, 4.85 and 5.25 were all on the Assign
+//     roster against a gate of 5. Only the last clears it.
+//
+// So the assertions below are deliberately about a gate that is NOT 5. A test
+// written at the default agrees with the bug.
+
+describe("the served gate — GET /api/config/summary carries it (issue 7)", () => {
+  it("serves the org's own number, and the number MOVES when the setting does", async () => {
+    const cookie = await login(SUPER);
+    const summary = async () => {
+      const res = await SELF.fetch(`${BASE}/api/config/summary`, { headers: { cookie } });
+      expect(res.status).toBe(200);
+      return (await res.json()) as { aiGateThreshold?: number; thresholdBest: number; thresholdMediocre: number };
+    };
+
+    await setGate(6.5);
+    const raised = await summary();
+    // Not 5. The whole defect was invisible at 5.
+    expect(raised.aiGateThreshold).toBe(6.5);
+    // The two neighbours did not move. Three numbers on one 0–10 scale, and
+    // `routes/decks.ts:95-100` records a past confusion between two of them.
+    expect(raised.thresholdBest).toBe(7);
+    expect(raised.thresholdMediocre).toBe(5);
+
+    await setGate(3);
+    expect((await summary()).aiGateThreshold).toBe(3);
+    await setGate(5);
+  });
+
+  it("the full admin config carries it too — `FullConfig extends ConfigSummary`", async () => {
+    await setGate(6.5);
+    const cookie = await login(ADMIN);
+    const res = await SELF.fetch(`${BASE}/api/config`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { aiGateThreshold?: number }).aiGateThreshold).toBe(6.5);
+    await setGate(5);
+  });
+
+  it("every role that screens gets it — the Dashboard is not admin-only", async () => {
+    await setGate(6.5);
+    for (const who of [SUPER, ADMIN, PM]) {
+      const cookie = await login(who);
+      const res = await SELF.fetch(`${BASE}/api/config/summary`, { headers: { cookie } });
+      expect(((await res.json()) as { aiGateThreshold?: number }).aiGateThreshold, who).toBe(6.5);
+    }
+    await setGate(5);
+  });
+});
+
+describe("?list=assign consults the gate (issue 8)", () => {
+  it("drops a sub-gate deck from the Assign roster and keeps one at the gate", async () => {
+    await setGate(5);
+    const cookie = await login(SUPER);
+    await seedDeck("sc_gate_low");
+    await evaluate("sc_gate_low", 3);
+    await seedDeck("sc_gate_at");
+    await evaluate("sc_gate_at", 5);
+
+    // Both are `ai_evaluated` and marked complete, which is everything
+    // `deckListRoute` asks — so before this both were on the roster.
+    for (const id of ["sc_gate_low", "sc_gate_at"]) {
+      const view = await deck(id, cookie);
+      expect(view.statusId, id).toBe("ai_evaluated");
+      expect(view.aiComplete, id).toBe(true);
+      expect(view.missingFields ?? [], id).toEqual([]);
+    }
+
+    const assign = await listNames(cookie, "assign");
+    expect(assign).not.toContain("Deck sc_gate_low");
+    // C13's `>=` reaches the LIST and not only the status word: a deck scoring
+    // exactly the gate is Complete, so it is on Assign.
+    expect(assign).toContain("Deck sc_gate_at");
+
+    // Nothing is lost, which is his own display rule — "all decks, including
+    // archived, stay on the uploaded status screen". The sub-gate deck is off
+    // Assign, off Query, and still in the whole table where Reject is offered.
+    expect(await listNames(cookie, "query")).not.toContain("Deck sc_gate_low");
+    expect(await listNames(cookie)).toContain("Deck sc_gate_low");
+  });
+
+  it("it is the ORG's gate, not a constant — the same deck moves when the gate does", async () => {
+    // The negative control for the whole section. With a hardcoded 5 every
+    // other assertion here still passes; this one cannot, because 6 is above 5
+    // and below 7 and the deck never changes.
+    const cookie = await login(SUPER);
+    await setGate(5);
+    await seedDeck("sc_gate_moves");
+    await evaluate("sc_gate_moves", 6);
+    expect(await listNames(cookie, "assign")).toContain("Deck sc_gate_moves");
+
+    await setGate(7);
+    expect(await listNames(cookie, "assign")).not.toContain("Deck sc_gate_moves");
+
+    await setGate(5);
+    expect(await listNames(cookie, "assign")).toContain("Deck sc_gate_moves");
+  });
+
+  it("a deck already SENT to Assign stays on the roster, whatever it scored", async () => {
+    // The carve-out, and it is not a nicety. Column 1 of the Assign screen keeps
+    // allocated rows so a second juror can be added, and every deck evaluated
+    // before today was routed with the gate unread — so a strict filter would
+    // have taken decks off the screen they are already being worked on. It is
+    // also `screeningStatus`'s own precedence: the `assigned` sink is answered
+    // before the rating check ever runs, so the status vocabulary never calls an
+    // allocated deck "Below threshold" and now neither does the list.
+    await setGate(5);
+    const cookie = await login(SUPER);
+    await seedDeck("sc_gate_sent");
+    await evaluate("sc_gate_sent", 3);
+    expect(await listNames(cookie, "assign")).not.toContain("Deck sc_gate_sent");
+
+    const res = await SELF.fetch(`${BASE}/api/decks/sc_gate_sent/send-to-assign`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    expect(res.status).toBe(200);
+    expect(await listNames(cookie, "assign")).toContain("Deck sc_gate_sent");
+  });
+
+  it("the QUERY arm is untouched — the gate narrows one list, not both", async () => {
+    await setGate(7);
+    const cookie = await login(SUPER);
+    await seedDeck("sc_gate_query", { complete: false });
+    await evaluate("sc_gate_query", 3, false);
+    const raise = await SELF.fetch(`${BASE}/api/decks/sc_gate_query/queries`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ questions: "Please resend the deck." }),
+    });
+    expect(raise.status).toBe(200);
+    // Scored 3 against a gate of 7 and on the Query list because somebody sent
+    // it there. The gate has nothing to say about that: his third check is only
+    // ever reached by a deck that is complete on both of the first two.
+    expect(await listNames(cookie, "query")).toContain("Deck sc_gate_query");
+    await setGate(5);
+  });
+});

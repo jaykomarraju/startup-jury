@@ -465,6 +465,22 @@ export function isArchivedDeck(deck: StatDeck): boolean {
   return deck.statusId === "archived";
 }
 
+/**
+ * **Has this deck already been handed to the Assign side?**
+ *
+ * The Assigned tile's predicate, lifted out of `matchesV3Stat` so the one other
+ * caller that needs it is not a second copy of it (`routes/decks.ts`, where the
+ * AI gate's `?list=assign` post-filter has to leave an already-handed deck
+ * alone). Three facts, and they are not redundant: the MARKER is the recorded
+ * Send-to-Assign click, which is what the client's map files under the Assigned
+ * box; `assignedTo` and the two stages are what "allocated to an evaluator" has
+ * meant since Aug-2026 issue 4, and the marker does not replace them —
+ * `POST /decks/:id/transition` will reach `assigned` with no marker written.
+ */
+export function isAllocatedDeck(deck: StatDeck): boolean {
+  return Boolean(deck.sendToAssignAt) || Boolean(deck.assignedTo) || ASSIGNED_STAGES.includes(deck.statusId ?? "");
+}
+
 export function v3DeckState(deck: StatDeck): V3DeckState {
   if (deck.statusId === "incomplete" || deck.signal === "flagged") return "incomplete";
   if (POST_AI_STAGES.includes(deck.statusId ?? "") || deck.aiScore !== undefined) return "aieval";
@@ -631,15 +647,7 @@ export function matchesV3Stat(deck: StatDeck, key: V3StatKey | "assigned"): bool
   if (key === "all") return true;
   if (isArchivedDeck(deck)) return false;
   if (key === "shortlisted") return SHORTLISTED_STAGES.includes(deck.statusId ?? "");
-  if (key === "assigned") {
-    // The marker is here as well as on the sink because the client's map files
-    // `AI Evaluated, Assigned` under the **Assigned** box, and until S2-SERVER
-    // writes the marker a Send-to-Assign click set nothing at all
-    // (`DashboardPage.tsx:1495` navigates and writes no row). `assignedTo` and
-    // the two stages stay, because they are what "allocated to an evaluator"
-    // has meant since Aug-2026 issue 4 and the marker does not replace them.
-    return Boolean(deck.sendToAssignAt) || Boolean(deck.assignedTo) || ASSIGNED_STAGES.includes(deck.statusId ?? "");
-  }
+  if (key === "assigned") return isAllocatedDeck(deck);
   // ── C10 · the one tile predicate the client's spec moves ──────────────────
   // His sink map files `Incomplete, Queried` under the **Incomplete** box, and
   // `queried` is not a stage: `POST_AI_STAGES` contains `ai_evaluated`, so a
@@ -1115,8 +1123,25 @@ function contactComplete(deck: ScreeningDeck): boolean {
  * feeds this function; calling that deck "Below threshold" would announce a
  * verdict the caller was not allowed to see. It is the same reading as `D` and
  * `C` above: absent never invents a problem.
+ *
+ * ── EXPORTED 2026-10-01, AND WHY IT IS EXPORTED FROM *HERE* (tester issue 8) ──
+ * `GET /api/decks?list=assign` served five decks scoring 2.66–5.25 against a
+ * gate of 5, because `deckListRoute` partitions the two screens and has never
+ * known about the gate. The fix is a post-filter in `routes/decks.ts` and it
+ * needs this predicate — `>=`, and an absent score is not below — rather than a
+ * second `score < gate` written at the call site, which is how a number on one
+ * 0–10 scale becomes three.
+ *
+ * It could not move to `queries.ts` beside `deckListRoute`: THIS file imports
+ * `deckListRoute` FROM that one (`isQueriedSinkCurrent`), so the reverse import
+ * is a cycle. Exporting from here costs nothing — `routes/decks.ts` already
+ * imports `latestTimestamp` from this module — and leaves the status vocabulary
+ * untouched, which the alternative (a required `gate` on `deckListRoute`) does
+ * not: that cascades through `isQueriedSinkCurrent` -> `isScreeningIncompleteTile`
+ * -> `matchesV3Stat` and its ~44 references, changing what the tile predicates
+ * mean in order to fix a list.
  */
-function ratingAtOrAboveGate(deck: ScreeningDeck, gate: number): boolean {
+export function ratingAtOrAboveGate(deck: ScreeningDeck, gate: number): boolean {
   return deck.aiScore === undefined || deck.aiScore >= gate;
 }
 

@@ -36,13 +36,31 @@ async function paramKeys(edition = "incubator"): Promise<string[]> {
 async function seedDeck(
   id: string,
   status = "pending_ai",
-  opts: { edition?: string; uploadedBy?: string; complete?: number } = {},
+  opts: {
+    edition?: string;
+    uploadedBy?: string;
+    complete?: number;
+    /** `null` seeds a deck with no founder address — see `founderEmail` below. */
+    founderEmail?: string | null;
+    missingFields?: string | null;
+  } = {},
 ): Promise<void> {
-  const { edition = "incubator", uploadedBy = "inc_founder", complete = 1 } = opts;
+  const {
+    edition = "incubator",
+    uploadedBy = "inc_founder",
+    complete = 1,
+    // 1-Oct: `POST /decks/:id/queries` refuses an incubator deck it cannot mail
+    // (`contact_incomplete`), so every fixture that raises a query needs a real
+    // address. It had none and the route sent to `founder@portal.local` instead,
+    // which is the defect — the fixture was passing on the bug.
+    founderEmail = "ada@testco.example",
+    missingFields = null,
+  } = opts;
   await env.DB.prepare(
-    "INSERT INTO decks (id, edition, name, status, r2_key, uploaded_by, founder, complete) VALUES (?, ?, 'TestCo', ?, ?, ?, 'Ada Founder', ?)",
+    "INSERT INTO decks (id, edition, name, status, r2_key, uploaded_by, founder, founder_email, missing_fields, complete) " +
+      "VALUES (?, ?, 'TestCo', ?, ?, ?, 'Ada Founder', ?, ?, ?)",
   )
-    .bind(id, edition, status, `decks/${id}.pdf`, uploadedBy, complete)
+    .bind(id, edition, status, `decks/${id}.pdf`, uploadedBy, founderEmail, missingFields, complete)
     .run();
   await env.DECKS.put(`decks/${id}.pdf`, new Uint8Array([37, 80, 68, 70]));
 }
@@ -321,6 +339,116 @@ describe("founder query email: the letter verbatim, the subject typed, a working
       .bind(id)
       .first<{ n: number }>();
     expect(tokens!.n).toBe(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The contact axis — tester 1-Oct, issue 4
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * "You cannot send any Email Query too if contact details are not available."
+ *
+ * The route validated the LETTER (`questions_required`, `invalid_subject`) and
+ * nothing about the deck, so a deck with no founder address was mailed to the
+ * uploading analyst or to `founder@portal.local`. The Upload screen greying the
+ * button out is not the rule — a disabled button is not a rule.
+ *
+ * TWO client wrappers reach this route and both are covered: `createQuery`
+ * (`api.ts`, Upload) posts `{ questions }` alone, `recordQuery`
+ * (`queryApi.ts`, the Query screen) posts `{ questions, subject }`.
+ */
+describe("POST /decks/:id/queries refuses a deck whose contact details are incomplete", () => {
+  async function recorded(id: string) {
+    const [queries, mail, tokens] = await Promise.all([
+      env.DB.prepare("SELECT COUNT(*) AS n FROM queries WHERE deck_id = ?").bind(id).first<{ n: number }>(),
+      env.DB.prepare("SELECT COUNT(*) AS n FROM email_outbox WHERE deck_id = ?").bind(id).first<{ n: number }>(),
+      env.DB.prepare("SELECT COUNT(*) AS n FROM resubmit_tokens WHERE deck_id = ?").bind(id).first<{ n: number }>(),
+    ]);
+    return { queries: queries!.n, mail: mail!.n, tokens: tokens!.n };
+  }
+
+  it("409s a deck with no founder address, from either client wrapper, and records nothing", async () => {
+    const pa = await login(PA);
+    // Both payload shapes, because both wrappers are live and only one of them
+    // sends a subject — a guard placed after the subject check must still catch
+    // the one that sends none.
+    for (const [n, body] of [
+      ["pipe_cq_noemail_a", { questions: "Please share your MRR." }],
+      ["pipe_cq_noemail_b", { questions: "Please share your MRR.", subject: "MRR?" }],
+    ] as const) {
+      await seedDeck(n, "incomplete", { complete: 0, founderEmail: null });
+      const res = await post(`/api/decks/${n}/queries`, pa, body);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: "contact_incomplete" });
+      // No query row, so no `queried = true`, so no latched Dashboard status;
+      // no outbox row, so nothing claims to have been sent; no resubmit token,
+      // because a token is a promise of a reply nobody can make.
+      expect(await recorded(n)).toEqual({ queries: 0, mail: 0, tokens: 0 });
+    }
+  });
+
+  it("names the missing columns in the refusal, so the screen can say which", async () => {
+    const pa = await login(PA);
+    await seedDeck("pipe_cq_named", "incomplete", {
+      founderEmail: null,
+      missingFields: "founderEmail,founderPhone",
+    });
+    const res = await post(`/api/decks/pipe_cq_named/queries`, pa, { questions: "Please share your MRR." });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      error: "contact_incomplete",
+      missingFields: ["founderEmail", "founderPhone"],
+    });
+  });
+
+  it("still sends to a reachable founder whose contact block is only PARTLY filled", async () => {
+    const pa = await login(PA);
+    // The guard is REACHABILITY, not completeness, and this is the case that
+    // decided it. The client's tree draws "Contact complete? No → Query
+    // disabled", but the Query screen's own column is "Parameters needing
+    // response" and `Phone (missing detail)` is listed there as a thing to ASK
+    // the founder for — `e2e/query.spec.ts` composes exactly this letter and
+    // `e2e/incubator.spec.ts` sends it to PayRoute, which seeds with
+    // `missing_fields = 'founderPhone'`. A completeness guard reddens both and
+    // deletes the screen's purpose. See the handoff's client question.
+    await seedDeck("pipe_cq_partial", "incomplete", { missingFields: "founderPhone" });
+    const res = await post(`/api/decks/pipe_cq_partial/queries`, pa, { questions: "Please share your MRR." });
+    expect(res.status).toBe(200);
+    const mail = await env.DB.prepare("SELECT to_email FROM email_outbox WHERE deck_id = ?")
+      .bind("pipe_cq_partial")
+      .first<{ to_email: string }>();
+    expect(mail!.to_email).toBe("ada@testco.example");
+  });
+
+  it("keeps Send to Query working for the state where it is the only way out", async () => {
+    // `docs/spec_screening_flow.md` §3 item 1 — a deck whose FILE could not be
+    // read but whose CONTACT is fine must stay queryable, and the diagram makes
+    // Archive unavailable there, so refusing this would strand the deck. The
+    // guard keys on the contact axis alone, which is what makes that hold.
+    const pa = await login(PA);
+    await seedDeck("pipe_cq_badfile", "incomplete", { complete: 0 });
+    const res = await post(`/api/decks/pipe_cq_badfile/queries`, pa, { questions: "Could you resend the deck?" });
+    expect(res.status).toBe(200);
+    const mail = await env.DB.prepare("SELECT to_email FROM email_outbox WHERE deck_id = ?")
+      .bind("pipe_cq_badfile")
+      .first<{ to_email: string }>();
+    expect(mail!.to_email).toBe("ada@testco.example");
+  });
+
+  it("leaves the VC arm exactly as it was — a sourced deal has no founder to begin with", async () => {
+    // Out of scope today, and not a hedge: eleven seeded VC deals carry
+    // `complete = 1` with an empty contact block because nobody submitted them,
+    // so this guard would delete the edition's Query screen. The incubator
+    // condition in the route is what keeps this green.
+    const analyst = await login("rhea.nair@demo.startupjury.ai");
+    await seedDeck("pipe_cq_vc", "associate_review", {
+      edition: "vc",
+      uploadedBy: "vc_analyst",
+      founderEmail: null,
+    });
+    const res = await post(`/api/decks/pipe_cq_vc/queries`, analyst, { questions: "What is your NRR?" });
+    expect(res.status).toBe(200);
   });
 });
 

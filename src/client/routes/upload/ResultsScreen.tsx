@@ -1,33 +1,45 @@
 import { Link } from "react-router-dom";
 import { INTAKE_DETAIL_FIELDS, INTAKE_RESULTS_LABELS } from "../../../shared/intake";
-import { INTAKE_STATUS_LABELS, intakeStatusOf, resultsSummary, type IntakeStatus } from "../../../shared/uploadReview";
+import {
+  resultsSummary,
+  uploadDeckStatus,
+  type UploadStatusContext,
+  type UploadStatusTone,
+} from "../../../shared/uploadReview";
 import type { StagedDeck } from "./types";
 
 /**
  * "Uploaded decks — AI-extracted details" (`#up-results`, F0296 / F0303 / F0304
  * / F0345): one row per uploaded deck, the seven prototype columns, a red
- * "not captured" cell for every detail the AI could not find, and the
- * Complete / Incomplete pill — plus the honest third state a real asynchronous
- * upload has, "Awaiting AI", while the deck is still being read.
+ * "not captured" cell for every detail the AI could not find, and the Status
+ * pill, which speaks `uploadDeckStatus` — so the incubator's rows now say WHICH
+ * half is incomplete (issue 5) instead of one "Incomplete" for both causes.
+ *
+ * Issues 2 and 12 moved this card off the incubator's successful path: that path
+ * ends on the Dashboard now, and the only way back here is a batch that partly
+ * failed. V3 item 8 deletes the card outright, so it is not being built on.
  */
 export const RESULTS_COLUMNS = ["Deck", ...INTAKE_DETAIL_FIELDS.map((f) => INTAKE_RESULTS_LABELS[f]), "Status"];
 
-const PILL: Record<IntakeStatus, string> = {
-  complete: "bg-[#EAF3E2] text-[#3A4E2E]",
-  incomplete: "bg-[#F8D7D7] text-[#B42318]",
-  awaiting: "bg-stone text-fg-muted",
+const PILL: Record<UploadStatusTone, string> = {
+  good: "bg-[#EAF3E2] text-[#3A4E2E]",
+  warn: "bg-[#F8D7D7] text-[#B42318]",
+  muted: "bg-stone text-fg-muted",
 };
 
 export function ResultsScreen({
   uploaded,
   workspaceSector,
   onBack,
+  statusCtx,
   showSendToEvaluate = false,
 }: {
   uploaded: StagedDeck[];
   /** The sector the batch was recorded under, for the note. */
   workspaceSector: string | null;
   onBack: () => void;
+  /** The gate and the edition the Status column's words are read under. */
+  statusCtx: UploadStatusContext;
   /**
    * V3 item 10's entry point (Q51). `upSendToEvaluate()` lives on the
    * prototype's post-upload results card, next to Edit and Archive, and is the
@@ -38,15 +50,19 @@ export function ResultsScreen({
    */
   showSendToEvaluate?: boolean;
 }) {
-  const statuses = uploaded.map((d) => (d.deck ? intakeStatusOf(d.deck) : "awaiting"));
+  // A row with no `deck` yet is a row the AI has not answered on, which the
+  // empty shape already reads as — no second spelling of "awaiting" here.
+  const statuses = uploaded.map((d) => uploadDeckStatus(d.deck ?? {}, statusCtx));
   return (
     <section className="sj-frame" data-testid="up-results">
       <div className="tb">
         <div className="min-w-0">
           <h1 className="tbt">Uploaded decks — AI-extracted details</h1>
+          {/* The copy used to say "marked Incomplete", which is the word issue
+              5 is about — it named neither cause. The Status column says which. */}
           <div className="tbs">
-            The AI scanned each deck and recorded the founder&rsquo;s details. Any deck missing a detail is automatically
-            marked Incomplete.
+            The AI scanned each deck and recorded the founder&rsquo;s details. Any detail it could not capture is flagged
+            below, and the deck&rsquo;s Status says so until it is filled in.
           </div>
         </div>
         <div className="tbr">
@@ -101,7 +117,7 @@ export function ResultsScreen({
                         );
                       }
                       // Sector is never "not captured": it is the workspace's, not the deck's.
-                      if (f === "sector" || status === "awaiting") {
+                      if (f === "sector" || status.awaiting) {
                         return (
                           <td key={f} className="whitespace-nowrap px-3 py-[11px] text-fg-muted">
                             —
@@ -115,8 +131,10 @@ export function ResultsScreen({
                       );
                     })}
                     <td className="whitespace-nowrap px-3 py-[11px]">
-                      <span className={`inline-block rounded-[20px] px-[9px] py-[3px] text-[10px] font-bold ${PILL[status]}`}>
-                        {INTAKE_STATUS_LABELS[status]}
+                      <span
+                        className={`inline-block rounded-[20px] px-[9px] py-[3px] text-[10px] font-bold ${PILL[status.tone]}`}
+                      >
+                        {status.label}
                       </span>
                     </td>
                   </tr>
@@ -130,7 +148,7 @@ export function ResultsScreen({
           <span>
             Sector is taken from your workspace setup context (<b>{workspaceSector ?? "none set"}</b>) — not scanned from
             the deck. Founder name, email, phone and city are extracted from each deck on upload; any field the AI cannot
-            capture is flagged and the deck is marked Incomplete until completed.
+            capture is flagged, and the deck&rsquo;s Status names the missing half until it is filled in.
           </span>
         </div>
       </div>

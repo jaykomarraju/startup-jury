@@ -209,6 +209,13 @@ beforeEach(() => {
   vi.mocked(api.getConfigSummary).mockResolvedValue({
     thresholdBest: 7,
     thresholdMediocre: 5,
+    // The AI SCREENING gate, and it has to be here now: the screen reads it off
+    // the summary with no `typeof` guard and no fallback, so a fixture that
+    // omits it hands `screeningStatus` an undefined `gate` and every scored deck
+    // reads "Below threshold". That loudness is the fix for tester issue 7 — the
+    // guard it replaces was false on every real response and discarded the org's
+    // setting in silence. 5 is the migration's default, so no row moves.
+    aiGateThreshold: 5,
   } as unknown as api.ConfigSummary);
   vi.mocked(api.listDeckTags).mockResolvedValue({ tags: [] });
   vi.mocked(api.listActivity).mockResolvedValue({ events: [] });
@@ -1487,6 +1494,13 @@ describe("V3 — the eleven-row whitelist (his §5 matrix · C6)", () => {
       active: ["Edit", "Archive"],
     },
     {
+      // [*] Oct-2026 issue 6 · **Edit, not Archive alone.** His row reads
+      // "Archive only", and the tester found what that means on a real deck:
+      // one edit that missed a field makes the deck terminal, with its own four
+      // editable inputs sitting in the row. The deviation and its reasoning are
+      // on the `V3_ACTIVE_ACTIONS` entry; the order here is the menu's order,
+      // so Edit precedes Archive exactly as it does at `Incomplete contact
+      // details` above.
       status: "Incomplete contact details, Edited",
       deck: {
         statusId: "ai_evaluated",
@@ -1497,7 +1511,7 @@ describe("V3 — the eleven-row whitelist (his §5 matrix · C6)", () => {
         aiScore: 7.2,
         contactEditedAt: hoursAgo(1),
       },
-      active: ["Archive"],
+      active: ["Edit", "Archive"],
     },
     {
       // I4. The one status at which "Reject (below AI gate)" is a TRUE label:
@@ -1616,6 +1630,69 @@ describe("V3 — the eleven-row whitelist (his §5 matrix · C6)", () => {
       }
     });
   }
+
+  /**
+   * ── OCT-2026 ISSUE 6 · THE ONE DEAD END IN THE WHITELIST ──────────────────
+   *
+   * The row above pins that Edit is OFFERED at `Incomplete contact details,
+   * Edited`. Two things make that offer real rather than drawn, and the MATRIX
+   * loop can see neither, so they are asserted here:
+   *
+   *  1. **`v3ActionCell(deck, withEdit)` only draws Edit under `withEdit`**,
+   *     which is `true` on the `v3Default` shape and `false` on
+   *     `v3Shortlisted`. This status renders on `v3Default` — if it ever moved,
+   *     the whitelist entry would be a whitelist for an option nobody draws.
+   *  2. **Choosing it has to open the editor.** The whitelist is re-checked in
+   *     the change handler (a disabled `<option>` is a presentation fact), so an
+   *     entry added to the const and missed by the handler would still read as
+   *     armed. The four inputs appearing is the only proof the exit exists.
+   *
+   * And the HINT, because the tooltip is the other half of the cell: the gloss
+   * this replaces ended at "still cannot be emailed", which told an operator
+   * there was nothing to do while the menu now offers the remedy. A row whose
+   * text argues with its own menu is the same defect in a different place.
+   */
+  it("issue 6 — Edit is a real exit from Incomplete contact details, Edited", async () => {
+    vi.mocked(api.listDecks).mockResolvedValue({
+      decks: [
+        {
+          id: "d_m",
+          name: "MatrixCo",
+          statusId: "ai_evaluated",
+          status: "AI Evaluated",
+          aiComplete: true,
+          complete: false,
+          missingFields: ["founderEmail"],
+          aiScore: 7.2,
+          contactEditedAt: hoursAgo(1),
+          founder: "Ada Founder",
+          founderPhone: "+91 90000 00000",
+          actions: SERVER_ALLOWS,
+        } as ScreeningDeckView,
+      ] as DeckView[],
+    });
+    mount("superuser", "u_super");
+    await screen.findByRole("button", { name: "MatrixCo" });
+    const tr = screen.getByRole("button", { name: "MatrixCo" }).closest("tr")!;
+    expect(within(tr).getByTestId("v3-status")).toHaveTextContent("Incomplete contact details, Edited");
+
+    // Precondition 2 — the shape draws Edit, and choosing it opens the editor
+    // rather than being swallowed by the handler's re-check.
+    expect(optionState("MatrixCo", "Edit")).toEqual({ text: "Edit", disabled: false });
+    fireEvent.change(screen.getByRole("combobox", { name: "Actions for MatrixCo" }), {
+      target: { value: "__edit" },
+    });
+    // The field the deck is still missing is editable, which is the whole point:
+    // the remedy for this status is four inputs in this row.
+    expect(await screen.findByLabelText("Email — MatrixCo")).toBeInTheDocument();
+    expect(screen.getByLabelText("Phone — MatrixCo")).toHaveValue("+91 90000 00000");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+
+    // And the gloss names it. The sentence that stood here said only that the
+    // deck still could not be emailed.
+    const hint = within(tr).getByTestId("v3-status").getAttribute("title") ?? "";
+    expect(hint).toMatch(/Edit/);
+  });
 
   /**
    * The negative control for the MECHANISM, not for a row.

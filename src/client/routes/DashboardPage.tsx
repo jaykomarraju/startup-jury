@@ -55,7 +55,6 @@ import {
   type IcVotes,
   type IcVoteValue,
   type PipelineEvent,
-  type ConfigSummary,
 } from "../api";
 import { cohortRating, weightedTotal } from "../../shared/scoring";
 import {
@@ -175,8 +174,12 @@ const V3_STATUS_HINTS: Partial<Record<ScreeningValue, string>> = {
     "The contact details were edited and the deck itself is still unreadable. Send to Query asks the founder for a better one.",
   incompleteContact:
     "Required founder details are missing, so this deck cannot be emailed. Fill them in here (Actions ▾ · Edit).",
+  // Rewritten with the whitelist (Oct-2026 issue 6): the sentence this replaces
+  // ended at "still cannot be emailed", which told an operator looking at four
+  // editable fields that there was nothing to do about it. The row now offers
+  // Edit, so the gloss has to name it or the cell argues with its own menu.
   incompleteContactEdited:
-    "The details were edited and something required is still blank, so this deck still cannot be emailed.",
+    "The details were edited and something required is still blank, so this deck still cannot be emailed. Edit it again (Actions ▾ · Edit).",
   belowThreshold: "Scored below the AI screening gate. Reject, or set it aside.",
   belowThresholdEdited: "The details were edited; the score is still below the AI screening gate.",
   contactEdited: "Saving the details, then re-running the three checks.",
@@ -228,9 +231,10 @@ const V3_PERMISSION_LAYER_ONLY = "*";
  * `undefined` that would read as "nothing is active" at render time. Sixteen
  * keys, checked by the compiler and again by a test.
  *
- * ── THE FIVE DEVIATIONS FROM HIS LITERAL TEXT, AND THE REASON FOR EACH ──────
- * (`docs/plan_screening.md` §2, C4–C8. Each is a client question with the
- * shipped fallback recorded; none is a preference.)
+ * ── THE SIX DEVIATIONS FROM HIS LITERAL TEXT, AND THE REASON FOR EACH ───────
+ * (`docs/plan_screening.md` §2, C4–C8, plus the sixth added 2026-10-01 for the
+ * tester's issue 6. Each is a client question with the shipped fallback
+ * recorded; none is a preference.)
  *
  *  · **Send to Query ACTIVE at `incompleteDeck` (C4 · Q4).** His matrix lists it
  *    in NEITHER column for that row, yet the row's own *next step* column fires
@@ -250,6 +254,11 @@ const V3_PERMISSION_LAYER_ONLY = "*";
  *    Send to Assign, which makes a typo in a complete deck's contact details
  *    uncorrectable and a complete deck the one thing that cannot be set aside
  *    while every failing state can. Almost certainly an omission.
+ *
+ *  · **Edit ACTIVE at `incompleteContactEdited` (Oct-2026 issue 6).** The same
+ *    reading as C8, on the one state where it bites hardest: the tester reached
+ *    a deck whose contact edit had missed a field and found Archive as the only
+ *    way out. The reason is written on the entry itself.
  *
  *  · **"Disabled: all buttons except Archive" is read as a drafting artefact**
  *    (C6). At `Below threshold`, `Incomplete decks, Edited` and `Below
@@ -288,8 +297,20 @@ const V3_ACTIVE_ACTIONS: Record<ScreeningValue, readonly string[]> = {
   // I1 · D ∧ ¬C — his row 4: BOTH handoffs disabled, because the deck cannot
   // be emailed and it cannot be assigned either.
   incompleteContact: [V3_EDIT, "archive"],
-  // I8 · edited, contact still not fine. Archive only, and that is his.
-  incompleteContactEdited: ["archive"],
+  // I8 · edited, contact STILL not fine.
+  //
+  // [*] Oct-2026 issue 6 · **Edit is re-armed here, and his "Archive only" is
+  // not followed.**
+  // His row reads literally: one edit, and if it did not fix the contact the
+  // deck can only be set aside. But the whole state is "somebody tried to fill
+  // these fields in and missed one" — the four inputs are right there in the
+  // row, and the second attempt is the same action as the first. Archive-only
+  // makes a typo in a phone number terminal, and it is the only state in his
+  // machine whose own remedy is drawn on the row and withheld. The other states
+  // that offer nothing (`queried`, `assigned`) are latched because somebody
+  // DECIDED; this one is latched because somebody failed to type. Same reading
+  // as C8 (Edit at `complete`): an omission, not a rule.
+  incompleteContactEdited: [V3_EDIT, "archive"],
   // I7 · the transient re-check. Zero buttons is his own row, and it is the one
   // status `screeningStatus` never returns — the cell renders it from the
   // in-flight PATCH instead (`contactRecheck`).
@@ -956,15 +977,25 @@ export function DashboardPage() {
    * REQUIRED parameter with no fallback of its own, deliberately — a constant
    * beside the setting is how this product came to have three thresholds.
    *
-   * S2-SERVER promotes the hardcoded `GATE = 5` (`src/server/ai/evaluate.ts`)
-   * to `org_scoring_settings.ai_gate_threshold` (migration `0082`, default 5.0)
-   * and serves it on the config summary. Until that lands the field is absent
-   * from the response AND from `ConfigSummary`, so it is read through a narrow
-   * local widening below and this initial value stands in. **It is one line to
-   * delete once `ConfigSummary.aiGateThreshold` is declared** — and it is the
-   * migration's own default, so no deck's verdict moves when it is.
-   * `src/client/types.ts` / `src/client/api.ts` belong to no session in this
-   * wave; flagged in the handoff.
+   * ── THE WIDENING IS GONE (2026-10-01, tester issue 7) ────────────────────
+   * The paragraph that stood here said the field was absent from the response
+   * and from `ConfigSummary`, that it was therefore read through "a narrow local
+   * widening", and that deleting it was one line once the type declared it.
+   * Both halves landed: `GET /api/config/summary` now returns `aiGateThreshold`
+   * and `ConfigSummary` declares it REQUIRED, so the cast below is a plain read.
+   *
+   * It was worth the wave it waited, and not for the reason the note gave. The
+   * widening did not merely stand in — `typeof served === "number"` was false on
+   * every response, so `setAiGate` never fired and this initial value was the
+   * ONLY gate the screen ever used. It read correctly only because production
+   * holds 5, which is the migration's default; any other configured gate was
+   * silently discarded, and no test could see it because the cast compiles
+   * whether or not the field exists. That is the whole lesson, and it is why the
+   * declaration above is required rather than optional.
+   *
+   * The initial value stays — it is what the screen holds for the one render
+   * before the summary resolves, which is a different thing from a fallback, and
+   * nothing else reads it.
    */
   const [aiGate, setAiGate] = useState(5.0);
   // Only set once the admin types — never seeded from the mount fetch, so a
@@ -1109,10 +1140,10 @@ export function DashboardPage() {
       .then((c) => {
         if (!live) return;
         setThresholds({ best: c.thresholdBest, mediocre: c.thresholdMediocre });
-        // S2-SERVER's `ai_gate_threshold`. The widening is the whole of the
-        // coupling between the two sessions, and it disappears with the cast.
-        const served = (c as ConfigSummary & { aiGateThreshold?: number }).aiGateThreshold;
-        if (typeof served === "number") setAiGate(served);
+        // The org's screening gate, read like any other served field. No
+        // `typeof` guard: the one it replaces was false on every response and
+        // swallowed the setting in silence for a wave (see `aiGate` above).
+        setAiGate(c.aiGateThreshold);
       })
       .catch(() => {});
     listDeckTags()

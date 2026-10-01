@@ -137,15 +137,23 @@ export function selectClarificationQuestions(
 }
 
 /**
- * Does the **automatic** clarification fire for this deck?
+ * **NO LONGER ON THE LIVE PATH (1-Oct-2026).** Nothing in `src/` calls this.
  *
- * `org_scoring_settings.auto_clarification` is the Scoring framework's
- * "Auto-trigger clarification questions — Send targeted questions to startup
- * when AI detects weak signal" toggle (`admin/s-fw.html`, ON by default;
- * `W2-A` owns its UI). It governs the *automatic* send only — an evaluator who
- * opens the Query screen and composes a letter by hand is not the AI detecting
- * anything, so the draft is still produced with the toggle off. With no area
- * flagged there is nothing to ask and nothing fires.
+ * It answered "would the AI raise this letter?" from the toggle and the area
+ * count alone, and the real trigger grew two more refusals that it could not
+ * see: no deliverable founder address, and every area being a `detail` (a
+ * missing phone is not something to write to the founder about — at the address
+ * we are saying is missing). `GET /api/questions/draft/:id` reported this
+ * function's answer as `triggered`, so the Query screen could promise a letter
+ * the evaluation had already declined to send.
+ *
+ * The authoritative predicate is now `autoClarifyBlock` in
+ * `src/server/config/autoQuery.ts`, which `maybeAutoClarify` itself is built
+ * from, so the two cannot drift. **Do not re-wire this one into a route.**
+ *
+ * Kept because `test/worker/auto-clarify.test.ts` uses it to pin a real
+ * invariant — the trigger never fires where this would not — which is a
+ * one-way check worth having and is not expressible without it.
  */
 export function shouldAutoClarify(opts: {
   autoClarification: boolean;

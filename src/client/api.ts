@@ -701,6 +701,18 @@ export interface ConfigSummary {
   additionalEnabled: boolean;
   thresholdBest: number;
   thresholdMediocre: number;
+  /**
+   * `org_scoring_settings.ai_gate_threshold` (migration 0082) — the AI SCREENING
+   * gate, which is the third of this product's three numbers on one 0–10 scale
+   * and is neither of the two above it.
+   *
+   * **Required, not optional.** It was absent here while the Dashboard read it
+   * anyway through a widening cast, so the screen's screening verdicts were
+   * taken against a hardcoded 5.0 for a whole wave without anything going red.
+   * An optional field would let that happen again with a `?? 5` instead of a
+   * cast; the server serves it on both `/summary` and `/`, pinned by a test.
+   */
+  aiGateThreshold: number;
   branding: Record<string, unknown>;
   /** Remaining evaluation credits. Absent for founders. */
   creditsBalance?: number;

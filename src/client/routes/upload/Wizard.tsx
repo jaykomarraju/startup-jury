@@ -59,10 +59,14 @@ export interface WizardProps {
   onViewDetails: () => void;
   onReview: () => void;
   /**
-   * V3 item 8 renames the forward button "Evaluate & Go to Dashboard →" for the
-   * roles in `V3_UP_ROLES` — the incubator superuser, admin and program
-   * associate. Optional, so the program manager (pending Q-P), the jury, the VC
-   * edition (not rescoped) and the founder keep "Go to dashboard →" unchanged.
+   * Tester issue 1 — the forward button's label was a promise `onReview` has
+   * never kept. It read "Go to dashboard →" (and, for V3-UP's roles, "Evaluate
+   * & Go to Dashboard →") while its handler navigates nowhere: it advances the
+   * wizard to "Review uploaded decks", which is where the batch is costed and
+   * approved. The default is now what the click does.
+   *
+   * The override exists for the VC edition alone, which was out of scope on
+   * 2026-10-01 and so keeps the wording it ships today.
    */
   forwardLabel?: string;
 }
@@ -150,7 +154,7 @@ export function Wizard(props: WizardProps) {
                 </button>
               )}
               <button type="button" className={BTN_NEXT} onClick={props.onReview}>
-                {props.forwardLabel ?? "Go to dashboard →"}
+                {props.forwardLabel ?? "Continue"}
               </button>
             </div>
           </div>

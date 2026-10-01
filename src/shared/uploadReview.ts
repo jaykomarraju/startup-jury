@@ -14,6 +14,13 @@
  * here counts credits, and nothing here knows a currency exists.
  */
 import { MAX_DECK_PDF_BYTES, type IntakeField } from "./intake";
+import {
+  SCREENING_STATUS_LABELS,
+  screeningStatus,
+  type ScreeningDeck,
+  type ScreeningValue,
+} from "./deckStats";
+import type { Edition } from "./roles";
 
 /** One evaluated deck consumes one credit. Metering, not a price. */
 export const CREDITS_PER_DECK = 1;
@@ -128,9 +135,22 @@ export function formatBytes(bytes: number): string {
 // ── Results ──────────────────────────────────────────────────────────────────
 
 /**
- * The results table's Status pill. The prototype has two (`upDetailsComplete`);
- * a real bulk upload is scored asynchronously, so there is a third, honest state
- * while the AI has not read the deck yet.
+ * The results table's Status pill BEFORE the client's screening vocabulary: the
+ * prototype's two (`upDetailsComplete`) plus the honest third state a real
+ * asynchronous upload has while the AI has not read the deck yet.
+ *
+ * ── RETAINED FOR THE VC EDITION ONLY (tester issue 5) ───────────────────────
+ * These three words cannot express the distinction the incubator spec requires.
+ * `intakeStatusOf` reads `missingFields` and nothing else, so a deck the AI
+ * could not READ and a deck whose FOUNDER details are missing arrive at the same
+ * word — and "Incomplete" is then the word an operator is asked to act on, with
+ * no way to know which of the two causes they are looking at. The incubator path
+ * reads `screeningStatus` instead (`shared/deckStats.ts`), whose thirteen
+ * statuses are the client's own and which keeps the two causes apart.
+ *
+ * The VC edition was explicitly out of scope on 2026-10-01 and the screening
+ * vocabulary is the incubator's by construction (`ScreeningOptions.edition`
+ * exists for exactly that reason), so VC keeps these.
  */
 export type IntakeStatus = "complete" | "incomplete" | "awaiting";
 
@@ -142,24 +162,138 @@ export const INTAKE_STATUS_LABELS: Record<IntakeStatus, string> = {
 
 export function intakeStatusOf(deck: {
   statusId?: string;
-  missingFields?: IntakeField[];
+  missingFields?: readonly IntakeField[];
 }): IntakeStatus {
   if (!deck.statusId || deck.statusId === "pending_ai") return "awaiting";
   return (deck.missingFields ?? []).length > 0 ? "incomplete" : "complete";
 }
 
+/** How a status pill reads, whichever vocabulary produced it. */
+export type UploadStatusTone = "good" | "warn" | "muted";
+
+/**
+ * `screeningStatus` takes the AI screening gate as a REQUIRED number so that no
+ * screen can type a threshold of its own — the product already has three, and
+ * `routes/decks.ts:95-100` records a past confusion between two of them. The
+ * gate is `org_scoring_settings.ai_gate_threshold`, served on the config
+ * summary, so it is null for as long as that response is in flight.
+ *
+ * A null gate means "there is no rating check to apply YET", never "the
+ * threshold is five": a constant beside the setting is the live defect this is
+ * being wired to avoid. `UNGATED` sits below every possible score, so a deck
+ * reads from its two completeness axes alone for that one fetch — which is
+ * exactly what these screens reported before they learned the screening words.
+ */
+const UNGATED = Number.NEGATIVE_INFINITY;
+
+export interface UploadStatusContext {
+  /** `org_scoring_settings.ai_gate_threshold`; null until the summary is read. */
+  gate: number | null;
+  /** Which vocabulary this operator's edition speaks — see `IntakeStatus`. */
+  edition: Edition;
+}
+
+/**
+ * How each screening status reads on an upload pill. A `Record` over the whole
+ * union on purpose: a fourteenth status must be given a tone here rather than
+ * falling through to whatever the last branch happened to be.
+ */
+const SCREENING_TONES: Record<ScreeningValue, UploadStatusTone> = {
+  // Settled — nothing is owed on these.
+  complete: "good",
+  completeEdited: "good",
+  assigned: "good",
+  // The operator has something to do.
+  incompleteContact: "warn",
+  incompleteContactEdited: "warn",
+  incompleteDeck: "warn",
+  incompleteDeckEdited: "warn",
+  bothIncomplete: "warn",
+  belowThreshold: "warn",
+  belowThresholdEdited: "warn",
+  rejected: "warn",
+  noResponse: "warn",
+  // Waiting on someone else: the AI, the founder, or nobody at all.
+  awaitingAi: "muted",
+  contactEdited: "muted",
+  queried: "muted",
+  archived: "muted",
+};
+
+/** `D` is false — the client's "Incomplete deck" arm. */
+const DECK_INCOMPLETE: readonly ScreeningValue[] = ["incompleteDeck", "incompleteDeckEdited", "bothIncomplete"];
+
+/** `C` is false — the client's "Incomplete contact details" arm. */
+const CONTACT_INCOMPLETE: readonly ScreeningValue[] = [
+  "incompleteContact",
+  "incompleteContactEdited",
+  "bothIncomplete",
+];
+
+export interface UploadDeckStatus {
+  /** The word on the pill. */
+  label: string;
+  tone: UploadStatusTone;
+  /** `D` — the AI could not read the deck itself. */
+  deckIncomplete: boolean;
+  /** `C` — one of the founder's four contact details is missing. */
+  contactIncomplete: boolean;
+  /** The AI has not answered yet, so there is no verdict to report. */
+  awaiting: boolean;
+  /**
+   * May "Parameters needing response" → Send to Query open on this deck?
+   *
+   * The spec's §1 tree arms Send to Query on the DECK axis — "Incomplete deck:
+   * Send to Query active", settled against the §5 table in §3 note 1 — and
+   * disables it on the contact axis and on Both incomplete, where the operator
+   * is told to Edit instead. It was armed on `missingFields.length > 0`, which
+   * is the contact axis: the one state the spec turns it off in (tester issue
+   * 4). The VC edition keeps the old arming along with the old vocabulary.
+   */
+  flaggable: boolean;
+}
+
+/** One uploaded deck's status, as the upload screens say it. */
+export function uploadDeckStatus(deck: ScreeningDeck, ctx: UploadStatusContext): UploadDeckStatus {
+  if (ctx.edition !== "incubator") {
+    const status = intakeStatusOf(deck);
+    return {
+      label: INTAKE_STATUS_LABELS[status],
+      tone: status === "complete" ? "good" : status === "incomplete" ? "warn" : "muted",
+      deckIncomplete: false,
+      contactIncomplete: status === "incomplete",
+      awaiting: status === "awaiting",
+      flaggable: status === "incomplete",
+    };
+  }
+  const value = screeningStatus(deck, { gate: ctx.gate ?? UNGATED, edition: ctx.edition });
+  return {
+    label: SCREENING_STATUS_LABELS[value],
+    tone: SCREENING_TONES[value],
+    deckIncomplete: DECK_INCOMPLETE.includes(value),
+    contactIncomplete: CONTACT_INCOMPLETE.includes(value),
+    awaiting: value === "awaitingAi",
+    flaggable: value === "incompleteDeck" || value === "incompleteDeckEdited",
+  };
+}
+
 /** The summary banner over the results table. */
-export function resultsSummary(statuses: IntakeStatus[]): string {
+export function resultsSummary(statuses: readonly UploadDeckStatus[]): string {
   const n = statuses.length;
-  const incomplete = statuses.filter((s) => s === "incomplete").length;
-  const awaiting = statuses.filter((s) => s === "awaiting").length;
+  const contact = statuses.filter((s) => s.contactIncomplete).length;
+  const unread = statuses.filter((s) => s.deckIncomplete).length;
+  const awaiting = statuses.filter((s) => s.awaiting).length;
   const head = `${n} deck${n === 1 ? "" : "s"} uploaded.`;
   const read =
     " The AI records the founder’s name, email, phone and city from each deck; sector is taken from your setup context.";
   const tail: string[] = [];
-  if (incomplete) tail.push(`${incomplete} deck${incomplete === 1 ? "" : "s"} marked Incomplete — details missing.`);
+  // Counted on the two axes SEPARATELY, and a deck failing both is counted in
+  // both: one "N marked Incomplete" line is what sent an operator to edit
+  // contact details on a deck whose PDF was the thing the AI could not read.
+  if (contact) tail.push(`${contact} deck${contact === 1 ? "" : "s"} with incomplete contact details.`);
+  if (unread) tail.push(`${unread} deck${unread === 1 ? "" : "s"} the AI could not read.`);
   if (awaiting) tail.push(`${awaiting} still being read by the AI.`);
-  if (!incomplete && !awaiting && n > 0) tail.push("All details captured.");
+  if (!tail.length && n > 0) tail.push("All details captured.");
   return [head + read, ...tail].join(" ");
 }
 

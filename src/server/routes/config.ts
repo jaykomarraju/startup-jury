@@ -167,9 +167,32 @@ function parseBranding(json: string): Record<string, unknown> {
 
 // ── Reads ──────────────────────────────────────────────────────────────────
 
+/**
+ * ── THE AI SCREENING GATE ON THE SUMMARY (2026-10-01, tester issues 7 and 8) ──
+ *
+ * `org_scoring_settings.ai_gate_threshold` is written by the console's Scoring
+ * framework section and was then read by nobody: the summary did not carry it,
+ * `ConfigSummary` did not declare it, and `DashboardPage` reached for it through
+ * a widening cast that nothing could satisfy — so every screening verdict on the
+ * Dashboard was taken against a hardcoded 5.0. It looked right only because
+ * production happens to hold 5, which is the migration's own default.
+ *
+ * **Read through `loadScoringSettings`, not through a column added to
+ * `loadSettings`.** The gate lives on `org_scoring_settings`; `loadSettings`
+ * reads `org_settings`. Reaching it from here would mean either a second table
+ * in that query or a second place that knows the column's name and its default —
+ * and a duplicate threshold reader is the exact fault this number already has a
+ * history of (`0082`'s header; `routes/decks.ts:95-100`). One reader, one
+ * default, one extra D1 read on a route that already makes three.
+ */
+function loadGate(c: Context<AppEnv>, scope: TenantScope): Promise<number> {
+  return loadScoringSettings(c.env.DB, scope).then((s) => s.aiGateThreshold);
+}
+
 /** GET /api/config/summary — the safe read subset (any authed user):
- *  thresholds + plan + branding + the rubric parameters (drives the dashboard
- *  thresholds rail and the read-only My Parameters view). No secrets. */
+ *  thresholds + the AI screening gate + plan + branding + the rubric parameters
+ *  (drives the dashboard thresholds rail, the screening statuses and the
+ *  read-only My Parameters view). No secrets. */
 config.get("/summary", async (c) => {
   const scope = scopeOf(c.var.user);
   const s = await loadSettings(c, scope);
@@ -182,6 +205,9 @@ config.get("/summary", async (c) => {
     additionalEnabled: planAllowsAdditional(s.plan, cap.addl),
     thresholdBest: s.threshold_best,
     thresholdMediocre: s.threshold_mediocre,
+    // The SCREENING gate — not the cohort bands above it and not
+    // `shortlist_threshold`. Three numbers on one 0–10 scale; see `loadGate`.
+    aiGateThreshold: await loadGate(c, scope),
     branding: parseBranding(s.branding_json),
     // Aug-2026 issue 11 — the Upload screen shows the credit balance on top for
     // everyone who can upload, not just admins (who also get it from GET /config
@@ -208,6 +234,9 @@ config.get("/", requireTask("adminconsole", "admin"), async (c) => {
     aiSystemPrompt: s.ai_system_prompt ?? "",
     thresholdBest: s.threshold_best,
     thresholdMediocre: s.threshold_mediocre,
+    // `FullConfig extends ConfigSummary`, so the gate is served here too or the
+    // type promises the admin console a number it never receives.
+    aiGateThreshold: await loadGate(c, scope),
     branding: parseBranding(s.branding_json),
     coreParams: params.filter((p) => p.informational === 0).map(toParamView),
     additionalParams: params.filter((p) => p.informational === 1).map(toParamView),

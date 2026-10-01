@@ -29,7 +29,8 @@ export interface SingleDetails {
  * `markedIncomplete` was removed by S2-UPLOAD with the "Mark incomplete" button
  * it existed for (feedback row 2). It had exactly one writer and no reader
  * outside this screen, so it is deleted rather than pinned to false; the deck's
- * real Incomplete verdict comes from the AI, through `intakeStatusOf(deck)`.
+ * real Incomplete verdict comes from the AI, through `uploadDeckStatus(deck)`,
+ * which since issue 5 says which of the two things was incomplete.
  */
 export interface StagedDeck {
   key: string;

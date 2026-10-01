@@ -21,7 +21,10 @@ import { loadScoringSettings } from "../config/scoringSettings";
 import { loadScoreVisibility } from "../config/scoreVisibility";
 import { missingIntakeFields, parseMissingFields, type IntakeMatch } from "../../shared/intake";
 // V3-DASH — one timestamp comparison, shared with the Dashboard that reads it.
-import { latestTimestamp } from "../../shared/deckStats";
+// `ratingAtOrAboveGate` / `isAllocatedDeck` are the AI gate's `?list=assign`
+// post-filter (tester issue 8): the predicates come from the status vocabulary
+// that already owns them, never re-written as `score < gate` at the call site.
+import { isAllocatedDeck, latestTimestamp, ratingAtOrAboveGate } from "../../shared/deckStats";
 // V4-ROUTE — the Assign/Query partition (items 6, 7). The list route enforces
 // it so it holds however the deck got to its stage, not just when a screen asks.
 import { deckListRoute, type DeckListRoute } from "../../shared/queries";
@@ -449,6 +452,24 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: Shortli
  */
 const ROW3_RECORDED_QUERY: Record<Edition, boolean> = { incubator: true, vc: false };
 
+/**
+ * Editions where the **AI screening gate** narrows `?list=assign` (tester issue
+ * 8, 2026-10-01).
+ *
+ * The client's third check is "Rating >= threshold?", and until this the Assign
+ * roster never asked it: five production decks scoring 2.66, 3.19, 4.00, 4.85
+ * and 5.25 were all on the Assign list against a configured gate of 5, so the
+ * one deck that cleared it sat among four that his own spec sends to Reject.
+ *
+ * **VC is false and the table is here to say so out loud.** `ASSIGNABLE_STAGES.vc`
+ * is empty, so `deckListRoute` can never answer "assign" for a VC deal and the
+ * filter is unreachable there by construction — but the VC edition is out of
+ * scope by instruction today, and "unreachable by construction" is a property
+ * of another file that a reader of this one cannot see. Same shape and same
+ * reason as `ROW3_RECORDED_QUERY` above.
+ */
+const AI_GATE_NARROWS_ASSIGN: Record<Edition, boolean> = { incubator: true, vc: false };
+
 /** `?list=` — the enforced screen list, or the whole table when absent. */
 function parseListParam(raw: string | undefined): Exclude<DeckListRoute, null> | null {
   return raw === "assign" || raw === "query" ? raw : null;
@@ -665,12 +686,62 @@ decks.get("/", async (c) => {
   // implementation of the rule — which is the property the paragraph above is
   // protecting, and it is not the same thing as one call site.
   const deriveQuery = ROW3_RECORDED_QUERY[edition] ? false : undefined;
-  const routed = <V extends Parameters<typeof deckListRoute>[0] & { queried?: boolean }>(views: V[]) =>
+  /**
+   * ── THE AI GATE, AS A POST-FILTER ON THE ASSIGN ARM (tester issue 8) ──────
+   *
+   * The client's three checks are deck, contact, then **rating >= threshold**,
+   * and only a deck that passes all three is "Complete · Send to Assign".
+   * `deckListRoute` asks the first two (through `isDeckComplete`) and has never
+   * asked the third, so the Assign roster held every evaluated complete deck
+   * whatever it scored — five of them in production this morning, four below
+   * the org's gate of 5.
+   *
+   * **Deliberately NOT a `gate` parameter on `deckListRoute`.** That function is
+   * re-entered from inside the STATUS vocabulary (`isQueriedSinkCurrent` ->
+   * `isScreeningIncompleteTile` -> `matchesV3Stat`, ~44 references), so a
+   * required parameter there would cascade through the tile predicates and
+   * change what the six stat boxes mean in order to fix one list. An optional
+   * parameter only this call site passes would work, and it would put the rule
+   * in the shared function while leaving it off for every other caller — a
+   * function whose answer depends on which argument you remembered. The rule
+   * belongs where it is ENFORCED, which is the same reasoning the row-3
+   * paragraph above gives for `deriveQuery` being an override here.
+   *
+   * **The gate is skipped on a deck already handed over** (`isAllocatedDeck`:
+   * the Send-to-Assign marker, `assigned_to`, or the `assigned` /
+   * `jury_evaluation` stages). Column 1 of the Assign screen deliberately keeps
+   * allocated rows so a second juror can be added, and a deck scored before the
+   * gate was raised — or before it was read at all, which was every deck until
+   * today — must not drop off the screen it is already on. It is also exactly
+   * `screeningStatus`'s own precedence: the `assigned` sink is answered before
+   * the rating check ever runs, so the status vocabulary never calls an
+   * allocated deck "Below threshold" and now neither does the list.
+   */
+  const gated = (v: Parameters<typeof ratingAtOrAboveGate>[0]) =>
+    !AI_GATE_NARROWS_ASSIGN[edition] ||
+    isAllocatedDeck(v) ||
+    ratingAtOrAboveGate(v, scoring.aiGateThreshold);
+  const routed = <
+    V extends Parameters<typeof deckListRoute>[0] &
+      Parameters<typeof gated>[0] & { queried?: boolean },
+  >(
+    views: V[],
+  ) =>
     list === null
       ? views
-      : views.filter((v) => deckListRoute(v, edition, { queried: v.queried === true, deriveQuery }) === list);
+      : views.filter(
+          (v) =>
+            deckListRoute(v, edition, { queried: v.queried === true, deriveQuery }) === list &&
+            (list !== "assign" || gated(v)),
+        );
+  // The partition runs on the UNBLINDED views, which is why the two branches
+  // below map first and blank afterwards. Routing is not a visibility question:
+  // `ratingAtOrAboveGate` reads an absent score as "not below the gate", so
+  // filtering the already-blanked rows would have given a juror mid-blind-scoring
+  // a different Assign roster from the PM's.
+  const views = rows.map((r) => toDeckView(edition, r, role, scoring));
   if (!withholdsAiScore(scoring, { isEvaluator: isAssignableEvaluator(edition, role), hasSubmitted: false })) {
-    return c.json({ decks: routed(rows.map((r) => toDeckView(edition, r, role, scoring))) });
+    return c.json({ decks: routed(views) });
   }
   const submitted = new Set(
     (
@@ -691,9 +762,8 @@ decks.get("/", async (c) => {
     ).results.map((r) => r.deck_id),
   );
   return c.json({
-    decks: routed(rows.map((r) => {
-      const view = toDeckView(edition, r, role, scoring);
-      if (submitted.has(r.id)) return view;
+    decks: routed(views).map((view) => {
+      if (submitted.has(view.id)) return view;
       return {
         ...view,
         aiScore: undefined,
@@ -702,7 +772,7 @@ decks.get("/", async (c) => {
         shortlistBlocked: false,
         aiScoreWithheld: true as const,
       };
-    })),
+    }),
   });
 });
 

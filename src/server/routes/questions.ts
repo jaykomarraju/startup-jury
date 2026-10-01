@@ -22,7 +22,8 @@
  *     clarification letter from the bank instead of from bare area labels
  *     (findings F0030, F0096). It honours
  *     `org_scoring_settings.auto_clarification` for the AUTOMATIC decision
- *     only; see `shouldAutoClarify` in `src/shared/queries.ts`.
+ *     only; see `autoClarifyBlock` in `src/server/config/autoQuery.ts`, which
+ *     is the trigger's own predicate and therefore cannot drift from it.
  *
  * Mounted at `/api/questions` (plan §10, Wave 2 server-route ownership) — this
  * wave's `config.ts` belongs to `W2-A`.
@@ -31,6 +32,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import { parseMissingFields } from "../../shared/intake";
+import { autoClarifyBlock } from "../config/autoQuery";
 import { scopeOf, scoped, type TenantScope } from "../../shared/tenant";
 import { requireAuth, requireTask } from "../auth/middleware";
 // W3-C — the bank is scoring configuration: an edit changes what a founder
@@ -40,7 +42,6 @@ import {
   areasNeedingResponse,
   buildQueryMessage,
   selectClarificationQuestions,
-  shouldAutoClarify,
   type BankArea,
 } from "../../shared/queries";
 
@@ -327,6 +328,8 @@ interface DraftDeckRow {
   id: string;
   name: string;
   missing_fields: string | null;
+  /** Needed by `autoClarifyBlock`: no deliverable address, no automatic letter. */
+  founder_email: string | null;
   weak_area_ids: string | null;
   missing_sections: string | null;
 }
@@ -358,7 +361,7 @@ questions.get("/draft/:deckId", requireQuerier, async (c) => {
   // tenant now, and the deck's tenant is this caller's because of the outer scope.
   const dq = scoped(scope).on("d").and("d.id = ?", c.req.param("deckId"));
   const deck = await c.env.DB.prepare(
-    "SELECT d.id, d.name, d.missing_fields, " +
+    "SELECT d.id, d.name, d.missing_fields, d.founder_email, " +
       "(SELECT GROUP_CONCAT(s.parameter_id, '||') FROM scores s JOIN parameters p ON p.id = s.parameter_id " +
       "  WHERE s.deck_id = d.id AND s.evaluator_kind = 'ai' AND p.informational = 0 " +
       "    AND s.value < (SELECT o.threshold_mediocre FROM org_settings o " +
@@ -403,8 +406,25 @@ questions.get("/draft/:deckId", requireQuerier, async (c) => {
     deckId: deck.id,
     deckName: deck.name,
     autoClarification,
-    /** Would the AI raise this letter on its own? (`s-fw` auto-trigger.) */
-    triggered: shouldAutoClarify({ autoClarification, areas: responseAreas }),
+    /**
+     * Would the AI raise this letter on its own? (`s-fw` auto-trigger.)
+     *
+     * Asks `autoClarifyBlock` — the trigger's OWN predicate, exported from
+     * `config/autoQuery.ts` — rather than `shouldAutoClarify`, which knew only
+     * about the toggle and the area count. The two had drifted in the direction
+     * that matters: after 1-Oct the trigger also refuses when there is no
+     * deliverable founder address, and when every area is a `detail` (a missing
+     * phone is not something to write to the founder about — at the address we
+     * are saying is missing). This flag told the operator the AI *would* raise a
+     * letter it had already decided not to raise.
+     */
+    triggered:
+      autoClarifyBlock({
+        autoClarification,
+        founderEmail: deck.founder_email,
+        missingFields: parseMissingFields(deck.missing_fields),
+        areas: responseAreas,
+      }) === null,
     areas: responseAreas,
     questions: selectClarificationQuestions(responseAreas, bank),
     message: buildQueryMessage(deck.name, responseAreas, { bank }),
