@@ -29,6 +29,8 @@ import {
   SCORE_SCALES,
 } from "../../shared/types";
 import { requireAuth, requireRole, requireTask } from "../auth/middleware";
+import { scopeOf, scoped, insertScope, type TenantScope } from "../../shared/tenant";
+import { inEdition } from "../config/scope";
 import { rescoreEdition } from "../config/rescore";
 import { loadScoringSettings } from "../config/scoringSettings";
 import { loadScoreVisibility } from "../config/scoreVisibility";
@@ -86,31 +88,54 @@ async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
 }
 
 /**
- * Bump the edition's criteria version. Any change to what the AI scores against —
- * core weights, the AI prompt, or the additional-parameter set — invalidates the
- * previous AI run, so a re-score becomes allowed (see routes/decks.ts /rescore).
+ * ── WHAT THE TENANCY WAVE CHANGED IN THIS FILE ──────────────────────────────
+ *
+ * Every helper below took an `Edition`; each now takes a `TenantScope` — the
+ * `(tenant_id, edition)` pair `scopeOf(c.var.user)` builds. `edition` survives
+ * because it is also the PRODUCT VARIANT (`plan_multitenancy.md` §5c): four sites
+ * branch on it to decide which features exist, and `canEditVisibility` below
+ * refuses a VC console outright. What changed is that it is no longer the ONLY
+ * key, which is what `/api/config/*` being §2's B9 was about: rubric, weights, AI
+ * prompts, credit balance and credit purchase, scoped by a column with two values.
+ *
+ * `org_settings`, `org_scoring_settings`, `parameters` and `score_visibility` are
+ * all tenant-keyed (0084/0085, rebuilt in 0089/0090/0092), so every predicate
+ * here is `.on(alias)` and every `UPDATE` carries the pair too — not because the
+ * scoped load above it is insufficient, but because a write that names the owner
+ * cannot be made wrong by a later edit to the read that fed it.
  */
-function bumpCriteriaVersion(c: Context<AppEnv>, edition: Edition): D1PreparedStatement {
+
+/**
+ * Bump the workspace's criteria version. Any change to what the AI scores
+ * against — core weights, the AI prompt, or the additional-parameter set —
+ * invalidates the previous AI run, so a re-score becomes allowed (see
+ * routes/decks.ts /rescore).
+ */
+function bumpCriteriaVersion(c: Context<AppEnv>, scope: TenantScope): D1PreparedStatement {
+  const q = scoped(scope).on("org_settings");
   return c.env.DB.prepare(
-    "UPDATE org_settings SET criteria_version = criteria_version + 1 WHERE edition = ?",
-  ).bind(edition);
+    `UPDATE org_settings SET criteria_version = criteria_version + 1 ${q.whereClause()}`,
+  ).bind(...q.binds);
 }
 
-function loadSettings(c: Context<AppEnv>, edition: Edition): Promise<SettingsRow | null> {
+function loadSettings(c: Context<AppEnv>, scope: TenantScope): Promise<SettingsRow | null> {
+  const q = scoped(scope).on("o");
   return c.env.DB.prepare(
-    "SELECT plan, credits_balance, branding_json, ai_system_prompt, threshold_best, threshold_mediocre FROM org_settings WHERE edition = ?",
+    "SELECT o.plan, o.credits_balance, o.branding_json, o.ai_system_prompt, o.threshold_best, " +
+      `o.threshold_mediocre FROM org_settings o ${q.whereClause()}`,
   )
-    .bind(edition)
+    .bind(...q.binds)
     .first<SettingsRow>();
 }
 
-async function loadParams(c: Context<AppEnv>, edition: Edition): Promise<ParamRow[]> {
+async function loadParams(c: Context<AppEnv>, scope: TenantScope): Promise<ParamRow[]> {
+  const q = scoped(scope).on("p").andRaw("p.active = 1");
   return (
     await c.env.DB.prepare(
-      "SELECT id, key, name, weight, informational, role_scope, prompt, description, config_permitted, sort_order " +
-        "FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
+      "SELECT p.id, p.key, p.name, p.weight, p.informational, p.role_scope, p.prompt, p.description, " +
+        `p.config_permitted, p.sort_order FROM parameters p ${q.whereClause()} ORDER BY p.sort_order`,
     )
-      .bind(edition)
+      .bind(...q.binds)
       .all<ParamRow>()
   ).results;
 }
@@ -146,11 +171,11 @@ function parseBranding(json: string): Record<string, unknown> {
  *  thresholds + plan + branding + the rubric parameters (drives the dashboard
  *  thresholds rail and the read-only My Parameters view). No secrets. */
 config.get("/summary", async (c) => {
-  const edition = c.var.user.edition;
-  const s = await loadSettings(c, edition);
+  const scope = scopeOf(c.var.user);
+  const s = await loadSettings(c, scope);
   if (!s) return c.json({ error: "not_found" }, 404);
-  const params = await loadParams(c, edition);
-  const cap = await loadSeatCapability(c, edition);
+  const params = await loadParams(c, scope);
+  const cap = await loadSeatCapability(c, scope);
   return c.json({
     plan: s.plan,
     coreConfigEnabled: planAllowsCore(s.plan, cap.core),
@@ -170,11 +195,11 @@ config.get("/summary", async (c) => {
 /** GET /api/config — the full settings (admin only): adds the AI system prompt
  *  and the credits balance to the summary payload. */
 config.get("/", requireTask("adminconsole", "admin"), async (c) => {
-  const edition = c.var.user.edition;
-  const s = await loadSettings(c, edition);
+  const scope = scopeOf(c.var.user);
+  const s = await loadSettings(c, scope);
   if (!s) return c.json({ error: "not_found" }, 404);
-  const params = await loadParams(c, edition);
-  const cap = await loadSeatCapability(c, edition);
+  const params = await loadParams(c, scope);
+  const cap = await loadSeatCapability(c, scope);
   return c.json({
     plan: s.plan,
     coreConfigEnabled: planAllowsCore(s.plan, cap.core),
@@ -210,8 +235,13 @@ async function memberPlan(
   c: Context<AppEnv>,
   orgPlan: Plan,
 ): Promise<{ memberTier: Plan; effective: Plan }> {
-  const row = await c.env.DB.prepare("SELECT plan_tier FROM users WHERE id = ?")
-    .bind(c.var.user.id)
+  // `users` is tenant-keyed (0087, rebuilt for `UNIQUE (tenant_id, email)`). The
+  // id is the CALLER's own, so the pair cannot disagree with it — but a read of
+  // `users` that names only an id is the shape §2 B6 is about, and a statement
+  // that says whose roster it is reading costs one predicate.
+  const uq = scoped(scopeOf(c.var.user)).on("u").and("u.id = ?", c.var.user.id);
+  const row = await c.env.DB.prepare(`SELECT u.plan_tier FROM users u ${uq.whereClause()}`)
+    .bind(...uq.binds)
     .first<{ plan_tier: string | null }>();
   const memberTier: Plan = isPlan(row?.plan_tier) ? row.plan_tier : "standard";
   // `PLANS` is ordered Standard → Pro → Premium; the lower of the two governs.
@@ -248,22 +278,24 @@ interface EditableParamRow extends ParamRow {
  * Any authenticated member of the workspace; not a founder, not a mentor.
  */
 config.get("/parameters", async (c) => {
-  const { edition, role } = c.var.user;
+  const { role } = c.var.user;
+  const scope = scopeOf(c.var.user);
   if (role === "founder" || isMentor(role)) return c.json({ error: "forbidden" }, 403);
-  const s = await loadSettings(c, edition);
+  const s = await loadSettings(c, scope);
   if (!s) return c.json({ error: "not_found" }, 404);
   const { memberTier, effective } = await memberPlan(c, s.plan);
-  const cap = await loadSeatCapability(c, edition);
+  const cap = await loadSeatCapability(c, scope);
   const coreConfigEnabled = planAllowsCore(effective, cap.core);
   const additionalEnabled = planAllowsAdditional(effective, cap.addl);
   const additionalEditor = await mayConfigureAdditional(c);
 
+  const rq = scoped(scope).on("p").andRaw("p.retired = 0");
   const rows = (
     await c.env.DB.prepare(
-      "SELECT id, key, name, weight, informational, role_scope, prompt, description, config_permitted, sort_order, active " +
-        "FROM parameters WHERE edition = ? AND retired = 0 ORDER BY sort_order",
+      "SELECT p.id, p.key, p.name, p.weight, p.informational, p.role_scope, p.prompt, p.description, " +
+        `p.config_permitted, p.sort_order, p.active FROM parameters p ${rq.whereClause()} ORDER BY p.sort_order`,
     )
-      .bind(edition)
+      .bind(...rq.binds)
       .all<EditableParamRow>()
   ).results;
 
@@ -306,11 +338,11 @@ interface WeightUpdate {
 /** PUT /api/config/parameters — update core parameter weights (and optional
  *  renames and extraction prompts), then re-score the whole edition. */
 config.put("/parameters", requireRole("admin"), async (c) => {
-  const edition = c.var.user.edition;
-  const settings = await loadSettings(c, edition);
+  const scope = scopeOf(c.var.user);
+  const settings = await loadSettings(c, scope);
   if (!settings) return c.json({ error: "not_found" }, 404);
   // Configuring the core 13 weights requires Pro or above (Standard = no config).
-  const cap = await loadSeatCapability(c, edition);
+  const cap = await loadSeatCapability(c, scope);
   if (!planAllowsCore(settings.plan, cap.core)) return c.json({ error: "plan_required" }, 402);
   // …and so does the member's own seat (§9 `W6-C`, §8 Q116).
   const { effective } = await memberPlan(c, settings.plan);
@@ -322,7 +354,7 @@ config.put("/parameters", requireRole("admin"), async (c) => {
   const updates = Array.isArray(body.params) ? body.params : [];
   if (updates.length === 0) return c.json({ error: "no_params" }, 400);
 
-  const existing = await loadParams(c, edition);
+  const existing = await loadParams(c, scope);
   const byId = new Map(existing.map((p) => [p.id, p]));
 
   const stmts: D1PreparedStatement[] = [];
@@ -346,13 +378,15 @@ config.put("/parameters", requireRole("admin"), async (c) => {
       prompt = typeof u.prompt === "string" && u.prompt.trim() ? u.prompt.trim() : null;
       if (prompt !== p.prompt) promptChanges.push(name);
     }
+    // `u.id` was validated against `existing`, which `loadParams` read scoped —
+    // but §2 B9 names this exact statement ("parameter writes at :350 … are
+    // `WHERE id = ?` after an edition-scoped load"), so the write names the owner
+    // too. A predicate here cannot be invalidated by a later change to the read.
+    const wq = scoped(scope).on("parameters").and("id = ?", u.id);
     stmts.push(
-      c.env.DB.prepare("UPDATE parameters SET weight = ?, name = ?, prompt = ? WHERE id = ?").bind(
-        weight,
-        name,
-        prompt,
-        u.id,
-      ),
+      c.env.DB.prepare(
+        `UPDATE parameters SET weight = ?, name = ?, prompt = ? ${wq.whereClause()}`,
+      ).bind(weight, name, prompt, ...wq.binds),
     );
   }
 
@@ -369,7 +403,7 @@ config.put("/parameters", requireRole("admin"), async (c) => {
     );
   }
 
-  stmts.push(bumpCriteriaVersion(c, edition));
+  stmts.push(bumpCriteriaVersion(c, scope));
   await c.env.DB.batch(stmts);
   await auditWeightChange(c, existing, updates);
   if (promptChanges.length > 0) {
@@ -378,8 +412,8 @@ config.put("/parameters", requireRole("admin"), async (c) => {
     });
   }
 
-  const rescored = await rescoreEdition(c.env, edition);
-  const params = await loadParams(c, edition);
+  const rescored = await rescoreEdition(c.env, scope);
+  const params = await loadParams(c, scope);
   return c.json({
     ok: true,
     rescored,
@@ -395,10 +429,10 @@ config.put("/parameters", requireRole("admin"), async (c) => {
 // delete) bumps criteria_version so the AI rescore guard treats it as a change.
 
 /** Guard: additional-param configuration requires a Premium plan. */
-async function requirePremium(c: Context<AppEnv>, edition: Edition): Promise<SettingsRow | null> {
-  const s = await loadSettings(c, edition);
+async function requirePremium(c: Context<AppEnv>, scope: TenantScope): Promise<SettingsRow | null> {
+  const s = await loadSettings(c, scope);
   if (!s) return null;
-  const cap = await loadSeatCapability(c, edition);
+  const cap = await loadSeatCapability(c, scope);
   return planAllowsAdditional(s.plan, cap.addl) ? s : null;
 }
 
@@ -411,7 +445,7 @@ function validOwner(edition: Edition, role: unknown): Role | null {
 
 /** Guard: the member's own seat must allow the role parameters too (§8 Q116). */
 async function memberAllowsAdditional(c: Context<AppEnv>, s: SettingsRow): Promise<boolean> {
-  const cap = await loadSeatCapability(c, c.var.user.edition);
+  const cap = await loadSeatCapability(c, scopeOf(c.var.user));
   return planAllowsAdditional((await memberPlan(c, s.plan)).effective, cap.addl);
 }
 
@@ -431,10 +465,11 @@ function optionalText(value: unknown, current: string | null): string | null {
 // admin-only list. A Program Manager therefore saw controls that 403'd. The task
 // is still ANDed on, so revoking the cell still closes them.
 config.post("/additional-params", requireTask("configparams", "admin", "program_manager", "partner"), async (c) => {
-  const edition = c.var.user.edition;
-  const s = await loadSettings(c, edition);
+  const { edition } = c.var.user;
+  const scope = scopeOf(c.var.user);
+  const s = await loadSettings(c, scope);
   if (!s) return c.json({ error: "not_found" }, 404);
-  const cap = await loadSeatCapability(c, edition);
+  const cap = await loadSeatCapability(c, scope);
   if (!planAllowsAdditional(s.plan, cap.addl)) return c.json({ error: "plan_required" }, 402);
   if (!(await memberAllowsAdditional(c, s))) return c.json({ error: "plan_required", scope: "member" }, 402);
 
@@ -448,27 +483,40 @@ config.post("/additional-params", requireTask("configparams", "admin", "program_
 
   // Up to 3 additional params per owning role. A switched-off one keeps its
   // slot (it still has its label, description and prompt); a removed one does not.
-  const count = await c.env.DB.prepare(
-    "SELECT COUNT(*) AS n FROM parameters WHERE edition = ? AND retired = 0 AND informational = 1 AND role_scope = ?",
-  )
-    .bind(edition, roleScope)
+  // The ≤3-per-role cap is a COUNT, which §11's second standing instruction
+  // names as the dangerous shape: unscoped it counted every customer's role
+  // parameters and refused this customer's fourth because another had three.
+  const cq = scoped(scope)
+    .on("p")
+    .and("p.role_scope = ?", roleScope)
+    .andRaw("p.retired = 0 AND p.informational = 1");
+  const count = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM parameters p ${cq.whereClause()}`)
+    .bind(...cq.binds)
     .first<{ n: number }>();
   if ((count?.n ?? 0) >= MAX_ADDITIONAL_PER_ROLE) return c.json({ error: "role_full" }, 409);
 
   const suffix = crypto.randomUUID().slice(0, 8);
   const id = `${edition}_add_${suffix}`;
   const key = `add_${suffix}`;
+  const oq = scoped(scope).on("p");
   const nextOrder = await c.env.DB.prepare(
-    "SELECT COALESCE(MAX(sort_order), 100) + 1 AS n FROM parameters WHERE edition = ?",
+    `SELECT COALESCE(MAX(p.sort_order), 100) + 1 AS n FROM parameters p ${oq.whereClause()}`,
   )
-    .bind(edition)
+    .bind(...oq.binds)
     .first<{ n: number }>();
+  // The write side, where the failure is silent: `parameters.tenant_id` carries
+  // `DEFAULT 't_default'` (0085 — SQLite offers no other way to backfill a NOT
+  // NULL column), so a forgotten bind here would file a second customer's rubric
+  // row against the first with a 200 and nothing to notice. `insertScope` is what
+  // stops the column being nameable without its value.
+  const t = insertScope(scope);
   await c.env.DB.batch([
     c.env.DB.prepare(
-      "INSERT INTO parameters (id, edition, key, name, weight, informational, role_scope, prompt, description, sort_order, active) VALUES (?, ?, ?, ?, 0, 1, ?, ?, ?, ?, 1)",
-    ).bind(id, edition, key, name, roleScope, prompt, description, nextOrder?.n ?? 101),
+      `INSERT INTO parameters (id, ${t.columns}, key, name, weight, informational, role_scope, prompt, description, sort_order, active) ` +
+        `VALUES (?, ${t.placeholders}, ?, ?, 0, 1, ?, ?, ?, ?, 1)`,
+    ).bind(id, ...t.binds, key, name, roleScope, prompt, description, nextOrder?.n ?? 101),
     // Adding a parameter changes the scoring criteria set → allow a re-score.
-    bumpCriteriaVersion(c, edition),
+    bumpCriteriaVersion(c, scope),
   ]);
 
   await auditConfig(c, "additional_param_added", `Additional parameter "${name}" added for ${roleScope}`, {
@@ -540,19 +588,22 @@ config.put("/additional-params/:id", async (c) => {
   // would have handed a jury member edit rights the role list never gave. The
   // floor is the same default editor set migration 0040 seeds — spec §10's, per
   // §8 Q6 — so the widening to program_manager / partner is preserved.
+  const scope = scopeOf(c.var.user);
   const mayConfigure = await mayConfigureAdditional(c);
   if (!mayConfigure && !isAdditionalParamOwner(edition, role)) {
     return c.json({ error: "forbidden" }, 403);
   }
-  const s = await requirePremium(c, edition);
+  const s = await requirePremium(c, scope);
   if (!s) return c.json({ error: "plan_required" }, 402);
   const id = c.req.param("id");
   // `retired = 0`, not `active = 1`: a switched-off parameter (0060) is still
   // editable, and switching it back on is an edit.
+  const pq = scoped(scope).on("p").and("p.id = ?", id).andRaw("p.retired = 0");
   const p = await c.env.DB.prepare(
-    "SELECT informational, name, prompt, description, role_scope, config_permitted, active FROM parameters WHERE id = ? AND edition = ? AND retired = 0",
+    "SELECT p.informational, p.name, p.prompt, p.description, p.role_scope, p.config_permitted, " +
+      `p.active FROM parameters p ${pq.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...pq.binds)
     .first<{
       informational: number;
       name: string;
@@ -586,12 +637,13 @@ config.put("/additional-params/:id", async (c) => {
   const description = optionalText(body.description, p.description);
   const active = body.enabled === undefined ? p.active : body.enabled ? 1 : 0;
 
+  const wq = scoped(scope).on("parameters").and("id = ?", id);
   try {
     await c.env.DB.batch([
       c.env.DB.prepare(
-        "UPDATE parameters SET name = ?, prompt = ?, description = ?, active = ? WHERE id = ?",
-      ).bind(name, prompt, description, active, id),
-      bumpCriteriaVersion(c, edition),
+        `UPDATE parameters SET name = ?, prompt = ?, description = ?, active = ? ${wq.whereClause()}`,
+      ).bind(name, prompt, description, active, ...wq.binds),
+      bumpCriteriaVersion(c, scope),
     ]);
   } catch {
     // `idx_parameters_edition_key_active` (0038) is partial on `active = 1`, so
@@ -631,21 +683,25 @@ config.put("/additional-params/:id", async (c) => {
  *  (Premium only). A soft delete — `active = 0, retired = 1` (0060) — so
  *  historical scores stay referenced and the row never comes back as a toggle. */
 config.delete("/additional-params/:id", requireTask("configparams", "admin", "program_manager", "partner"), async (c) => {
-  const edition = c.var.user.edition;
-  const s = await requirePremium(c, edition);
+  const workspace = scopeOf(c.var.user);
+  const s = await requirePremium(c, workspace);
   if (!s) return c.json({ error: "plan_required" }, 402);
   if (!(await memberAllowsAdditional(c, s))) return c.json({ error: "plan_required", scope: "member" }, 402);
   const id = c.req.param("id");
+  const pq = scoped(workspace).on("p").and("p.id = ?", id).andRaw("p.retired = 0");
   const p = await c.env.DB.prepare(
-    "SELECT informational, name FROM parameters WHERE id = ? AND edition = ? AND retired = 0",
+    `SELECT p.informational, p.name FROM parameters p ${pq.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...pq.binds)
     .first<{ informational: number; name: string }>();
   if (!p) return c.json({ error: "not_found" }, 404);
   if (p.informational !== 1) return c.json({ error: "core_param" }, 400); // never delete a core area
+  const dq = scoped(workspace).on("parameters").and("id = ?", id);
   await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE parameters SET active = 0, retired = 1 WHERE id = ?").bind(id),
-    bumpCriteriaVersion(c, edition),
+    c.env.DB.prepare(`UPDATE parameters SET active = 0, retired = 1 ${dq.whereClause()}`).bind(
+      ...dq.binds,
+    ),
+    bumpCriteriaVersion(c, workspace),
   ]);
   await auditConfig(c, "additional_param_removed", `Additional parameter "${p.name}" removed`, {
     targetType: "parameter",
@@ -662,21 +718,23 @@ config.delete("/additional-params/:id", requireTask("configparams", "admin", "pr
  * though the grant it writes lets a non-admin edit. Body: `{ permitted: bool }`.
  */
 config.put("/additional-params/:id/permit", requireTask("configparams", "admin", "program_manager", "partner"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const id = c.req.param("id");
   const body = await readBody<{ permitted: boolean }>(c);
   if (typeof body.permitted !== "boolean") return c.json({ error: "invalid_permitted" }, 400);
+  const pq = scoped(scope).on("p").and("p.id = ?", id).andRaw("p.active = 1");
   const p = await c.env.DB.prepare(
-    "SELECT informational, name, role_scope FROM parameters WHERE id = ? AND edition = ? AND active = 1",
+    `SELECT p.informational, p.name, p.role_scope FROM parameters p ${pq.whereClause()}`,
   )
-    .bind(id, edition)
+    .bind(...pq.binds)
     .first<{ informational: number; name: string; role_scope: string | null }>();
   if (!p) return c.json({ error: "not_found" }, 404);
   // Only the role-scoped additional parameters carry the delegation — the core
   // 13 are the org's rubric and are never delegated to one role.
   if (p.informational !== 1) return c.json({ error: "core_param" }, 400);
-  await c.env.DB.prepare("UPDATE parameters SET config_permitted = ? WHERE id = ?")
-    .bind(body.permitted ? 1 : 0, id)
+  const wq = scoped(scope).on("parameters").and("id = ?", id);
+  await c.env.DB.prepare(`UPDATE parameters SET config_permitted = ? ${wq.whereClause()}`)
+    .bind(body.permitted ? 1 : 0, ...wq.binds)
     .run();
   await auditConfig(
     c,
@@ -744,7 +802,19 @@ interface WeightPreviewRow {
 
 const WEIGHT_PREVIEW_LIMIT = 5;
 
-async function loadWeightPreview(db: D1Database, edition: Edition) {
+async function loadWeightPreview(db: D1Database, scope: TenantScope) {
+  // Both halves read `decks`, which §2 B1 calls the highest-value data on the
+  // platform, and the preview returns deck NAME plus raw `ai_score` plus the peer
+  // `human_avg` — so an insufficient predicate here shows another customer's
+  // startups and their scores on an admin's own Scoring framework screen. `decks`
+  // carries `tenant_id` (0084). The `evaluations` sub-select stays keyed on
+  // `e.deck_id = d.id`, which is the proxy path `TENANT_OWNER` names.
+  const previewQ = scoped(scope)
+    .on("d")
+    .andRaw("d.ai_score IS NOT NULL AND pr.ai_weight_pct IS NULL AND co.ai_weight_pct IS NULL");
+  const pinnedQ = scoped(scope)
+    .on("d")
+    .andRaw("COALESCE(co.ai_weight_pct, pr.ai_weight_pct) IS NOT NULL");
   const [rows, pinned] = await Promise.all([
     db
       .prepare(
@@ -755,21 +825,20 @@ async function loadWeightPreview(db: D1Database, edition: Edition) {
           "FROM decks d " +
           "LEFT JOIN programs pr ON pr.id = d.program_id " +
           "LEFT JOIN cohorts  co ON co.id = d.cohort_id " +
-          "WHERE d.edition = ? AND d.ai_score IS NOT NULL " +
-          "  AND pr.ai_weight_pct IS NULL AND co.ai_weight_pct IS NULL" +
+          `${previewQ.whereClause()}` +
           ") WHERE human_avg IS NOT NULL " +
           "ORDER BY ABS(ai_score - human_avg) DESC, name LIMIT ?",
       )
-      .bind(edition, WEIGHT_PREVIEW_LIMIT)
+      .bind(...previewQ.binds, WEIGHT_PREVIEW_LIMIT)
       .all<WeightPreviewRow>(),
     db
       .prepare(
         "SELECT COUNT(*) AS n FROM decks d " +
           "LEFT JOIN programs pr ON pr.id = d.program_id " +
           "LEFT JOIN cohorts  co ON co.id = d.cohort_id " +
-          "WHERE d.edition = ? AND COALESCE(co.ai_weight_pct, pr.ai_weight_pct) IS NOT NULL",
+          `${pinnedQ.whereClause()}`,
       )
-      .bind(edition)
+      .bind(...pinnedQ.binds)
       .first<{ n: number }>(),
   ]);
   return {
@@ -827,12 +896,13 @@ async function canEditVisibility(c: Context<AppEnv>): Promise<boolean> {
 
 /** GET /api/config/scoring — the org's scoring framework (any authed staff). */
 config.get("/scoring", async (c) => {
-  const { edition, role } = c.var.user;
+  const { role } = c.var.user;
+  const scope = scopeOf(c.var.user);
   // A founder never scores and never reads a report; the framework tells them
   // nothing they should know about how their deck is judged internally.
   if (role === "founder") return c.json({ error: "forbidden" }, 403);
-  const settings = await loadScoringSettings(c.env.DB, edition);
-  const s = await loadSettings(c, edition);
+  const settings = await loadScoringSettings(c.env.DB, scope);
+  const s = await loadSettings(c, scope);
   // V3 item 13 — both matrices, because the v3 superuser console's `s-fw`
   // draws `Visibility for Incubator` AND `Visibility for VC` side by side
   // regardless of which edition the viewer is in. They are RESOLVED, so the
@@ -854,10 +924,15 @@ config.get("/scoring", async (c) => {
   // change (`editable: isConfigAdmin(role)` below), so nobody else has a use
   // for it.
   const canPreview = isConfigAdmin(role);
+  // Both matrices, scoped by the viewer's TENANT and the matrix's own EDITION —
+  // never by the viewer's edition, because this one screen draws both cards. The
+  // edition here is the product variant picking which role list applies
+  // (`VISIBILITY_ROLES`); the customer is `scope.tenantId`. `inEdition` is where
+  // that judgement is written down.
   const [incubator, vc, weightPreview, visibilityEditable] = await Promise.all([
-    loadScoreVisibility(c.env.DB, "incubator"),
-    loadScoreVisibility(c.env.DB, "vc"),
-    canPreview ? loadWeightPreview(c.env.DB, edition) : Promise.resolve(null),
+    loadScoreVisibility(c.env.DB, inEdition(scope, "incubator")),
+    loadScoreVisibility(c.env.DB, inEdition(scope, "vc")),
+    canPreview ? loadWeightPreview(c.env.DB, scope) : Promise.resolve(null),
     canEditVisibility(c),
   ]);
   return c.json({
@@ -909,6 +984,7 @@ interface ScoringFrameworkBody {
  */
 function visibilityWrites(
   c: Context<AppEnv>,
+  scope: TenantScope,
   userId: string,
   submitted: ScoringFrameworkBody["visibility"],
 ): D1PreparedStatement[] {
@@ -924,13 +1000,26 @@ function visibilityWrites(
       for (const target of roles) {
         const cell = row[target];
         if (typeof cell !== "boolean") continue;
+        // ── ONE OF THE THREE `ON CONFLICT` SITES T1-CONFIG HOLDS ─────────────
+        //
+        // `0092` widened the primary key to `(tenant_id, edition, viewer_role,
+        // target_role)`. SQLite requires a conflict target to match a uniqueness
+        // constraint EXACTLY, so the old `ON CONFLICT (edition, viewer_role,
+        // target_role)` resolved against the transitional unique index 0092 left
+        // standing — and while it resolved there, a second customer's cell for the
+        // same triple could not exist at all. Naming the widened key is what lets
+        // integration drop that index (0101-0108).
+        //
+        // The EDITION bind is the loop's, not the caller's: this screen writes both
+        // matrices. `insertScope` is not used here for the same reason — the pair
+        // is `(scope.tenantId, edition)`, built per cell.
         out.push(
           c.env.DB.prepare(
-            "INSERT INTO score_visibility (edition, viewer_role, target_role, visible, updated_at, updated_by) " +
-              "VALUES (?, ?, ?, ?, datetime('now'), ?) " +
-              "ON CONFLICT (edition, viewer_role, target_role) DO UPDATE SET " +
+            "INSERT INTO score_visibility (tenant_id, edition, viewer_role, target_role, visible, updated_at, updated_by) " +
+              "VALUES (?, ?, ?, ?, ?, datetime('now'), ?) " +
+              "ON CONFLICT (tenant_id, edition, viewer_role, target_role) DO UPDATE SET " +
               "visible = excluded.visible, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
-          ).bind(edition, viewer, target, cell ? 1 : 0, userId),
+          ).bind(scope.tenantId, edition, viewer, target, cell ? 1 : 0, userId),
         );
       }
     }
@@ -949,8 +1038,9 @@ function visibilityWrites(
  * contract a weight edit already has.
  */
 config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c) => {
-  const { edition, id: userId } = c.var.user;
-  const before = await loadScoringSettings(c.env.DB, edition);
+  const { id: userId } = c.var.user;
+  const scope = scopeOf(c.var.user);
+  const before = await loadScoringSettings(c.env.DB, scope);
   const body = await readBody<ScoringFrameworkBody>(c);
 
   // P0-2 — the matrix half of this save carries its own gate, checked FIRST so
@@ -960,7 +1050,7 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
   // save it makes, and a body whose only cells name roles the matrix does not
   // draw (`admin`, `founder`) still writes nothing and is still dropped
   // silently — exactly as before — rather than turned into a 403 nobody caused.
-  const visibilityStmts = visibilityWrites(c, userId, body.visibility);
+  const visibilityStmts = visibilityWrites(c, scope, userId, body.visibility);
   if (visibilityStmts.length > 0 && !(await canEditVisibility(c))) {
     return c.json({ error: "forbidden" }, 403);
   }
@@ -1022,8 +1112,8 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
   // V3 item 13 — read the matrices BEFORE the write so the audit log can name
   // the cells that actually moved rather than the ones that were submitted.
   const visibilityBefore = {
-    incubator: await loadScoreVisibility(c.env.DB, "incubator"),
-    vc: await loadScoreVisibility(c.env.DB, "vc"),
+    incubator: await loadScoreVisibility(c.env.DB, inEdition(scope, "incubator")),
+    vc: await loadScoreVisibility(c.env.DB, inEdition(scope, "vc")),
   };
 
   const recompute = compositionChanged(before, after);
@@ -1034,7 +1124,7 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
         "jury_sees_peer_scores = ?, score_scale = ?, composite_formula = ?, ai_weight_pct = ?, " +
         "shortlist_threshold = ?, ai_gate_threshold = ?, show_three_score_view = ?, show_score_drift = ?, " +
         "include_ai_evidence = ?, intro_call_ai_prompts = ?, updated_at = datetime('now'), " +
-        "updated_by = ? WHERE edition = ?",
+        `updated_by = ? ${scoped(scope).on("org_scoring_settings").whereClause()}`,
     ).bind(
       after.aiPreScoringEnabled ? 1 : 0,
       after.autoClarification ? 1 : 0,
@@ -1052,10 +1142,11 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
       after.includeAiEvidence ? 1 : 0,
       after.introCallAiPrompts ? 1 : 0,
       userId,
-      edition,
+      scope.tenantId,
+      scope.edition,
     ),
   ];
-  if (recompute) stmts.push(bumpCriteriaVersion(c, edition));
+  if (recompute) stmts.push(bumpCriteriaVersion(c, scope));
   // V3 item 13 — the matrices ride the section's single Save (F0168): `s-fw`
   // has no save control of its own, so they commit in the SAME batch as the
   // toggles above them. Built above, where the gate that admits them is.
@@ -1065,8 +1156,8 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
   await auditScoringFramework(c, before, after);
 
   const [incubator, vc] = await Promise.all([
-    loadScoreVisibility(c.env.DB, "incubator"),
-    loadScoreVisibility(c.env.DB, "vc"),
+    loadScoreVisibility(c.env.DB, inEdition(scope, "incubator")),
+    loadScoreVisibility(c.env.DB, inEdition(scope, "vc")),
   ]);
   const visibilityAfter = { incubator, vc };
   const moved: VisibilityChange[] = [];
@@ -1081,14 +1172,14 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
   }
   await auditScoreVisibility(c, moved);
 
-  const rescored = recompute ? await rescoreEdition(c.env, edition) : { decks: 0, evaluations: 0 };
+  const rescored = recompute ? await rescoreEdition(c.env, scope) : { decks: 0, evaluations: 0 };
   return c.json({ ok: true, scoring: after, visibility: { incubator, vc }, rescored });
 });
 
 // ── Cohort thresholds ────────────────────────────────────────────────────────
 
 config.put("/thresholds", requireTask("adminconsole", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const body = await readBody<{ best: number; mediocre: number }>(c);
   const best = Number(body.best);
   const mediocre = Number(body.mediocre);
@@ -1096,11 +1187,12 @@ config.put("/thresholds", requireTask("adminconsole", "admin"), async (c) => {
     return c.json({ error: "invalid_threshold" }, 400);
   }
   if (best <= mediocre) return c.json({ error: "best_below_mediocre" }, 400);
-  const previous = await loadSettings(c, edition);
+  const previous = await loadSettings(c, scope);
+  const q = scoped(scope).on("org_settings");
   await c.env.DB.prepare(
-    "UPDATE org_settings SET threshold_best = ?, threshold_mediocre = ? WHERE edition = ?",
+    `UPDATE org_settings SET threshold_best = ?, threshold_mediocre = ? ${q.whereClause()}`,
   )
-    .bind(best, mediocre, edition)
+    .bind(best, mediocre, ...q.binds)
     .run();
   await auditThresholds(
     c,
@@ -1113,16 +1205,18 @@ config.put("/thresholds", requireTask("adminconsole", "admin"), async (c) => {
 // ── AI system prompt ─────────────────────────────────────────────────────────
 
 config.put("/ai-prompt", requireTask("adminconsole", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const { edition } = c.var.user;
+  const scope = scopeOf(c.var.user);
   const body = await readBody<{ prompt: string }>(c);
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+  const q = scoped(scope).on("org_settings");
   await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE org_settings SET ai_system_prompt = ? WHERE edition = ?").bind(
+    c.env.DB.prepare(`UPDATE org_settings SET ai_system_prompt = ? ${q.whereClause()}`).bind(
       prompt ? prompt : null,
-      edition,
+      ...q.binds,
     ),
     // The prompt is part of the scoring criteria → allow a re-score.
-    bumpCriteriaVersion(c, edition),
+    bumpCriteriaVersion(c, scope),
   ]);
   await auditConfig(
     c,
@@ -1136,11 +1230,12 @@ config.put("/ai-prompt", requireTask("adminconsole", "admin"), async (c) => {
 // ── Branding ─────────────────────────────────────────────────────────────────
 
 config.put("/branding", requireTask("adminconsole", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const { edition } = c.var.user;
+  const q = scoped(scopeOf(c.var.user)).on("org_settings");
   const body = await readBody<{ branding: Record<string, unknown> }>(c);
   const branding = body.branding && typeof body.branding === "object" ? body.branding : {};
-  await c.env.DB.prepare("UPDATE org_settings SET branding_json = ? WHERE edition = ?")
-    .bind(JSON.stringify(branding), edition)
+  await c.env.DB.prepare(`UPDATE org_settings SET branding_json = ? ${q.whereClause()}`)
+    .bind(JSON.stringify(branding), ...q.binds)
     .run();
   await auditConfig(c, "branding_updated", `Branding updated: ${Object.keys(branding).join(", ") || "cleared"}`, {
     targetType: "org_settings",
@@ -1153,12 +1248,14 @@ config.put("/branding", requireTask("adminconsole", "admin"), async (c) => {
 // ── Plan tier ────────────────────────────────────────────────────────────────
 
 config.put("/plan", requireTask("upgrade", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const { edition } = c.var.user;
+  const scope = scopeOf(c.var.user);
   const body = await readBody<{ plan: string }>(c);
   if (!isPlan(body.plan)) return c.json({ error: "invalid_plan" }, 400);
-  const current = await loadSettings(c, edition);
-  await c.env.DB.prepare("UPDATE org_settings SET plan = ? WHERE edition = ?")
-    .bind(body.plan, edition)
+  const current = await loadSettings(c, scope);
+  const q = scoped(scope).on("org_settings");
+  await c.env.DB.prepare(`UPDATE org_settings SET plan = ? ${q.whereClause()}`)
+    .bind(body.plan, ...q.binds)
     .run();
   if (current && current.plan !== body.plan) {
     await auditConfig(c, "plan_changed", `Plan changed from ${current.plan} to ${body.plan}`, {
@@ -1167,7 +1264,7 @@ config.put("/plan", requireTask("upgrade", "admin"), async (c) => {
       detail: { from: current.plan, to: body.plan },
     });
   }
-  const cap = await loadSeatCapability(c, edition);
+  const cap = await loadSeatCapability(c, scope);
   return c.json({
     ok: true,
     plan: body.plan,
@@ -1178,13 +1275,14 @@ config.put("/plan", requireTask("upgrade", "admin"), async (c) => {
 // ── Admin-granted credits ────────────────────────────────────────────────────
 
 config.post("/credits", requireTask("upgrade", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const body = await readBody<{ credits: number }>(c);
   const credits = Number(body.credits);
   if (!Number.isInteger(credits) || credits < 0) return c.json({ error: "invalid_credits" }, 400);
-  const settings = await loadSettings(c, edition);
-  await c.env.DB.prepare("UPDATE org_settings SET credits_balance = ? WHERE edition = ?")
-    .bind(credits, edition)
+  const settings = await loadSettings(c, scope);
+  const q = scoped(scope).on("org_settings");
+  await c.env.DB.prepare(`UPDATE org_settings SET credits_balance = ? ${q.whereClause()}`)
+    .bind(credits, ...q.binds)
     .run();
   // F0054 — the balance is a mutable integer; the ledger is what explains it.
   // An admin SET is recorded as the signed movement it actually performed.
@@ -1209,7 +1307,7 @@ config.post("/credits", requireTask("upgrade", "admin"), async (c) => {
 // integration — collecting card / UPI / bank credentials is deliberately out of
 // scope. The client labels it clearly as a simulated purchase.
 config.post("/credits/purchase", requireTask("upgrade", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const body = await readBody<{ credits: number }>(c);
   const credits = Number(body.credits);
   // A pack adds 1..1000 credits (1000 = the largest enterprise pack).
@@ -1217,15 +1315,20 @@ config.post("/credits/purchase", requireTask("upgrade", "admin"), async (c) => {
     return c.json({ error: "invalid_pack" }, 400);
   }
   // Atomic increment so a concurrent upload/reserve can't clobber the top-up.
+  // §2 B9 lists "credit balance and credit purchase" among what `/api/config/*`
+  // crosses, and this is the write half: unscoped, one customer's top-up credited
+  // whichever `org_settings` row the edition matched first.
+  const uq = scoped(scope).on("org_settings");
   await c.env.DB.prepare(
-    "UPDATE org_settings SET credits_balance = credits_balance + ? WHERE edition = ?",
+    `UPDATE org_settings SET credits_balance = credits_balance + ? ${uq.whereClause()}`,
   )
-    .bind(credits, edition)
+    .bind(credits, ...uq.binds)
     .run();
+  const rq = scoped(scope).on("o");
   const row = await c.env.DB.prepare(
-    "SELECT credits_balance FROM org_settings WHERE edition = ?",
+    `SELECT o.credits_balance FROM org_settings o ${rq.whereClause()}`,
   )
-    .bind(edition)
+    .bind(...rq.binds)
     .first<{ credits_balance: number }>();
   // F0054 — "Purchased 50-credit pack · ₹20,000 · Transaction ID: RZP…" is made
   // of ledger columns, so the ledger row and the Billing audit row are written

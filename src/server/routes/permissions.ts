@@ -9,6 +9,22 @@
  * GATE, NOT GRANT (§8 Q8): a cell can only ever REMOVE a capability the role
  * already has by its role list. `PUT` therefore never widens access on its own,
  * which is what makes it safe to expose as a checkbox.
+ *
+ * ── TENANCY (T1-CONFIG) ─────────────────────────────────────────────────────
+ *
+ * §2 B10: these two routes were scoped by `edition` alone, and `edition` has two
+ * values — so the leak here is not a list showing the wrong rows, it is a WRITE
+ * that re-gates another customer's entire admin console. `0091` rebuilt
+ * `role_permissions` with `PRIMARY KEY (tenant_id, edition, role, task_id)` and
+ * all three statements below now name the pair, including the upsert's conflict
+ * target (one of the nine `ON CONFLICT` sites that were blocking integration).
+ *
+ * The boundary, because it is easy to get wrong: `src/shared/permissions.ts` is
+ * NOT scoped. `can(edition, role, taskId, overrides)` is a pure function and its
+ * `edition` is the product variant choosing which matrix applies. What is
+ * tenant-owned is the `overrides` MAP it consumes, so the scope lives on the
+ * queries that load and write those rows — here and in `auth/permissions.ts`.
+ * §11: "A T1 session that 'fixes' `src/shared/` has misread the boundary."
  */
 import { Hono } from "hono";
 import type { AppEnv } from "../types";
@@ -16,7 +32,8 @@ import { requireAuth, requireTask } from "../auth/middleware";
 import { ROLE_LABELS, type Edition, type Role } from "../../shared/roles";
 import { PERMISSION_ROLES, permissionTasksFor } from "../../shared/types";
 import { can, isMatrixRole, isMatrixTask } from "../../shared/permissions";
-import { loadEditionOverrides } from "../auth/permissions";
+import { insertScope, scopeOf, scoped } from "../../shared/tenant";
+import { loadWorkspaceOverrides } from "../auth/permissions";
 // W3-C — an authorisation change is the one event an audit trail most needs.
 import { auditPermissionCells } from "../audit/events";
 
@@ -33,7 +50,7 @@ const requireConsole = requireTask("adminconsole", "admin");
 /** GET /api/permissions — tasks, roles and the resolved grid for the edition. */
 permissions.get("/", requireConsole, async (c) => {
   const edition = c.var.user.edition as Edition;
-  const overrides = await loadEditionOverrides(c.env.DB, edition);
+  const overrides = await loadWorkspaceOverrides(c.env.DB, scopeOf(c.var.user));
   const tasks = permissionTasksFor(edition);
   const roles = PERMISSION_ROLES[edition];
 
@@ -70,6 +87,7 @@ interface CellUpdate {
  */
 permissions.put("/", requireConsole, async (c) => {
   const { edition, id: actorId, role: actorRole } = c.var.user;
+  const scope = scopeOf(c.var.user);
   const body = await c.req.json<{ cells?: CellUpdate[] }>().catch(() => null);
   const cells = Array.isArray(body?.cells) ? body.cells : [];
   if (cells.length === 0) return c.json({ error: "no_cells" }, 400);
@@ -92,26 +110,45 @@ permissions.put("/", requireConsole, async (c) => {
   // granted cell recorded a flip that never happened — a fabricated before-state
   // in the one log that exists to be trusted about exactly this. Wave 3
   // integration.
+  const beforeQ = scoped(scope)
+    .on("rp")
+    .and(
+      `(${cells.map(() => "(rp.role = ? AND rp.task_id = ?)").join(" OR ")})`,
+      ...cells.flatMap((cell) => [cell.role as Role, cell.taskId]),
+    );
   const before = new Map<string, boolean>(
     (
       await c.env.DB.prepare(
-        `SELECT role, task_id, granted FROM role_permissions WHERE edition = ? AND (${cells
-          .map(() => "(role = ? AND task_id = ?)")
-          .join(" OR ")})`,
+        `SELECT rp.role, rp.task_id, rp.granted FROM role_permissions rp ${beforeQ.whereClause()}`,
       )
-        .bind(edition, ...cells.flatMap((cell) => [cell.role as Role, cell.taskId]))
+        .bind(...beforeQ.binds)
         .all<{ role: string; task_id: string; granted: number }>()
     ).results.map((r) => [`${r.role}:${r.task_id}`, r.granted === 1]),
   );
 
+  // ── ONE OF THE THREE `ON CONFLICT` SITES T1-CONFIG HOLDS ──────────────────
+  //
+  // `0091` widened the primary key to `(tenant_id, edition, role, task_id)`.
+  // SQLite requires a conflict target to match a uniqueness constraint EXACTLY,
+  // so the old three-column target resolved against the transitional unique index
+  // 0091 left standing — and while it stood, a second customer could not hold a
+  // grant for the same (edition, role, task_id) at all. Naming the widened key is
+  // what lets integration drop that index (0101-0108); the index itself is NOT
+  // dropped here, which is that session's job.
+  //
+  // `insertScope`, not two hand-written binds, because this is the most dangerous
+  // INSERT in the file: `tenant_id` carries `DEFAULT 't_default'`, so a forgotten
+  // bind would not fail — it would write a permission cell into the FIRST
+  // customer's authorisation matrix and answer 200.
+  const t = insertScope(scope);
   await c.env.DB.batch(
     cells.map((cell) =>
       c.env.DB.prepare(
-        "INSERT INTO role_permissions (edition, role, task_id, granted, updated_at, updated_by) " +
-          "VALUES (?, ?, ?, ?, datetime('now'), ?) " +
-          "ON CONFLICT (edition, role, task_id) DO UPDATE SET " +
+        `INSERT INTO role_permissions (${t.columns}, role, task_id, granted, updated_at, updated_by) ` +
+          `VALUES (${t.placeholders}, ?, ?, ?, datetime('now'), ?) ` +
+          "ON CONFLICT (tenant_id, edition, role, task_id) DO UPDATE SET " +
           "granted = excluded.granted, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
-      ).bind(edition, cell.role as Role, cell.taskId, cell.granted ? 1 : 0, actorId),
+      ).bind(...t.binds, cell.role as Role, cell.taskId, cell.granted ? 1 : 0, actorId),
     ),
   );
 
@@ -122,7 +159,7 @@ permissions.put("/", requireConsole, async (c) => {
     before,
   );
 
-  const overrides = await loadEditionOverrides(c.env.DB, edition);
+  const overrides = await loadWorkspaceOverrides(c.env.DB, scope);
   return c.json({
     ok: true,
     updated: cells.length,

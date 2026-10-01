@@ -32,7 +32,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
-import type { Edition } from "../../shared/roles";
 import { isMentor } from "../../shared/roles";
 import { PLANS, isPlan, planAllowsAdditional, planAllowsCore, type Plan } from "../../shared/plans";
 import {
@@ -43,6 +42,7 @@ import {
   type SeatCapability,
 } from "../../shared/aiPrompts";
 import { requireAuth, requireTask } from "../auth/middleware";
+import { insertScope, scopeOf, scoped, type TenantScope } from "../../shared/tenant";
 import { auditConfig } from "../audit/events";
 
 const aiPrompts = new Hono<AppEnv>();
@@ -87,12 +87,27 @@ function toView(p: PromptRow): PromptView {
   };
 }
 
-const SELECT_PARAMS =
-  "SELECT id, key, name, informational, role_scope, prompt, prompt_default, sort_order " +
-  "FROM parameters WHERE edition = ? AND active = 1 AND retired = 0 ORDER BY sort_order";
+/**
+ * ── TENANCY, AND WHY `SELECT_PARAMS` IS NO LONGER A STRING TO PATCH ─────────
+ *
+ * `findParam` used to build its statement by `String.replace`-ing this constant's
+ * `WHERE edition = ?` clause. That worked exactly as long as the predicate was one
+ * token wide; a workspace key is two, and a predicate assembled by search and
+ * replace is the shape that silently drops a half. Both readers now take the
+ * builder's clause instead, so the column list and the predicate are separate
+ * things and neither is edited by rewriting the other's text.
+ */
+const SELECT_PARAM_COLUMNS =
+  "SELECT p.id, p.key, p.name, p.informational, p.role_scope, p.prompt, p.prompt_default, " +
+  "p.sort_order FROM parameters p ";
 
-async function loadParams(c: Context<AppEnv>, edition: Edition): Promise<PromptRow[]> {
-  return (await c.env.DB.prepare(SELECT_PARAMS).bind(edition).all<PromptRow>()).results;
+async function loadParams(c: Context<AppEnv>, scope: TenantScope): Promise<PromptRow[]> {
+  const q = scoped(scope).on("p").andRaw("p.active = 1 AND p.retired = 0");
+  return (
+    await c.env.DB.prepare(`${SELECT_PARAM_COLUMNS}${q.whereClause()} ORDER BY p.sort_order`)
+      .bind(...q.binds)
+      .all<PromptRow>()
+  ).results;
 }
 
 // ── The seat-configurability grid ────────────────────────────────────────────
@@ -105,14 +120,20 @@ async function loadParams(c: Context<AppEnv>, edition: Edition): Promise<PromptR
  */
 export async function loadSeatCapability(
   c: Context<AppEnv>,
-  edition: Edition,
+  scope: TenantScope,
 ): Promise<SeatCapability> {
+  // `0093` widened the key to `(tenant_id, edition, param_set, tier)`. The
+  // fallback below is what makes an insufficient predicate dangerous rather than
+  // merely wrong: a missing row means "as it has always behaved", so reading
+  // ANOTHER customer's grid produces a plausible answer and no error — and the
+  // answer decides whether this caller may configure the rubric at all.
   const cap = defaultSeatCapability();
+  const q = scoped(scope).on("sc");
   const rows = (
     await c.env.DB.prepare(
-      "SELECT param_set, tier, allowed FROM seat_capabilities WHERE edition = ?",
+      `SELECT sc.param_set, sc.tier, sc.allowed FROM seat_capabilities sc ${q.whereClause()}`,
     )
-      .bind(edition)
+      .bind(...q.binds)
       .all<{ param_set: string; tier: string; allowed: number }>()
   ).results;
   for (const r of rows) {
@@ -128,12 +149,14 @@ export async function loadSeatCapability(
  * sessions this wave and a new export from it is a merge conflict for all of
  * them; §9 records the fold-back.
  */
-async function effectiveTier(c: Context<AppEnv>, edition: Edition): Promise<Plan> {
-  const org = await c.env.DB.prepare("SELECT plan FROM org_settings WHERE edition = ?")
-    .bind(edition)
+async function effectiveTier(c: Context<AppEnv>, scope: TenantScope): Promise<Plan> {
+  const oq = scoped(scope).on("o");
+  const org = await c.env.DB.prepare(`SELECT o.plan FROM org_settings o ${oq.whereClause()}`)
+    .bind(...oq.binds)
     .first<{ plan: string }>();
-  const member = await c.env.DB.prepare("SELECT plan_tier FROM users WHERE id = ?")
-    .bind(c.var.user.id)
+  const uq = scoped(scope).on("u").and("u.id = ?", c.var.user.id);
+  const member = await c.env.DB.prepare(`SELECT u.plan_tier FROM users u ${uq.whereClause()}`)
+    .bind(...uq.binds)
     .first<{ plan_tier: string | null }>();
   const orgPlan: Plan = isPlan(org?.plan) ? org.plan : "standard";
   const seat: Plan = isPlan(member?.plan_tier) ? member.plan_tier : "standard";
@@ -143,11 +166,11 @@ async function effectiveTier(c: Context<AppEnv>, edition: Edition): Promise<Plan
 /** Whether the caller's seat may edit prompts in `set`, per the org's grid. */
 async function mayConfigure(
   c: Context<AppEnv>,
-  edition: Edition,
+  scope: TenantScope,
   set: ParamSet,
 ): Promise<{ allowed: boolean; tier: Plan }> {
-  const tier = await effectiveTier(c, edition);
-  const cap = await loadSeatCapability(c, edition);
+  const tier = await effectiveTier(c, scope);
+  const cap = await loadSeatCapability(c, scope);
   const allowed =
     set === "core" ? planAllowsCore(tier, cap.core) : planAllowsAdditional(tier, cap.addl);
   return { allowed, tier };
@@ -169,12 +192,13 @@ function setOf(p: PromptRow): ParamSet {
  * prompt may still need to read what the AI was asked. Editing is gated below.
  */
 aiPrompts.get("/", async (c) => {
-  const { edition, role } = c.var.user;
+  const { role } = c.var.user;
+  const scope = scopeOf(c.var.user);
   if (role === "founder" || isMentor(role)) return c.json({ error: "forbidden" }, 403);
   const [params, capability, tier] = await Promise.all([
-    loadParams(c, edition),
-    loadSeatCapability(c, edition),
-    effectiveTier(c, edition),
+    loadParams(c, scope),
+    loadSeatCapability(c, scope),
+    effectiveTier(c, scope),
   ]);
   return c.json({
     params: params.map(toView),
@@ -189,13 +213,12 @@ aiPrompts.get("/", async (c) => {
 // ── Writes ───────────────────────────────────────────────────────────────────
 
 async function findParam(c: Context<AppEnv>, id: string): Promise<PromptRow | null> {
-  return c.env.DB.prepare(
-    SELECT_PARAMS.replace("WHERE edition = ?", "WHERE edition = ? AND id = ?").replace(
-      " ORDER BY sort_order",
-      "",
-    ),
-  )
-    .bind(c.var.user.edition, id)
+  const q = scoped(scopeOf(c.var.user))
+    .on("p")
+    .and("p.id = ?", id)
+    .andRaw("p.active = 1 AND p.retired = 0");
+  return c.env.DB.prepare(`${SELECT_PARAM_COLUMNS}${q.whereClause()}`)
+    .bind(...q.binds)
     .first<PromptRow>();
 }
 
@@ -224,11 +247,17 @@ async function writePrompt(
   summary: string,
   action: string,
 ): Promise<void> {
+  const scope = scopeOf(c.var.user);
+  const pq = scoped(scope).on("parameters").and("id = ?", param.id);
+  const oq = scoped(scope).on("org_settings");
   await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE parameters SET prompt = ? WHERE id = ?").bind(prompt, param.id),
+    c.env.DB.prepare(`UPDATE parameters SET prompt = ? ${pq.whereClause()}`).bind(
+      prompt,
+      ...pq.binds,
+    ),
     c.env.DB.prepare(
-      "UPDATE org_settings SET criteria_version = criteria_version + 1 WHERE edition = ?",
-    ).bind(c.var.user.edition),
+      `UPDATE org_settings SET criteria_version = criteria_version + 1 ${oq.whereClause()}`,
+    ).bind(...oq.binds),
   ]);
   await auditConfig(c, action, summary, { targetType: "parameter", targetId: param.id });
 }
@@ -239,7 +268,7 @@ aiPrompts.put("/params/:id", requireTask("adminconsole", "admin"), async (c) => 
   if (!param) return c.json({ error: "not_found" }, 404);
 
   const set = setOf(param);
-  const { allowed, tier } = await mayConfigure(c, c.var.user.edition, set);
+  const { allowed, tier } = await mayConfigure(c, scopeOf(c.var.user), set);
   if (!allowed) return c.json({ error: "plan_required", set, tier }, 402);
 
   const body = (await c.req.json().catch(() => ({}))) as { prompt?: unknown };
@@ -262,7 +291,7 @@ aiPrompts.post("/params/:id/restore", requireTask("adminconsole", "admin"), asyn
   if (!param) return c.json({ error: "not_found" }, 404);
 
   const set = setOf(param);
-  const { allowed, tier } = await mayConfigure(c, c.var.user.edition, set);
+  const { allowed, tier } = await mayConfigure(c, scopeOf(c.var.user), set);
   if (!allowed) return c.json({ error: "plan_required", set, tier }, 402);
 
   const restored = param.prompt_default;
@@ -287,27 +316,29 @@ aiPrompts.post("/params/:id/restore", requireTask("adminconsole", "admin"), asyn
  * must not be able to restore the additional ones in the same request.
  */
 aiPrompts.post("/restore-all", requireTask("adminconsole", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const body = (await c.req.json().catch(() => ({}))) as { set?: unknown };
   if (!isParamSet(body.set)) return c.json({ error: "invalid_set", sets: PARAM_SETS }, 400);
   const set = body.set;
 
-  const { allowed, tier } = await mayConfigure(c, edition, set);
+  const { allowed, tier } = await mayConfigure(c, scope, set);
   if (!allowed) return c.json({ error: "plan_required", set, tier }, 402);
 
-  const params = (await loadParams(c, edition)).filter((p) => setOf(p) === set);
+  const params = (await loadParams(c, scope)).filter((p) => setOf(p) === set);
   const changed = params.filter((p) => (p.prompt ?? null) !== (p.prompt_default ?? null));
   if (changed.length > 0) {
+    const oq = scoped(scope).on("org_settings");
     await c.env.DB.batch([
-      ...changed.map((p) =>
-        c.env.DB.prepare("UPDATE parameters SET prompt = ? WHERE id = ?").bind(
+      ...changed.map((p) => {
+        const pq = scoped(scope).on("parameters").and("id = ?", p.id);
+        return c.env.DB.prepare(`UPDATE parameters SET prompt = ? ${pq.whereClause()}`).bind(
           p.prompt_default,
-          p.id,
-        ),
-      ),
+          ...pq.binds,
+        );
+      }),
       c.env.DB.prepare(
-        "UPDATE org_settings SET criteria_version = criteria_version + 1 WHERE edition = ?",
-      ).bind(edition),
+        `UPDATE org_settings SET criteria_version = criteria_version + 1 ${oq.whereClause()}`,
+      ).bind(...oq.binds),
     ]);
     await auditConfig(
       c,
@@ -333,7 +364,7 @@ aiPrompts.post("/restore-all", requireTask("adminconsole", "admin"), async (c) =
  * an org locks itself out of its own settings.
  */
 aiPrompts.put("/capability", requireTask("adminconsole", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const body = (await c.req.json().catch(() => ({}))) as {
     set?: unknown;
     tier?: unknown;
@@ -344,11 +375,25 @@ aiPrompts.put("/capability", requireTask("adminconsole", "admin"), async (c) => 
   if (typeof body.allowed !== "boolean") return c.json({ error: "invalid_allowed" }, 400);
   const { set, tier, allowed } = body;
 
+  // ── ONE OF THE THREE `ON CONFLICT` SITES T1-CONFIG HOLDS ──────────────────
+  //
+  // `0093` widened the key to `(tenant_id, edition, param_set, tier)`, and a
+  // conflict target must match a uniqueness constraint EXACTLY — so the old
+  // three-column target resolved against the transitional unique index 0093 left
+  // standing, and while it did, no second customer could own a grid cell at all.
+  // Naming the widened key is what lets integration drop that index (0101-0108).
+  //
+  // `insertScope` rather than two hand-written binds, because this is a write to
+  // the table that decides WHO MAY CONFIGURE: `tenant_id` carries
+  // `DEFAULT 't_default'`, so a forgotten bind would not fail — it would hand the
+  // first customer's grid a cell set by the second, with a 200 and nothing to see.
+  const t = insertScope(scope);
   await c.env.DB.prepare(
-    "INSERT INTO seat_capabilities (edition, param_set, tier, allowed) VALUES (?, ?, ?, ?) " +
-      "ON CONFLICT (edition, param_set, tier) DO UPDATE SET allowed = excluded.allowed",
+    `INSERT INTO seat_capabilities (${t.columns}, param_set, tier, allowed) ` +
+      `VALUES (${t.placeholders}, ?, ?, ?) ` +
+      "ON CONFLICT (tenant_id, edition, param_set, tier) DO UPDATE SET allowed = excluded.allowed",
   )
-    .bind(edition, set, tier, allowed ? 1 : 0)
+    .bind(...t.binds, set, tier, allowed ? 1 : 0)
     .run();
 
   await auditConfig(
@@ -357,7 +402,7 @@ aiPrompts.put("/capability", requireTask("adminconsole", "admin"), async (c) => 
     `${tier} seats ${allowed ? "may now" : "may no longer"} configure the ` +
       `${set === "core" ? "core" : "additional"} parameters`,
   );
-  return c.json({ ok: true, capability: await loadSeatCapability(c, edition) });
+  return c.json({ ok: true, capability: await loadSeatCapability(c, scope) });
 });
 
 export default aiPrompts;

@@ -10,6 +10,7 @@ import {
 } from "../auth/session";
 import { requireAuth } from "../auth/middleware";
 import { loadPermissionOverrides } from "../auth/permissions";
+import { scopeOf } from "../../shared/tenant";
 import { emitNotification } from "../email/outbox";
 import { grantedTasks } from "../../shared/permissions";
 import { roleLabel } from "../../shared/roles";
@@ -18,7 +19,16 @@ const auth = new Hono<AppEnv>();
 
 /** The task ids this principal holds — see the note on `GET /me` below. */
 async function permissionsFor(db: D1Database, user: SessionUser): Promise<string[]> {
-  return grantedTasks(user.edition, user.role, await loadPermissionOverrides(db, user.edition, user.role));
+  // T1-CONFIG, one expression inside T0's file: `loadPermissionOverrides` now takes
+  // the workspace rather than the edition, because `role_permissions` is the
+  // authorisation matrix itself (§2 B10) and a gate must not read it from another
+  // customer. `scopeOf(user)` is the same principal this function was already
+  // answering for.
+  return grantedTasks(
+    user.edition,
+    user.role,
+    await loadPermissionOverrides(db, scopeOf(user), user.role),
+  );
 }
 
 /**

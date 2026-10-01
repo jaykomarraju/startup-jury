@@ -30,8 +30,8 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
-import type { Edition } from "../../shared/roles";
 import { parseMissingFields } from "../../shared/intake";
+import { scopeOf, scoped, type TenantScope } from "../../shared/tenant";
 import { requireAuth, requireTask } from "../auth/middleware";
 // W3-C — the bank is scoring configuration: an edit changes what a founder
 // is asked, so it belongs in the Config trail.
@@ -106,21 +106,28 @@ function cleanText(raw: unknown): string | null {
  */
 async function loadBank(
   c: Context<AppEnv>,
-  edition: Edition,
+  scope: TenantScope,
 ): Promise<{ areas: AreaRow[]; byArea: Map<string, BankRow[]> }> {
+  // `question_bank` carries no tenant column — it is keyed to `parameters.id` and
+  // owned through it (§5b's proxy bucket, `TENANT_OWNER`). So the scope goes on
+  // `parameters` in BOTH halves, and the second half is the one that matters:
+  // adding `tenant_id` to `parameters` does nothing for a statement that reads
+  // `question_bank` and names only `p.edition`. §2 B24 is this route family.
+  const aq = scoped(scope).on("p").andRaw("p.active = 1 AND p.informational = 0");
+  const bq = scoped(scope).on("p").andRaw("q.active = 1");
   const [areas, rows] = await Promise.all([
     c.env.DB.prepare(
-      "SELECT id, key, name, sort_order FROM parameters " +
-        "WHERE edition = ? AND active = 1 AND informational = 0 ORDER BY sort_order",
+      "SELECT p.id, p.key, p.name, p.sort_order FROM parameters p " +
+        `${aq.whereClause()} ORDER BY p.sort_order`,
     )
-      .bind(edition)
+      .bind(...aq.binds)
       .all<AreaRow>(),
     c.env.DB.prepare(
       "SELECT q.id, q.parameter_id, q.seq, q.text, q.active FROM question_bank q " +
         "JOIN parameters p ON p.id = q.parameter_id " +
-        "WHERE p.edition = ? AND q.active = 1 ORDER BY q.seq, q.rowid",
+        `${bq.whereClause()} ORDER BY q.seq, q.rowid`,
     )
-      .bind(edition)
+      .bind(...bq.binds)
       .all<BankRow>(),
   ]);
 
@@ -141,23 +148,35 @@ function toBankAreas(areas: AreaRow[], byArea: Map<string, BankRow[]>): BankArea
   }));
 }
 
-/** The question, if it exists and belongs to the caller's edition. */
+/**
+ * The question, if it exists and belongs to the caller's WORKSPACE.
+ *
+ * This is the gate for every write below — `PUT /:id`, `DELETE /:id` and the
+ * reorder all take their row id from here and then write `WHERE id = ?`. So the
+ * predicate on this one statement is what stands between a console admin and
+ * another customer's clarification bank, which is why the writes are safe without
+ * a predicate of their own and why this one is not optional.
+ */
 async function loadQuestion(c: Context<AppEnv>, id: string): Promise<BankRow | null> {
+  const q = scoped(scopeOf(c.var.user)).on("p").and("q.id = ?", id);
   return c.env.DB.prepare(
     "SELECT q.id, q.parameter_id, q.seq, q.text, q.active FROM question_bank q " +
-      "JOIN parameters p ON p.id = q.parameter_id WHERE q.id = ? AND p.edition = ?",
+      `JOIN parameters p ON p.id = q.parameter_id ${q.whereClause()}`,
   )
-    .bind(id, c.var.user.edition)
+    .bind(...q.binds)
     .first<BankRow>();
 }
 
-/** The area, if it exists, is scored, and belongs to the caller's edition. */
+/** The area, if it exists, is scored, and belongs to the caller's workspace. */
 async function loadArea(c: Context<AppEnv>, parameterId: string): Promise<AreaRow | null> {
+  const q = scoped(scopeOf(c.var.user))
+    .on("p")
+    .and("p.id = ?", parameterId)
+    .andRaw("p.active = 1 AND p.informational = 0");
   return c.env.DB.prepare(
-    "SELECT id, key, name, sort_order FROM parameters " +
-      "WHERE id = ? AND edition = ? AND active = 1 AND informational = 0",
+    `SELECT p.id, p.key, p.name, p.sort_order FROM parameters p ${q.whereClause()}`,
   )
-    .bind(parameterId, c.var.user.edition)
+    .bind(...q.binds)
     .first<AreaRow>();
 }
 
@@ -167,8 +186,8 @@ async function loadArea(c: Context<AppEnv>, parameterId: string): Promise<AreaRo
 
 /** GET /api/questions — the thirteen accordions and their questions. */
 questions.get("/", requireAdmin, async (c) => {
-  const edition = c.var.user.edition;
-  const { areas, byArea } = await loadBank(c, edition);
+  const { edition } = c.var.user;
+  const { areas, byArea } = await loadBank(c, scopeOf(c.var.user));
   return c.json({
     edition,
     areas: areas.map((a) => ({
@@ -194,6 +213,14 @@ questions.post("/", requireAdmin, async (c) => {
 
   // Appends after every row of the area, active or not, so a soft-deleted
   // question's ordinal is never handed to a new one.
+  //
+  // `WHERE parameter_id = ?` with no tenant predicate, deliberately: `area.id`
+  // came from `loadArea`, which is scoped, and `question_bank` has no tenant
+  // column of its own — it is owned through `parameters`. An aggregate over a
+  // validated parent id is the one shape §11's warning does not apply to, because
+  // the owner was named one frame up rather than nowhere. The same reasoning
+  // covers the reorder read and all three `UPDATE … WHERE id = ?` writes below:
+  // every id reaching them passed `loadArea` or `loadQuestion` first.
   const max = await c.env.DB.prepare(
     "SELECT COALESCE(MAX(seq), 0) AS n FROM question_bank WHERE parameter_id = ?",
   )
@@ -320,20 +347,30 @@ interface DraftDeckRow {
  * carry: the bank is keyed to it.
  */
 questions.get("/draft/:deckId", requireQuerier, async (c) => {
-  const user = c.var.user;
+  const scope = scopeOf(c.var.user);
+  // Three correlated sub-selects hang off this one predicate, and two of them
+  // reach tenant-owned data through `d.id` alone: `scores` and `deck_extractions`
+  // are both deck-owned with no scope of their own (§5b's proxy bucket). The
+  // `org_settings` sub-select is the one that needed its own predicate — it
+  // correlated on `o.edition = d.edition`, which is a column with two values, so
+  // it read whichever customer's threshold the edition matched first and then
+  // decided which of THIS deck's areas count as weak. It correlates on the deck's
+  // tenant now, and the deck's tenant is this caller's because of the outer scope.
+  const dq = scoped(scope).on("d").and("d.id = ?", c.req.param("deckId"));
   const deck = await c.env.DB.prepare(
     "SELECT d.id, d.name, d.missing_fields, " +
       "(SELECT GROUP_CONCAT(s.parameter_id, '||') FROM scores s JOIN parameters p ON p.id = s.parameter_id " +
       "  WHERE s.deck_id = d.id AND s.evaluator_kind = 'ai' AND p.informational = 0 " +
-      "    AND s.value < (SELECT o.threshold_mediocre FROM org_settings o WHERE o.edition = d.edition)) AS weak_area_ids, " +
+      "    AND s.value < (SELECT o.threshold_mediocre FROM org_settings o " +
+      "                    WHERE o.tenant_id = d.tenant_id AND o.edition = d.edition)) AS weak_area_ids, " +
       "(SELECT GROUP_CONCAT(e.label, '||') FROM deck_extractions e WHERE e.deck_id = d.id AND e.missing = 1) AS missing_sections " +
-      "FROM decks d WHERE d.id = ? AND d.edition = ?",
+      `FROM decks d ${dq.whereClause()}`,
   )
-    .bind(c.req.param("deckId"), user.edition)
+    .bind(...dq.binds)
     .first<DraftDeckRow>();
   if (!deck) return c.json({ error: "not_found" }, 404);
 
-  const { areas, byArea } = await loadBank(c, user.edition);
+  const { areas, byArea } = await loadBank(c, scope);
   const nameById = new Map(areas.map((a) => [a.id, a.name]));
   const weakAreas: string[] = [];
   for (const id of (deck.weak_area_ids ?? "").split("||")) {
@@ -351,10 +388,11 @@ questions.get("/draft/:deckId", requireQuerier, async (c) => {
     weakAreas,
   });
 
+  const sq = scoped(scope).on("oss");
   const settings = await c.env.DB.prepare(
-    "SELECT auto_clarification FROM org_scoring_settings WHERE edition = ?",
+    `SELECT oss.auto_clarification FROM org_scoring_settings oss ${sq.whereClause()}`,
   )
-    .bind(user.edition)
+    .bind(...sq.binds)
     .first<{ auto_clarification: number }>();
   // The table is seeded for both editions in 0026; a missing row means the
   // migration has not run, in which case the prototype's default (ON) applies.

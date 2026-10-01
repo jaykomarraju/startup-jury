@@ -518,8 +518,10 @@ const ROUTE_PROBES: readonly RouteProbe[] = [
   { id: "B1 decks", path: "/api/decks", as: PM, status: "enforced" },
   { id: "B5 audit", path: "/api/audit", as: ADMIN, status: "pending", owner: "T1-REPORTS" },
   { id: "B6 users", path: "/api/users", as: ADMIN, status: "enforced" },
-  { id: "B9 config parameters", path: "/api/config/parameters", as: ADMIN, status: "pending", owner: "T1-CONFIG" },
-  { id: "B9 config summary", path: "/api/config/summary", as: ADMIN, status: "pending", owner: "T1-CONFIG" },
+  // T1-CONFIG. Both of these read `parameters`, which 0089 keyed on
+  // `(tenant_id, edition)`; the loaders now take a `TenantScope`.
+  { id: "B9 config parameters", path: "/api/config/parameters", as: ADMIN, status: "enforced" },
+  { id: "B9 config summary", path: "/api/config/summary", as: ADMIN, status: "enforced" },
   { id: "B15 esign templates", path: "/api/esign/templates", as: ADMIN, status: "enforced" },
   { id: "B15 esign signatories", path: "/api/esign/signatories", as: ADMIN, status: "enforced" },
   // §2 B14, which had no probe at all — the single highest-value row in the leak
@@ -559,7 +561,15 @@ const ROUTE_PROBES: readonly RouteProbe[] = [
   // signup-config's documents live at `/documents`, not at the router root. A probe
   // pointed at a 404 proves nothing, which is why the `status !== 200` guard above
   // fails loudly instead of passing quietly.
-  { id: "B9 config sectors", path: "/api/config", as: ADMIN, status: "pending", owner: "T1-CONFIG" },
+  { id: "B9 config sectors", path: "/api/config", as: ADMIN, status: "enforced" },
+  // ── T1-CONFIG's three unlisted routes. §2 B24 names `/api/questions` (6),
+  //    `/api/ai-prompts` (5) and `/api/anchors` (2) in one row and the leak table
+  //    gives them no probe; all three read `parameters`, so the `zz_param` fixture
+  //    reaches every one of them. Each was MEASURED leaking on T0's commit before
+  //    being written here as `enforced`.
+  { id: "B24 ai prompts", path: "/api/ai-prompts", as: ADMIN, status: "enforced" },
+  { id: "B24 question bank", path: "/api/questions", as: ADMIN, status: "enforced" },
+  { id: "B24 rubric anchors", path: "/api/anchors", as: ADMIN, status: "enforced" },
   // T1-FLOW. The checklist (`required_documents`, tenant-owned) AND the per-record
   // document sets (`signups` + `signup_documents`, two hops) in one payload.
   { id: "B13 signup-config documents", path: "/api/signup-config/documents", as: ADMIN, status: "enforced" },
@@ -604,7 +614,24 @@ const ROUTE_PROBES: readonly RouteProbe[] = [
     owner: "T1-CONFIG",
     reason:
       "returns task ids and booleans, no free text — and `role_permissions` is one of the five " +
-      "tables 0091-0095's transitional keys still block, so tenant B cannot have a row to leak",
+      "tables 0091-0095's transitional keys still block, so tenant B cannot have a row to leak. " +
+      "T1-CONFIG has scoped both statements and the upsert now names the widened key " +
+      "(`routes/permissions.ts`), but this case cannot be promoted until integration drops " +
+      "0091's index and a tenant-B fixture becomes possible — promoting it now would assert " +
+      "nothing, which is what `unprobed` exists to say.",
+  },
+  {
+    id: "B9 config scoring",
+    path: "/api/config/scoring",
+    as: ADMIN,
+    status: "unprobed",
+    owner: "T1-CONFIG",
+    reason:
+      "every field is a number or a boolean. The one free-text path is `weightPreview`, which " +
+      "carries deck NAMES and needs `zz_deck` to have both an `ai_score` and a human " +
+      "`evaluations` row — tenant B has neither. Scoped by T1-CONFIG regardless " +
+      "(`loadWeightPreview`, `loadScoringSettings`, `loadScoreVisibility`); the fixture that " +
+      "would make it probeable belongs with T1-DECKS' evaluation rows.",
   },
   // T1-FLOW. Promoted out of `unprobed` the way this file's instruction 1b asks:
   // `TENANT_B_PROXY_FIXTURES.calls` and `.call_participants` gave tenant B a call
@@ -1542,6 +1569,192 @@ describe("tenancy · layer 3 — the writes, where the failure is silent", () =>
     expect(theirs.text).not.toContain(`${MARKER} Colleague`);
 
     await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(created.user.id).run();
+  });
+
+  /**
+   * `loadSettings` AND `loadScoringSettings` — ASSERTED FROM TENANT B's SIDE,
+   * BECAUSE A MARKER SWEEP FROM TENANT A's SIDE CANNOT SEE THEM.
+   *
+   * The six `enforced` route cases above all catch the `parameters` read, and they
+   * were all confirmed red against unscoped source. They say **nothing** about the
+   * `org_settings` and `org_scoring_settings` reads on the same routes, and the
+   * reason is the third trap in T1-REPORTS' list: both are `.first()` over a
+   * single-row predicate, and with the key `(tenant_id, edition)` and nothing
+   * indexing `edition` alone, an UNSCOPED scan reaches the MIGRATION's `t_default`
+   * row before any row this file inserts. So `/api/config` would withhold tenant
+   * B's `ZZTENANTB system prompt` from tenant A by luck of insert order, with no
+   * predicate at all, and the case would pass while proving nothing.
+   *
+   * Inverting the probe removes the luck. Signed in as tenant B's OWN admin, the
+   * correct answer is tenant B's row — which an unscoped `.first()` cannot return,
+   * because it reaches `t_default` first. A passing assertion here therefore
+   * requires the predicate to work, in the one direction insert order cannot fake.
+   *
+   * This is a POSITIVE control and it is paired with the marker sweeps above, not a
+   * replacement for them: together they cover both reads on these routes.
+   */
+  it("tenant B's own admin reads tenant B's org_settings, not the migration's row", async () => {
+    const cookie = await login(`zz.admin@${MARKER.toLowerCase()}.test`);
+    expect(cookie).toBeTruthy();
+    const { status, text } = await body("/api/config", cookie!);
+    expect(status, "/api/config refused tenant B's admin, so this case proves nothing").toBe(200);
+    const json = JSON.parse(text) as { aiSystemPrompt?: string };
+    // The fixture's own value. `t_default`'s prompt is the seed's, so the two cannot
+    // be confused, and an unscoped read returns the seed's.
+    expect(
+      json.aiSystemPrompt,
+      "tenant B's admin was served another workspace's org_settings row — `loadSettings` " +
+        "is reading by edition alone and the scan reached the migration's row first",
+    ).toBe(`${MARKER} system prompt`);
+  });
+
+  it("tenant B's own admin reads tenant B's scoring framework, not the migration's row", async () => {
+    // Same shape, same reason, different table: `org_scoring_settings` was given
+    // `ai_weight_pct = 11` by the fixture precisely because no seeded row holds it.
+    // This is the only assertion in the file that can see `loadScoringSettings`'s
+    // predicate — the framework response is all numbers and booleans, so the marker
+    // sweep is structurally blind to it (`B9 config scoring` is `unprobed` for that
+    // reason).
+    const cookie = await login(`zz.admin@${MARKER.toLowerCase()}.test`);
+    const { status, text } = await body("/api/config/scoring", cookie!);
+    expect(status).toBe(200);
+    const json = JSON.parse(text) as { scoring?: { aiWeightPct?: number } };
+    expect(
+      json.scoring?.aiWeightPct,
+      "tenant B's admin was served another workspace's scoring framework — the AI pre-scoring " +
+        "switch, the jury-visibility toggles and the shortlist floor all come from this row",
+    ).toBe(11);
+  });
+
+  /**
+   * T1-CONFIG's THREE `ON CONFLICT` SITES — `role_permissions`, `score_visibility`
+   * and `seat_capabilities`.
+   *
+   * These three are the write side of the five tables
+   * `BLOCKED_BY_TRANSITIONAL_KEY` names, and the usual Layer-3 shape does not fit
+   * them: the probe cannot assert "the row landed in tenant B", because while
+   * 0091-0093's transitional unique indexes stand, a second customer's row for a
+   * key the seed already holds CANNOT exist. `0091`'s header says so, and says the
+   * UNIQUE violation is the correct error for "T1 has not finished yet".
+   *
+   * So the assertion is the one that holds in BOTH worlds, before and after
+   * integration drops those indexes: **tenant B's write never lands in tenant A.**
+   * Either it is refused — loudly, naming the index — or it succeeds and belongs to
+   * tenant B. What it must never do is succeed with a 200 and file itself against
+   * the first customer, which is exactly what `tenant_id TEXT NOT NULL DEFAULT
+   * 't_default'` makes the default outcome of a forgotten bind. That is why all
+   * three upserts use `insertScope()` rather than two hand-written binds.
+   *
+   * Each case therefore records the three statuses explicitly, so a run says which
+   * world it is in rather than passing silently in both.
+   */
+  it("tenant B's permission write never lands in tenant A (role_permissions)", async () => {
+    const cookie = await login(`zz.admin@${MARKER.toLowerCase()}.test`);
+    expect(cookie).toBeTruthy();
+    const res = await SELF.fetch(`${BASE}/api/permissions`, {
+      method: "PUT",
+      headers: { cookie: cookie!, "content-type": "application/json" },
+      body: JSON.stringify({ cells: [{ role: "program_manager", taskId: "upload", granted: false }] }),
+    });
+    // Whatever the outcome, no row of the FIRST customer's authorisation matrix may
+    // carry tenant B's actor. `updated_by` is the only column that can name who
+    // wrote a cell, which is why the audit note on the route matters here too.
+    const strays = (
+      await env.DB.prepare(
+        "SELECT count(*) n FROM role_permissions WHERE tenant_id = ? AND updated_by = 'zz_admin'",
+      )
+        .bind(TENANT_A)
+        .first<{ n: number }>()
+    )!.n;
+    expect(
+      strays,
+      "tenant B's PUT /api/permissions wrote into tenant A's matrix — the INSERT is missing " +
+        "its tenant_id bind and the column's DEFAULT 't_default' took effect",
+    ).toBe(0);
+    if (res.status === 200) {
+      // 0091's index is gone and the widened key resolved. The row must be tenant B's.
+      const row = await env.DB.prepare(
+        "SELECT tenant_id FROM role_permissions WHERE role = 'program_manager' AND task_id = 'upload' " +
+          "AND updated_by = 'zz_admin'",
+      ).first<{ tenant_id: string }>();
+      expect(row?.tenant_id, "the write succeeded but no tenant-B row exists").toBe(TENANT_B);
+    } else {
+      // The transitional index refused it. Loud, and the correct error for today.
+      expect(res.status).toBeGreaterThanOrEqual(400);
+    }
+  });
+
+  it("tenant B's grid write never flips tenant A's cell (seat_capabilities)", async () => {
+    // `seat_capabilities` has no `updated_by`, so the invariant is stated on the
+    // VALUE instead: tenant A's `(core, premium)` cell must read the same before and
+    // after. A mis-tenanted upsert would overwrite it, and the grid decides who may
+    // configure the rubric at all — so the damage is an authorisation change that
+    // looks like a successful save.
+    const cellOf = async () =>
+      (
+        await env.DB.prepare(
+          "SELECT allowed FROM seat_capabilities WHERE tenant_id = ? AND edition = 'incubator' " +
+            "AND param_set = 'core' AND tier = 'premium'",
+        )
+          .bind(TENANT_A)
+          .first<{ allowed: number }>()
+      )?.allowed ?? null;
+    const before = await cellOf();
+    expect(before, "tenant A has no (core, premium) cell, so this case proves nothing").not.toBeNull();
+
+    const cookie = await login(`zz.admin@${MARKER.toLowerCase()}.test`);
+    const res = await SELF.fetch(`${BASE}/api/ai-prompts/capability`, {
+      method: "PUT",
+      headers: { cookie: cookie!, "content-type": "application/json" },
+      body: JSON.stringify({ set: "core", tier: "premium", allowed: before === 1 ? false : true }),
+    });
+    expect(
+      await cellOf(),
+      "tenant B's PUT /api/ai-prompts/capability moved tenant A's grid cell",
+    ).toBe(before);
+    if (res.status === 200) {
+      const row = await env.DB.prepare(
+        "SELECT allowed FROM seat_capabilities WHERE tenant_id = ? AND edition = 'incubator' " +
+          "AND param_set = 'core' AND tier = 'premium'",
+      )
+        .bind(TENANT_B)
+        .first<{ allowed: number }>();
+      expect(row, "the write succeeded but no tenant-B cell exists").toBeTruthy();
+    } else {
+      expect(res.status).toBeGreaterThanOrEqual(400);
+    }
+  });
+
+  it("tenant B's visibility write never lands in tenant A (score_visibility)", async () => {
+    const cookie = await login(`zz.admin@${MARKER.toLowerCase()}.test`);
+    const res = await SELF.fetch(`${BASE}/api/config/scoring-framework`, {
+      method: "PUT",
+      headers: { cookie: cookie!, "content-type": "application/json" },
+      body: JSON.stringify({
+        visibility: { incubator: { program_manager: { program_associate: false } } },
+      }),
+    });
+    const strays = (
+      await env.DB.prepare(
+        "SELECT count(*) n FROM score_visibility WHERE tenant_id = ? AND updated_by = 'zz_admin'",
+      )
+        .bind(TENANT_A)
+        .first<{ n: number }>()
+    )!.n;
+    expect(
+      strays,
+      "tenant B's scoring-framework save wrote visibility cells into tenant A's matrix",
+    ).toBe(0);
+    if (res.status === 200) {
+      const row = await env.DB.prepare(
+        "SELECT tenant_id FROM score_visibility WHERE updated_by = 'zz_admin'",
+      ).first<{ tenant_id: string }>();
+      // A 200 with no row at all is possible: the save drops cells naming a role the
+      // matrix does not draw, and writes nothing when none survive.
+      if (row) expect(row.tenant_id).toBe(TENANT_B);
+    } else {
+      expect(res.status).toBeGreaterThanOrEqual(400);
+    }
   });
 
   it("the migration chain's own integrity assertions all passed", async () => {

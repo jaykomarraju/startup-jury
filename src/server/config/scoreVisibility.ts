@@ -12,8 +12,9 @@
  * edition with no rows at all behaves exactly like the prototype rather than
  * throwing halfway through a report.
  */
-import type { Edition } from "../../shared/roles";
 import { resolveVisibility, type VisibilityMatrix } from "../../shared/scoreVisibility";
+import { scoped } from "../../shared/tenant";
+import { configScope, type ConfigScopeArg } from "./scope";
 
 interface Row {
   viewer_role: string;
@@ -21,14 +22,29 @@ interface Row {
   visible: number;
 }
 
-/** Read one edition's matrix, resolved. Never throws; never returns null. */
+/**
+ * Read one WORKSPACE's matrix, resolved. Never throws; never returns null.
+ *
+ * `0092` rebuilt the table with `PRIMARY KEY (tenant_id, edition, viewer_role,
+ * target_role)`, so the predicate is the pair. The matrix answers "may this
+ * viewer see that evaluator's numbers?" and `resolveVisibility` layers whatever
+ * is stored onto the prototype's printed defaults — which means an unscoped read
+ * does not fail, it quietly applies ANOTHER CUSTOMER'S visibility rules to this
+ * customer's deck report. A missing row stays a non-error, as before.
+ *
+ * `edition` still comes out of the scope because it is also the product variant:
+ * the two matrices have different role lists (`VISIBILITY_ROLES`), and
+ * `routes/config.ts` reads both from one screen by passing `inEdition(scope, …)`.
+ */
 export async function loadScoreVisibility(
   db: D1Database,
-  edition: Edition,
+  scope: ConfigScopeArg,
 ): Promise<VisibilityMatrix> {
+  const resolved = configScope(scope);
+  const q = scoped(resolved).on("v");
   const rows = await db
-    .prepare("SELECT viewer_role, target_role, visible FROM score_visibility WHERE edition = ?")
-    .bind(edition)
+    .prepare(`SELECT v.viewer_role, v.target_role, v.visible FROM score_visibility v ${q.whereClause()}`)
+    .bind(...q.binds)
     .all<Row>();
-  return resolveVisibility(edition, rows.results);
+  return resolveVisibility(resolved.edition, rows.results);
 }

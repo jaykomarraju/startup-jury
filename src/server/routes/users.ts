@@ -38,7 +38,7 @@ import type { Edition, Role } from "../../shared/roles";
 import { creatableStaffRoles, roleLabel } from "../../shared/roles";
 import { PERMISSION_ROLES } from "../../shared/types";
 import { can } from "../../shared/permissions";
-import { loadEditionOverrides } from "../auth/permissions";
+import { loadWorkspaceOverrides } from "../auth/permissions";
 import { requireAuth, requireTask } from "../auth/middleware";
 // Ownership transfer ends the outgoing owner's session rather than leaving a
 // superuser token valid for another seven days — see the route.
@@ -647,15 +647,19 @@ async function wouldStrandTheConsole(
   target: UserRosterRow,
 ): Promise<boolean> {
   const edition = c.var.user.edition;
-  // CROSS-SESSION: `loadEditionOverrides` reads `role_permissions WHERE edition = ?`
-  // (`auth/permissions.ts:53`). `role_permissions` IS tenant-owned, so that read
-  // wants a scope — but the file is T0's and the route that writes the table is
-  // T1-CONFIG's `routes/permissions.ts`, which is one of the nine `ON CONFLICT`
-  // sites. Until it is widened the grid is shared, which makes this count's ROLE
-  // LIST shared too. The count itself is scoped below, which is the half that
-  // decides whether a workspace is left without an administrator. Recorded in
-  // `docs/parity-requests/T1-PEOPLE.md`.
-  const overrides = await loadEditionOverrides(c.env.DB, edition);
+  // CROSS-SESSION, resolved at integration. This answer has two halves and they
+  // were widened by different sessions: the ROLE LIST comes from the
+  // `role_permissions` grid, and the COUNT below comes from `users`.
+  //
+  // T1-PEOPLE widened the count and recorded that the grid was still shared,
+  // because the loader lived in a file it did not own. T1-CONFIG then widened the
+  // loader — strictly, with no default-tenant fallback, since it fails open to
+  // `DEFAULT_ROLE_PERMISSIONS` and a bridged scope would be one customer's gate
+  // answering from another's grid. It lives in `src/server/auth/permissions.ts`,
+  // NOT `routes/permissions.ts` as the plan says. The rename from
+  // `loadEditionOverrides` is deliberate: a stale call now fails to compile
+  // instead of quietly changing meaning.
+  const overrides = await loadWorkspaceOverrides(c.env.DB, scopeOf(c.var.user));
   const keyholders = PERMISSION_ROLES[edition].filter((role) =>
     can(edition, role, "adminconsole", overrides),
   );

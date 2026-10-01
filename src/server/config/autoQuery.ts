@@ -27,13 +27,30 @@ import {
 import type { IntakeField } from "../../shared/intake";
 import { isWeakSignal } from "../../shared/scoring";
 import { buildQueryEmail, sendEmail } from "../email/outbox";
+import { scoped, type TenantScope } from "../../shared/tenant";
 import type { Env } from "../types";
 import { scoringSettingsFor } from "./scoringSettings";
+import { configScope } from "./scope";
 import type { Edition } from "../../shared/roles";
 
 export interface AutoClarifyInput {
   deckId: string;
   edition: Edition;
+  /**
+   * The deck's owning customer (`decks.tenant_id`).
+   *
+   * OPTIONAL, and the only optional scope field T1-CONFIG ships. The sole caller
+   * is `ai/evaluate.ts:1149` — T1-DECKS' file — and it builds this input from a
+   * `decks` row whose `SELECT` does not yet carry `tenant_id`. Adding it means
+   * editing that statement and its `DeckRow` type, which is that session's work
+   * and not safely done from this branch.
+   *
+   * Absent, it resolves to `DEFAULT_TENANT_ID`, which is today's behaviour. See
+   * `config/scope.ts` for the ratchet that stops that becoming permanent:
+   * `test/unit/config-scope-bridge.test.ts` lists this call site and fails when a
+   * new one appears.
+   */
+  tenantId?: string;
   deckName: string;
   founderName: string | null;
   founderEmail: string | null;
@@ -56,13 +73,25 @@ export interface AutoClarifyResult {
  * Insufficient band. Informational / role-scoped parameters are excluded — they
  * are an internal lens, not something to put to a founder.
  */
-async function weakAreasFor(env: Env, deckId: string): Promise<{ weak: string[]; sections: string[] }> {
+async function weakAreasFor(
+  env: Env,
+  scope: TenantScope,
+  deckId: string,
+): Promise<{ weak: string[]; sections: string[] }> {
+  // `scores` and `deck_extractions` are both deck-owned and the `deck_id` here
+  // is the deck being evaluated, so the owner is already established one frame
+  // up. The scope goes on `parameters` anyway: this statement resolves a score's
+  // `parameter_id` to a NAME that ends up in a founder's letter, and the rubric
+  // it resolves against must be this customer's.
+  const q = scoped(scope).on("p").and("s.deck_id = ?", deckId).andRaw(
+    "s.evaluator_kind = 'ai' AND p.informational = 0",
+  );
   const scored = (
     await env.DB.prepare(
       "SELECT p.name AS name, s.value AS value FROM scores s JOIN parameters p ON p.id = s.parameter_id " +
-        "WHERE s.deck_id = ? AND s.evaluator_kind = 'ai' AND p.informational = 0 ORDER BY p.sort_order",
+        `${q.whereClause()} ORDER BY p.sort_order`,
     )
-      .bind(deckId)
+      .bind(...q.binds)
       .all<{ name: string; value: number }>()
   ).results;
 
@@ -88,19 +117,26 @@ async function weakAreasFor(env: Env, deckId: string): Promise<{ weak: string[];
  */
 async function questionsFor(
   db: D1Database,
-  edition: string,
+  scope: TenantScope,
   deckName: string,
   areas: ResponseArea[],
 ): Promise<string> {
+  // `question_bank` has no tenant column: it is keyed to `parameters.id` and
+  // reached through it (`TENANT_OWNER`). So the scope goes on `parameters`, and
+  // it has to — this statement reads the WHOLE bank for the edition, which is
+  // every customer's curated clarification questions, and then puts them in a
+  // letter to a founder. The one place in this module where an insufficient
+  // predicate leaves the building.
+  const q = scoped(scope).on("p").andRaw("q.active = 1");
   const rows = (
     await db
       .prepare(
         `SELECT q.parameter_id AS parameterId, p.name AS name, q.text AS text
            FROM question_bank q JOIN parameters p ON p.id = q.parameter_id
-          WHERE q.active = 1 AND p.edition = ?
+          ${q.whereClause()}
           ORDER BY p.sort_order, q.seq`,
       )
-      .bind(edition)
+      .bind(...q.binds)
       .all<{ parameterId: string; name: string; text: string }>()
   ).results;
   const byArea = new Map<string, BankArea>();
@@ -130,10 +166,13 @@ export async function maybeAutoClarify(
   input: AutoClarifyInput,
   now: () => string = () => new Date().toISOString(),
 ): Promise<AutoClarifyResult> {
-  const settings = await scoringSettingsFor(env, input.edition);
+  const scope = configScope(
+    input.tenantId ? { tenantId: input.tenantId, edition: input.edition } : input.edition,
+  );
+  const settings = await scoringSettingsFor(env, scope);
   if (!settings.autoClarification) return { triggered: false, reason: "disabled" };
 
-  const { weak, sections } = await weakAreasFor(env, input.deckId);
+  const { weak, sections } = await weakAreasFor(env, scope, input.deckId);
   const areas = areasNeedingResponse({
     missingFields: input.missingFields,
     missingSections: sections,
@@ -150,13 +189,20 @@ export async function maybeAutoClarify(
 
   const ts = now();
   const queryId = `qry_${crypto.randomUUID()}`;
-  const questions = await questionsFor(env.DB, input.edition, input.deckName, areas);
+  const questions = await questionsFor(env.DB, scope, input.deckName, areas);
   await env.DB.prepare(
     "INSERT INTO queries (id, deck_id, questions, email_status, created_at) VALUES (?, ?, ?, 'sent', ?)",
   )
     .bind(queryId, input.deckId, questions, ts)
     .run();
 
+  // Unscoped on purpose, and this is the one place in T1-CONFIG where adding the
+  // predicate would be the bug. `input.tenantId` is optional (see above), so a
+  // scoped read here would bind `DEFAULT_TENANT_ID` for every caller that has not
+  // passed it — and then fail to find a SECOND customer's uploader, silently
+  // falling back to `founder@portal.local` and mailing the clarification letter
+  // into a void. `uploadedBy` comes off the deck being evaluated, so the owner is
+  // already established; T1-DECKS can scope it once the deck row carries the key.
   const uploader = input.uploadedBy
     ? await env.DB.prepare("SELECT email, name FROM users WHERE id = ?")
         .bind(input.uploadedBy)
