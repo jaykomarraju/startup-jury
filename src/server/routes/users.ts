@@ -24,7 +24,8 @@ import type { Edition, Role } from "../../shared/roles";
 import { creatableStaffRoles, roleLabel } from "../../shared/roles";
 import { PERMISSION_ROLES } from "../../shared/types";
 import { can } from "../../shared/permissions";
-import { loadEditionOverrides } from "../auth/permissions";
+import { loadWorkspaceOverrides } from "../auth/permissions";
+import { scopeOf } from "../../shared/tenant";
 import { requireAuth, requireTask } from "../auth/middleware";
 // Ownership transfer ends the outgoing owner's session rather than leaving a
 // superuser token valid for another seven days — see the route.
@@ -560,7 +561,12 @@ async function wouldStrandTheConsole(
   target: UserRosterRow,
 ): Promise<boolean> {
   const edition = c.var.user.edition;
-  const overrides = await loadEditionOverrides(c.env.DB, edition);
+  // T1-CONFIG, crossing into T1-PEOPLE's file by one expression: `role_permissions`
+  // is the authorisation matrix (§2 B10) and its loader now takes the workspace,
+  // strictly — see `src/server/auth/permissions.ts`. The `users` COUNT below is
+  // T1-PEOPLE's to widen; this line is only here because the rename would not
+  // otherwise compile. `docs/parity-requests/T1-CONFIG.md` records it.
+  const overrides = await loadWorkspaceOverrides(c.env.DB, scopeOf(c.var.user));
   const keyholders = PERMISSION_ROLES[edition].filter((role) =>
     can(edition, role, "adminconsole", overrides),
   );

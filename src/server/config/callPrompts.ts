@@ -15,9 +15,10 @@
  */
 import { INTAKE_FIELD_LABELS, parseMissingFields } from "../../shared/intake";
 import { isWeakSignal, WEAK_SIGNAL_MAX } from "../../shared/scoring";
-import type { Edition } from "../../shared/roles";
+import { scoped } from "../../shared/tenant";
 import type { Env } from "../types";
 import { scoringSettingsFor } from "./scoringSettings";
+import { configScope, type ConfigScopeArg } from "./scope";
 
 export interface CallPrompt {
   /** What the question is about — the area, section or detail. */
@@ -37,25 +38,36 @@ const MAX_PROMPTS = 6;
 
 export async function introCallPrompts(
   env: Env,
-  edition: Edition,
+  scope: ConfigScopeArg,
   deckId: string,
 ): Promise<CallPromptResult> {
-  const settings = await scoringSettingsFor(env, edition);
+  const resolved = configScope(scope);
+  const settings = await scoringSettingsFor(env, resolved);
   if (!settings.introCallAiPrompts) return { enabled: false, prompts: [] };
 
-  const deck = await env.DB.prepare("SELECT name, missing_fields FROM decks WHERE id = ?")
-    .bind(deckId)
+  // The deck read was `WHERE id = ?` with no scope of ANY kind — not even
+  // `edition` — so a juror holding a deck id read another workspace's deck name
+  // and its missing-intake list straight out of this helper. `decks` carries
+  // `tenant_id` (0084), so the predicate is the workspace, and the three reads
+  // below inherit it: they are keyed off a `deck_id` this statement has now
+  // established belongs to the caller.
+  const dq = scoped(resolved).on("d").and("d.id = ?", deckId);
+  const deck = await env.DB
+    .prepare(`SELECT d.name, d.missing_fields FROM decks d ${dq.whereClause()}`)
+    .bind(...dq.binds)
     .first<{ name: string | null; missing_fields: string | null }>();
   if (!deck) return { enabled: true, prompts: [] };
 
+  const sq = scoped(resolved).on("p").and("s.deck_id = ?", deckId).andRaw(
+    "s.evaluator_kind = 'ai' AND p.informational = 0",
+  );
   const scored = (
     await env.DB.prepare(
       "SELECT p.name AS name, p.description AS description, s.value AS value, s.comment AS comment " +
         "FROM scores s JOIN parameters p ON p.id = s.parameter_id " +
-        "WHERE s.deck_id = ? AND s.evaluator_kind = 'ai' AND p.informational = 0 " +
-        "ORDER BY s.value ASC, p.sort_order",
+        `${sq.whereClause()} ORDER BY s.value ASC, p.sort_order`,
     )
-      .bind(deckId)
+      .bind(...sq.binds)
       .all<{ name: string; description: string | null; value: number; comment: string | null }>()
   ).results;
 

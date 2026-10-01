@@ -10,7 +10,6 @@
  * migration's column defaults, so an edition that somehow has no row behaves
  * like the prototype rather than throwing halfway through an evaluation.
  */
-import type { Edition } from "../../shared/roles";
 import { DEFAULT_SCORING_SETTINGS, type ScoringSettings } from "../../shared/scoring";
 import {
   COMPOSITE_FORMULAS,
@@ -19,7 +18,9 @@ import {
   type OrgScoringSettingsRow,
   type ScoreScale,
 } from "../../shared/types";
+import { scoped } from "../../shared/tenant";
 import type { Env } from "../types";
+import { configScope, type ConfigScopeArg } from "./scope";
 
 const COLUMNS =
   "edition, ai_pre_scoring_enabled, auto_clarification, show_ai_score_to_jury, " +
@@ -75,19 +76,33 @@ export function toScoringSettings(row: Partial<OrgScoringSettingsRow> | null): S
   };
 }
 
-/** Read one edition's scoring framework. Never throws; never returns null. */
+/**
+ * Read one WORKSPACE's scoring framework. Never throws; never returns null.
+ *
+ * `org_scoring_settings` was rebuilt by `0090` with `PRIMARY KEY (tenant_id,
+ * edition)`, so a second customer has a row of its own and an `edition`-only
+ * predicate returns the FIRST customer's framework — the AI pre-scoring switch,
+ * the jury-visibility toggles and the shortlist floor, all read from somebody
+ * else's workspace. The `COLUMNS` list keeps selecting `edition` because the
+ * caller's row type carries it; the SCOPE is the pair.
+ *
+ * `scope` may still be a bare `Edition` from the sixteen foreign call sites
+ * `config/scope.ts` enumerates. That resolves to the default tenant, which is
+ * today's behaviour and is wrong for a second customer — see the ratchet there.
+ */
 export async function loadScoringSettings(
   db: D1Database,
-  edition: Edition,
+  scope: ConfigScopeArg,
 ): Promise<ScoringSettings> {
+  const q = scoped(configScope(scope)).on("s");
   const row = await db
-    .prepare(`SELECT ${COLUMNS} FROM org_scoring_settings WHERE edition = ?`)
-    .bind(edition)
+    .prepare(`SELECT ${COLUMNS} FROM org_scoring_settings s ${q.whereClause()}`)
+    .bind(...q.binds)
     .first<OrgScoringSettingsRow>();
   return toScoringSettings(row);
 }
 
 /** Convenience for the server paths that hold an `Env` rather than a `D1Database`. */
-export function scoringSettingsFor(env: Env, edition: Edition): Promise<ScoringSettings> {
-  return loadScoringSettings(env.DB, edition);
+export function scoringSettingsFor(env: Env, scope: ConfigScopeArg): Promise<ScoringSettings> {
+  return loadScoringSettings(env.DB, scope);
 }

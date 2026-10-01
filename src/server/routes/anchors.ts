@@ -18,8 +18,8 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
-import type { Edition } from "../../shared/roles";
 import { RUBRIC_BANDS } from "../../shared/types";
+import { scopeOf, scoped, type TenantScope } from "../../shared/tenant";
 import { requireAuth, requireTask } from "../auth/middleware";
 // W3-C — "Rubric anchor updated for Traction & validation — 7–8 band text
 // revised" is one of the prototype's own Config rows (`admin/s-al.html`).
@@ -90,23 +90,38 @@ function bandsFor(rows: BandRow[]): AnchorBandView[] {
   });
 }
 
-async function loadEdition(c: Context<AppEnv>, edition: Edition): Promise<AnchorParameterView[]> {
+/**
+ * Every active parameter of ONE WORKSPACE with its prompt and bands.
+ *
+ * Renamed from `loadEdition` because an edition is no longer what it loads.
+ * `parameter_rubric_bands` carries no tenant column of its own — it is owned
+ * through `parameters` (`TENANT_OWNER`) — so the second statement's predicate
+ * goes on the parent, which is the §11 instruction about proxy tables stated as
+ * code: adding `tenant_id` to `parameters` does nothing for a read of
+ * `parameter_rubric_bands` that names only `p.edition`.
+ */
+async function loadWorkspace(
+  c: Context<AppEnv>,
+  scope: TenantScope,
+): Promise<AnchorParameterView[]> {
+  const pq = scoped(scope).on("p").andRaw("p.active = 1");
   const params = (
     await c.env.DB.prepare(
-      "SELECT id, key, name, informational, role_scope, prompt, sort_order " +
-        "FROM parameters WHERE edition = ? AND active = 1 ORDER BY sort_order",
+      "SELECT p.id, p.key, p.name, p.informational, p.role_scope, p.prompt, p.sort_order " +
+        `FROM parameters p ${pq.whereClause()} ORDER BY p.sort_order`,
     )
-      .bind(edition)
+      .bind(...pq.binds)
       .all<ParamRow>()
   ).results;
 
+  const bq = scoped(scope).on("p").andRaw("p.active = 1");
   const bands = (
     await c.env.DB.prepare(
       "SELECT b.parameter_id, b.band_index, b.band_label, b.band_name, b.min_score, b.max_score, b.description " +
         "FROM parameter_rubric_bands b JOIN parameters p ON p.id = b.parameter_id " +
-        "WHERE p.edition = ? AND p.active = 1 ORDER BY b.band_index",
+        `${bq.whereClause()} ORDER BY b.band_index`,
     )
-      .bind(edition)
+      .bind(...bq.binds)
       .all<BandRow>()
   ).results;
 
@@ -129,8 +144,8 @@ async function loadEdition(c: Context<AppEnv>, edition: Edition): Promise<Anchor
  * trio (plan §8 Q10).
  */
 anchors.get("/", requireTask("adminconsole", "admin"), async (c) => {
-  const edition = c.var.user.edition;
-  return c.json({ edition, parameters: await loadEdition(c, edition) });
+  const { edition } = c.var.user;
+  return c.json({ edition, parameters: await loadWorkspace(c, scopeOf(c.var.user)) });
 });
 
 interface AnchorWriteBody {
@@ -146,14 +161,19 @@ interface AnchorWriteBody {
  * and must fall back to the band label, not to an empty line in the AI prompt.
  */
 anchors.put("/:parameterId", requireTask("adminconsole", "admin"), async (c) => {
-  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
   const parameterId = c.req.param("parameterId");
   const body = (await c.req.json().catch(() => ({}))) as Partial<AnchorWriteBody>;
 
+  // The gate for everything below: the band upsert and the prompt write both key
+  // on `parameterId` alone, so this predicate is what decides whose rubric is
+  // being edited. `parameter_rubric_bands` has no tenant column to check against
+  // and no `edition` either — it was only ever reachable through this lookup.
+  const pq = scoped(scope).on("p").and("p.id = ?", parameterId).andRaw("p.active = 1");
   const param = await c.env.DB.prepare(
-    "SELECT id, name FROM parameters WHERE id = ? AND edition = ? AND active = 1",
+    `SELECT p.id, p.name FROM parameters p ${pq.whereClause()}`,
   )
-    .bind(parameterId, edition)
+    .bind(...pq.binds)
     .first<{ id: string; name: string }>();
   if (!param) return c.json({ error: "not_found" }, 404);
 
@@ -166,10 +186,11 @@ anchors.put("/:parameterId", requireTask("adminconsole", "admin"), async (c) => 
   const statements: D1PreparedStatement[] = [];
 
   if (Object.prototype.hasOwnProperty.call(body, "prompt")) {
+    const wq = scoped(scope).on("parameters").and("id = ?", parameterId);
     statements.push(
-      c.env.DB.prepare("UPDATE parameters SET prompt = ? WHERE id = ?").bind(
+      c.env.DB.prepare(`UPDATE parameters SET prompt = ? ${wq.whereClause()}`).bind(
         blank(body.prompt),
-        parameterId,
+        ...wq.binds,
       ),
     );
   }
@@ -205,10 +226,11 @@ anchors.put("/:parameterId", requireTask("adminconsole", "admin"), async (c) => 
   // Anchors and the guidance prompt are what the AI scores against, so an edit
   // invalidates the previous run exactly as a weight change does (F0164). The
   // re-score itself stays opt-in via POST /api/decks/:id/rescore.
+  const oq = scoped(scope).on("org_settings");
   statements.push(
     c.env.DB.prepare(
-      "UPDATE org_settings SET criteria_version = criteria_version + 1 WHERE edition = ?",
-    ).bind(edition),
+      `UPDATE org_settings SET criteria_version = criteria_version + 1 ${oq.whereClause()}`,
+    ).bind(...oq.binds),
   );
   await c.env.DB.batch(statements);
 
@@ -224,7 +246,7 @@ anchors.put("/:parameterId", requireTask("adminconsole", "admin"), async (c) => 
     { targetType: "parameter", targetId: parameterId, detail: { bands: bandNames } },
   );
 
-  const parameters = await loadEdition(c, edition);
+  const parameters = await loadWorkspace(c, scope);
   const saved = parameters.find((p) => p.id === parameterId);
   return c.json({ ok: true, parameter: saved });
 });

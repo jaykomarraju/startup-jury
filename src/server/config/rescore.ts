@@ -9,8 +9,8 @@
 // moved, so a weight edit can't rewind a deck that has already advanced. Decks
 // the AI flagged as incomplete keep their `flagged` signal.
 
-import type { Edition } from "../../shared/roles";
 import { composite, signalTag } from "../../shared/scoring";
+import { scoped, type TenantScope } from "../../shared/tenant";
 import { scoringSettingsFor } from "./scoringSettings";
 import type { Env } from "../types";
 
@@ -36,23 +36,41 @@ export interface RescoreResult {
   evaluations: number;
 }
 
-/** Recompute every stored weighted total in an edition against current weights. */
-export async function rescoreEdition(env: Env, edition: Edition): Promise<RescoreResult> {
+/**
+ * Recompute every stored weighted total in ONE WORKSPACE against current weights.
+ *
+ * `scope`, not an `Edition`, and strictly: both call sites are in
+ * `routes/config.ts`, so there is no foreign caller to bridge for and no reason
+ * to accept the weaker argument `config/scope.ts` exists for.
+ *
+ * This is a WRITE over every deck the predicate selects, which makes an
+ * insufficient predicate worse here than on a read: unscoped, a weight edit in
+ * one customer's console rewrote `decks.ai_score`, `decks.signal`,
+ * `decks.updated_at` and every `evaluations.weighted_total` of every other
+ * customer in the same edition — against THIS customer's parameter weights. The
+ * two `UPDATE`s below stay keyed by `deck_id` alone because their ids come from
+ * the scoped join above and from nowhere else; `scores` and `evaluations` carry
+ * no tenant column of their own and are reached through `decks` (§5b's proxy
+ * bucket, `TENANT_OWNER`).
+ */
+export async function rescoreEdition(env: Env, scope: TenantScope): Promise<RescoreResult> {
   // W2-A — the org's composite formula, so a re-score reproduces exactly what
   // the evaluation path would compute today (a median org gets medians back).
-  const { compositeFormula } = await scoringSettingsFor(env, edition);
+  const { compositeFormula } = await scoringSettingsFor(env, scope);
+  const pq = scoped(scope).on("p").andRaw("p.active = 1");
   const params = (
-    await env.DB.prepare("SELECT id, weight FROM parameters WHERE edition = ? AND active = 1")
-      .bind(edition)
+    await env.DB.prepare(`SELECT p.id, p.weight FROM parameters p ${pq.whereClause()}`)
+      .bind(...pq.binds)
       .all<{ id: string; weight: number }>()
   ).results;
 
+  const dq = scoped(scope).on("d");
   const rows = (
     await env.DB.prepare(
       "SELECT s.deck_id, d.signal AS deck_signal, s.evaluator_id, s.evaluator_kind, s.parameter_id, s.value " +
-        "FROM scores s JOIN decks d ON d.id = s.deck_id WHERE d.edition = ?",
+        `FROM scores s JOIN decks d ON d.id = s.deck_id ${dq.whereClause()}`,
     )
-      .bind(edition)
+      .bind(...dq.binds)
       .all<ScoreJoinRow>()
   ).results;
 
