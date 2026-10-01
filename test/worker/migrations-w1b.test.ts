@@ -11,6 +11,7 @@
  */
 import { applyD1Migrations, env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
+import { TENANT_KEYED_TABLES, PLATFORM_GLOBAL_TABLES } from "../../src/shared/tenant";
 
 /** The block this session added; everything in it must stay together. */
 const FIRST = 25;
@@ -56,6 +57,21 @@ const BLOCK_SIZE = LAST - FIRST + 1;
  *   0082        S2-SERVER — org_scoring_settings.ai_gate_threshold
  *   0083–0108   tenancy T0 block (26 slots)
  *   0109–0110   declared headroom
+ *
+ * T0-SCHEMA used 0083–0100 of its 26 and left 0101–0108 as the T1 wave's working
+ * headroom — eight slots the seven parallel sessions and their integration step
+ * draw from, including the one that drops the transitional unique indexes
+ * `0091`–`0095` and `0099` left standing. The ceiling is NOT raised again here: it
+ * was set to 110 for three waves at once, in advance, precisely so a foundation
+ * session would not produce a one-line conflict in seven branches.
+ *
+ *   0083        organizations + the t_default backfill
+ *   0084–0086   ADD COLUMN tenant_id on 17 tables + the two outbox tables
+ *   0087        rebuild users (alone, by instruction)
+ *   0088        prove 0087 applied whole
+ *   0089–0098   the other ten rebuilds, one table per migration
+ *   0099        the index pass — 21 re-cuts plus the tenant-blind dedupe unique
+ *   0100        the standing integrity assertion
  *
  * `0082 < 0083` deliberately: the AI-gate column must land BEFORE tenancy
  * rebuilds `org_scoring_settings`.
@@ -164,5 +180,141 @@ describe("migration idempotence", () => {
     const before = await fingerprint();
     await applyD1Migrations(env.DB, MIGRATIONS);
     expect(await fingerprint()).toEqual(before);
+  });
+});
+
+/**
+ * ── THE DETECTOR §5f SAYS HAD TO EXIST BEFORE THE FIRST REBUILD ──────────────
+ *
+ * `grep -rn "foreign_key_check\|integrity_check" src test e2e scripts package.json`
+ * returned ZERO before the tenancy block. This file asserted numbering,
+ * contiguity, `IF NOT EXISTS` guards, re-executable inserts and idempotent
+ * re-apply — and never once asserted referential integrity. §5f: "The detector has
+ * to be written before the first rebuild lands. Treat that test as the first
+ * deliverable of Stage 4, not as a follow-up."
+ *
+ * The migrations carry their own assertions (`0088` for the `users` rebuild,
+ * `0100` for all 30 tenant keys), but neither can run a PRAGMA: D1 refuses the
+ * table-valued form — `pragma_foreign_key_list(...)` in a SELECT answers
+ * `SQLITE_AUTH` — so no SQL statement inside a migration can ask the question
+ * these tests ask. That is why this half lives here.
+ */
+describe("referential integrity after the tenancy block", () => {
+  it("PRAGMA foreign_key_check is clean across the whole database", async () => {
+    // The one assertion that would have caught the rename trap. `ALTER TABLE users
+    // RENAME TO users_old` rewrites 35 child tables' DDL to point at a table about
+    // to be dropped, reports success, and surfaces nothing until a much later
+    // INSERT behaves as though the constraint were gone. 0087 routes around it;
+    // this is the net under it.
+    const { results } = await env.DB.prepare("PRAGMA foreign_key_check").all();
+    expect(results, `orphaned rows: ${JSON.stringify(results.slice(0, 5))}`).toEqual([]);
+  });
+
+  it("no table's DDL references a renamed or stashed copy of another", async () => {
+    // The rebuilds use `<table>__pre_tenant` stashes and `<table>__fk_stash`
+    // detach copies. Every one is dropped inside the migration that made it; a
+    // leftover means a rebuild stopped half way, and a REFERENCE to one means the
+    // rename trap fired.
+    const row = await env.DB.prepare(
+      "SELECT group_concat(name) AS names FROM sqlite_master " +
+        "WHERE name LIKE '%__pre_tenant' OR name LIKE '%__fk_stash' OR name LIKE '%_old' OR name LIKE '%_new'",
+    ).first<{ names: string | null }>();
+    expect(row!.names, "a rebuild left a stash table behind").toBeNull();
+
+    const refs = await env.DB.prepare(
+      "SELECT group_concat(name) AS names FROM sqlite_master WHERE type = 'table' " +
+        "AND (sql LIKE '%__pre_tenant%' OR sql LIKE '%__fk_stash%' OR sql LIKE '%users_old%')",
+    ).first<{ names: string | null }>();
+    expect(refs!.names, "a child table's foreign key points at a stash copy").toBeNull();
+  });
+
+  it("every one of the 30 tenant-keyed tables carries the column, and the 8 global ones do not", async () => {
+    // A census rather than a spot check: a table that silently misses its column
+    // fails here, at `npm test`, rather than at the first cross-tenant read. The
+    // lists come from `src/shared/tenant.ts`, so they cannot drift from the helper
+    // the seven T1 sessions bind against.
+    for (const table of TENANT_KEYED_TABLES) {
+      const row = await env.DB.prepare(
+        "SELECT count(*) n FROM pragma_table_info(?) WHERE name = 'tenant_id'",
+      )
+        .bind(table)
+        .first<{ n: number }>();
+      expect(row!.n, `${table} is tenant-keyed but has no tenant_id column`).toBe(1);
+    }
+    for (const table of PLATFORM_GLOBAL_TABLES) {
+      const row = await env.DB.prepare(
+        "SELECT count(*) n FROM pragma_table_info(?) WHERE name = 'tenant_id'",
+      )
+        .bind(table)
+        .first<{ n: number }>();
+      expect(row!.n, `${table} is platform-global — see plan_multitenancy.md §3`).toBe(0);
+    }
+  });
+
+  it("no row in any tenant-keyed table names a tenant that does not exist", async () => {
+    // The foreign key §5d measured cannot be DECLARED: `ALTER TABLE … ADD COLUMN …
+    // NOT NULL DEFAULT 't_default' REFERENCES organizations(id)` is refused, and the
+    // nullable-then-rebuild alternative turns 11 rebuilds into 30. `0100` asserts
+    // this on every apply of the chain; this asserts it on every `npm test`, which
+    // is the one that catches a bad write between applies.
+    for (const table of TENANT_KEYED_TABLES) {
+      const row = await env.DB.prepare(
+        `SELECT count(*) n FROM ${table} x LEFT JOIN organizations o ON o.id = x.tenant_id WHERE o.id IS NULL`,
+      ).first<{ n: number }>();
+      expect(row!.n, `${table} holds rows whose tenant_id has no organizations row`).toBe(0);
+    }
+  });
+
+  it("every assertion the migration chain wrote came back 'ok'", async () => {
+    // `_tenancy_assert`'s CHECK admits only 'ok', so a failing verdict could never
+    // have committed. Reading the rows back proves the assertions RAN — a chain that
+    // skipped 0088 or 0100 would leave the table short rather than wrong.
+    const { results } = await env.DB.prepare(
+      "SELECT id, verdict FROM _tenancy_assert ORDER BY id",
+    ).all<{ id: string; verdict: string }>();
+    const ids = results.map((r) => r.id);
+    for (const required of [
+      "users.fk_actions_fully_restored",
+      "agreement_templates.fk_actions_fully_restored",
+      "crm_connections.fk_actions_fully_restored",
+      "0088.no_child_points_at_a_renamed_users",
+      "0088.users_unique_is_per_tenant",
+      "0088.all_41_user_edges_resolve",
+      "0100.all_30_tables_resolve_their_tenant",
+      "0100.pricing_tables_stay_global",
+      "0100.rebuild_detachments_still_restored",
+    ]) {
+      expect(ids, `${required} did not run`).toContain(required);
+    }
+    for (const row of results) expect(row.verdict, row.id).toBe("ok");
+  });
+
+  it("users.email is unique PER TENANT and no longer globally", async () => {
+    // §2 A7, the one finding in the leak table that "blocks the model outright".
+    // Asserted behaviourally rather than by reading the DDL, because the DDL is what
+    // 0088 already checks and a constraint is only real if it behaves.
+    const hash = await env.DB.prepare("SELECT password_hash FROM users LIMIT 1").first<{
+      password_hash: string;
+    }>();
+    await env.DB.prepare(
+      "INSERT INTO organizations (id, name, slug) VALUES ('t_fk_probe', 'FK probe', 'fk-probe') " +
+        "ON CONFLICT (id) DO NOTHING",
+    ).run();
+    const insert = (id: string, tenant: string) =>
+      env.DB.prepare(
+        "INSERT INTO users (id, tenant_id, name, email, role, edition, initials, password_hash) " +
+          "VALUES (?, ?, 'FK Probe', 'fk.probe@example.test', 'admin', 'incubator', 'FP', ?)",
+      )
+        .bind(id, tenant, hash!.password_hash)
+        .run();
+
+    await insert("fkp_a", "t_default");
+    // The same address, a different customer: this is the whole point of 0087.
+    await insert("fkp_b", "t_fk_probe");
+    // The same address, the SAME customer: still refused.
+    await expect(insert("fkp_c", "t_default")).rejects.toThrow(/UNIQUE constraint failed/);
+
+    await env.DB.prepare("DELETE FROM users WHERE id IN ('fkp_a', 'fkp_b')").run();
+    await env.DB.prepare("DELETE FROM organizations WHERE id = 't_fk_probe'").run();
   });
 });
