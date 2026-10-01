@@ -459,24 +459,32 @@ interface SeedUser {
   email: string;
   edition: Edition;
   role: Role;
+  /** `organizations.id`. Every seeded account belongs to the backfilled tenant. */
+  tenant: string;
   note?: string;
 }
 
+/**
+ * The one organisation the seed backfills to (`migrations/0083`). Declared rather
+ * than implied, because §D below is about what happens when there are two.
+ */
+const TENANT_A = "t_default";
+
 /** The seeded demo accounts — one per role, plus the mentor user-type. */
 const SEED_USERS: SeedUser[] = [
-  { email: "priya.sharma@demo.startupjury.ai", edition: "incubator", role: "superuser" },
-  { email: "nisha.kapoor@demo.startupjury.ai", edition: "incubator", role: "admin" },
-  { email: "raj.kumar@demo.startupjury.ai", edition: "incubator", role: "program_manager" },
-  { email: "sunita.rao@demo.startupjury.ai", edition: "incubator", role: "program_associate" },
-  { email: "rajesh.kumar@demo.startupjury.ai", edition: "incubator", role: "jury" },
-  { email: "meera.sharma@demo.startupjury.ai", edition: "incubator", role: "founder" },
-  { email: "anil.mehta@demo.startupjury.ai", edition: "incubator", role: "mentor" as Role, note: "user-type, not a role" },
-  { email: "aarav.khanna@demo.startupjury.ai", edition: "vc", role: "superuser" },
-  { email: "nisha.kapoor.vc@demo.startupjury.ai", edition: "vc", role: "admin" },
-  { email: "ishaan.sethi@demo.startupjury.ai", edition: "vc", role: "partner" },
-  { email: "rajesh.kumar.vc@demo.startupjury.ai", edition: "vc", role: "ic_member" },
-  { email: "sunita.rao.vc@demo.startupjury.ai", edition: "vc", role: "associate" },
-  { email: "rhea.nair@demo.startupjury.ai", edition: "vc", role: "analyst" },
+  { email: "priya.sharma@demo.startupjury.ai", tenant: TENANT_A, edition: "incubator", role: "superuser" },
+  { email: "nisha.kapoor@demo.startupjury.ai", tenant: TENANT_A, edition: "incubator", role: "admin" },
+  { email: "raj.kumar@demo.startupjury.ai", tenant: TENANT_A, edition: "incubator", role: "program_manager" },
+  { email: "sunita.rao@demo.startupjury.ai", tenant: TENANT_A, edition: "incubator", role: "program_associate" },
+  { email: "rajesh.kumar@demo.startupjury.ai", tenant: TENANT_A, edition: "incubator", role: "jury" },
+  { email: "meera.sharma@demo.startupjury.ai", tenant: TENANT_A, edition: "incubator", role: "founder" },
+  { email: "anil.mehta@demo.startupjury.ai", tenant: TENANT_A, edition: "incubator", role: "mentor" as Role, note: "user-type, not a role" },
+  { email: "aarav.khanna@demo.startupjury.ai", tenant: TENANT_A, edition: "vc", role: "superuser" },
+  { email: "nisha.kapoor.vc@demo.startupjury.ai", tenant: TENANT_A, edition: "vc", role: "admin" },
+  { email: "ishaan.sethi@demo.startupjury.ai", tenant: TENANT_A, edition: "vc", role: "partner" },
+  { email: "rajesh.kumar.vc@demo.startupjury.ai", tenant: TENANT_A, edition: "vc", role: "ic_member" },
+  { email: "sunita.rao.vc@demo.startupjury.ai", tenant: TENANT_A, edition: "vc", role: "associate" },
+  { email: "rhea.nair@demo.startupjury.ai", tenant: TENANT_A, edition: "vc", role: "analyst" },
 ];
 
 /** A non-existent id: `requireRole` (403) fires before the handler's 404. */
@@ -873,7 +881,34 @@ async function probeOne(session: Session, probe: Probe): Promise<number> {
   return res.status;
 }
 
-function expectedAllowed(probe: Probe, user: SeedUser): boolean {
+/**
+ * ── §6's COMPLAINT ABOUT THIS FUNCTION, AND THE FIX ──────────────────────────
+ *
+ * `plan_multitenancy.md` §6 calls this harness "structurally invalidated" for the
+ * tenancy work, and the sharpest part of the charge is about the line below:
+ * "`expectedAllowed()` at `:859-863` reads `if (!probe.strict && user.role ===
+ * "superuser") return true;` — **the harness encodes the superuser bypass as the
+ * expected answer**, so a customer superuser reaching a vendor-only route is
+ * recorded as *correct*."
+ *
+ * That is right, and it is right about cross-TENANT reach too. `middleware.ts:32`
+ * and `:63` both carry `if (user.role !== "superuser" && !roles.includes(user.role))`,
+ * so the bypass is real and the harness is faithfully describing it — WITHIN a
+ * workspace, where it is the intended design (one account owner, full access). The
+ * bug is that the same clause then answers a question it was never about: whether a
+ * principal may reach ANOTHER customer's resource, or a platform-owned one.
+ *
+ * So `crossTenant` is a separate axis and the bypass does not apply to it. A
+ * superuser is the most privileged principal inside its own workspace and has no
+ * standing at all outside it. §7 Q6's shipped answer is the same thing said in
+ * product terms: "observe only, with every cross-boundary action refused by
+ * default, because an impersonation path is what turns the transfer-ownership
+ * tripwire into a cross-tenant ownership transfer."
+ */
+function expectedAllowed(probe: Probe, user: SeedUser, crossTenant = false): boolean {
+  // The tenancy axis is checked FIRST and admits no bypass. Off the diagonal,
+  // nobody passes — not an admin, not a superuser.
+  if (crossTenant) return false;
   if (probe.editions && !probe.editions.includes(user.edition)) return false;
   if (!probe.strict && user.role === "superuser") return true;
   return (probe.allow as readonly string[]).includes(user.role);
@@ -934,6 +969,142 @@ async function reportRuntimeProbe() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// D. CROSS-TENANT ISOLATION
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// §6 asks for "a fourth section: a cross-principal matrix over {tenant A, tenant
+// B, platform} × {A's resource, B's resource, platform resource} asserting 403/404
+// off the diagonal".
+//
+// ── WHAT THIS SECTION CAN AND CANNOT DO, STATED RATHER THAN IMPLIED ──────────
+//
+// The other three sections are pure or read-only by design, and the file's own
+// safety note is emphatic: "the probe never mutates anything ... it is safe to
+// point at production." A second tenant cannot be conjured under that rule — it
+// needs rows in `organizations` and `users`, which is a WRITE. And seeding tenant B
+// into `0002_seed.sql` instead would change the row counts every other suite
+// asserts, on a tree where a dirty seed is a known way to redden e2e.
+//
+// So the runtime arm here is OPT-IN, and its absence is reported rather than
+// hidden:
+//
+//   ROLES_TENANT_B_EMAIL=... ROLES_TENANT_B_SLUG=... npm run roles
+//
+// Point those at a second customer's account on a scratch deployment and §D probes
+// it for real. With them unset, §D runs its DECLARED half only — the part that
+// needs no server — and says in the report that the runtime half did not run. What
+// it must never do is pass silently: §6's whole complaint is that this harness
+// "stays green while the vendor principal is entirely untested", and a section that
+// reports "0 findings" because it probed nothing would be the same defect wearing a
+// new number.
+//
+// **The per-table, per-route isolation proof lives in
+// `test/worker/tenant-scope.test.ts`**, which CAN write, because it runs against an
+// isolated D1 snapshot. That file is the authority; this section is the end-to-end
+// confirmation against a running server, and the place the platform principal will
+// be probed when it exists.
+const TENANT_B_EMAIL = process.env.ROLES_TENANT_B_EMAIL ?? "";
+const TENANT_B_SLUG = process.env.ROLES_TENANT_B_SLUG ?? "";
+
+/** Resources the probe addresses BY ID, so "whose is it?" is a real question. */
+const CROSS_TENANT_PROBES: { id: string; label: string; path: string; method: string }[] = [
+  { id: "x-deck", label: "a deck by id", path: `/api/decks/${GHOST_DECK}`, method: "GET" },
+  { id: "x-decks", label: "the deck index", path: "/api/decks", method: "GET" },
+  { id: "x-users", label: "the staff roster", path: "/api/users", method: "GET" },
+  { id: "x-audit", label: "the audit trail", path: "/api/audit", method: "GET" },
+  { id: "x-perms", label: "the authorisation matrix", path: "/api/permissions", method: "GET" },
+  { id: "x-billing", label: "invoices and subscription", path: "/api/billing", method: "GET" },
+];
+
+async function reportCrossTenant() {
+  h1("D. CROSS-TENANT ISOLATION");
+
+  // ── the declared half: no server needed ───────────────────────────────────
+  h2("declared — the bypass must not reach across a tenant boundary");
+  for (const edition of EDITIONS) {
+    for (const role of ROLES_BY_EDITION[edition]) {
+      const user: SeedUser = { email: "", edition, role, tenant: TENANT_A };
+      const probe: Probe = {
+        id: "x", label: "x", kind: "read", method: "GET", path: "/", allow: [],
+      };
+      check(
+        `${edition}/${role} is expected to be REFUSED another customer's resource`,
+        expectedAllowed(probe, user, true) === false,
+        "expectedAllowed granted a cross-tenant request",
+      );
+    }
+  }
+  check(
+    "a superuser gets NO bypass across a tenant boundary",
+    expectedAllowed(
+      { id: "x", label: "x", kind: "read", method: "GET", path: "/", allow: [] },
+      { email: "", edition: "incubator", role: "superuser", tenant: TENANT_A },
+      true,
+    ) === false,
+    "the superuser bypass leaked into the tenancy axis — see plan_multitenancy.md §6",
+  );
+  say(`  ${EDITIONS.reduce((n, e) => n + ROLES_BY_EDITION[e].length, 0)} roles × 1 boundary, all expected DENIED`);
+
+  // ── the runtime half: opt-in, and loud when it is off ─────────────────────
+  h2("runtime — a second customer's principal against the first's data");
+  if (STATIC_ONLY) {
+    say("  not run: --static");
+    return;
+  }
+  if (!TENANT_B_EMAIL) {
+    say("  NOT RUN — no second tenant to probe with.");
+    say("  Set ROLES_TENANT_B_EMAIL (and ROLES_TENANT_B_SLUG if that address is held by");
+    say("  more than one customer) to an account at a second organisation, against a");
+    say("  scratch deployment. Until then the per-table proof is");
+    say("  `test/worker/tenant-scope.test.ts`, which seeds its own second tenant.");
+    say("  This is reported, not skipped: a section that printed 0 findings after");
+    say("  probing nothing would be the defect plan_multitenancy.md §6 describes.");
+    return;
+  }
+
+  const res = await fetch(`${BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: TENANT_B_EMAIL,
+      password: DEMO_PASSWORD,
+      ...(TENANT_B_SLUG ? { tenant: TENANT_B_SLUG } : {}),
+    }),
+    redirect: "manual",
+  });
+  if (res.status !== 200) {
+    check(`login as the tenant-B principal ${TENANT_B_EMAIL}`, false, `HTTP ${res.status}`);
+    say(`  ROLES_TENANT_B_EMAIL was set but could not sign in (HTTP ${res.status}).`);
+    return;
+  }
+  const raw = res.headers.getSetCookie?.() ?? [res.headers.get("set-cookie") ?? ""];
+  const cookie = raw.map((c) => c.match(/sj_session=([^;]+)/)?.[1]).find(Boolean) ?? null;
+  check(`login as the tenant-B principal ${TENANT_B_EMAIL}`, cookie !== null);
+  if (!cookie) return;
+
+  // Every seeded id below belongs to tenant A. A tenant-B principal reaching one
+  // is the finding; 403 and 404 are both correct answers, and 404 is the better
+  // one because it does not confirm the resource exists.
+  const rows: { label: string; cells: boolean[] }[] = [];
+  for (const probe of CROSS_TENANT_PROBES) {
+    const r = await fetch(`${BASE}${probe.path}`, {
+      method: probe.method,
+      headers: { Cookie: `sj_session=${cookie}` },
+      redirect: "manual",
+    });
+    const refused = r.status === 403 || r.status === 404;
+    check(
+      `${probe.id} · tenant B → tenant A's ${probe.label} must be refused`,
+      refused,
+      `HTTP ${r.status}`,
+    );
+    rows.push({ label: `◦ ${probe.label}`, cells: [refused] });
+  }
+  matrix("resource", rows, ["B→A"]);
+  say("  ◦ ✓ = refused (403/404), which is the only correct answer off the diagonal");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Report
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -957,6 +1128,13 @@ async function main() {
       checksFailed++;
       findings.push(`runtime probe could not reach ${BASE}`);
     }
+  }
+  try {
+    await reportCrossTenant();
+  } catch (err) {
+    say(`\n  cross-tenant section failed — ${(err as Error).message}`);
+    checksFailed++;
+    findings.push(`cross-tenant isolation section could not run: ${(err as Error).message}`);
   }
 
   h1("SUMMARY");

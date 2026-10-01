@@ -76,6 +76,31 @@ export interface SessionUser {
   role: Role;
   edition: Edition;
   /**
+   * The CUSTOMER this principal belongs to — `organizations.id`. Together with
+   * `edition` it is the WORKSPACE, and it is the key every scoped query binds via
+   * `scopeOf()` in `src/shared/tenant.ts`.
+   *
+   * REQUIRED and non-optional, deliberately. An optional `tenantId` would let a
+   * scoped predicate bind `undefined`, and in D1 a bind of `undefined` is not a
+   * type error — it is a parameter that matches nothing, so the query returns an
+   * empty list and the screen looks merely empty rather than broken. Making it
+   * required means a principal without a tenant does not compile.
+   *
+   * It is read from `users.tenant_id` at login and from nowhere else. §2's one
+   * piece of good news is that all 211 existing scope predicates take their key
+   * from the session and not one takes it from the browser; this field is what
+   * keeps that true.
+   *
+   * ── SESSIONS WRITTEN BEFORE THIS FIELD EXISTED ──────────────────────────────
+   * `auth/session.ts` snapshots this object into KV for seven days and there is no
+   * invalidation path (§6's closing note). A session minted before this deploy
+   * therefore has no `tenantId`, and `getSession` REFUSES it rather than defaulting
+   * it to `t_default` — see the comment there. One deploy costs everybody a
+   * re-login; the alternative is a principal silently scoped to the wrong customer,
+   * which is the failure this whole wave exists to prevent.
+   */
+  tenantId: string;
+  /**
    * Organizational ALIAS title shown in the top ribbon instead of the platform
    * role label (Aug-2026 issue 1). Presentation only — `role` still drives every
    * permission check. Undefined = fall back to the role label.
