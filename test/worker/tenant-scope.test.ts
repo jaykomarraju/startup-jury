@@ -161,12 +161,12 @@ const LABEL: Record<Status, string> = {
  * because the alternative is a test that silently covers 25 tables while claiming
  * 30.
  */
-const BLOCKED_BY_TRANSITIONAL_KEY = new Set([
-  "role_permissions",
-  "score_visibility",
-  "seat_capabilities",
-  "account_profiles",
-  "billing_subscriptions",
+const BLOCKED_BY_TRANSITIONAL_KEY = new Set<string>([
+  // EMPTIED BY T1 INTEGRATION. `0101` dropped all five transitional pre-tenant
+  // unique indexes, and each of those five tables now carries a real tenant-B
+  // fixture below. The set and the two assertions that read it are kept rather
+  // than deleted: they are what would catch a sixth table being parked here by a
+  // later wave, and what proves this one is empty for the right reason.
 ]);
 
 interface Fixture {
@@ -400,12 +400,69 @@ const TENANT_B_FIXTURES: Readonly<Record<string, Fixture>> = {
     binds: [TENANT_B],
   },
 
-  // ── blocked: see BLOCKED_BY_TRANSITIONAL_KEY ───────────────────────────────
-  role_permissions: { sql: "", blocked: "0091's transitional UNIQUE (edition, role, task_id)" },
-  score_visibility: { sql: "", blocked: "0092's transitional UNIQUE (edition, viewer_role, target_role)" },
-  seat_capabilities: { sql: "", blocked: "0093's transitional UNIQUE (edition, param_set, tier)" },
-  account_profiles: { sql: "", blocked: "0094's transitional UNIQUE (edition)" },
-  billing_subscriptions: { sql: "", blocked: "0095's transitional UNIQUE (edition)" },
+  // ── WERE blocked until T1 integration's `0101` dropped the five transitional
+  //    pre-tenant unique indexes. Every insert below FAILED with a UNIQUE
+  //    violation before it, which is what makes them the functional proof that
+  //    `0101` did its job — the migration itself only asserts the structure.
+  //
+  //    Three of the five have no free-text column, so they carry no `MARKER`: a
+  //    leak in a permission grid or a capability table does not show up as a
+  //    string, it shows up as the WRONG ANSWER. What these fixtures buy instead is
+  //    Layer 1's per-table predicate assertion, which now covers all 30 keyed
+  //    tables rather than 25.
+  //
+  //    Each value is deliberately one NO PRODUCTION CODE PATH ASKS ABOUT — an
+  //    unknown `task_id`, an unknown `viewer_role`, an `allowed` count nothing
+  //    reads. A fixture that revoked a real permission for tenant B would be a
+  //    booby trap: if some route did leak the grid, the failure would surface in
+  //    an unrelated test file as a confusing authorisation error rather than here
+  //    as an isolation one. These still leak VISIBLY (an extra unknown row in the
+  //    payload) without changing any decision the product makes.
+  role_permissions: {
+    sql:
+      "INSERT INTO role_permissions (tenant_id, edition, role, task_id, granted) " +
+      "VALUES (?, 'incubator', 'admin', 'zz_marker_task', 1)",
+    binds: [TENANT_B],
+  },
+  score_visibility: {
+    sql:
+      "INSERT INTO score_visibility (tenant_id, edition, viewer_role, target_role, visible, updated_at) " +
+      "VALUES (?, 'incubator', 'zz_marker_viewer', 'zz_marker_target', 1, datetime('now'))",
+    binds: [TENANT_B],
+  },
+  seat_capabilities: {
+    // The only one of the three whose columns are all CHECK-constrained, so the
+    // distinctive value has to go in `allowed`: 99 is far outside any seeded count.
+    sql:
+      "INSERT INTO seat_capabilities (tenant_id, edition, param_set, tier, allowed) " +
+      "VALUES (?, 'incubator', 'addl', 'premium', 99)",
+    binds: [TENANT_B],
+  },
+  account_profiles: {
+    // This one DOES take a marker, in `org_name` and the names — and it is the
+    // highest-value of the five: §2 B18 is the customer's own billing identity.
+    // `account_type = 'organization'` drags in the table's own CHECK, which wants
+    // `org_kind` and `org_name` non-null.
+    sql:
+      "INSERT INTO account_profiles (tenant_id, edition, account_type, work_email, first_name, " +
+      "last_name, org_kind, org_name, city, country) " +
+      "VALUES (?, 'incubator', 'organization', ?, ?, 'Admin', 'incubator', ?, 'Bengaluru', 'IN')",
+    binds: [
+      TENANT_B,
+      `zz.billing@${MARKER.toLowerCase()}.test`,
+      `${MARKER} Finance`,
+      `${MARKER} Accelerator Pvt Ltd`,
+    ],
+  },
+  billing_subscriptions: {
+    // §2 B16. `plan_label` is what the billing screen renders, so the marker goes
+    // there: an unscoped read shows another customer's plan on your own invoice.
+    sql:
+      "INSERT INTO billing_subscriptions (tenant_id, edition, plan_label, seats, billing_period, " +
+      "cycle_anchor, currency, status, billing_email) " +
+      "VALUES (?, 'incubator', ?, 5, 'year', '2099-01-01', 'INR', 'active', ?)",
+    binds: [TENANT_B, `${MARKER} Basic Plus`, `zz.billing@${MARKER.toLowerCase()}.test`],
+  },
 };
 
 /**
@@ -891,22 +948,63 @@ describe("tenancy · the registry itself", () => {
     expect(new Set(blocked)).toEqual(BLOCKED_BY_TRANSITIONAL_KEY);
   });
 
-  it("the blocked tables really are blocked, and fail LOUDLY when they are not", async () => {
-    // The point of `blocked` is that it expires. When integration drops a
-    // transitional index, the insert below starts succeeding and this fails —
-    // which is the signal to move that table into the fixtures above.
-    for (const table of BLOCKED_BY_TRANSITIONAL_KEY) {
-      const row = await env.DB.prepare(
+  it("the five pre-tenant transitional keys are GONE, and nothing is parked as blocked", async () => {
+    // The predecessor of this case asserted each index was still THERE, and was
+    // written to fail the moment integration dropped one. It did. This is its
+    // successor, asserting the other direction — and the set it guards is now
+    // empty, so the loop below is what keeps the case from being vacuous.
+    expect(BLOCKED_BY_TRANSITIONAL_KEY.size, "a table is parked as blocked again").toBe(0);
+    for (const table of [
+      "role_permissions",
+      "score_visibility",
+      "seat_capabilities",
+      "account_profiles",
+      "billing_subscriptions",
+    ]) {
+      const idx = await env.DB.prepare(
         "SELECT count(*) n FROM sqlite_master WHERE type = 'index' AND name = ?",
       )
         .bind(`${table}__pre_tenant_key`)
         .first<{ n: number }>();
-      const partial = table === "authorised_signatories";
-      expect(
-        row!.n,
-        `${table}'s transitional index is gone — move it out of BLOCKED_BY_TRANSITIONAL_KEY ` +
-          `and give it a TENANT_B_FIXTURES row`,
-      ).toBe(partial ? 0 : 1);
+      expect(idx!.n, `${table}__pre_tenant_key is still there — 0101 did not apply`).toBe(0);
+
+      // The half that matters, and the half a structural check cannot give:
+      // tenant B HAS a row. Every one of these inserts failed with a UNIQUE
+      // violation before `0101`, so this is the functional proof of the drop.
+      const row = await env.DB.prepare(
+        `SELECT count(*) n FROM ${table} WHERE tenant_id = ?`,
+      )
+        .bind(TENANT_B)
+        .first<{ n: number }>();
+      expect(row!.n, `${table}: tenant B has no row, so the drop proved nothing`).toBe(1);
+
+      // And tenant A still has its own. This is the regression that matters: the
+      // measured danger of the transitional keys was never a failed insert, it was
+      // an `ON CONFLICT` resolving to the OTHER tenant's row and overwriting it —
+      // one row, no error, HTTP 200. So assert tenant A survived tenant B arriving.
+      //
+      // Two of the five are EMPTY for tenant A in this seed, and both are asserted
+      // as empty rather than excused, so a table that becomes unexpectedly empty
+      // still fails here:
+      //
+      //   `score_visibility`  — sparse BY DESIGN. `scoreVisibility.ts` layers stored
+      //                         rows over the prototype's printed defaults, so "an
+      //                         edition with no rows at all behaves exactly like the
+      //                         prototype". A seeded row here means that changed.
+      //   `account_profiles`  — empty in the SEED and holding 2 rows in PRODUCTION.
+      //                         That divergence is not trivia: it is why T0 keyed
+      //                         this table `(tenant_id, edition)` rather than
+      //                         `tenant_id` alone, a correction only the read-only
+      //                         production check found. The seed cannot show it.
+      const EMPTY_FOR_TENANT_A = new Set(["score_visibility", "account_profiles"]);
+      const mine = await env.DB.prepare(
+        `SELECT count(*) n FROM ${table} WHERE tenant_id = 't_default'`,
+      ).first<{ n: number }>();
+      if (EMPTY_FOR_TENANT_A.has(table)) {
+        expect(mine!.n, `${table} is empty in this seed — see the note above before changing this`).toBe(0);
+      } else {
+        expect(mine!.n, `${table}: tenant A's rows are gone — tenant B's write displaced them`).toBeGreaterThan(0);
+      }
     }
   });
 });

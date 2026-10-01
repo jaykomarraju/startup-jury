@@ -1053,7 +1053,7 @@ describe("authZ", () => {
     // §8 Q16's property: the grid is the gate for the screen AND its API.
     await env.DB.prepare(
       "INSERT INTO role_permissions (edition, role, task_id, granted) VALUES ('incubator', 'admin', 'adminconsole', 0) " +
-        "ON CONFLICT (edition, role, task_id) DO UPDATE SET granted = 0",
+        "ON CONFLICT (tenant_id, edition, role, task_id) DO UPDATE SET granted = 0",
     ).run();
     const admin = await login(ADMIN);
     expect((await get("/api/esign/templates", admin)).status).toBe(403);

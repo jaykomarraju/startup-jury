@@ -1277,7 +1277,7 @@ describe("authZ", () => {
     expect((await get("/api/signup-config/documents", cookie)).status).toBe(200);
     await env.DB.prepare(
       "INSERT INTO role_permissions (edition, role, task_id, granted) VALUES ('incubator', 'admin', 'adminconsole', 0) " +
-        "ON CONFLICT (edition, role, task_id) DO UPDATE SET granted = 0",
+        "ON CONFLICT (tenant_id, edition, role, task_id) DO UPDATE SET granted = 0",
     ).run();
     expect((await get("/api/signup-config/documents", cookie)).status).toBe(403);
     expect((await get("/api/signup-config/seats", cookie)).status).toBe(403);

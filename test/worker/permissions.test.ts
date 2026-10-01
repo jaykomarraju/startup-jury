@@ -48,7 +48,7 @@ const get = (p: string, c: string) => SELF.fetch(`${BASE}${p}`, { headers: { coo
 async function setCell(edition: string, role: string, taskId: string, granted: boolean) {
   await env.DB.prepare(
     "INSERT INTO role_permissions (edition, role, task_id, granted) VALUES (?, ?, ?, ?) " +
-      "ON CONFLICT (edition, role, task_id) DO UPDATE SET granted = excluded.granted",
+      "ON CONFLICT (tenant_id, edition, role, task_id) DO UPDATE SET granted = excluded.granted",
   )
     .bind(edition, role, taskId, granted ? 1 : 0)
     .run();

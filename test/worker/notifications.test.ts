@@ -556,7 +556,7 @@ describe("authZ", () => {
     // `role_permissions` is keyed (edition, role, task_id) — no surrogate id.
     await env.DB.prepare(
       "INSERT INTO role_permissions (edition, role, task_id, granted) VALUES ('incubator', 'admin', 'adminconsole', 0) " +
-        "ON CONFLICT (edition, role, task_id) DO UPDATE SET granted = 0",
+        "ON CONFLICT (tenant_id, edition, role, task_id) DO UPDATE SET granted = 0",
     ).run();
     // The grid is read per REQUEST, not baked into the session, so the existing
     // cookie already sees the revocation — no re-login.

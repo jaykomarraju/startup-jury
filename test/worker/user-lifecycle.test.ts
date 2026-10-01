@@ -73,7 +73,7 @@ async function invite(
 async function setCell(role: string, taskId: string, granted: boolean) {
   await env.DB.prepare(
     "INSERT INTO role_permissions (edition, role, task_id, granted) VALUES ('incubator', ?, ?, ?) " +
-      "ON CONFLICT (edition, role, task_id) DO UPDATE SET granted = excluded.granted",
+      "ON CONFLICT (tenant_id, edition, role, task_id) DO UPDATE SET granted = excluded.granted",
   )
     .bind(role, taskId, granted ? 1 : 0)
     .run();

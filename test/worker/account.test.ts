@@ -116,7 +116,7 @@ describe("authorisation — the upgrade task", () => {
   it("closes the API when the upgrade cell is revoked, superuser bypass aside", async () => {
     await env.DB.prepare(
       "INSERT INTO role_permissions (edition, role, task_id, granted) VALUES ('vc', 'admin', 'upgrade', 0) " +
-        "ON CONFLICT (edition, role, task_id) DO UPDATE SET granted = 0",
+        "ON CONFLICT (tenant_id, edition, role, task_id) DO UPDATE SET granted = 0",
     ).run();
     try {
       expect((await req("GET", "/api/account", await login(VC_ADMIN))).status).toBe(403);
@@ -667,27 +667,29 @@ describe("tenancy — My account shows one customer their own orders", () => {
 });
 
 describe("tenancy — the profile upsert, and the refusal that replaces an overwrite", () => {
-  it("a second customer's save in an OCCUPIED edition is refused, and the first customer's row survives", async () => {
-    // ══ THE CORRECTION THIS SESSION MAKES, OBSERVED THROUGH THE ROUTE ═══════
+  it("a second customer's save in an OCCUPIED edition gets its OWN row, and the first's survives", async () => {
+    // ══ THIS CASE HAS HAD THREE CORRECT ANSWERS. THE HISTORY IS THE POINT ════
     //
-    // `PUT /profile`'s two upserts targeted `ON CONFLICT (edition)`. `0094` widened
-    // the PRIMARY KEY to `(tenant_id, edition)` and left `UNIQUE (edition)` standing
-    // as the transitional index `account_profiles__pre_tenant_key`, so that target
-    // kept resolving — to THE OTHER CUSTOMER'S ROW. Measured in D1 in
-    // `billing.test.ts`'s `ON CONFLICT` block: the old target writes the second
-    // customer's organisation name, business type, city, country and whole contact
-    // block INTO the first customer's row, keeps `tenant_id = 't_default'`, adds no
-    // row, and answers 200.
+    //   1. `PUT /profile`'s two upserts targeted `ON CONFLICT (edition)`. `0094`
+    //      widened the PRIMARY KEY to `(tenant_id, edition)` and left
+    //      `UNIQUE (edition)` standing as `account_profiles__pre_tenant_key`, so
+    //      that target kept resolving — to THE OTHER CUSTOMER'S ROW. Measured in
+    //      D1 in `billing.test.ts`'s `ON CONFLICT` block: the old target wrote the
+    //      second customer's organisation name, business type, city, country and
+    //      whole contact block INTO the first customer's row, kept
+    //      `tenant_id = 't_default'`, added no row, and answered 200.
+    //   2. Named against the widened key it was REFUSED with a 500 instead — the
+    //      error `0094`'s header intended, and the honest answer while that index
+    //      stood, because there was nothing the handler could do that was correct.
+    //   3. NOW, after T1 integration's `0101` dropped the index: it SUCCEEDS. The
+    //      second customer gets a profile of its own and the first keeps theirs.
     //
-    // Named against the widened key it is refused instead, which is the error
-    // `0094`'s header intended and the reason `account_profiles` sits in
-    // `BLOCKED_BY_TRANSITIONAL_KEY`. A 500 is the honest answer while that index
-    // stands: there is nothing the handler could do that would be correct.
+    // Both halves are asserted, because either alone can be true for the wrong
+    // reason: a save that silently did nothing would also leave tenant A intact.
     const before = await env.DB.prepare(
-      "SELECT tenant_id, org_name, city FROM account_profiles WHERE edition = 'incubator'",
+      "SELECT tenant_id, org_name, city FROM account_profiles WHERE tenant_id = 't_default' AND edition = 'incubator'",
     ).first<{ tenant_id: string; org_name: string | null; city: string | null }>();
     expect(before, "tenant A must hold the incubator profile, or this proves nothing").toBeTruthy();
-    expect(before!.tenant_id).toBe("t_default");
 
     // The ORGANISATION branch — the first of this session's three `ON CONFLICT`
     // sites, and the one whose silent overwrite destroyed the most: eleven
@@ -698,18 +700,32 @@ describe("tenancy — the profile upsert, and the refusal that replaces an overw
       workEmail: AX_ADMIN,
       org: { ...ORG, name: `${AX_MARK} Foundation` },
     });
-    expect(res.status, await res.text()).toBe(500);
+    expect(res.status, await res.text()).toBe(200);
 
+    // Tenant A, untouched. Queried BY TENANT rather than with `first()` over the
+    // edition: there are two rows now, and `first()` would pick one arbitrarily —
+    // which is how an assertion like this goes quietly vacuous.
     const after = await env.DB.prepare(
-      "SELECT tenant_id, org_name, city FROM account_profiles WHERE edition = 'incubator'",
+      "SELECT tenant_id, org_name, city FROM account_profiles WHERE tenant_id = 't_default' AND edition = 'incubator'",
     ).first<{ tenant_id: string; org_name: string | null; city: string | null }>();
     expect(after, "tenant A's commercial record was destroyed by another customer's save").toEqual(
       before,
     );
+
+    // And tenant B's row exists, under its own key, carrying its own org name.
+    const theirs = await env.DB.prepare(
+      "SELECT tenant_id, org_name FROM account_profiles WHERE tenant_id = ? AND edition = 'incubator'",
+    )
+      .bind(AX)
+      .first<{ tenant_id: string; org_name: string | null }>();
+    expect(theirs, "tenant B's save did not create a row of its own").toBeTruthy();
+    expect(theirs!.org_name).toBe(`${AX_MARK} Foundation`);
+
+    // Two profiles in one edition — impossible until `0101`.
     const rows = await env.DB.prepare(
       "SELECT count(*) n FROM account_profiles WHERE edition = 'incubator'",
     ).first<{ n: number }>();
-    expect(rows!.n).toBe(1);
+    expect(rows!.n).toBe(2);
   });
 
   it("POST /orders files the order AND its intent under the buying customer", async () => {

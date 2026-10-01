@@ -641,7 +641,7 @@ describe("billing authZ", () => {
     await env.DB.prepare(
       "INSERT INTO role_permissions (edition, role, task_id, granted) " +
         "VALUES ('incubator', 'admin', 'adminconsole', 0) " +
-        "ON CONFLICT (edition, role, task_id) DO UPDATE SET granted = 0",
+        "ON CONFLICT (tenant_id, edition, role, task_id) DO UPDATE SET granted = 0",
     ).run();
     try {
       const admin = await login(ADMIN);
@@ -920,19 +920,28 @@ describe("tenancy — the ON CONFLICT target, measured in D1 itself", () => {
     expect(row!.v).toBe("tenantA");
   });
 
-  it("PUT /subscription refuses a second customer rather than overwriting the first's tax identity", async () => {
+  it("PUT /subscription files a second customer's tax identity BESIDE the first's, not over it", async () => {
     // The THIRD of this session's `ON CONFLICT` sites, exercised through the route
     // rather than the probe table — because the probe proves what SQLite does and
     // this proves what the handler does with it.
     //
-    // With the old target this upsert answered 200 and wrote tenant B's billing
-    // email, GSTIN and cycle anchor into tenant A's `billing_subscriptions` row.
-    // GSTIN is the field that makes this the worst of the three: it prints on every
-    // tax invoice tenant A issues, so one customer's save would have put another
-    // customer's GST registration on documents already filed.
+    // This case has had three different correct answers, and the history is the
+    // point:
+    //
+    //   1. OLD TARGET, `ON CONFLICT (edition)` — answered 200 and wrote tenant B's
+    //      billing email, GSTIN and cycle anchor INTO tenant A's row. GSTIN is what
+    //      makes this the worst of the three sites: it prints on every tax invoice
+    //      tenant A issues, so one customer's save put another customer's GST
+    //      registration on documents already filed.
+    //   2. WIDENED TARGET, transitional index still standing — refused with a 500.
+    //      Strictly better: an honest failure, and the error `0095` intended.
+    //   3. NOW, after `0101` dropped that index — it SUCCEEDS, and the two
+    //      customers' subscriptions coexist. This is the outcome the whole wave is
+    //      for, and the assertion below is that both halves are true at once: the
+    //      second customer got a row, and the first customer's is byte-identical.
     const before = await env.DB.prepare(
       "SELECT tenant_id, billing_email, gstin, cycle_anchor FROM billing_subscriptions " +
-        "WHERE edition = 'incubator'",
+        "WHERE tenant_id = 't_default' AND edition = 'incubator'",
     ).first<Record<string, unknown>>();
     expect(before, "tenant A must hold the incubator subscription, or this proves nothing").toBeTruthy();
 
@@ -942,33 +951,64 @@ describe("tenancy — the ON CONFLICT target, measured in D1 itself", () => {
       cycleAnchor: "2027-03-01",
       billingPeriod: "month",
     });
-    expect(res.status).toBe(500);
+    expect(res.status, await res.text()).toBe(200);
 
+    // Tenant A, untouched — queried BY TENANT, not by `first()`, because there are
+    // now two rows in this edition and `first()` would pick one arbitrarily. That
+    // is exactly how a test like this goes quietly vacuous.
     const after = await env.DB.prepare(
       "SELECT tenant_id, billing_email, gstin, cycle_anchor FROM billing_subscriptions " +
-        "WHERE edition = 'incubator'",
+        "WHERE tenant_id = 't_default' AND edition = 'incubator'",
     ).first<Record<string, unknown>>();
     expect(after, "tenant A's billing identity was overwritten by another customer").toEqual(before);
+
+    // And tenant B has its OWN row, carrying its own GSTIN.
+    const theirs = await env.DB.prepare(
+      "SELECT tenant_id, billing_email, gstin FROM billing_subscriptions WHERE tenant_id = ? AND edition = 'incubator'",
+    )
+      .bind(CX)
+      .first<{ tenant_id: string; billing_email: string; gstin: string }>();
+    expect(theirs, "tenant B's save did not create a row of its own").toBeTruthy();
+    expect(theirs!.gstin).toBe("27AAAAA0000A1Z5");
+    expect(theirs!.billing_email).toBe(`billing@${CX_MARK.toLowerCase()}.test`);
+
+    // Two rows in one edition — which the transitional index made impossible.
     const rows = await env.DB.prepare(
       "SELECT count(*) n FROM billing_subscriptions WHERE edition = 'incubator'",
     ).first<{ n: number }>();
-    expect(rows!.n).toBe(1);
+    expect(rows!.n).toBe(2);
   });
 
-  it("both real tables still carry the transitional index integration must drop", async () => {
-    // A guard against this suite outliving its subject: when 0101-0108 drops these,
-    // this case fails and says what to do.
+  it("both real tables have SHED the transitional index, and can hold two customers at once", async () => {
+    // The predecessor of this case asserted the index was still THERE, as a guard
+    // against this suite outliving its subject. It did outlive it: `0101` dropped
+    // both, this case failed, and it said what to do. This is that.
     for (const table of ["account_profiles", "billing_subscriptions"]) {
-      const row = await env.DB.prepare(
+      const idx = await env.DB.prepare(
         "SELECT count(*) n FROM sqlite_master WHERE type = 'index' AND name = ?",
       )
         .bind(`${table}__pre_tenant_key`)
         .first<{ n: number }>();
       expect(
-        row!.n,
-        `${table}'s transitional UNIQUE (edition) is gone — integration has run, so the two ` +
-          `"blocked" cases above can become real second-tenant isolation cases`,
-      ).toBe(1);
+        idx!.n,
+        `${table}'s transitional UNIQUE (edition) is back — 0101 has been reverted or did not apply`,
+      ).toBe(0);
+
+      // Structural is not enough — but the functional half is asserted only for the
+      // table THIS FILE populates. Worker D1 state is shared across test files in
+      // this pool, so asserting `account_profiles` holds two customers here would
+      // make this case depend on `account.test.ts` having run first: green or red by
+      // file order, which is the exact flakiness shape this repo keeps rediscovering.
+      // `account.test.ts` owns that proof, through the route.
+      if (table === "billing_subscriptions") {
+        const tenants = await env.DB.prepare(
+          `SELECT count(DISTINCT tenant_id) n FROM ${table} WHERE edition = 'incubator'`,
+        ).first<{ n: number }>();
+        expect(
+          tenants!.n,
+          `${table}: only one customer has a row in this edition, so the drop is unproven here`,
+        ).toBeGreaterThanOrEqual(2);
+      }
     }
   });
 });
