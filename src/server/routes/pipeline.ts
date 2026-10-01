@@ -1286,7 +1286,13 @@ pipeline.get("/activity", async (c) => {
   const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 12) || 12, 1), 50);
 
   const { rows } = await listAudit(c.env.DB, {
-    edition,
+    // T1-REPORTS (§2 B4, and `tenant-scope.test.ts`'s "B4 activity" case, whose
+    // owner is T1-REPORTS). The leak was in `audit/log.ts`'s two branch predicates;
+    // this line is the only part of the fix that falls outside T1-REPORTS' paths,
+    // because `AuditQuery.edition` became `AuditQuery.scope` and a `TenantScope`
+    // cannot be half-supplied. Three lines, noted in
+    // `docs/parity-requests/T1-REPORTS.md` as the session's one foreign edit.
+    scope: scopeOf(c.var.user),
     categories: ["pipeline"],
     programId: c.req.query("programId") || undefined,
     cohortId: c.req.query("cohortId") || undefined,

@@ -36,6 +36,7 @@ import type { Edition, Role } from "../../shared/roles";
 import { editionLabel, roleLabel } from "../../shared/roles";
 import type { ScoringSettings } from "../../shared/scoring";
 import { recordAudit, changedFragment, pct, type AuditEntry } from "./log";
+import { scopeOf, scoped } from "../../shared/tenant";
 
 /** The edition's evaluator role, for the sentences that name one (F0181). */
 function evaluatorLabel(edition: Edition): string {
@@ -276,8 +277,14 @@ export async function auditUserInvited(
   c: Context<AppEnv>,
   user: { id: string; name: string; email: string; roleLabel: string },
 ): Promise<void> {
-  const row = await c.env.DB.prepare("SELECT plan FROM org_settings WHERE edition = ?")
-    .bind(c.var.user.edition)
+  // `org_settings` is tenant-owned, one row per workspace. Unscoped this read was
+  // non-deterministic rather than wrong-by-a-little: `first()` over two customers'
+  // rows returns whichever the index yields, so the invite sentence could have
+  // named ANOTHER customer's purchased plan. T1-CONFIG owns the console that
+  // writes this row; the read is here because the sentence is.
+  const qb = scoped(scopeOf(c.var.user)).on("o");
+  const row = await c.env.DB.prepare(`SELECT plan FROM org_settings o ${qb.whereClause()}`)
+    .bind(...qb.binds)
     .first<{ plan: string }>();
   const plan = PLAN_LABELS[row?.plan ?? ""] ?? "Standard plan";
   await recordAudit(c, {

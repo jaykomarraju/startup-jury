@@ -619,4 +619,88 @@ describe("retention", () => {
     const after = await env.DB.prepare("SELECT COUNT(*) AS n FROM pipeline_events").first<{ n: number }>();
     expect(after?.n).toBe(before?.n);
   });
+
+  /**
+   * T1-REPORTS — the purge is the one statement in this file that DESTROYS rather
+   * than discloses.
+   *
+   * `tenant-scope.test.ts` asserts that setting a window touches only the caller's
+   * workspace. This asserts the consequence that followed from it: scoped by
+   * `edition` alone, `DELETE FROM audit_log WHERE edition = ? AND created_at < …`
+   * deleted every OTHER customer's expired trail on this customer's schedule — and
+   * reported the combined row count as `purged`, so a console showing "purged: 4"
+   * looked exactly like one showing "purged: 1".
+   *
+   * It lives here rather than in the isolation file because it is about the DELETE,
+   * not about a read: there is no marker to sweep for a row that is gone.
+   */
+  it("purges only the caller's workspace, and counts only what it purged", async () => {
+    const cookie = await login(ADMIN);
+    // Two expired rows in the same edition, one per customer. Nothing but
+    // `tenant_id` distinguishes them.
+    await env.DB.prepare(
+      "INSERT INTO organizations (id, name, slug, status) VALUES ('t_purge', 'Purge Co', 'purge-co', 'active') " +
+        "ON CONFLICT (id) DO NOTHING",
+    ).run();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO audit_log (id, tenant_id, edition, category, action, summary, created_at) " +
+          "VALUES ('aud_mine', 't_default', 'incubator', 'config', 'threshold_changed', 'mine', datetime('now', '-400 days'))",
+      ),
+      env.DB.prepare(
+        "INSERT INTO audit_log (id, tenant_id, edition, category, action, summary, created_at) " +
+          "VALUES ('aud_theirs', 't_purge', 'incubator', 'config', 'threshold_changed', 'theirs', datetime('now', '-400 days'))",
+      ),
+    ]);
+
+    const res = await req("PUT", "/api/audit/retention", cookie, { retentionDays: 365 });
+    expect(res.status).toBe(200);
+    // Exactly one. An unscoped DELETE reports 2 here, which reads like an
+    // ordinary number and is the only symptom the other customer's loss has.
+    expect(await res.json()).toMatchObject({ ok: true, retentionDays: 365, purged: 1 });
+
+    expect(await env.DB.prepare("SELECT id FROM audit_log WHERE id = 'aud_mine'").first()).toBeNull();
+    const theirs = await env.DB.prepare("SELECT id FROM audit_log WHERE id = 'aud_theirs'").first();
+    expect(theirs, "another customer's expired audit rows were deleted on this customer's schedule").toBeTruthy();
+
+    await env.DB.prepare("DELETE FROM audit_log WHERE id = 'aud_theirs'").run();
+  });
+
+  /**
+   * T1-REPORTS — the retention window is read per workspace too, which is what
+   * decides WHICH rows the statement above is allowed to delete. `org_settings` is
+   * keyed `(tenant_id, edition)`, so an unscoped `first()` over two customers' rows
+   * returns whichever the index happens to yield: the console would have shown, and
+   * purged on, a window this customer never set.
+   */
+  it("reads the window from the caller's own workspace row", async () => {
+    const cookie = await login(ADMIN);
+    await req("PUT", "/api/audit/retention", cookie, { retentionDays: 365 });
+    // A second customer with a very different window, in the same edition.
+    await env.DB.prepare(
+      "INSERT INTO organizations (id, name, slug, status) VALUES ('t_window', 'Window Co', 'window-co', 'active') " +
+        "ON CONFLICT (id) DO NOTHING",
+    ).run();
+    // **The explicit `rowid` is what makes this a control rather than a
+    // coincidence.** `org_settings` is keyed `(tenant_id, edition)` and nothing
+    // indexes `edition` alone, so an unscoped `WHERE edition = ?` is a table scan
+    // and `first()` returns whichever row the scan reaches first — which, for a
+    // row inserted later than the migration's, is tenant A's own. Measured: with
+    // the predicate removed this case still passed, by luck of insert order. A
+    // negative rowid puts the OTHER customer's row first, so an unscoped read
+    // deterministically returns 30 and the case fails as it should.
+    await env.DB.prepare(
+      "INSERT INTO org_settings (rowid, tenant_id, edition, audit_retention_days) " +
+        "VALUES (-1, 't_window', 'incubator', 30)",
+    ).run();
+
+    expect((await page(cookie)).retentionDays).toBe(365);
+    // And theirs is untouched by ours.
+    const theirs = await env.DB.prepare(
+      "SELECT audit_retention_days AS d FROM org_settings WHERE tenant_id = 't_window'",
+    ).first<{ d: number | null }>();
+    expect(theirs!.d).toBe(30);
+
+    await env.DB.prepare("DELETE FROM org_settings WHERE tenant_id = 't_window'").run();
+  });
 });

@@ -24,6 +24,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { requireAuth, requireTask } from "../auth/middleware";
+import { scopeOf } from "../../shared/tenant";
 import {
   isAuditCategory,
   isValidRetention,
@@ -58,12 +59,18 @@ function isoDate(value: string | undefined): string | undefined {
  */
 audit.get("/", async (c) => {
   const edition = c.var.user.edition as Edition;
+  // T1-REPORTS — §2 B5. The workspace, from the principal and never from the query
+  // string, even though every other filter on this route IS a query parameter.
+  // That asymmetry is the one that matters: `category`, `actorId`, `deckId` and
+  // `q` narrow what this customer sees of their own trail, and the scope decides
+  // whose trail it is.
+  const scope = scopeOf(c.var.user);
   const categories = c.req
     .queries("category")
     ?.filter(isAuditCategory) as AuditCategory[] | undefined;
 
   const page = await listAudit(c.env.DB, {
-    edition,
+    scope,
     categories,
     actorId: c.req.query("actorId") || undefined,
     deckId: c.req.query("deckId") || undefined,
@@ -75,8 +82,8 @@ audit.get("/", async (c) => {
   });
 
   const [actors, retentionDays] = await Promise.all([
-    listAuditActors(c.env.DB, edition),
-    loadAuditRetention(c.env.DB, edition),
+    listAuditActors(c.env.DB, scope),
+    loadAuditRetention(c.env.DB, scope),
   ]);
 
   return c.json({
@@ -100,12 +107,13 @@ audit.get("/", async (c) => {
  */
 audit.put("/retention", async (c) => {
   const edition = c.var.user.edition as Edition;
+  const scope = scopeOf(c.var.user);
   const body = await c.req.json<{ retentionDays?: number | null }>().catch(() => null);
   const days = body?.retentionDays ?? null;
   if (!isValidRetention(days)) return c.json({ error: "invalid_retention" }, 400);
 
-  const before = await loadAuditRetention(c.env.DB, edition);
-  await setAuditRetention(c.env.DB, edition, days);
+  const before = await loadAuditRetention(c.env.DB, scope);
+  await setAuditRetention(c.env.DB, scope, days);
   // Shortening the window is itself an administrative act — and the one act a
   // trail must never lose, since it is the act that loses other rows. Recorded
   // before the purge runs, and `security` rather than `config` because the
@@ -116,9 +124,14 @@ audit.put("/retention", async (c) => {
     summary: `Audit log retention changed from ${retentionLabel(before)} to ${retentionLabel(days)}`,
     detail: { from: before, to: days },
     targetType: "org_settings",
+    // `org_settings` is keyed `(tenant_id, edition)` now, so `edition` alone no
+    // longer identifies the row. It is not widened here on purpose: the audit row
+    // this is written on carries `tenant_id` itself, so the pair that identifies
+    // the target is `(row.tenant_id, row.target_id)` and putting the tenant in
+    // both places would be the only copy that could disagree.
     targetId: edition,
   });
-  const purged = await purgeExpiredAudit(c.env.DB, edition);
+  const purged = await purgeExpiredAudit(c.env.DB, scope);
   return c.json({ ok: true, retentionDays: days, purged });
 });
 
