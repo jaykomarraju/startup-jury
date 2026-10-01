@@ -33,11 +33,41 @@
  * because the trail hiccuped would be the worse failure. The trade is that a
  * broken write is silent in production — which is why every writer in this
  * session is covered by a test that asserts the ROW, not the call.
+ *
+ * ## T1-REPORTS — why this file is the highest-risk read in the wave
+ *
+ * `audit_log` is tenant-owned and it is the SECURITY TRAIL. §2 lists the reads
+ * here as B4/B5, scoped by `edition` alone, and names what crosses: "the security
+ * audit trail, including `ownership_transferred` rows". A customer reading another
+ * customer's trail learns who their staff are, what they changed and when they
+ * changed it — that is a disclosure, not an inconvenience, and it is worse than
+ * the data leak it would be reporting.
+ *
+ * Both halves moved, and the WRITE half mattered more:
+ *
+ *   • **Reads.** `listAudit`, `listAuditActors`, `purgeExpiredAudit` and the two
+ *     retention accessors took an `Edition`. They now take a `TenantScope`, which
+ *     can only be built by `scopeOf(principal)` — so the key cannot come from a
+ *     request, and a caller cannot pass half of it. That is a deliberate
+ *     compile-time break at the call sites rather than an optional field that
+ *     defaults.
+ *   • **Writes.** `recordAudit` named no `tenant_id`, so every audit row written
+ *     by every mutating route in the product landed in whichever tenant the
+ *     column's `DEFAULT 't_default'` supplied — a 200, a row, and a trail entry
+ *     filed against the wrong customer. There is nothing in a response to notice
+ *     that, and a trail is the one table where a misfiled row is also a FALSE
+ *     ACCUSATION: tenant A's administrator appears to have changed tenant B's
+ *     settings. `insertScope()` is what makes the column unforgettable.
+ *
+ * `purgeExpiredAudit` is the third shape and the sharpest: an unscoped `DELETE`
+ * on a retention window does not leak rows, it DESTROYS another customer's trail
+ * on this customer's schedule, and the row count it returns looks ordinary.
  */
 import type { Context } from "hono";
 import type { AppEnv } from "../types";
 import type { Edition } from "../../shared/roles";
 import { getStage } from "../../pipeline";
+import { scopeOf, scoped, insertScope, type TenantScope } from "../../shared/tenant";
 import {
   type AuditCategory,
   type AuditEventView,
@@ -82,15 +112,21 @@ function auditId(): string {
 export async function recordAudit(c: Context<AppEnv>, ...entries: AuditEntry[]): Promise<void> {
   if (entries.length === 0) return;
   const user = c.var.user;
+  // The workspace the row belongs to, from the acting principal and nowhere else.
+  // `insertScope` supplies `tenant_id, edition` as one column list with its own
+  // placeholders and binds, so the column cannot be named without the value or
+  // dropped without the name. Before this, the INSERT named `edition` only and the
+  // column default filed every row in the product against `t_default`.
+  const t = insertScope(scopeOf(user));
   try {
     await c.env.DB.batch(
       entries.map((e) =>
         c.env.DB.prepare(
-          "INSERT INTO audit_log (id, edition, category, actor_id, actor_label, action, summary, detail_json, deck_id, target_type, target_id) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          `INSERT INTO audit_log (id, ${t.columns}, category, actor_id, actor_label, action, summary, detail_json, deck_id, target_type, target_id) ` +
+            `VALUES (?, ${t.placeholders}, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).bind(
           auditId(),
-          user.edition,
+          ...t.binds,
           e.category,
           user.id,
           // Denormalised on purpose (`0030`): the trail must stay readable
@@ -179,13 +215,19 @@ export async function recordCreditMovement(
   movement: CreditMovement,
 ): Promise<string> {
   const id = `cl_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  // `credit_ledger` is tenant-owned. A movement filed against the wrong customer
+  // is an accounting defect with no symptom: `sum(delta)` is the BALANCE, so a
+  // misfiled refund credits one customer for another's failed evaluation — §2 B24's
+  // "credit refunds charged to an edition, not a customer". T1-COMMERCE owns the
+  // balance read; this is the write that feeds it.
+  const t = insertScope(scopeOf(c.var.user));
   await c.env.DB.prepare(
-    "INSERT INTO credit_ledger (id, edition, delta, reason, deck_id, amount_minor, currency, reference, note, actor_id) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    `INSERT INTO credit_ledger (id, ${t.columns}, delta, reason, deck_id, amount_minor, currency, reference, note, actor_id) ` +
+      `VALUES (?, ${t.placeholders}, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
-      c.var.user.edition,
+      ...t.binds,
       movement.delta,
       movement.reason,
       movement.deckId ?? null,
@@ -213,6 +255,12 @@ export async function recordCreditMovement(
  * The INR price of a seeded credit pack, so a purchase can be recorded with the
  * money it cost. `null` when the catalogue has no pack of that size — the
  * movement is still recorded, just without an amount.
+ *
+ * **Deliberately NOT tenant-scoped.** `price_plans` and `price_amounts` are two of
+ * the eight PLATFORM-GLOBAL tables (§3, `PLATFORM_GLOBAL_TABLES`): one catalogue
+ * serves the whole product, `0033`'s own header says so, and `0100`'s integrity
+ * assertion fails the migration chain if a tenant key is ever added to them. A
+ * sweep that "finished the job" here would be the one wrong edit in this file.
  */
 export async function packPriceMinor(
   db: D1Database,
@@ -272,12 +320,23 @@ export async function recordScoreOverrides(
   });
   if (diverged.length === 0) return;
 
+  // `parameters` is tenant-owned, and these ids arrive in a REQUEST BODY — the one
+  // place in this file where a value is not derived from the session. The ids are
+  // validated upstream before a score is stored, so this is a second line rather
+  // than the first, but an unscoped name lookup would put another customer's
+  // rubric wording into this customer's audit sentence. Scoped, an id from
+  // outside the workspace falls back to the raw id (`?? s.parameterId` below),
+  // which is visibly wrong instead of plausibly wrong.
+  const qb = scoped(scopeOf(c.var.user))
+    .on("p")
+    .and(
+      `p.id IN (${diverged.map(() => "?").join(", ")})`,
+      ...diverged.map((s) => s.parameterId),
+    );
   const names = new Map(
     (
-      await c.env.DB.prepare(
-        `SELECT id, name FROM parameters WHERE id IN (${diverged.map(() => "?").join(", ")})`,
-      )
-        .bind(...diverged.map((s) => s.parameterId))
+      await c.env.DB.prepare(`SELECT id, name FROM parameters p ${qb.whereClause()}`)
+        .bind(...qb.binds)
         .all<{ id: string; name: string }>()
     ).results.map((r) => [r.id, r.name]),
   );
@@ -306,43 +365,56 @@ export async function recordScoreOverrides(
 
 // ── Retention ────────────────────────────────────────────────────────────────
 
-export async function loadAuditRetention(db: D1Database, edition: Edition): Promise<number | null> {
+export async function loadAuditRetention(db: D1Database, scope: TenantScope): Promise<number | null> {
+  const qb = scoped(scope).on("o");
   const row = await db
-    .prepare("SELECT audit_retention_days FROM org_settings WHERE edition = ?")
-    .bind(edition)
+    .prepare(`SELECT audit_retention_days FROM org_settings o ${qb.whereClause()}`)
+    .bind(...qb.binds)
     .first<{ audit_retention_days: number | null }>();
   return row?.audit_retention_days ?? null;
 }
 
 export async function setAuditRetention(
   db: D1Database,
-  edition: Edition,
+  scope: TenantScope,
   days: number | null,
 ): Promise<void> {
   if (!isValidRetention(days)) throw new Error("invalid_retention");
+  // An UPDATE scoped by `edition` alone would have set EVERY customer's retention
+  // window from one customer's console — and because the next statement purges on
+  // that window, it would then have deleted their trails. SQLite reports the row
+  // count and nothing else, so the console would have shown an ordinary success.
+  const qb = scoped(scope).on("o");
   await db
-    .prepare("UPDATE org_settings SET audit_retention_days = ? WHERE edition = ?")
-    .bind(days, edition)
+    .prepare(`UPDATE org_settings AS o SET audit_retention_days = ? ${qb.whereClause()}`)
+    .bind(days, ...qb.binds)
     .run();
 }
 
 /**
- * Delete audit rows older than the edition's retention window. A NULL window
+ * Delete audit rows older than the workspace's retention window. A NULL window
  * ("keep everything", the default) deletes nothing.
  *
  * Only `audit_log` is pruned. `pipeline_events` is a deck's own decision
  * history — it is rendered on the deck screen, it is referenced by the
  * analytics, and deleting it would silently rewrite a deck's record rather than
  * expire an administrative log line.
+ *
+ * **The scope here is not a read filter, it is the blast radius.** Scoped by
+ * `edition` alone, one customer setting a 30-day window deleted every other
+ * customer's trail older than 30 days, on their schedule, with no error and a row
+ * count that looked like their own. Of the three shapes this file has, this is the
+ * only one that is not recoverable.
  */
-export async function purgeExpiredAudit(db: D1Database, edition: Edition): Promise<number> {
-  const days = await loadAuditRetention(db, edition);
+export async function purgeExpiredAudit(db: D1Database, scope: TenantScope): Promise<number> {
+  const days = await loadAuditRetention(db, scope);
   if (days === null) return 0;
+  const qb = scoped(scope)
+    .on("a")
+    .and("a.created_at < datetime('now', ? || ' days')", `-${days}`);
   const res = await db
-    .prepare(
-      "DELETE FROM audit_log WHERE edition = ? AND created_at < datetime('now', ? || ' days')",
-    )
-    .bind(edition, `-${days}`)
+    .prepare(`DELETE FROM audit_log AS a ${qb.whereClause()}`)
+    .bind(...qb.binds)
     .run();
   return res.meta?.changes ?? 0;
 }
@@ -350,7 +422,17 @@ export async function purgeExpiredAudit(db: D1Database, edition: Edition): Promi
 // ── Reading ──────────────────────────────────────────────────────────────────
 
 export interface AuditQuery {
-  edition: Edition;
+  /**
+   * The WORKSPACE whose trail is being read — `{ tenantId, edition }`, built only
+   * by `scopeOf(principal)`.
+   *
+   * This replaced a bare `edition: Edition` and the break was the point. An
+   * optional `tenantId` alongside the old field would have compiled at every
+   * existing call site and returned every customer's rows from the ones that did
+   * not pass it; a `TenantScope` cannot be half-supplied, and `scopeOf` takes a
+   * principal, so `scopeOf(c.req.query())` does not typecheck.
+   */
+  scope: TenantScope;
   /** Empty / omitted = every category. */
   categories?: AuditCategory[];
   actorId?: string;
@@ -415,8 +497,18 @@ function parseCursor(cursor: string | null | undefined): { at: string; id: strin
  * can order and page across them as one stream.
  *
  * Predicates are applied INSIDE each branch rather than outside, so the indexes
- * `0030` and `0042` created (`(edition, created_at)`, `(edition, category,
- * created_at)`, `(edition, actor_id, created_at)`) are still usable.
+ * `0030` and `0042` created are still usable — `0098` re-cut all three to lead
+ * with `(tenant_id, edition, …)`, and the scope predicate below is what makes the
+ * new leading column selective. Scoping the OUTER query instead would have been
+ * correct and unindexed.
+ *
+ * Each branch is scoped on a different alias, and the difference is load-bearing:
+ * the `audit_log` branch scopes `a`, the table's own key, because its `deck_id` is
+ * NULLABLE and its `LEFT JOIN decks` therefore produces no owner for an
+ * administrative row. The `pipeline_events` branch scopes `d`, because
+ * `pipeline_events` has no key of its own and `decks` is its owner in
+ * `TENANT_OWNER` — and that join is already INNER, which is what `viaParent` would
+ * have emitted.
  */
 export async function listAudit(db: D1Database, query: AuditQuery): Promise<AuditReadResult> {
   const limit = Math.min(Math.max(query.limit ?? 50, 1), 200);
@@ -465,8 +557,9 @@ export async function listAudit(db: D1Database, query: AuditQuery): Promise<Audi
   }
 
   if (wantsAudit && !query.founderId) {
-    const where = ["a.edition = ?"];
-    params.push(query.edition);
+    const scopeQb = scoped(query.scope).on("a");
+    const where = [scopeQb.where];
+    params.push(...scopeQb.binds);
     const filtered = cats.filter((k) => k !== "pipeline");
     if (filtered.length > 0) {
       where.push(`a.category IN (${filtered.map(() => "?").join(", ")})`);
@@ -508,8 +601,9 @@ export async function listAudit(db: D1Database, query: AuditQuery): Promise<Audi
   }
 
   if (wantsPipeline) {
-    const where = ["d.edition = ?"];
-    params.push(query.edition);
+    const scopeQb = scoped(query.scope).on("d");
+    const where = [scopeQb.where];
+    params.push(...scopeQb.binds);
     if (query.founderId) {
       where.push("d.uploaded_by = ?");
       params.push(query.founderId);
@@ -595,22 +689,31 @@ export function toAuditView(edition: Edition, row: UnionRow): AuditEventView {
   };
 }
 
-/** The distinct actors present in the edition's trail, for the actor filter. */
+/**
+ * The distinct actors present in the workspace's trail, for the actor filter.
+ *
+ * This is a roster read wearing a filter's clothing: it returns NAMES, and an
+ * unscoped version put another customer's staff into this customer's dropdown —
+ * the same disclosure §2 B6 describes, reached from the audit section instead of
+ * `/api/users`. Two branches, two scopes, in the statement's own order.
+ */
 export async function listAuditActors(
   db: D1Database,
-  edition: Edition,
+  scope: TenantScope,
 ): Promise<{ id: string; label: string }[]> {
+  const auditQb = scoped(scope).on("a").andRaw("a.actor_id IS NOT NULL");
+  const pipelineQb = scoped(scope).on("d").andRaw("e.actor_id IS NOT NULL");
   const rows = (
     await db
       .prepare(
         "SELECT a.actor_id AS id, COALESCE(u.name, a.actor_label) AS label FROM audit_log a " +
-          "LEFT JOIN users u ON u.id = a.actor_id WHERE a.edition = ? AND a.actor_id IS NOT NULL " +
+          `LEFT JOIN users u ON u.id = a.actor_id ${auditQb.whereClause()} ` +
           "UNION " +
           "SELECT e.actor_id AS id, u.name AS label FROM pipeline_events e " +
           "JOIN decks d ON d.id = e.deck_id LEFT JOIN users u ON u.id = e.actor_id " +
-          "WHERE d.edition = ? AND e.actor_id IS NOT NULL",
+          pipelineQb.whereClause(),
       )
-      .bind(edition, edition)
+      .bind(...auditQb.binds, ...pipelineQb.binds)
       .all<{ id: string; label: string | null }>()
   ).results;
   const seen = new Map<string, string>();

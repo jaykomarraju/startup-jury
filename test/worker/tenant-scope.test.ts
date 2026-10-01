@@ -181,9 +181,16 @@ const TENANT_B_FIXTURES: Readonly<Record<string, Fixture>> = {
     binds: [TENANT_B, `${MARKER} Admin`],
   },
   decks: {
+    // `ai_score` is LOAD-BEARING, added by T1-REPORTS: `GET /api/analytics/drift`
+    // selects `WHERE ai_score IS NOT NULL`, so with it null the drift probe
+    // answered 200 with tenant B absent and read as isolated when the route was
+    // not scoped at all. Measured: the probe passed against an unscoped
+    // `analytics.ts`. 1.1 is deliberately below every seeded score, so it also
+    // moves any mean that leaks. Do not set it back to null without re-marking
+    // that probe `unprobed`.
     sql:
-      "INSERT INTO decks (id, tenant_id, edition, name, status, founder_email, founder_phone) " +
-      "VALUES ('zz_deck', ?, 'incubator', ?, 'new', ?, '+91 00000 00000')",
+      "INSERT INTO decks (id, tenant_id, edition, name, status, founder_email, founder_phone, ai_score) " +
+      "VALUES ('zz_deck', ?, 'incubator', ?, 'new', ?, '+91 00000 00000', 1.1)",
     binds: [TENANT_B, `${MARKER} Startup`, `founder@${MARKER.toLowerCase()}.test`],
   },
   audit_log: {
@@ -334,6 +341,69 @@ const TENANT_B_FIXTURES: Readonly<Record<string, Fixture>> = {
   billing_subscriptions: { sql: "", blocked: "0095's transitional UNIQUE (edition)" },
 };
 
+/**
+ * **THE PROXY FIXTURES — the second extension point, added by T1-REPORTS.**
+ *
+ * `TENANT_B_FIXTURES` above is one row per TENANT-KEYED table and the registry
+ * test asserts its keys are exactly `TENANT_KEYED_TABLES`, so a row in a
+ * scoped-by-proxy table has nowhere to go there. That is what left ten cases
+ * `unprobed`: the note in "HOW TO EXTEND IT" §1b asks for "a `queries` / `calls`
+ * / `signups` row hanging off `zz_deck`" and there was no place to put one.
+ *
+ * This is the place. Each entry gives tenant B one row in a table that has no
+ * tenant key of its own, hanging off a fixture above, so that a route reading
+ * that table has something to leak. They are seeded after the keyed fixtures and
+ * before any probe runs.
+ *
+ * **A fixture here can turn another session's `unprobed` case into a REAL leak,
+ * and that is the point of adding one.** When it does, move that case to
+ * `pending` with its owner rather than deleting it or working around it — the
+ * owner then has a negative control instead of a case that could never have
+ * failed. T1-REPORTS added `zz_jury` and `zz_eval` for its own two reports and
+ * that flipped `B7 evaluators` (T1-DECKS) from `unprobed` to `pending`, which is
+ * one more measured leak than the file carried before.
+ */
+const TENANT_B_PROXY_FIXTURES: readonly {
+  /** What it exists for, named so a later session can tell whether it may change it. */
+  readonly id: string;
+  readonly sql: string;
+  readonly binds?: readonly unknown[];
+}[] = [
+  {
+    // A second tenant-B principal, with an EVALUATOR role. `zz_admin` is an
+    // admin, so every route that filters `users` to the evaluator roles found
+    // nothing to leak and read as isolated when it was not.
+    id: "zz_jury — an evaluator-role principal for tenant B",
+    sql:
+      "INSERT INTO users (id, tenant_id, name, email, role, edition, initials, password_hash) " +
+      "SELECT 'zz_jury', ?, ?, 'zz.jury@" + MARKER.toLowerCase() + ".test', 'jury', 'incubator', 'ZJ', password_hash " +
+      "FROM users WHERE email = '" + ADMIN + "'",
+    binds: [TENANT_B, `${MARKER} Juror`],
+  },
+  {
+    // `evaluations` is scoped only through `decks` (`TENANT_OWNER`), and it is
+    // what `humanEvalsByDeck` reads for three incubator reports. The total is
+    // deliberately 9.9 — far above any seeded score — so a leaking MEAN moves
+    // visibly rather than by a rounding step.
+    id: "zz_eval — a tenant-B evaluation, for the reports that take a mean",
+    sql:
+      "INSERT INTO evaluations (id, deck_id, evaluator_id, weighted_total, verdict, remarks, submitted_at) " +
+      "VALUES ('zz_eval', 'zz_deck', 'zz_jury', 9.9, 'advance', ?, datetime('now'))",
+    binds: [`${MARKER} remarks`],
+  },
+  {
+    // `pipeline_events` likewise. This is what `GET /api/activity` reads, and
+    // without it that probe could not have failed: the route returns the DECK
+    // NAME from the joined `decks` row, so one event on `zz_deck` is enough to
+    // put `ZZTENANTB Startup` in the response of a route that is not scoped.
+    id: "zz_pe — a tenant-B stage transition, for GET /api/activity",
+    sql:
+      "INSERT INTO pipeline_events (id, deck_id, actor_id, from_stage, to_stage, action, note) " +
+      "VALUES ('zz_pe', 'zz_deck', 'zz_admin', 'new', 'shortlisted', 'stage_changed', ?)",
+    binds: [`${MARKER} moved to shortlisted`],
+  },
+];
+
 interface RouteProbe {
   readonly id: string;
   readonly path: string;
@@ -354,7 +424,11 @@ interface RouteProbe {
 const ROUTE_PROBES: readonly RouteProbe[] = [
   // ── measured to leak today. These are the real negative controls. ───────────
   { id: "B1 decks", path: "/api/decks", as: PM, status: "pending", owner: "T1-DECKS" },
-  { id: "B5 audit", path: "/api/audit", as: ADMIN, status: "pending", owner: "T1-REPORTS" },
+  // T1-REPORTS. `/api/audit` returns the trail AND the actor list, so this one
+  // probe covers both of `audit/log.ts`'s union branches and `listAuditActors`'s
+  // two. Measured before the fix: the response carried `ZZTENANTB transferred
+  // ownership` — an `ownership_transferred` row, §2's own example.
+  { id: "B5 audit", path: "/api/audit", as: ADMIN, status: "enforced" },
   { id: "B6 users", path: "/api/users", as: ADMIN, status: "pending", owner: "T1-PEOPLE" },
   { id: "B9 config parameters", path: "/api/config/parameters", as: ADMIN, status: "pending", owner: "T1-CONFIG" },
   { id: "B9 config summary", path: "/api/config/summary", as: ADMIN, status: "pending", owner: "T1-CONFIG" },
@@ -386,32 +460,41 @@ const ROUTE_PROBES: readonly RouteProbe[] = [
     owner: "T1-DECKS",
     reason: "tenant B has no `queries` row — needs one hanging off `zz_deck`",
   },
-  {
-    id: "B4 activity",
-    path: "/api/activity",
-    as: ADMIN,
-    status: "unprobed",
-    owner: "T1-REPORTS",
-    reason: "reads `pipeline_events`, where tenant B has no row — needs one on `zz_deck`",
-  },
-  {
-    id: "B7 evaluators",
-    path: "/api/evaluators",
-    as: PM,
-    status: "unprobed",
-    owner: "T1-DECKS",
-    reason: "filters `users` to evaluator roles and `zz_admin` is an admin — needs a tenant-B jury row",
-  },
+  // T1-REPORTS. Was `unprobed` for exactly the reason recorded — tenant B had no
+  // `pipeline_events` row — so `TENANT_B_PROXY_FIXTURES` supplies `zz_pe` FIRST,
+  // the case was watched failing as a real leak, and only then was the route
+  // scoped. Promoting it straight to `enforced` would have asserted nothing.
+  { id: "B4 activity", path: "/api/activity", as: ADMIN, status: "enforced" },
+  // T1-REPORTS supplied the missing fixture its `reason` named — `zz_jury`, in
+  // `TENANT_B_PROXY_FIXTURES` — and the case promptly leaked. It is `pending`
+  // rather than `unprobed` now: T1-DECKS has a real negative control on
+  // `pipeline.ts:1186`'s evaluator roster instead of a case that could not fail.
+  { id: "B7 evaluators", path: "/api/evaluators", as: PM, status: "pending", owner: "T1-DECKS" },
   {
     id: "B8 analytics funnel",
     path: "/api/analytics/funnel",
     as: ADMIN,
     status: "unprobed",
-    owner: "T1-REPORTS",
+    // T1-REPORTS, and this one STAYS unprobed after the fix, which is the honest
+    // answer rather than a missing one. `buildFunnel` returns stage labels from a
+    // constant and counts from the rows; no text from any deck reaches the
+    // response, so no fixture can put a marker in it. A marker sweep cannot test
+    // this route — so `layer 2c` tests it by VALUE instead, against the live
+    // route, and that is where the funnel's isolation is actually asserted.
     reason:
       "returns counts, not names — the marker sweep is structurally blind here, which is §11's " +
-      "whole point about aggregates. `AGGREGATE_PROBES` is the layer that can see this one.",
+      "whole point about aggregates. No fixture can change that; see `layer 2c`, which asserts " +
+      "this route's NUMBER against tenant B gaining rows.",
   },
+  // T1-REPORTS — three reports this session owns that the file carried no probe
+  // for at all. Each returns free text drawn from the rows it aggregates, so
+  // unlike the funnel they ARE marker-probeable, and each one was measured
+  // leaking before the fix: `/analytics/evaluators` named `ZZTENANTB Juror` with
+  // their average, `/analytics/cohort` listed `ZZTENANTB Startup`, and
+  // `/analytics/decisions` carried `zz_pe`'s transition against it.
+  { id: "B8 analytics evaluators", path: "/api/analytics/evaluators", as: ADMIN, status: "enforced" },
+  { id: "B8 analytics cohort", path: "/api/analytics/cohort", as: ADMIN, status: "enforced" },
+  { id: "B8 analytics drift", path: "/api/analytics/drift", as: ADMIN, status: "enforced" },
   {
     id: "B10 permissions",
     path: "/api/permissions",
@@ -514,6 +597,7 @@ async function body(path: string, cookie: string): Promise<{ status: number; tex
 }
 
 const seeded: string[] = [];
+const proxySeeded: string[] = [];
 const blocked: string[] = [];
 
 beforeAll(async () => {
@@ -548,6 +632,14 @@ beforeAll(async () => {
       .bind(...(fixture.binds ?? []))
       .run();
     seeded.push(table);
+  }
+
+  // The proxy rows go last: every one of them references a keyed fixture above.
+  for (const fixture of TENANT_B_PROXY_FIXTURES) {
+    await env.DB.prepare(fixture.sql)
+      .bind(...(fixture.binds ?? []))
+      .run();
+    proxySeeded.push(fixture.id);
   }
 });
 
@@ -652,6 +744,23 @@ describe("tenancy · layer 1 — the key and the scope helper", () => {
     }
   });
 
+  it("seeded tenant B's PROXY rows too, so the ten unprobed cases can be worked off", async () => {
+    // Without these, a route that reads only proxy tables answers 200 with an
+    // empty list and the marker sweep calls it isolated. Asserted by COUNT so a
+    // fixture that silently failed to insert is caught here rather than showing
+    // up as a probe that cannot fail.
+    expect(proxySeeded).toEqual(TENANT_B_PROXY_FIXTURES.map((f) => f.id));
+    for (const [table, id] of [
+      ["evaluations", "zz_eval"],
+      ["pipeline_events", "zz_pe"],
+    ] as const) {
+      const row = await env.DB.prepare(`SELECT count(*) n FROM ${table} WHERE id = ?`)
+        .bind(id)
+        .first<{ n: number }>();
+      expect(row!.n, `${table}: ${id} is missing`).toBe(1);
+    }
+  });
+
   it("every proxy path reaches an owner, and the join excludes tenant B", async () => {
     // The 31 tables with no tenant column of their own. `signatures` is three hops
     // — `signatures → agreements → signups → decks`, the deepest in the schema.
@@ -663,9 +772,12 @@ describe("tenancy · layer 1 — the key and the scope helper", () => {
       // compile-time-looking error that only SQL can find.
       const row = await env.DB.prepare(sql).bind(...q.binds).first<{ n: number }>();
       expect(row, `${table}: the owner path in TENANT_OWNER does not execute`).toBeTruthy();
-      // Tenant B owns exactly one deck and no evaluation data, so every
-      // deck-owned proxy table must come back empty for tenant B. A path wired to
-      // the wrong parent returns tenant A's rows here.
+      // Tenant B owns one deck and, since `TENANT_B_PROXY_FIXTURES` was added, one
+      // evaluation and one stage event hanging off it — so a deck-owned proxy
+      // table is no longer necessarily empty for tenant B, and this case asserts
+      // the partition rather than the emptiness: the two tenants' scoped reads
+      // must not overlap or over-count. A path wired to the wrong parent returns
+      // tenant A's rows on the tenant-B side and breaks the sum.
       const scopedToB = row!.n;
       const q2 = scoped(A_SCOPE);
       const joins2 = q2.viaParent(table, "c");
@@ -830,6 +942,118 @@ describe("tenancy · layer 2b — aggregates, which have no marker to sweep", ()
   }
 });
 
+/**
+ * LAYER 2c — THE AGGREGATE ROUTES, ADDED BY T1-REPORTS.
+ *
+ * `AGGREGATE_PROBES` above asserts something important but narrow: that tenant B
+ * contributes enough to each aggregate for a leak to be DETECTABLE. It compares
+ * two SQL statements the test itself writes. It never calls the product.
+ *
+ * So nothing in this file could see the leak §11 calls the dangerous one. The
+ * funnel is the named example — "`routes/analytics.ts` has 77 `edition` mentions
+ * and is the largest concentration of this shape" — and its response is counts and
+ * constant stage labels, so there is no marker to sweep and `ROUTE_PROBES` is
+ * structurally blind to it. A marker-blind route is not a scoped route.
+ *
+ * This layer asserts the product's own number, by VALUE, with the one control that
+ * cannot go vacuous: **give tenant B more rows and require the number not to
+ * move**, while proving in the same test that the rows were really added and that
+ * an unscoped count DOES move. A route that forgot its predicate fails here even
+ * though its response contains nothing recognisable.
+ */
+describe("tenancy · layer 2c — the aggregate routes, which have no marker at all", () => {
+  /** Stage-0 of the incubator funnel counts every deck, so the top row is the total. */
+  async function funnelTop(cookie: string): Promise<number> {
+    const { status, text } = await body("/api/analytics/funnel", cookie);
+    expect(status, `/api/analytics/funnel answered ${status}`).toBe(200);
+    const json = JSON.parse(text) as { rows: { label: string; count: number }[] };
+    expect(json.rows.length, "the funnel returned no rows, so its top is not a number").toBeGreaterThan(0);
+    return json.rows[0].count;
+  }
+
+  it("the pipeline funnel's counts do not move when another customer gains decks", async () => {
+    const cookie = await login(ADMIN);
+    expect(cookie).toBeTruthy();
+
+    const before = await funnelTop(cookie!);
+    const unscopedBefore = (
+      await env.DB.prepare("SELECT count(*) n FROM decks WHERE edition = 'incubator'").first<{ n: number }>()
+    )!.n;
+
+    // Three more decks for tenant B, in the same edition and the same status as
+    // the seeded ones — indistinguishable from this customer's own rows to any
+    // query whose only predicate is `edition`.
+    for (const n of [1, 2, 3]) {
+      await env.DB.prepare(
+        "INSERT INTO decks (id, tenant_id, edition, name, status) VALUES (?, ?, 'incubator', ?, 'new')",
+      )
+        .bind(`zz_funnel_${n}`, TENANT_B, `${MARKER} Funnel ${n}`)
+        .run();
+    }
+
+    try {
+      // The control FIRST: if the unscoped number did not move, the rows are not
+      // there and the assertion below would pass for the wrong reason.
+      const unscopedAfter = (
+        await env.DB.prepare("SELECT count(*) n FROM decks WHERE edition = 'incubator'").first<{ n: number }>()
+      )!.n;
+      expect(
+        unscopedAfter - unscopedBefore,
+        "the three tenant-B decks are not in the table, so this test proves nothing",
+      ).toBe(3);
+
+      const after = await funnelTop(cookie!);
+      expect(
+        after,
+        `GET /api/analytics/funnel moved from ${before} to ${after} when ANOTHER customer ` +
+          "uploaded three decks. Every number on that screen is a count, so nothing in the " +
+          "response would have said so.",
+      ).toBe(before);
+    } finally {
+      await env.DB.prepare("DELETE FROM decks WHERE id LIKE 'zz_funnel_%'").run();
+    }
+  });
+
+  it("the cohort report's mean score does not move when another customer scores a deck", async () => {
+    // `humanEvalsByDeck` feeds three reports. `zz_eval` carries 9.9 — above every
+    // seeded score — so a leaking mean rises and a scoped one does not. This case
+    // then MOVES that mean and requires the report not to notice.
+    const cookie = await login(ADMIN);
+    expect(cookie).toBeTruthy();
+    const read = async () => {
+      const { status, text } = await body("/api/analytics/cohort", cookie!);
+      expect(status).toBe(200);
+      return JSON.parse(text) as { decks?: { finalScore: number | null }[] };
+    };
+    const before = await read();
+
+    // 1.0, NOT another 9.9. Measured 2026-09-30: with a second 9.9 on the same
+    // deck the mean stayed 9.9, the response body was byte-identical, and the case
+    // passed against a completely unscoped `analytics.ts`. A control whose
+    // "before" and "after" cannot differ is not a control. 1.0 against 9.9 moves
+    // tenant B's mean to 5.45, so an unscoped read changes.
+    await env.DB.prepare(
+      "INSERT INTO evaluations (id, deck_id, evaluator_id, weighted_total, submitted_at) " +
+        "VALUES ('zz_eval_2', 'zz_deck', 'zz_jury', 1.0, datetime('now'))",
+    ).run();
+    try {
+      const unscoped = (
+        await env.DB.prepare(
+          "SELECT count(*) n FROM evaluations WHERE weighted_total IS NOT NULL",
+        ).first<{ n: number }>()
+      )!.n;
+      expect(unscoped, "no evaluations at all, so a mean cannot be tested").toBeGreaterThan(1);
+      const after = await read();
+      // The whole report, not one field: the ranking, the counts and the means are
+      // all taken from the same row set, so comparing the serialised body catches a
+      // leak into any of them.
+      expect(JSON.stringify(after)).toBe(JSON.stringify(before));
+    } finally {
+      await env.DB.prepare("DELETE FROM evaluations WHERE id = 'zz_eval_2'").run();
+    }
+  });
+});
+
 describe("tenancy · layer 3 — the writes, where the failure is silent", () => {
   it("a row created through the API as tenant B still lands in tenant A (pending — T1-COMMERCE)", async () => {
     const cookie = await login(`zz.admin@${MARKER.toLowerCase()}.test`);
@@ -864,6 +1088,54 @@ describe("tenancy · layer 3 — the writes, where the failure is silent", () =>
       "POST /api/tickets NO LONGER mis-tenants its write — T1-COMMERCE has scoped the INSERT. " +
         `Change this expectation to TENANT_B and delete this comment.`,
     ).toBe(TENANT_A);
+  });
+
+  it("an audit row written as tenant B is filed against tenant B (T1-REPORTS)", async () => {
+    // `recordAudit` named no `tenant_id`, so the column's `DEFAULT 't_default'`
+    // filed EVERY audit row in the product against the first customer. On a trail
+    // that is not merely a misplaced row: tenant A's log would show tenant B's
+    // administrator changing tenant A's settings. `PUT /api/audit/retention`
+    // records a `security` row, so it exercises the writer end to end.
+    const cookie = await login(`zz.admin@${MARKER.toLowerCase()}.test`);
+    expect(cookie).toBeTruthy();
+    const res = await SELF.fetch(`${BASE}/api/audit/retention`, {
+      method: "PUT",
+      headers: { cookie: cookie!, "content-type": "application/json" },
+      // 3650 days keeps everything, so the purge in the same request deletes
+      // nothing and this test cannot destroy another case's fixtures.
+      body: JSON.stringify({ retentionDays: 3650 }),
+    });
+    expect(res.status, await res.text()).toBe(200);
+
+    const row = await env.DB.prepare(
+      "SELECT tenant_id, edition FROM audit_log WHERE action = 'audit_retention_changed' ORDER BY created_at DESC LIMIT 1",
+    ).first<{ tenant_id: string; edition: string }>();
+    expect(row, "no audit row was written, so the write side is untested").toBeTruthy();
+    expect(row!.tenant_id).toBe(TENANT_B);
+    expect(row!.edition).toBe("incubator");
+  });
+
+  it("setting a retention window touches only the caller's workspace (T1-REPORTS)", async () => {
+    // The sharpest shape in `audit/log.ts`: `UPDATE org_settings … WHERE edition = ?`
+    // set every customer's window from one console, and `purgeExpiredAudit` then
+    // DELETED on it. Not a leak — a destruction, on someone else's schedule, with
+    // an ordinary row count in the response. Depends on the request above having
+    // set tenant B to 3650.
+    const a = await env.DB.prepare(
+      "SELECT audit_retention_days AS d FROM org_settings WHERE tenant_id = ? AND edition = 'incubator'",
+    )
+      .bind(TENANT_A)
+      .first<{ d: number | null }>();
+    const b = await env.DB.prepare(
+      "SELECT audit_retention_days AS d FROM org_settings WHERE tenant_id = ? AND edition = 'incubator'",
+    )
+      .bind(TENANT_B)
+      .first<{ d: number | null }>();
+    expect(b!.d, "tenant B's window was not set, so this case proves nothing").toBe(3650);
+    expect(
+      a!.d,
+      "tenant B's admin set tenant A's audit retention window — and the purge runs on it",
+    ).not.toBe(3650);
   });
 
   it("the migration chain's own integrity assertions all passed", async () => {

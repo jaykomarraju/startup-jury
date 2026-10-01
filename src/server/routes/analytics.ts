@@ -23,6 +23,27 @@ import { isAssignableEvaluator, type Role } from "../../shared/roles";
 import { canSeeEvaluatorScoresIn } from "../../shared/scoreVisibility";
 import { withholdsAiScore } from "../../shared/scoring";
 import { ASSIGNEE_PAIRS_SQL } from "../decks/assignments";
+// T1-REPORTS — T0-SCHEMA's ONE scope helper. `scopeOf(user)` is the only way a
+// scope is built, so a predicate here can never take its key from the browser;
+// `scoped()` carries every fragment together with its binds, which is the mistake
+// a file-wide sweep makes.
+//
+// ── THE RULE THIS FILE APPLIES, STATED ONCE ─────────────────────────────────
+//
+// Every statement below counts or averages rows in a PROXY table — `evaluations`,
+// `scores`, `queries`, `portfolio`, `pipeline_events` — none of which carries a
+// tenant key of its own. Each one already JOINs its owner (`decks`, aliased `d`),
+// so the scope goes on THAT alias with `.on("d")`; `viaParent()` is for the
+// statements that do not join the owner, and using it here would emit a second,
+// redundant join to the same table. Where the owner is itself tenant-keyed and
+// read directly (`decks`, `programs`), `.on()` takes its alias.
+//
+// Joins to a tenant-keyed table on its PRIMARY KEY — `users u ON u.id =
+// e.evaluator_id`, `parameters p ON p.id = s.parameter_id` — get no predicate of
+// their own. Ids are globally unique in this schema, so a PK join cannot reach
+// another customer's row; adding a predicate there would turn an impossible
+// cross-tenant reference into a silently dropped row instead of a visible one.
+import { scopeOf, scoped } from "../../shared/tenant";
 import {
   buildFunnel,
   cohortSummary,
@@ -105,13 +126,21 @@ async function humanEvalsByDeck(
 ): Promise<Map<string, number[]>> {
   const { role, id: viewerId } = c.var.user;
   const visibility = await loadScoreVisibility(c.env.DB, edition);
+  // Three reports take a mean out of this map (`/cohort`, `/drift` and the ranked
+  // final score), so one missing predicate here moves three screens' numbers at
+  // once. `evaluations` is scoped through `decks`, which this statement already
+  // joins.
+  const qb = scoped(scopeOf(c.var.user))
+    .on("d")
+    .andRaw("e.evaluator_id IS NOT NULL")
+    .andRaw("e.weighted_total IS NOT NULL");
   const rows = (
     await c.env.DB.prepare(
       "SELECT e.deck_id AS deck_id, e.evaluator_id AS eid, u.role AS role, e.weighted_total AS wt FROM evaluations e " +
         "JOIN decks d ON d.id = e.deck_id JOIN users u ON u.id = e.evaluator_id " +
-        "WHERE d.edition = ? AND e.evaluator_id IS NOT NULL AND e.weighted_total IS NOT NULL",
+        qb.whereClause(),
     )
-      .bind(edition)
+      .bind(...qb.binds)
       .all<{ deck_id: string; eid: string; role: string; wt: number }>()
   ).results.filter(
     (r) => r.eid === viewerId || canSeeEvaluatorScoresIn(visibility, edition, role, r.role as Role),
@@ -131,21 +160,32 @@ async function humanEvalsByDeck(
  * evaluators. "Your pipeline" is every deal the caller uploaded, is assigned to,
  * scored, or moved: the union of the ways a person comes to own a deal here.
  */
+//
+// T1-REPORTS — the numbered binds (`?1`) are gone. SQLite numbers a bare `?` from
+// one above the highest number already assigned, so mixing `?1` with the scope
+// builder's `?` renumbers both and the binds land on the wrong predicates. The id
+// is therefore bound four times instead of once, which is the cheaper half of the
+// trade. The four sub-selects are deliberately NOT scoped: they produce an ID SET
+// that the outer, scoped read of `decks` intersects, so an id belonging to another
+// customer cannot survive the outer predicate.
 const MY_DEALS_SQL =
-  "SELECT id AS deck_id FROM decks WHERE uploaded_by = ?1 " +
-  `UNION SELECT deck_id FROM (${ASSIGNEE_PAIRS_SQL}) WHERE evaluator_id = ?1 ` +
-  "UNION SELECT deck_id FROM evaluations WHERE evaluator_id = ?1 " +
-  "UNION SELECT deck_id FROM pipeline_events WHERE actor_id = ?1";
+  "SELECT id AS deck_id FROM decks WHERE uploaded_by = ? " +
+  `UNION SELECT deck_id FROM (${ASSIGNEE_PAIRS_SQL}) WHERE evaluator_id = ? ` +
+  "UNION SELECT deck_id FROM evaluations WHERE evaluator_id = ? " +
+  "UNION SELECT deck_id FROM pipeline_events WHERE actor_id = ?";
 
 analytics.get("/funnel", guard("funnel"), async (c) => {
   const { edition, role, id } = c.var.user;
   const mine = edition === "vc" && isAssignableEvaluator(edition, role);
+  // The funnel is §11's named example of the dangerous shape: every number on this
+  // screen is a count, so a second customer's deals would raise each bar by a
+  // plausible amount and nothing in the response would say so.
+  const qb = scoped(scopeOf(c.var.user)).on("d");
+  if (mine) qb.and(`d.id IN (${MY_DEALS_SQL})`, id, id, id, id);
   const rows = (
-    mine
-      ? await c.env.DB.prepare(`SELECT status FROM decks WHERE edition = ?2 AND id IN (${MY_DEALS_SQL})`)
-          .bind(id, edition)
-          .all<{ status: string }>()
-      : await c.env.DB.prepare("SELECT status FROM decks WHERE edition = ?").bind(edition).all<{ status: string }>()
+    await c.env.DB.prepare(`SELECT d.status AS status FROM decks d ${qb.whereClause()}`)
+      .bind(...qb.binds)
+      .all<{ status: string }>()
   ).results;
   return c.json({ ...buildFunnel(edition, rows.map((r) => r.status)), scope: mine ? "mine" : "all" });
 });
@@ -154,22 +194,26 @@ analytics.get("/funnel", guard("funnel"), async (c) => {
 
 analytics.get("/cohort", guard("cohortsummary"), async (c) => {
   const edition = c.var.user.edition;
+  const qb = scoped(scopeOf(c.var.user)).on("d");
   const decks = (
     await c.env.DB.prepare(
-      "SELECT id, name, sector, stage, status, ai_score, created_at FROM decks WHERE edition = ?",
+      `SELECT id, name, sector, stage, status, ai_score, created_at FROM decks d ${qb.whereClause()}`,
     )
-      .bind(edition)
+      .bind(...qb.binds)
       .all<{ id: string; name: string; sector: string | null; stage: string | null; status: string; ai_score: number | null; created_at: string | null }>()
   ).results;
 
   // Top AI-scored parameter per deck ("top driver") when per-parameter AI scores exist.
+  // `scores` has no tenant key; `decks` is its owner in `TENANT_OWNER` and is
+  // already joined. `parameters p` is reached on its primary key and needs none.
+  const topQb = scoped(scopeOf(c.var.user)).on("d").andRaw("s.evaluator_kind = 'ai'");
   const topRows = (
     await c.env.DB.prepare(
       "SELECT s.deck_id AS deck_id, p.name AS name, s.value AS value FROM scores s " +
         "JOIN parameters p ON p.id = s.parameter_id JOIN decks d ON d.id = s.deck_id " +
-        "WHERE d.edition = ? AND s.evaluator_kind = 'ai'",
+        topQb.whereClause(),
     )
-      .bind(edition)
+      .bind(...topQb.binds)
       .all<{ deck_id: string; name: string; value: number }>()
   ).results;
   const topParam = new Map<string, { name: string; value: number }>();
@@ -184,13 +228,14 @@ analytics.get("/cohort", guard("cohortsummary"), async (c) => {
   // W8-A (F0798) — "In clarification — awaiting founder input" is the query
   // loop: decks with a founder query not yet answered (the same predicate the
   // VC diligence report counts), not the intake states.
+  const openQb = scoped(scopeOf(c.var.user)).on("d").andRaw("q.email_status != 'answered'");
   const openQueryDeckIds = new Set(
     (
       await c.env.DB.prepare(
         "SELECT DISTINCT q.deck_id AS deck_id FROM queries q JOIN decks d ON d.id = q.deck_id " +
-          "WHERE d.edition = ? AND q.email_status != 'answered'",
+          openQb.whereClause(),
       )
-        .bind(edition)
+        .bind(...openQb.binds)
         .all<{ deck_id: string }>()
     ).results.map((r) => r.deck_id),
   );
@@ -220,13 +265,20 @@ analytics.get("/evaluators", guard("evaluatorscores"), async (c) => {
   // `humanEvalsByDeck` and `/scoring` — V3 item 13's configurable matrix.
   const { edition, role, id: viewerId } = c.var.user;
   const visibility = await loadScoreVisibility(c.env.DB, edition);
+  // This report lists an average BY NAME per evaluator, so an unscoped read would
+  // put another customer's staff names on the screen AND fold their scores into
+  // every mean — the list leak and the aggregate leak in one statement.
+  const qb = scoped(scopeOf(c.var.user))
+    .on("d")
+    .andRaw("e.evaluator_id IS NOT NULL")
+    .andRaw("e.weighted_total IS NOT NULL");
   const rows = (
     await c.env.DB.prepare(
       "SELECT e.evaluator_id AS eid, u.name AS name, u.role AS role, e.deck_id AS deck_id, e.weighted_total AS wt " +
         "FROM evaluations e JOIN decks d ON d.id = e.deck_id JOIN users u ON u.id = e.evaluator_id " +
-        "WHERE d.edition = ? AND e.evaluator_id IS NOT NULL AND e.weighted_total IS NOT NULL",
+        qb.whereClause(),
     )
-      .bind(edition)
+      .bind(...qb.binds)
       .all<{ eid: string; name: string; role: string; deck_id: string; wt: number }>()
   ).results.filter(
     (r) => r.eid === viewerId || canSeeEvaluatorScoresIn(visibility, edition, role, r.role as Role),
@@ -250,11 +302,12 @@ analytics.get("/drift", guard("scoredrift"), async (c) => {
   // it off is not something a client can decline to honour.
   const scoring = await loadScoringSettings(c.env.DB, edition);
   if (!scoring.showScoreDrift) return c.json({ ...scoreDrift([]), disabled: true });
+  const qb = scoped(scopeOf(c.var.user)).on("d").andRaw("ai_score IS NOT NULL");
   const decks = (
     await c.env.DB.prepare(
-      "SELECT id, name, ai_score FROM decks WHERE edition = ? AND ai_score IS NOT NULL",
+      `SELECT id, name, ai_score FROM decks d ${qb.whereClause()}`,
     )
-      .bind(edition)
+      .bind(...qb.binds)
       .all<{ id: string; name: string; ai_score: number }>()
   ).results;
   const humans = await humanEvalsByDeck(c, edition);
@@ -272,9 +325,10 @@ analytics.get("/drift", guard("scoredrift"), async (c) => {
 analytics.get("/scoring", guard("scoring"), async (c) => {
   const { edition, role, id: viewerId } = c.var.user;
   const visibility = await loadScoreVisibility(c.env.DB, edition);
+  const deckQb = scoped(scopeOf(c.var.user)).on("d");
   const decks = (
-    await c.env.DB.prepare("SELECT id, name, ai_score FROM decks WHERE edition = ?")
-      .bind(edition)
+    await c.env.DB.prepare(`SELECT id, name, ai_score FROM decks d ${deckQb.whereClause()}`)
+      .bind(...deckQb.binds)
       .all<{ id: string; name: string; ai_score: number | null }>()
   ).results;
   // W9-D — issue 21: "lower guys must not be able to view the evaluators' scores
@@ -283,13 +337,20 @@ analytics.get("/scoring", guard("scoring"), async (c) => {
   // mean. Only evaluations the viewer may see count — in the averages, the
   // variance and the "Evaluators" tile alike. V3 item 13 made which those are
   // configurable: `Visibility for VC`, the 5×5 in the admin console.
+  // The "Evaluators" tile is `new Set(evals.map(eid)).size` — a HEADCOUNT, and the
+  // variance below is a second aggregate over the same rows. Both move silently if
+  // another customer's evaluations are in here.
+  const evalQb = scoped(scopeOf(c.var.user))
+    .on("d")
+    .andRaw("e.evaluator_id IS NOT NULL")
+    .andRaw("e.weighted_total IS NOT NULL");
   const evals = (
     await c.env.DB.prepare(
       "SELECT e.deck_id AS deck_id, e.evaluator_id AS eid, u.role AS role, e.weighted_total AS wt FROM evaluations e " +
         "JOIN decks d ON d.id = e.deck_id JOIN users u ON u.id = e.evaluator_id " +
-        "WHERE d.edition = ? AND e.evaluator_id IS NOT NULL AND e.weighted_total IS NOT NULL",
+        evalQb.whereClause(),
     )
-      .bind(edition)
+      .bind(...evalQb.binds)
       .all<{ deck_id: string; eid: string; role: string; wt: number }>()
   ).results.filter(
     (e) => e.eid === viewerId || canSeeEvaluatorScoresIn(visibility, edition, role, e.role as Role),
@@ -316,13 +377,18 @@ analytics.get("/scoring", guard("scoring"), async (c) => {
 
 // ── Capital deployment (VC) ──────────────────────────────────────────────────
 
-async function loadPortfolio(c: Context<AppEnv>, edition: Edition): Promise<PortfolioRow[]> {
+async function loadPortfolio(c: Context<AppEnv>): Promise<PortfolioRow[]> {
+  // `/capital` and `/portfolio` both sum `capital_deployed` out of these rows and
+  // divide it by the committed fund below. An unscoped read inflates the numerator
+  // with another customer's cheques while the denominator stays this customer's.
+  const qb = scoped(scopeOf(c.var.user)).on("d");
   const rows = (
     await c.env.DB.prepare(
       "SELECT pf.deck_id AS deck_id, d.name AS name, d.sector AS sector, d.stage AS stage, d.city AS city, " +
-        "pf.capital_deployed AS capital, pf.onboarded_at AS onboarded_at FROM portfolio pf JOIN decks d ON d.id = pf.deck_id WHERE d.edition = ?",
+        "pf.capital_deployed AS capital, pf.onboarded_at AS onboarded_at FROM portfolio pf JOIN decks d ON d.id = pf.deck_id " +
+        qb.whereClause(),
     )
-      .bind(edition)
+      .bind(...qb.binds)
       .all<{
         deck_id: string;
         name: string;
@@ -345,26 +411,28 @@ async function loadPortfolio(c: Context<AppEnv>, edition: Edition): Promise<Port
 }
 
 /** W9-D — the chip's fund name: the one active programme with a committed size, else "All funds". */
-async function loadFundLabel(c: Context<AppEnv>, edition: Edition): Promise<string> {
+async function loadFundLabel(c: Context<AppEnv>): Promise<string> {
+  const qb = scoped(scopeOf(c.var.user)).on("p").andRaw("active = 1");
   const programs = (
-    await c.env.DB.prepare("SELECT name, fund_size FROM programs WHERE edition = ? AND active = 1")
-      .bind(edition)
+    await c.env.DB.prepare(`SELECT name, fund_size FROM programs p ${qb.whereClause()}`)
+      .bind(...qb.binds)
       .all<{ name: string; fund_size: number | null }>()
   ).results;
   return fundLabel(programs.map((p) => ({ name: p.name, fundSize: p.fund_size })));
 }
 
-/** Sum the edition's program-level fund economics (₹ Cr). Falls back to the
+/** Sum the workspace's program-level fund economics (₹ Cr). Falls back to the
  *  single-fund constant only when no program has a committed size yet. */
-async function loadFundTotals(
-  c: Context<AppEnv>,
-  edition: Edition,
-): Promise<{ committed: number; allocated: number }> {
+async function loadFundTotals(c: Context<AppEnv>): Promise<{ committed: number; allocated: number }> {
+  // The worst single number in this file: two `SUM`s over `programs.fund_size`,
+  // rendered as "committed" and "allocated" capital. A second customer's fund adds
+  // to both and the deployment percentage that divides by them stays plausible.
+  const qb = scoped(scopeOf(c.var.user)).on("p").andRaw("active = 1");
   const row = await c.env.DB.prepare(
     "SELECT COALESCE(SUM(fund_size), 0) AS committed, COALESCE(SUM(fund_allocated), 0) AS allocated " +
-      "FROM programs WHERE edition = ? AND active = 1",
+      `FROM programs p ${qb.whereClause()}`,
   )
-    .bind(edition)
+    .bind(...qb.binds)
     .first<{ committed: number; allocated: number }>();
   const committed = row?.committed ?? 0;
   return {
@@ -374,12 +442,11 @@ async function loadFundTotals(
 }
 
 analytics.get("/capital", guard("capital"), async (c) => {
-  const edition = c.var.user.edition;
-  const rows = await loadPortfolio(c, edition);
-  const { committed, allocated } = await loadFundTotals(c, edition);
+  const rows = await loadPortfolio(c);
+  const { committed, allocated } = await loadFundTotals(c);
   return c.json({
     ...capitalDeployment(rows, committed, allocated),
-    fund: { label: await loadFundLabel(c, edition) },
+    fund: { label: await loadFundLabel(c) },
     // W9-D — `panel-capital.html` draws reserves, a deployment plan and a
     // follow-on split. No surface records any of the three (§8 Q152), so each is
     // an explicit null the screen renders as "—", never an invented number.
@@ -391,13 +458,12 @@ analytics.get("/capital", guard("capital"), async (c) => {
 });
 
 analytics.get("/portfolio", guard("portfolio"), async (c) => {
-  const edition = c.var.user.edition;
-  const rows = await loadPortfolio(c, edition);
+  const rows = await loadPortfolio(c);
   const report = portfolioConstruction(rows);
   const deployed = rows.reduce((n, r) => n + (r.capitalDeployed !== null && r.capitalDeployed > 0 ? r.capitalDeployed : 0), 0);
   return c.json({
     ...report,
-    fund: { label: await loadFundLabel(c, edition) },
+    fund: { label: await loadFundLabel(c) },
     deployed: Math.round(deployed * 10) / 10,
     checkSizeMix: checkSizeMix(rows),
     // No position can be marked a follow-on cheque yet (§8 Q152).
@@ -410,12 +476,12 @@ analytics.get("/portfolio", guard("portfolio"), async (c) => {
 const DILIGENCE_STAGES = ["investment_dd", "ic_review", "mp_decision", "legal_dd"];
 
 analytics.get("/diligence", guard("diligence"), async (c) => {
-  const edition = c.var.user.edition;
+  const qb = scoped(scopeOf(c.var.user)).on("d");
   const decks = (
     await c.env.DB.prepare(
-      "SELECT id, name, status, signal FROM decks WHERE edition = ?",
+      `SELECT id, name, status, signal FROM decks d ${qb.whereClause()}`,
     )
-      .bind(edition)
+      .bind(...qb.binds)
       .all<{ id: string; name: string; status: string; signal: string | null }>()
   ).results;
   const inDiligence = decks.filter((d) => DILIGENCE_STAGES.includes(d.status));
@@ -433,12 +499,20 @@ analytics.get("/diligence", guard("diligence"), async (c) => {
   // panel's other kinds (an unverified reference, a founder departure, revenue
   // concentration) need a flag someone RAISES, which nothing records (§8 Q153).
   const placeholders = DILIGENCE_STAGES.map(() => "?").join(",");
+  // σ is a standard deviation, which is where a cross-tenant row does the most
+  // damage for the least visibility: a foreign score widens the spread and raises a
+  // "High evaluator disagreement" flag against THIS customer's deal.
+  const evalQb = scoped(scopeOf(c.var.user))
+    .on("d")
+    .and(`d.status IN (${placeholders})`, ...DILIGENCE_STAGES)
+    .andRaw("e.evaluator_id IS NOT NULL")
+    .andRaw("e.weighted_total IS NOT NULL");
   const evals = (
     await c.env.DB.prepare(
       "SELECT e.deck_id AS deck_id, e.weighted_total AS wt FROM evaluations e JOIN decks d ON d.id = e.deck_id " +
-        `WHERE d.edition = ? AND d.status IN (${placeholders}) AND e.evaluator_id IS NOT NULL AND e.weighted_total IS NOT NULL`,
+        evalQb.whereClause(),
     )
-      .bind(edition, ...DILIGENCE_STAGES)
+      .bind(...evalQb.binds)
       .all<{ deck_id: string; wt: number }>()
   ).results;
   const scoresByDeck = new Map<string, number[]>();
@@ -460,12 +534,15 @@ analytics.get("/diligence", guard("diligence"), async (c) => {
   // Founder clarifications on decks *in diligence* only: the unanswered count,
   // and (W9-D, F0814) the rows — newest first, answered ones included, as the
   // panel lists InsureFlow's "Answered" beside two "Pending".
+  const clarQb = scoped(scopeOf(c.var.user))
+    .on("d")
+    .and(`d.status IN (${placeholders})`, ...DILIGENCE_STAGES);
   const clarificationRows = (
     await c.env.DB.prepare(
       "SELECT d.name AS company, q.questions AS questions, q.email_status AS status FROM queries q JOIN decks d ON d.id = q.deck_id " +
-        `WHERE d.edition = ? AND d.status IN (${placeholders}) ORDER BY q.created_at DESC`,
+        `${clarQb.whereClause()} ORDER BY q.created_at DESC`,
     )
-      .bind(edition, ...DILIGENCE_STAGES)
+      .bind(...clarQb.binds)
       .all<{ company: string; questions: string; status: string }>()
   ).results.map((q) => ({
     company: q.company,
@@ -496,14 +573,14 @@ analytics.get("/diligence", guard("diligence"), async (c) => {
 // ── Decision history (VC) ────────────────────────────────────────────────────
 
 analytics.get("/decisions", guard("decisions"), async (c) => {
-  const edition = c.var.user.edition;
+  const qb = scoped(scopeOf(c.var.user)).on("d");
   const rows = (
     await c.env.DB.prepare(
       "SELECT e.created_at AS created_at, d.name AS company, e.action AS action, e.note AS note, u.name AS actor " +
         "FROM pipeline_events e JOIN decks d ON d.id = e.deck_id LEFT JOIN users u ON u.id = e.actor_id " +
-        "WHERE d.edition = ? ORDER BY e.created_at DESC",
+        `${qb.whereClause()} ORDER BY e.created_at DESC`,
     )
-      .bind(edition)
+      .bind(...qb.binds)
       .all<{ created_at: string; company: string; action: string; note: string | null; actor: string | null }>()
   ).results;
   const events: DecisionEvent[] = rows
@@ -516,13 +593,23 @@ analytics.get("/decisions", guard("decisions"), async (c) => {
 
 /** The caller's own human evaluations joined to their decks. */
 async function myEvals(c: Context<AppEnv>) {
+  // This was the one statement in the file with NO workspace predicate of any
+  // kind — not even `edition`. It is scoped by the caller's own user id, which is
+  // globally unique, so it was never a read of someone else's evaluations; but the
+  // deck it joins was unfiltered, so a row whose `deck_id` pointed outside the
+  // caller's workspace would have been reported as theirs. `.on("d")` closes it,
+  // and the caller's id stays as the narrowing predicate it always was.
+  const qb = scoped(scopeOf(c.var.user))
+    .on("d")
+    .and("e.evaluator_id = ?", c.var.user.id)
+    .andRaw("e.weighted_total IS NOT NULL");
   return (
     await c.env.DB.prepare(
       "SELECT d.id AS id, d.name AS name, d.sector AS sector, d.status AS status, d.ai_score AS ai, e.weighted_total AS mine " +
         "FROM evaluations e JOIN decks d ON d.id = e.deck_id " +
-        "WHERE e.evaluator_id = ? AND e.weighted_total IS NOT NULL ORDER BY e.submitted_at DESC",
+        `${qb.whereClause()} ORDER BY e.submitted_at DESC`,
     )
-      .bind(c.var.user.id)
+      .bind(...qb.binds)
       .all<{ id: string; name: string; sector: string | null; status: string; ai: number | null; mine: number }>()
   ).results;
 }
@@ -537,6 +624,12 @@ const AWAITING_JURY = ["assigned", "jury_evaluation"];
 // There is no partial-save path, so "In draft" is always 0 until one exists.
 analytics.get("/my/decks", guard("repdecks"), async (c) => {
   const { id: userId, edition, role } = c.var.user;
+  // Three binds sit EARLIER in the statement than the WHERE clause — two in the
+  // `mine` sub-select and one in the LEFT JOIN condition — so they go before
+  // `qb.binds`, which is the bind-order rule `src/shared/tenant.ts` states. The
+  // sub-select is an id set the scoped `decks` read intersects, exactly as in
+  // `/funnel`.
+  const qb = scoped(scopeOf(c.var.user)).on("d");
   const rows = (
     await c.env.DB.prepare(
       "SELECT d.id AS id, d.name AS name, d.sector AS sector, d.status AS status, d.ai_score AS ai, " +
@@ -545,9 +638,9 @@ analytics.get("/my/decks", guard("repdecks"), async (c) => {
         "UNION SELECT deck_id FROM evaluations WHERE evaluator_id = ? AND weighted_total IS NOT NULL) mine " +
         "JOIN decks d ON d.id = mine.deck_id " +
         "LEFT JOIN evaluations e ON e.deck_id = d.id AND e.evaluator_id = ? AND e.weighted_total IS NOT NULL " +
-        "WHERE d.edition = ? ORDER BY e.submitted_at IS NULL, e.submitted_at DESC, d.name",
+        `${qb.whereClause()} ORDER BY e.submitted_at IS NULL, e.submitted_at DESC, d.name`,
     )
-      .bind(userId, userId, userId, edition)
+      .bind(userId, userId, userId, ...qb.binds)
       .all<{ id: string; name: string; sector: string | null; status: string; ai: number | null; mine: number | null; submitted_at: string | null }>()
   ).results;
   // Blind scoring holds here exactly as on GET /api/decks: no AI score on a deck

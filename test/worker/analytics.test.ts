@@ -1,4 +1,4 @@
-import { SELF } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 
 const BASE = "https://example.com";
@@ -168,5 +168,143 @@ describe("analytics — VC reports", () => {
 
   it("unauthenticated requests are rejected", async () => {
     expect((await get("/api/analytics/funnel", "")).status).toBe(401);
+  });
+});
+
+/**
+ * T1-REPORTS — THE VC AGGREGATES, WHICH `tenant-scope.test.ts` CANNOT REACH.
+ *
+ * The isolation file's second customer is an INCUBATOR workspace: `zz_deck`,
+ * `zz_admin` and every proxy fixture are `edition = 'incubator'`. The four VC
+ * reports (`/capital`, `/portfolio`, `/diligence`, `/decisions`) answer 403
+ * `wrong_edition` to an incubator principal, so none of its layers can see them —
+ * and `/capital` holds the single worst number in `routes/analytics.ts`:
+ *
+ *     SELECT COALESCE(SUM(fund_size), 0), COALESCE(SUM(fund_allocated), 0)
+ *     FROM programs WHERE edition = ?
+ *
+ * Two `SUM`s over another customer's FUND SIZE, rendered as this customer's
+ * committed and allocated capital, with `deployedPct` and `dryPowder` computed
+ * from them. §11: "a `COUNT(*)` or an `AVG(score)` that leaks returns a perfectly
+ * ordinary-looking number". A fund that grew by someone else's ₹500 Cr does not
+ * even look like a leak — it looks like a good quarter.
+ *
+ * These cases live here rather than in the isolation file because the fixture they
+ * need is a VC workspace, and that is a larger change to a file six sessions are
+ * editing in parallel. T1-ESIGN is adding a VC principal there for `/api/diligence`
+ * (§2 B14); at integration these two cases should move across behind it.
+ */
+describe("analytics — tenant isolation on the VC aggregates (T1-REPORTS)", () => {
+  const OTHER = "t_rival_fund";
+
+  async function giveRivalAFund(): Promise<void> {
+    await env.DB.prepare(
+      "INSERT INTO organizations (id, name, slug, status) VALUES (?, 'Rival Fund', 'rival-fund', 'active') " +
+        "ON CONFLICT (id) DO NOTHING",
+    )
+      .bind(OTHER)
+      .run();
+    // Same edition, active, with fund economics an order of magnitude above the
+    // seed — so a leak is unmistakable rather than a rounding argument.
+    await env.DB.prepare(
+      "INSERT INTO programs (id, tenant_id, edition, name, active, fund_size, fund_allocated) " +
+        "VALUES ('rival_fund_1', ?, 'vc', 'Rival Fund I', 1, 5000, 4000)",
+    )
+      .bind(OTHER)
+      .run();
+  }
+
+  const clearRival = () =>
+    env.DB.prepare("DELETE FROM programs WHERE tenant_id = ?").bind(OTHER).run();
+
+  it("committed and allocated capital exclude another customer's fund", async () => {
+    const c = await login(VC_ADMIN);
+    interface Capital {
+      committed: number;
+      allocated: number;
+      deployedPct: number;
+      dryPowder: number;
+      fund: { label: string };
+    }
+    const read = async () => {
+      const res = await get("/api/analytics/capital", c);
+      expect(res.status).toBe(200);
+      return (await res.json()) as Capital;
+    };
+
+    const before = await read();
+    await giveRivalAFund();
+    try {
+      // The control: the rows really are in the table and really would be summed.
+      const unscoped = (
+        await env.DB.prepare(
+          "SELECT COALESCE(SUM(fund_size), 0) AS v FROM programs WHERE edition = 'vc' AND active = 1",
+        ).first<{ v: number }>()
+      )!.v;
+      expect(
+        unscoped,
+        "the rival fund is not in `programs`, so this case proves nothing",
+      ).toBeGreaterThanOrEqual(before.committed + 5000);
+
+      const after = await read();
+      expect(
+        after.committed,
+        `committed capital moved from ${before.committed} to ${after.committed} because ANOTHER ` +
+          "customer raised a fund — and dryPowder and deployedPct are computed from it",
+      ).toBe(before.committed);
+      expect(after.allocated).toBe(before.allocated);
+      expect(after.dryPowder).toBe(before.dryPowder);
+      expect(after.deployedPct).toBe(before.deployedPct);
+      // The chip names the one active programme with a committed size. Unscoped,
+      // two customers each have one and the label falls back to "All funds" — the
+      // leak shows up as a LABEL losing its name, which nobody reads as a leak.
+      expect(after.fund.label).toBe(before.fund.label);
+    } finally {
+      await clearRival();
+    }
+  });
+
+  it("the portfolio and decision reports exclude another customer's deals", async () => {
+    const c = await login(VC_ADMIN);
+    const read = async (path: string) => {
+      const res = await get(`/api/analytics/${path}`, c);
+      expect(res.status, `${path} answered ${res.status}`).toBe(200);
+      return await res.text();
+    };
+    const before = { portfolio: await read("portfolio"), decisions: await read("decisions") };
+
+    // A rival VC deal, a cheque against it, and a decision on it — `portfolio` and
+    // `pipeline_events` are both scoped only through `decks`, so this is the
+    // one-hop proxy shape §5b counts 43 unjoined reads of.
+    await env.DB.prepare(
+      "INSERT INTO organizations (id, name, slug, status) VALUES (?, 'Rival Fund', 'rival-fund', 'active') " +
+        "ON CONFLICT (id) DO NOTHING",
+    )
+      .bind(OTHER)
+      .run();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO decks (id, tenant_id, edition, name, status) VALUES ('rival_deck', ?, 'vc', 'RIVALCO', 'portfolio')",
+      ).bind(OTHER),
+      env.DB.prepare(
+        "INSERT INTO portfolio (deck_id, capital_deployed, onboarded_at) VALUES ('rival_deck', 900, '2026-01-01')",
+      ),
+      env.DB.prepare(
+        "INSERT INTO pipeline_events (id, deck_id, from_stage, to_stage, action, note) " +
+          "VALUES ('rival_pe', 'rival_deck', 'ic_review', 'portfolio', 'invested', 'RIVALCO closed')",
+      ),
+    ]);
+
+    try {
+      const after = { portfolio: await read("portfolio"), decisions: await read("decisions") };
+      // By NAME first — the readable failure — then by whole body, which also
+      // catches the deployed total and the cheque-size mix moving.
+      expect(after.portfolio).not.toContain("RIVALCO");
+      expect(after.decisions).not.toContain("RIVALCO");
+      expect(after.portfolio).toBe(before.portfolio);
+      expect(after.decisions).toBe(before.decisions);
+    } finally {
+      await env.DB.prepare("DELETE FROM decks WHERE id = 'rival_deck'").run();
+    }
   });
 });
