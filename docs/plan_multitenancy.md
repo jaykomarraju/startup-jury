@@ -341,9 +341,18 @@ Raise it to the **wave's** ceiling, never to a session's number — the conventi
 > stays green while the statement that produced the rows is rewritten. Screening first costs
 > tenancy only a prompt regeneration against a newer HEAD, and T1-DECKS' weight goes DOWN.
 >
-> **Open, and not assigned to any session:** twenty files under `src/shared/` carry `edition` and
-> appear in no `owns` block above. `src/shared/permissions.ts` is one of them and §3 calls it a
-> gate. Assign them or state the exclusion and why, before T1 starts.
+> **RESOLVED 2026-09-30 — `src/shared/` is excluded deliberately, and no session owns it.**
+> Twenty files there carry `edition` (225 mentions, `types.ts` 45 and `permissions.ts` 31 the
+> largest), which looked like an unassigned gap. It is not. **No file under `src/shared/` issues a
+> query** — verified, `grep -rln 'prepare(\|DB\.' src/shared/` returns nothing. They are pure
+> functions, and their `edition` is the PRODUCT VARIANT that §5c keeps: `ROLES_BY_EDITION`,
+> `NAV_BY_EDITION`, `PERMISSION_ROLES`, and `can(edition, role, taskId)` picking which permission
+> matrix applies. None of it scopes data by customer.
+>
+> `permissions.ts` is the one §3 calls a gate, and it is still right: `can()` takes an `overrides`
+> map read from `role_permissions`, which IS tenant-owned — so the tenant scoping belongs on the
+> QUERY that loads those overrides (T1-CONFIG's `routes/permissions.ts`), not on the pure function
+> that consumes them. A T1 session that "fixes" `src/shared/` has misread the boundary.
 
 **Shape: ONE sequential foundation session, then SEVEN in parallel, then integration.** This work
 cannot be run as eight parallel sessions from a standing start, and saying otherwise would waste a
