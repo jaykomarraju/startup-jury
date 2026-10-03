@@ -970,6 +970,83 @@ describe("issue 1 — an incomplete deck is on neither roster", () => {
     expect(await listNames(cookie, "assign")).not.toContain("Deck sc_i1_both");
   });
 
+  /**
+   * **The client's question, 2026-10-02:** "if a deck is incomplete contact and
+   * incomplete deck, both, then, after edit + details are entered, will it move
+   * to query screen?"
+   *
+   * Yes, and three independent gates have to agree for that to be true, which is
+   * why this is measured end to end rather than read off the flow diagram:
+   *
+   *   1. the STATUS — `contactEditedAt` is set and the contact axis now passes,
+   *      so `screeningStatus` takes the edited branch and lands on
+   *      `incompleteDeckEdited` ("Edited, incomplete deck");
+   *   2. the WHITELIST — that status offers Send to Query (and Archive), which
+   *      §3 item 1 makes the state's only exit;
+   *   3. the LIST — `screened(v, "query")` asks the CONTACT axis only, so a deck
+   *      whose file is still unreadable passes now that its details are in. It
+   *      still has to be SENT: membership is a recorded action, so the edit buys
+   *      the operator the choice rather than making it for them.
+   *
+   * The one that could silently have failed is the pipeline STAGE: `?list=query`
+   * also needs `deckListRoute` to still route it there. It does, because the
+   * contact edit writes a `pipeline_events` row with `from_stage === to_stage`
+   * — a record of a CLICK, not a transition — so the deck stays at `incomplete`
+   * and stays queryable. An edit that moved the stage would have taken it off
+   * the roster it had just become eligible for.
+   */
+  it("BOTH incomplete, then the details are entered → it moves ONTO the Query screen", async () => {
+    await setGate(5);
+    const cookie = await login(SUPER);
+    await seedDeck("sc_i1_both_fixed", { complete: false });
+    await evaluateWithoutPhone("sc_i1_both_fixed", 8, false);
+
+    // Where it starts: on neither roster, and the click refused.
+    const before = await deck("sc_i1_both_fixed", cookie);
+    expect(screeningStatus(before as ScreeningDeck, { gate: GATE })).toBe("bothIncomplete");
+    expect(await listNames(cookie, "query")).not.toContain("Deck sc_i1_both_fixed");
+    expect(await listNames(cookie, "assign")).not.toContain("Deck sc_i1_both_fixed");
+
+    // The operator supplies the missing detail, through the real route.
+    const patch = await SELF.fetch(`${BASE}/api/decks/sc_i1_both_fixed`, {
+      method: "PATCH",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ founderPhone: "+91 90000 11111" }),
+    });
+    expect(patch.status, await patch.text()).toBe(200);
+
+    const after = await deck("sc_i1_both_fixed", cookie);
+    expect(after.missingFields ?? []).toEqual([]);
+    // The DECK axis is untouched — the file is still the one the model could not
+    // read. That is the whole point of the state it lands in.
+    expect(after.aiComplete).toBe(false);
+    expect(screeningStatus(after as ScreeningDeck, { gate: GATE })).toBe("incompleteDeckEdited");
+
+    // **It does NOT appear on the Query screen by itself, and that is the client's
+    // own rule, not an oversight.** Query membership is a RECORDED action: a deck
+    // is on that roster because an operator SENT it, never because its state
+    // makes it eligible. Measured here rather than assumed — this assertion was
+    // written the other way round first and failed.
+    expect(await listNames(cookie, "query")).not.toContain("Deck sc_i1_both_fixed");
+
+    // What the edit changed is that the click is now ACCEPTED, where the same
+    // call was a 409 a moment ago. "The operator will choose whether they want to
+    // send to query or not" (2026-10-02) — the edit grants the choice.
+    const sent = await SELF.fetch(`${BASE}/api/decks/sc_i1_both_fixed/send-to-query`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    expect(sent.status, await sent.text()).toBe(200);
+
+    // …and THEN it is on the roster.
+    expect((await deck("sc_i1_both_fixed", cookie)).queried).toBe(true);
+    expect(await listNames(cookie, "query")).toContain("Deck sc_i1_both_fixed");
+
+    // And still NOT on Assign: fixing the contact details does not make an
+    // unreadable deck assignable. Both axes gate that one.
+    expect(await listNames(cookie, "assign")).not.toContain("Deck sc_i1_both_fixed");
+  });
+
   it("incomplete DECK with complete contacts STAYS queryable (§3 item 1)", async () => {
     await setGate(5);
     const cookie = await login(SUPER);
