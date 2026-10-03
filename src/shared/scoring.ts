@@ -398,10 +398,30 @@ export interface ScoringSettings {
   introCallAiPrompts: boolean;
 }
 
-/** Migration 0026's column defaults — the prototype's shipped ON/OFF state. */
+/**
+ * Migration 0026's column defaults — the prototype's shipped ON/OFF state, with
+ * ONE deliberate departure recorded below.
+ */
 export const DEFAULT_SCORING_SETTINGS: ScoringSettings = {
   aiPreScoringEnabled: true,
-  autoClarification: true,
+  /**
+   * **OFF, against the prototype (2026-10-02). The client's instruction:** "it
+   * should [not] automatically send the query either. it should just say
+   * incomplete. the operator will choose whether they want to send to query or
+   * not."
+   *
+   * The toggle survives — "Auto-trigger clarification questions" is still in the
+   * Scoring framework section and an admin may switch it on — but the shipped
+   * behaviour is operator-driven. `0102` turns it off for existing workspaces.
+   *
+   * Why he asked: with it on, every evaluated deck acquired a `queries` row, and
+   * that row latches `screeningStatus` to the `queried` sink
+   * (`routes/decks.ts:429` makes `queried` true for ANY query row, whatever its
+   * delivery status). So the Dashboard read "Incomplete, Queried" on decks
+   * nobody had queried, which hid the very distinction the status vocabulary
+   * exists to draw — "Incomplete contact details" against "Incomplete deck".
+   */
+  autoClarification: false,
   showAiScoreToJury: true,
   requireOverrideRationale: true,
   overrideRationaleDelta: 2,

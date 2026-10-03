@@ -57,7 +57,11 @@ async function setScoring(patch: Partial<Record<string, number | string>>): Prom
 async function resetScoring(): Promise<void> {
   await setScoring({
     ai_pre_scoring_enabled: 1,
-    auto_clarification: 1,
+    // 0, matching `DEFAULT_SCORING_SETTINGS` — this fixture IS "the shipped
+    // defaults" the case above asserts, and `0102` moved this one field off the
+    // prototype on the client's instruction (2026-10-02). Every other value here
+    // is still the prototype's.
+    auto_clarification: 0,
     show_ai_score_to_jury: 1,
     require_override_rationale: 1,
     override_rationale_delta: 2,
@@ -334,6 +338,11 @@ describe("composite_formula reaches the AI path", () => {
 
 describe("auto_clarification", () => {
   it("on → a weak deck gets a query and an email without anyone asking", async () => {
+    // Stated explicitly, as its "off" sibling below always did. It used to lean
+    // on the fixture's default being ON; `0102` made the default OFF (the client,
+    // 2026-10-02: "the operator will choose whether they want to send to query or
+    // not"), so a case about the toggle now has to set the toggle.
+    await setScoring({ auto_clarification: 1 });
     const id = "fw_auto_q";
     await seedDeck(id);
     await aiEvaluate(id, 2); // every area in the rubric's Insufficient band

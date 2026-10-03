@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import { UploadPage } from "../../src/client/routes/UploadPage";
+import { UploadPage, chunkBulk } from "../../src/client/routes/UploadPage";
+import { uploadDeadlineMs } from "../../src/client/api";
 import { ResultsScreen, RESULTS_COLUMNS } from "../../src/client/routes/upload/ResultsScreen";
 import { ReviewScreen, isFlaggable, isUploadable } from "../../src/client/routes/upload/ReviewScreen";
 import { AuthContext, type AuthUser } from "../../src/client/auth/AuthProvider";
@@ -68,6 +69,32 @@ let balance = 42;
  */
 let pollDecks: unknown[] = [];
 
+/**
+ * Issue 3's switches. A bulk batch is several requests now, so the things that
+ * matter about it are HOW MANY went out and what each one carried — `bulkCalls`
+ * records one entry of file names per accepted request. `bulkHangs` stands in
+ * for the stalled socket that left "Uploading…" on screen for forty minutes: it
+ * answers nothing and settles only when the deadline aborts it.
+ */
+let bulkCalls: string[][] = [];
+let bulkHangs = false;
+/** How many leading bulk requests are refused for credits. */
+let bulkNoCredits = 0;
+/**
+ * Held requests. A chunked batch settles one request per microtask, so the
+ * in-flight state is gone before an assertion can see it; a gate is how a test
+ * stands still inside it. The mock reads it per call, so releasing it lets the
+ * requests behind the held one answer at once.
+ */
+let bulkGate: Promise<void> | null = null;
+
+/** The file names a stubbed request carried. */
+function filesIn(init?: RequestInit): string[] {
+  const body = init?.body;
+  if (!(body instanceof FormData)) return [];
+  return body.getAll("files").map((f) => (f instanceof File ? f.name : String(f)));
+}
+
 function json(status: number, body: unknown) {
   return Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
 }
@@ -76,9 +103,13 @@ beforeEach(() => {
   trialDecks = 3;
   balance = 42;
   pollDecks = [];
+  bulkCalls = [];
+  bulkHangs = false;
+  bulkNoCredits = 0;
+  bulkGate = null;
   vi.stubGlobal(
     "fetch",
-    vi.fn((input: RequestInfo | URL) => {
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith("/api/programs")) {
         return json(200, {
@@ -120,15 +151,37 @@ beforeEach(() => {
       // assert nothing was uploaded assert on the CALLS, so a reachable route
       // does not weaken them.
       if (url === "/api/decks/upload") return json(200, { deckId: "deck_uploaded", evaluated: true });
-      // One request, two outcomes — the partial-failure shape the review screen
-      // now has to keep the operator on (issues 2 and 12).
+      /**
+       * The bulk route ECHOES the request's own files, because since issue 3 a
+       * batch is several bounded requests and a fixed reply would answer for
+       * files the request never carried. Three file names are special, so one
+       * mock serves every outcome the screen has to map back to a row:
+       *
+       *   `Refused.pdf` — reported failed, the per-row error path (unchanged);
+       *   `Silent.pdf`  — left OUT of the report altogether, the deck that
+       *                   neither uploaded nor failed;
+       *   anything else — accepted. `Kept.pdf` keeps the id `pollDecks` is
+       *                   keyed on, so the end-to-end query test is untouched.
+       */
       if (url === "/api/decks/bulk") {
-        return json(200, {
-          results: [
-            { file: "Kept.pdf", ok: true, deckId: "deck_uploaded" },
-            { file: "Refused.pdf", ok: false, error: "pdf_too_large" },
-          ],
-        });
+        if (bulkHangs) {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+          });
+        }
+        bulkCalls.push(filesIn(init));
+        if (bulkCalls.length <= bulkNoCredits) return json(402, { error: "no_credits" });
+        const reply = () =>
+          json(200, {
+            results: filesIn(init)
+              .filter((f) => f !== "Silent.pdf")
+              .map((f) =>
+                f === "Refused.pdf"
+                  ? { file: f, ok: false, error: "pdf_too_large" }
+                  : { file: f, ok: true, deckId: f === "Kept.pdf" ? "deck_uploaded" : `deck_${f}` },
+              ),
+          });
+        return bulkGate ? bulkGate.then(reply) : reply();
       }
       if (url === "/api/decks") return json(200, { decks: pollDecks });
       if (url === "/api/decks/deck_uploaded/queries") return json(200, { ok: true, queryId: "q_1", emailStatus: "sent" });
@@ -352,6 +405,7 @@ describe("Review uploaded decks", () => {
         renderDetails: () => null,
         statusCtx: CTX,
         showDashboard: false,
+        progress: null,
       };
     }
 
@@ -860,6 +914,149 @@ describe("the end of the upload flow", () => {
     expect(screen.getByRole("button", { name: "Upload selected decks" })).toBeEnabled();
     // "Cancel" would name the wrong thing for the deck that did upload.
     expect(screen.queryByRole("link", { name: "Cancel" })).toBeNull();
+  });
+});
+
+/**
+ * Issue 3 — "i tried uploading 10 decks at once and it still says uploading
+ * after 40 minutes".
+ *
+ * Two independent faults, so two independent pins. The batch was ONE request
+ * carrying every file, and `fetch` has no timeout — so a request that never
+ * settled left `busy` raised with nothing else able to lower it. Chunking
+ * bounds what any one request has to do; the deadline bounds how long the
+ * screen can be wrong about it.
+ */
+describe("a bulk batch of ten decks (issue 3)", () => {
+  /** Stage `n` bulk PDFs and land on the review list with all of them ticked. */
+  async function stageBulk(names: string[]) {
+    mount(PA());
+    await waitFor(() => expect(screen.getByText("Credits balance — 42 remaining")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("radio", { name: /Bulk upload/ }));
+    fireEvent.change(screen.getByLabelText("Choose a ZIP or several pitch decks"), {
+      target: { files: names.map((n) => new File([new Uint8Array([37, 80, 68, 70])], n, { type: "application/pdf" })) },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: FORWARD }));
+    await waitFor(() => expect(screen.getByText(`${names.length} decks staged`)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
+    return () => fireEvent.click(screen.getByRole("button", { name: /^Upload selected decks$/ }));
+  }
+
+  const TEN = Array.from({ length: 10 }, (_, i) => `Deck${i + 1}.pdf`);
+
+  it("cuts the batch into bounded requests instead of one unbounded POST", async () => {
+    const upload = await stageBulk(TEN);
+    upload();
+
+    await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/app/alldecks"));
+    // Four requests of at most three files, not one of ten.
+    expect(bulkCalls.map((c) => c.length)).toEqual([3, 3, 3, 1]);
+    // And between them they carry every deck exactly once — chunking must not
+    // drop or duplicate a file, which is the only way it could cost credits.
+    expect(bulkCalls.flat().sort()).toEqual([...TEN].sort());
+  });
+
+  it("maps every outcome back to its own row across the chunk boundary", async () => {
+    // Refused is in the FIRST request and Silent in the SECOND, so a row can
+    // only be matched by its file name and not by its position in the batch.
+    const upload = await stageBulk(["A.pdf", "Refused.pdf", "B.pdf", "C.pdf", "Silent.pdf", "D.pdf"]);
+    upload();
+
+    // Two failures: the one the server refused and the one it never mentioned.
+    expect(await screen.findByText("2 decks could not be uploaded — see the list.")).toBeInTheDocument();
+    expect(screen.getByTestId("where")).toHaveTextContent("/app/upload");
+    const rows = () => screen.getAllByTestId("up-deck-row");
+    const text = rows().map((r) => r.textContent ?? "");
+    // Four landed, two did not, and none is still waiting its turn.
+    expect(text.filter((t) => t.includes("· uploaded"))).toHaveLength(4);
+    expect(text.filter((t) => t.includes("· not uploaded"))).toHaveLength(2);
+    expect(text.filter((t) => t.includes("not yet analysed"))).toHaveLength(0);
+
+    // And each failure says its OWN reason, which is what the file-name match
+    // across a chunk boundary is for.
+    fireEvent.click(rows().find((r) => r.textContent?.includes("Refused.pdf"))!);
+    expect(screen.getByText(/Too large/)).toBeInTheDocument();
+    fireEvent.click(rows().find((r) => r.textContent?.includes("Silent.pdf"))!);
+    expect(screen.getByText(/Upload failed — try this deck again/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Go to dashboard →" })).toHaveAttribute("href", "/app/alldecks");
+  });
+
+  it("stops the batch on no_credits without sending the remaining requests", async () => {
+    bulkNoCredits = 1;
+    const upload = await stageBulk(TEN);
+    upload();
+
+    // Said twice — in the banner and in the refused deck's own preview.
+    expect(await screen.findAllByText(/Not enough credits/)).toHaveLength(2);
+    // The refusal ends the batch where it always has: the other seven decks
+    // were never sent, so they were never charged for either.
+    expect(bulkCalls).toHaveLength(1);
+    expect(screen.getByTestId("where")).toHaveTextContent("/app/upload");
+  });
+
+  it("gives up on a request that never answers, instead of saying Uploading for ever", async () => {
+    bulkHangs = true;
+    const upload = await stageBulk(TEN);
+
+    // The clock goes fake only now: staging needs real timers, and the thing
+    // under test is a `setTimeout` that no test should have to really wait out.
+    vi.useFakeTimers();
+    try {
+      upload();
+      // Every deck is 4 bytes, so this is the floor plus a rounding byte.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(uploadDeadlineMs(12) + 1000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // The button is a button again — this is the whole of the bug report.
+    expect(screen.getByRole("button", { name: "Upload selected decks" })).toBeEnabled();
+    expect(screen.queryByText(/^Uploading/)).toBeNull();
+    expect(screen.queryAllByTestId("up-row-uploading")).toHaveLength(0);
+    // And it says the one true thing: we stopped waiting, nobody refused
+    // anything, so look before paying again.
+    expect(screen.getByText(/The rest of the batch was left alone/)).toHaveTextContent(
+      "check All decks before trying again",
+    );
+    // A dead connection ends the batch rather than spending a fresh deadline
+    // on each of the three requests behind it.
+    expect(bulkCalls).toHaveLength(0);
+  });
+
+  it("names the decks in flight and counts the batch down while it runs", async () => {
+    let release!: () => void;
+    bulkGate = new Promise<void>((r) => {
+      release = r;
+    });
+    const upload = await stageBulk(["A.pdf", "B.pdf", "C.pdf", "D.pdf"]);
+    upload();
+
+    // The first request is out and held: its three decks say so, the fourth
+    // does not, and the button counts the batch rather than just spinning.
+    expect(await screen.findByRole("button", { name: "Uploading 0 of 4…" })).toBeInTheDocument();
+    expect(screen.getAllByTestId("up-row-uploading")).toHaveLength(3);
+    const text = screen.getAllByTestId("up-deck-row").map((r) => r.textContent ?? "");
+    expect(text.filter((t) => t.includes("uploading…"))).toHaveLength(3);
+    expect(text.find((t) => t.includes("D.pdf"))).toContain("not yet analysed");
+
+    bulkGate = null;
+    release();
+    await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/app/alldecks"));
+    expect(screen.queryAllByTestId("up-row-uploading")).toHaveLength(0);
+  });
+
+  it("cuts a chunk short on bytes, and never holds one deck back on its own", () => {
+    const deck = (name: string, size: number) => ({ key: name, fileName: name, size }) as unknown as StagedDeck;
+    // Three 10 MB decks exceed the 24 MB budget, so the third starts a request.
+    expect(
+      chunkBulk([deck("a", 10e6), deck("b", 10e6), deck("c", 10e6)]).map((c) => c.map((d) => d.fileName)),
+    ).toEqual([["a", "b"], ["c"]]);
+    // A deck at the 50 MB per-file ceiling is over the budget by itself and
+    // still goes — the budget caps a request, it cannot refuse a deck.
+    expect(chunkBulk([deck("big", 50 * 1024 * 1024)]).map((c) => c.length)).toEqual([1]);
+    expect(chunkBulk([])).toEqual([]);
   });
 });
 

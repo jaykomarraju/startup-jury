@@ -135,7 +135,14 @@ test("an admin edits a question and the founder is asked the edited wording", as
   expect(draft.message).not.toContain(original.text);
   expect(draft.message).toContain(`${area!.name} (weak signal)`);
   expect(draft.questions.find((q) => q.area === area!.name)!.questions[0]).toBe(edited);
-  expect(draft.triggered).toBe(true);
+  // `triggered` is NOT asserted here any more. It answers "would the AI raise
+  // this letter on its own", and as of `0102` auto-clarification is OFF by
+  // default (the client, 2026-10-02: "the operator will choose whether they want
+  // to send to query or not"), so the honest answer is false and says nothing
+  // about this test's subject — the edited WORDING, asserted on the two lines
+  // above. The flag has its own coverage now, both directions, in
+  // `test/worker/questions.test.ts` and `test/worker/auto-clarify.test.ts`.
+  expect(draft.triggered).toBe(false);
 
   // Put it back so a re-run of the suite starts where it started.
   const restore = await page.request.put(`/api/questions/${original.id}`, {

@@ -192,14 +192,22 @@ describe("Assign — toolbar and columns", () => {
     expect(options).toEqual(["AI base", "AI+ · Program Associate", "AI++ · Program Manager", "AI+++ · Jury Member"]);
   });
 
-  it("lists incomplete decks greyed out with their missing information, unselectable (F0259)", async () => {
+  it("keeps incomplete decks OFF the incubator's Assign screen entirely (2026-10-02)", async () => {
+    // This case used to assert the opposite — F0259 drew them greyed, untickable
+    // and captioned with what was missing, so the operator could see where a deck
+    // had gone instead of it vanishing. The client looked at that and asked for
+    // them gone: "incomplete decks shouldnt show up in the assign screen".
+    //
+    // What replaced the grey row is better than it was: the Dashboard's Status
+    // column now says WHICH incompleteness it is, in words the row never carried
+    // — "Incomplete contact details" against "Incomplete deck".
     setup();
     await ready();
-    const row = screen.getByTestId("assign-incomplete-row");
-    expect(within(row).getByText("AgriChain")).toBeInTheDocument();
-    expect(within(row).getByText("Incomplete")).toBeInTheDocument();
-    expect(within(row).getByText("Founder email not captured · no traction data")).toBeInTheDocument();
-    expect(within(row).getByRole("checkbox", { name: "Select AgriChain" })).toBeDisabled();
+    expect(screen.queryByTestId("assign-incomplete-row")).toBeNull();
+    expect(screen.queryByText("AgriChain")).toBeNull();
+    // The guard on the guard: the screen still drew the decks it IS for, so this
+    // is not passing because nothing rendered at all.
+    expect(screen.getAllByTestId("assign-deck-row").length).toBeGreaterThan(0);
   });
 
   it("orders roles Program manager → Program associate → Jury member, with 'N users' (F0332/F0334)", async () => {
@@ -416,12 +424,13 @@ describe("Assign — the Incomplete decks view (F0272)", () => {
     });
     setup({ decks: [FINSTACK, BLANKED] });
     await ready();
-    // Column 1 lists it the way it lists any un-assignable deck — greyed, with
-    // a disabled tick — and only FinStack can actually be selected.
+    // Column 1 does not list it AT ALL on the incubator (2026-10-02) — only
+    // FinStack is there. The deck is still reachable through the Incomplete tab
+    // below, which is the screen's own answer to "where did it go".
     const selectable = screen.getAllByTestId("assign-deck-row");
     expect(selectable.map((r) => r.textContent?.includes("Blanked"))).toEqual([false]);
-    expect(screen.getByRole("checkbox", { name: "Select Blanked" })).toBeDisabled();
-    expect(screen.getByTestId("assign-incomplete-row")).toHaveTextContent("Blanked");
+    expect(screen.queryByRole("checkbox", { name: "Select Blanked" })).toBeNull();
+    expect(screen.queryByTestId("assign-incomplete-row")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /Incomplete\s*1/ }));
     const table = screen.getByRole("table", { name: "Incomplete decks" });

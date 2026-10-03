@@ -313,13 +313,12 @@ describe("the Dashboard → Assign hand-off (item 4)", () => {
     mount("assign", { deckIds: ["d_agri"] });
     await screen.findByRole("checkbox", { name: "Select GreenGrid" });
 
-    // AgriChain IS drawn in column 1 — V4-ROUTE keeps the marked-incomplete
-    // decks visible there, greyed and untickable, rather than vanishing them.
-    // Arriving with its id in hand must not tick it anyway.
-    const box = screen.getByRole("checkbox", { name: "Select AgriChain" });
-    expect(box).toBeDisabled();
-    expect(box).not.toBeChecked();
-    expect(box.closest("li")).toHaveAttribute("data-testid", "assign-incomplete-row");
+    // AgriChain is NOT drawn in column 1 at all since 2026-10-02 — the client
+    // asked for incomplete decks off the Assign screen. The invariant this case
+    // exists for is unchanged and is if anything stronger: arriving with its id
+    // in hand must not select it. It cannot be selected because it is not there.
+    expect(screen.queryByRole("checkbox", { name: "Select AgriChain" })).toBeNull();
+    expect(screen.queryByTestId("assign-incomplete-row")).toBeNull();
     // And nothing assignable was ticked in its place.
     for (const row of screen.getAllByTestId("assign-deck-row")) {
       expect(within(row).getByRole("checkbox")).not.toBeChecked();

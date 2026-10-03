@@ -475,6 +475,35 @@ export function EvaluationDrawer({
                   </table>
                 </div>
               )}
+              {/*
+               * Oct-2026 issue 6 — "My score column is inactive. Unable to
+               * score the deck", filed against this overlay by a jury member
+               * AND a programme manager. Both described what they saw
+               * accurately: the header reads *Evaluate — {deck}*, the hint
+               * above is the prototype's verbatim "…and add yours", and the
+               * column under it is a read-only report. Measured, nothing is
+               * disabled and no role is blocked — the workbench's own inputs
+               * take a score from either role (`test/client/evaluateScoring`).
+               * The overlay simply never said which of the two it was.
+               *
+               * Said here rather than fixed by making the column editable,
+               * because the single scoring surface is a decision, not an
+               * omission: `EvalScorecard` owns the score scale, the
+               * override-rationale rule and the submit, and there is no draft
+               * to save to (F0195, plan §8). Whether the prototype's editable
+               * report should be built is in `docs/parity-requests/OCT2-EVAL.md`.
+               *
+               * Additive copy only. The hint, the tiles, the five column
+               * headers and the four section titles are pinned verbatim
+               * against the prototype by `test/client/reportV3.test.tsx`, so
+               * this is a paragraph and NOT another `<h3>`.
+               */}
+              <p className="mt-2 text-[11px] leading-relaxed text-fg-muted">
+                <b className="font-medium text-fg-2">My score is read-only on this report.</b> Scores
+                and per-parameter remarks are entered in the evaluator workbench on{" "}
+                <b className="font-medium text-fg-2">Evaluate</b>, which opens a deck for scoring
+                once it has been assigned for evaluation.
+              </p>
             </ReportSection>
 
             <ReportSection

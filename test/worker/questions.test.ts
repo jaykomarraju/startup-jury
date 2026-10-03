@@ -1,5 +1,5 @@
 import { SELF, env } from "cloudflare:test";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, onTestFinished } from "vitest";
 
 /**
  * W2-C — the Clarification question bank (`/api/questions`) and the
@@ -317,6 +317,17 @@ describe("the producer — GET /api/questions/draft/:deckId", () => {
   it("honours the auto-clarification toggle for the automatic decision only", async () => {
     const admin = await login(ADMIN);
     const deck = await weakDeck();
+    // Auto-clarification is OFF by default as of `0102` (the client, 2026-10-02:
+    // "the operator will choose whether they want to send to query or not"), so
+    // this case turns it on — it is about the TOGGLE, not about the default.
+    await env.DB.prepare(
+      "UPDATE org_scoring_settings SET auto_clarification = 1 WHERE edition = 'incubator'",
+    ).run();
+    // Worker D1 state is shared across FILES in this pool, so this goes back to
+    // the shipped default when the case ends — see auto-clarify.test.ts.
+    onTestFinished(async () => {
+      await env.DB.prepare("UPDATE org_scoring_settings SET auto_clarification = 0").run();
+    });
 
     const on = (await (await get(`/api/questions/draft/${deck.id}`, admin)).json()) as Draft;
     expect(on.autoClarification).toBe(true);
@@ -334,6 +345,11 @@ describe("the producer — GET /api/questions/draft/:deckId", () => {
     await env.DB.prepare(
       "UPDATE org_scoring_settings SET auto_clarification = 1 WHERE edition = 'incubator'",
     ).run();
+    // Worker D1 state is shared across FILES in this pool, so this goes back to
+    // the shipped default when the case ends — see auto-clarify.test.ts.
+    onTestFinished(async () => {
+      await env.DB.prepare("UPDATE org_scoring_settings SET auto_clarification = 0").run();
+    });
   });
 
   it("reports `triggered: false` when there is no founder to write to", async () => {
@@ -346,6 +362,17 @@ describe("the producer — GET /api/questions/draft/:deckId", () => {
     // built from, so the two cannot drift.
     const admin = await login(ADMIN);
     const deck = await weakDeck();
+    // Auto-clarification is OFF by default as of `0102` (the client, 2026-10-02:
+    // "the operator will choose whether they want to send to query or not"), so
+    // this case turns it on — it is about the TOGGLE, not about the default.
+    await env.DB.prepare(
+      "UPDATE org_scoring_settings SET auto_clarification = 1 WHERE edition = 'incubator'",
+    ).run();
+    // Worker D1 state is shared across FILES in this pool, so this goes back to
+    // the shipped default when the case ends — see auto-clarify.test.ts.
+    onTestFinished(async () => {
+      await env.DB.prepare("UPDATE org_scoring_settings SET auto_clarification = 0").run();
+    });
 
     // The deck is weak and reachable: the AI would write.
     const before = (await (await get(`/api/questions/draft/${deck.id}`, admin)).json()) as Draft;

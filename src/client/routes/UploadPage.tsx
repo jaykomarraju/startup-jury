@@ -57,6 +57,44 @@ const POLL_MS = 4000;
 const POLL_LIMIT = 150;
 
 /**
+ * How a bulk batch is cut into requests — issue 3, "i tried uploading 10 decks
+ * at once and it still says uploading after 40 minutes".
+ *
+ * Ten decks went up as ONE POST. `/api/decks/bulk` buffers that whole multipart
+ * body with `c.req.formData()` inside a 128 MB Workers isolate, behind the
+ * edge's own request-body limit, and then stores, enqueues and intake-checks
+ * every file in that single invocation — several subrequests per deck. So the
+ * unit that could fail was the entire batch, after however long the body took
+ * to climb the uplink, and nothing on the screen moved until it did.
+ *
+ * Chunking makes ten decks several bounded requests: each one settles on its
+ * own, each one's decks are saved before the next starts, and `uploadBulk`'s
+ * deadline is scaled to a body we know is small. Three files and 24 MB sit well
+ * inside every one of those ceilings; the byte budget never holds a deck back
+ * on its own, so a single deck at the 50 MB per-file cap still goes alone.
+ */
+const BULK_CHUNK_FILES = 3;
+const BULK_CHUNK_BYTES = 24 * 1024 * 1024;
+
+/** Greedy fill, and never fewer than one deck per request. */
+export function chunkBulk(decks: StagedDeck[]): StagedDeck[][] {
+  const out: StagedDeck[][] = [];
+  let chunk: StagedDeck[] = [];
+  let bytes = 0;
+  for (const d of decks) {
+    if (chunk.length > 0 && (chunk.length >= BULK_CHUNK_FILES || bytes + d.size > BULK_CHUNK_BYTES)) {
+      out.push(chunk);
+      chunk = [];
+      bytes = 0;
+    }
+    chunk.push(d);
+    bytes += d.size;
+  }
+  if (chunk.length > 0) out.push(chunk);
+  return out;
+}
+
+/**
  * Upload (Evaluation → Upload) — W7-B, the prototype's three views of one batch:
  *
  *   1. **The wizard** (`#up-wizard`) — the credits bar, the credits-flow chips and
@@ -209,6 +247,8 @@ function StaffUpload() {
   const [staged, setStaged] = useState<StagedDeck[]>([]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Decks whose request has settled, out of the batch — null when idle. */
+  const [progress, setProgress] = useState<BatchProgress | null>(null);
   const [error, setError] = useState<ReactNode>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [sending, setSending] = useState<string | null>(null);
@@ -285,77 +325,117 @@ function StaffUpload() {
     if (selection.length === 0 || preview.shortfall > 0) return;
     setBusy(true);
     setError(null);
+    setProgress({ done: 0, total: selection.length });
     const outcomes = new Map<string, Partial<StagedDeck>>();
-    let stopped: string | null = null;
+    let stopped: StopReason | null = null;
 
-    for (const d of selection.filter((s) => s.source === "single")) {
-      if (stopped) break;
-      const form = new FormData();
-      form.set("file", d.file!, d.fileName);
-      for (const [k, v] of Object.entries(d.details ?? {})) if (v.trim()) form.set(k, v.trim());
-      appendContext(form, d.context);
-      try {
-        const res = await uploadSingle(form);
-        const flag = res.result?.intakeFlag ?? res.matches?.[0]?.flag ?? undefined;
-        outcomes.set(d.key, {
-          deckId: res.deckId,
-          checked: false,
-          uploadError: undefined,
-          intakeFlag: flag ?? undefined,
-          intakeNote: res.result?.intakeNote ?? res.matches?.[0]?.reason ?? undefined,
-          evalNote: res.evaluated
-            ? undefined
-            : `${res.error === "evaluation_failed" ? "Uploaded, but the AI evaluation could not be started" : "Uploaded — the AI evaluation is queued and will retry automatically"}${res.reason ? ` · ${res.reason}` : ""}. You can re-run it from All decks once the cause is cleared.`,
-        });
-      } catch (err) {
-        const message = uploadErrorMessage(err);
-        outcomes.set(d.key, { uploadError: message });
-        if (err instanceof ApiError && err.code === "no_credits") stopped = message;
-      }
-    }
+    /** The decks in the request about to go out, so their rows can say so. */
+    const start = (attempted: StagedDeck[]) => {
+      const keys = new Set(attempted.map((d) => d.key));
+      setStaged((list) => list.map((d) => (keys.has(d.key) ? { ...d, uploading: true } : d)));
+    };
+    /**
+     * Land one request's outcomes the MOMENT it settles rather than at the end
+     * of the batch. With several requests per batch that is the difference
+     * between a screen that moves and the one the operator sat in front of for
+     * forty minutes — and it is also what keeps the decks that did upload
+     * visible if a later request fails.
+     */
+    const settle = (attempted: StagedDeck[], landed: Map<string, Partial<StagedDeck>>) => {
+      for (const [k, v] of landed) outcomes.set(k, v);
+      const keys = new Set(attempted.map((d) => d.key));
+      setStaged((list) => list.map((d) => (keys.has(d.key) ? { ...d, uploading: false, ...landed.get(d.key) } : d)));
+      setProgress((p) => (p ? { ...p, done: p.done + attempted.length } : p));
+    };
 
-    const groups = new Map<string, StagedDeck[]>();
-    for (const d of selection.filter((s) => s.source === "bulk")) {
-      const k = JSON.stringify(d.context);
-      groups.set(k, [...(groups.get(k) ?? []), d]);
-    }
-    for (const group of groups.values()) {
-      if (stopped) break;
-      const form = new FormData();
-      for (const d of group) form.append("files", d.file!, d.fileName);
-      appendContext(form, group[0].context);
-      try {
-        const res = await uploadBulk(form);
-        const pending = [...group];
-        for (const row of res.results ?? []) {
-          const i = pending.findIndex((d) => d.fileName === row.file);
-          if (i < 0) continue;
-          const [d] = pending.splice(i, 1);
-          outcomes.set(
-            d.key,
-            row.ok
-              ? { deckId: row.deckId, checked: false, uploadError: undefined, intakeFlag: row.flag, intakeNote: row.note }
-              : {
-                  uploadError:
-                    row.error === "pdf_too_large"
-                      ? STAGED_ISSUE_LABELS.too_large
-                      : row.error === "pdf_required"
-                        ? STAGED_ISSUE_LABELS.not_pdf
-                        : "Upload failed — try this deck again.",
-                },
-          );
+    try {
+      for (const d of selection.filter((s) => s.source === "single")) {
+        if (stopped) break;
+        const form = new FormData();
+        form.set("file", d.file!, d.fileName);
+        for (const [k, v] of Object.entries(d.details ?? {})) if (v.trim()) form.set(k, v.trim());
+        appendContext(form, d.context);
+        const landed = new Map<string, Partial<StagedDeck>>();
+        start([d]);
+        try {
+          const res = await uploadSingle(form);
+          const flag = res.result?.intakeFlag ?? res.matches?.[0]?.flag ?? undefined;
+          landed.set(d.key, {
+            deckId: res.deckId,
+            checked: false,
+            uploadError: undefined,
+            intakeFlag: flag ?? undefined,
+            intakeNote: res.result?.intakeNote ?? res.matches?.[0]?.reason ?? undefined,
+            evalNote: res.evaluated
+              ? undefined
+              : `${res.error === "evaluation_failed" ? "Uploaded, but the AI evaluation could not be started" : "Uploaded — the AI evaluation is queued and will retry automatically"}${res.reason ? ` · ${res.reason}` : ""}. You can re-run it from All decks once the cause is cleared.`,
+          });
+        } catch (err) {
+          landed.set(d.key, { uploadError: uploadErrorMessage(err) });
+          stopped = stopReason(err) ?? stopped;
         }
-      } catch (err) {
-        const message = uploadErrorMessage(err);
-        for (const d of group) outcomes.set(d.key, { uploadError: message });
-        if (err instanceof ApiError && err.code === "no_credits") stopped = message;
+        settle([d], landed);
       }
-    }
 
-    setStaged((list) => list.map((d) => (outcomes.has(d.key) ? { ...d, ...outcomes.get(d.key) } : d)));
-    // The balance after the batch is the server's to say.
-    getConfigSummary().then(setConfig).catch(() => {});
-    setBusy(false);
+      const groups = new Map<string, StagedDeck[]>();
+      for (const d of selection.filter((s) => s.source === "bulk")) {
+        const k = JSON.stringify(d.context);
+        groups.set(k, [...(groups.get(k) ?? []), d]);
+      }
+      for (const group of groups.values()) {
+        if (stopped) break;
+        for (const chunk of chunkBulk(group)) {
+          if (stopped) break;
+          const form = new FormData();
+          for (const d of chunk) form.append("files", d.file!, d.fileName);
+          appendContext(form, chunk[0].context);
+          const landed = new Map<string, Partial<StagedDeck>>();
+          start(chunk);
+          try {
+            const res = await uploadBulk(form);
+            const pending = [...chunk];
+            for (const row of res.results ?? []) {
+              const i = pending.findIndex((d) => d.fileName === row.file);
+              if (i < 0) continue;
+              const [d] = pending.splice(i, 1);
+              landed.set(
+                d.key,
+                row.ok
+                  ? { deckId: row.deckId, checked: false, uploadError: undefined, intakeFlag: row.flag, intakeNote: row.note }
+                  : {
+                      uploadError:
+                        row.error === "pdf_too_large"
+                          ? STAGED_ISSUE_LABELS.too_large
+                          : row.error === "pdf_required"
+                            ? STAGED_ISSUE_LABELS.not_pdf
+                            : "Upload failed — try this deck again.",
+                    },
+              );
+            }
+            // A file the per-row report never mentions did not land, and saying
+            // so is what keeps a chunked batch honest: a silent row counts as
+            // neither uploaded nor failed, so the batch would read as fully
+            // successful and leave for the Dashboard without it.
+            if (Array.isArray(res.results)) {
+              for (const d of pending) landed.set(d.key, { uploadError: "Upload failed — try this deck again." });
+            }
+          } catch (err) {
+            const message = uploadErrorMessage(err);
+            for (const d of chunk) landed.set(d.key, { uploadError: message });
+            stopped = stopReason(err) ?? stopped;
+          }
+          settle(chunk, landed);
+        }
+      }
+    } finally {
+      // The balance after the batch is the server's to say.
+      getConfigSummary().then(setConfig).catch(() => {});
+      // In a `finally` so that NOTHING leaves the button saying "Uploading…" —
+      // the one symptom the operator actually reported. Any throw from the
+      // loops above now surfaces as itself instead of as a dead screen.
+      setBusy(false);
+      setProgress(null);
+    }
 
     const uploaded = [...outcomes.values()].filter((o) => o.deckId).length;
     const failed = outcomes.size - uploaded;
@@ -363,14 +443,19 @@ function StaffUpload() {
       setError(
         stopped ? (
           <>
-            {stopped}{" "}
-            {canBuy ? (
-              <Link to="/app/billing" className="font-medium underline">
-                Buy credits
-              </Link>
-            ) : (
-              "Ask an administrator to add credits."
-            )}
+            {stopped.message}
+            {stopped.credits ? (
+              <>
+                {" "}
+                {canBuy ? (
+                  <Link to="/app/billing" className="font-medium underline">
+                    Buy credits
+                  </Link>
+                ) : (
+                  "Ask an administrator to add credits."
+                )}
+              </>
+            ) : null}
           </>
         ) : (
           `${failed} deck${failed === 1 ? "" : "s"} could not be uploaded — see the list.`
@@ -507,6 +592,7 @@ function StaffUpload() {
         onBack={() => setView("wizard")}
         onUpload={uploadSelected}
         busy={busy}
+        progress={progress}
         preview={preview}
         error={error}
         canBuy={canBuy}
@@ -600,5 +686,43 @@ function uploadErrorMessage(err: unknown): string {
   if (code === "no_credits") return "Not enough credits — the remaining decks were not uploaded or charged.";
   if (code === "pdf_too_large") return STAGED_ISSUE_LABELS.too_large;
   if (code === "pdf_required") return STAGED_ISSUE_LABELS.not_pdf;
+  // "Try again" is the wrong instruction here: we stopped waiting, the server
+  // never refused, so the deck may be on file and a retry would charge twice.
+  if (code === "upload_timeout") return UPLOAD_TIMEOUT_MESSAGE;
   return "Upload failed — try this deck again.";
+}
+
+const UPLOAD_TIMEOUT_MESSAGE =
+  "This upload didn't finish in time — check All decks before trying again, in case it landed anyway.";
+
+/** The batch's own progress, counted in decks whose request has settled. */
+export interface BatchProgress {
+  done: number;
+  total: number;
+}
+
+/** Why the rest of a batch was abandoned, and whether credits are the cure. */
+interface StopReason {
+  message: string;
+  credits: boolean;
+}
+
+/**
+ * Which failures abandon the rest of the batch. `no_credits` always has — the
+ * remaining decks cannot be paid for. A missed deadline joins it: the
+ * connection could not carry the request we already sent, so working through
+ * the remaining chunks would spend a fresh deadline on each before saying so,
+ * which is how one slow batch turned into forty minutes of silence. Everything
+ * else is per-deck and the batch carries on.
+ */
+function stopReason(err: unknown): StopReason | null {
+  if (!(err instanceof ApiError)) return null;
+  if (err.code === "no_credits") return { message: uploadErrorMessage(err), credits: true };
+  if (err.code === "upload_timeout") {
+    return {
+      message: `${UPLOAD_TIMEOUT_MESSAGE} The rest of the batch was left alone — the decks still ticked were never sent.`,
+      credits: false,
+    };
+  }
+  return null;
 }

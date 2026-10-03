@@ -121,7 +121,12 @@ describe("nav manifest", () => {
     expect(pa).toContain("assign");
     expect(pa).toContain("introcalls");
     expect(pa).toContain("incuration");
-    expect(pa).not.toContain("jurypipeline");
+    // GRANTED 2026-10-02 — the client: "The program associate should be able to
+    // see jury pipeline only as read only." They could not reach it at all, so
+    // the ask was to grant read; the write half was already refused by
+    // `performAction` and is asserted over the state machine in
+    // `test/unit/jury-pipeline-readonly.test.ts`, not by a missing nav entry.
+    expect(pa).toContain("jurypipeline");
     // Aug-2026 issue 26/28: Prog Manager Pipeline is the PM's surface, and
     // "For Sign up" was deleted from the product.
     expect(pa).not.toContain("pmpipeline");
@@ -346,7 +351,13 @@ describe("nav manifest", () => {
       ],
       program_associate: [
         "alldecks:Dashboard", "upload:Upload & Evaluate", "query:Query", "evaluate:Evaluate",
-        "assign:Assign", "introcalls:Intro calls", "incuration:Sign up Pipeline",
+        // `jurypipeline` GRANTED 2026-10-02 (Oct-2 issue 2) — read-only, between
+        // Assign and Intro calls, which is where `INCUBATOR_NAV` declares it. The
+        // associate's variant draws the staff columns with no Action cell; see
+        // `JURY_PIPELINE_READONLY` and `test/unit/jury-pipeline-readonly.test.ts`.
+        // This is the ONE intended departure from the `main` pin below.
+        "assign:Assign", "jurypipeline:Jury Pipeline", "introcalls:Intro calls",
+        "incuration:Sign up Pipeline",
         "curation:Onboard ready", "archive:Archive", "cohortsummary:Cohort summary",
         "evaluatorscores:Evaluator scores", "scoredrift:Score drift", "funnel:Pipeline funnel",
         "myparams:My Parameters", "setup:Set up", "account:My account",

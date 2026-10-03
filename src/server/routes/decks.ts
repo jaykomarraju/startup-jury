@@ -24,7 +24,16 @@ import { missingIntakeFields, parseMissingFields, type IntakeMatch } from "../..
 // `ratingAtOrAboveGate` / `isAllocatedDeck` are the AI gate's `?list=assign`
 // post-filter (tester issue 8): the predicates come from the status vocabulary
 // that already owns them, never re-written as `score < gate` at the call site.
-import { isAllocatedDeck, latestTimestamp, ratingAtOrAboveGate } from "../../shared/deckStats";
+// `deckComplete` / `contactComplete` are that same vocabulary's first two
+// checks, and they narrow both rosters for the client's 2026-10-02 flow — see
+// `screened` below for why they, and not `isDeckComplete`.
+import {
+  contactComplete,
+  deckComplete,
+  isAllocatedDeck,
+  latestTimestamp,
+  ratingAtOrAboveGate,
+} from "../../shared/deckStats";
 // V4-ROUTE — the Assign/Query partition (items 6, 7). The list route enforces
 // it so it holds however the deck got to its stage, not just when a screen asks.
 import { deckListRoute, type DeckListRoute } from "../../shared/queries";
@@ -170,6 +179,13 @@ const DECK_DERIVED =
   // directions; the marker is what satisfies both — the deck latches and joins
   // the Assign roster, and `assigned_to` keeps meaning a real evaluator.
   "(SELECT MAX(pe.created_at) FROM pipeline_events pe WHERE pe.deck_id = d.id AND pe.action = 'send_to_assign') AS send_to_assign_at, " +
+  // Oct-2026 issue 5 — how many times the AI has evaluated this deck, which is
+  // the whole of "it should say reevaluated". `ai/evaluate.ts` writes one of
+  // these per run under a fresh id and nothing deletes them, so COUNT is the
+  // run counter. The deck's own `evaluations` row is NOT: evaluate.ts:1052
+  // deletes it and re-inserts under the fixed id `${deckId}_ai_eval`, so that
+  // table shows one AI row however often the model has looked.
+  "(SELECT COUNT(*) FROM pipeline_events pe WHERE pe.deck_id = d.id AND pe.action = 'ai_evaluated') AS ai_eval_count, " +
   // The client's own open item ("queried but the founder never responds").
   // `query_count` above collapses the whole history to a boolean, which throws
   // away exactly the two things the rule needs: WHEN the last letter went out,
@@ -222,6 +238,7 @@ interface DeckRow {
   last_event_at?: string | null;
   contact_edited_at?: string | null;
   send_to_assign_at?: string | null;
+  ai_eval_count?: number | null;
   last_query_at?: string | null;
   last_query_answered?: number | null;
   query_count?: number | null;
@@ -431,6 +448,10 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: Shortli
     // Screening — the three fields `screeningStatus` (`shared/deckStats.ts`)
     // needs and no row carried until now. All derived; no column was added.
     sendToAssignAt: row.send_to_assign_at ?? undefined,
+    // Issue 5 — the one field behind the `reevaluated` status word. A number,
+    // not a boolean: `screeningStatus` asks "more than once", and a count also
+    // lets the row say how many times without a second subquery.
+    evaluationRuns: row.ai_eval_count ?? 0,
     lastQueryAt: row.last_query_at ?? undefined,
     // Only meaningful when there IS a last query, and `isQueryUnanswered` reads
     // `queried` first, so a deck with no history simply never asks.
@@ -469,6 +490,25 @@ const ROW3_RECORDED_QUERY: Record<Edition, boolean> = { incubator: true, vc: fal
  * reason as `ROW3_RECORDED_QUERY` above.
  */
 const AI_GATE_NARROWS_ASSIGN: Record<Edition, boolean> = { incubator: true, vc: false };
+
+/**
+ * Editions where the **first two screening checks** narrow the two rosters
+ * (client, 2026-10-02).
+ *
+ * His flow, verbatim: *"if a deck is incomplete contact details firstly … send
+ * to query or send to assign should be not active and also not show up in
+ * assign or query screen"* and *"if a deck is incomplete deck (NOT contact
+ * details), it should have send to query not send to assign and also not show
+ * up in assign screen"*.
+ *
+ * Same shape and same reason as the two tables above, and the VC arm is false
+ * for the same reason: his screening spec is the incubator's, and the edition is
+ * out of scope by instruction. On VC the Assign half is unreachable anyway
+ * (`ASSIGNABLE_STAGES.vc` is empty) but the QUERY half would not be — VC's own
+ * auto-listing rules came from the VC prototype (F0274, F0341) and flipping
+ * this for both editions would delete them without his having asked.
+ */
+const SCREENING_NARROWS_LISTS: Record<Edition, boolean> = { incubator: true, vc: false };
 
 /** `?list=` — the enforced screen list, or the whole table when absent. */
 function parseListParam(raw: string | undefined): Exclude<DeckListRoute, null> | null {
@@ -721,6 +761,44 @@ decks.get("/", async (c) => {
     !AI_GATE_NARROWS_ASSIGN[edition] ||
     isAllocatedDeck(v) ||
     ratingAtOrAboveGate(v, scoring.aiGateThreshold);
+  /**
+   * ── THE FIRST TWO CHECKS, AS A POST-FILTER TOO (client, 2026-10-02) ───────
+   *
+   * His flow adds LIST MEMBERSHIP to what his §5 action matrix already decided:
+   * an incomplete deck is off the Assign roster, and an incomplete CONTACT is
+   * off the Query roster as well — "you cannot email a founder you cannot
+   * reach", which is the same reason he gave for row 3. The whitelists in
+   * `DashboardPage.tsx` already withhold the two handoffs at those statuses;
+   * this is the half that was missing, and it is the half a screen cannot fake.
+   *
+   * **Beside `gated` and not inside `deckListRoute`, for the reason written on
+   * `gated` above and measured again here.** That function is re-entered from
+   * inside the STATUS vocabulary (`isQueriedSinkCurrent` ->
+   * `isScreeningIncompleteTile` -> `matchesV3Stat`, ~44 references), so teaching
+   * it the new rule would change what the six stat boxes count in order to fix
+   * two lists — and his own display rule is the opposite of that: "all decks,
+   * including archived, stay on the uploaded status screen". The tiles must keep
+   * counting every deck; only the two rosters narrow.
+   *
+   * **The axes are `deckComplete` / `contactComplete` from `shared/deckStats.ts`
+   * — the STATUS's own two — and deliberately not `isDeckComplete`
+   * (`shared/queries.ts`), which `deckListRoute` already applied on the Assign
+   * arm.** The two disagree on a real row: `isDeckComplete` reads the frozen
+   * ANDed `decks.complete` column, and `POST /api/queries/:id/respond` raises
+   * that column to 1 without re-reading the deck and without touching
+   * `ai_complete`, so a deck the model never managed to read can carry
+   * `complete = 1 ∧ ai_complete = 0`. Archive it, restore it (`archived ->
+   * ai_evaluated`, no model run) and it joins the Assign roster while its own
+   * Status pill reads "Incomplete decks". Asking the status's axes is what makes
+   * "no row on Assign is labelled incomplete" true rather than usually true.
+   *
+   * **The deck axis narrows ASSIGN ONLY.** `docs/spec_screening_flow.md` §3
+   * item 1: a deck whose FILE could not be read keeps Send to Query active and
+   * it is that state's only exit, so it stays on the Query roster.
+   */
+  const screened = (v: Parameters<typeof deckComplete>[0], which: Exclude<DeckListRoute, null>) =>
+    !SCREENING_NARROWS_LISTS[edition] ||
+    (contactComplete(v) && (which === "query" || deckComplete(v)));
   const routed = <
     V extends Parameters<typeof deckListRoute>[0] &
       Parameters<typeof gated>[0] & { queried?: boolean },
@@ -732,6 +810,7 @@ decks.get("/", async (c) => {
       : views.filter(
           (v) =>
             deckListRoute(v, edition, { queried: v.queried === true, deriveQuery }) === list &&
+            screened(v, list) &&
             (list !== "assign" || gated(v)),
         );
   // The partition runs on the UNBLINDED views, which is why the two branches
@@ -1298,10 +1377,33 @@ decks.post("/:id/send-to-query", requireTask("query", ...SEND_TO_QUERY_ROLES), a
   const { edition } = c.var.user;
   const id = c.req.param("id");
   const qg = oneDeck(c.var.user, id);
-  const row = await c.env.DB.prepare(`SELECT d.id FROM decks d ${qg.whereClause()}`)
+  const row = await c.env.DB.prepare(`SELECT d.id, d.missing_fields FROM decks d ${qg.whereClause()}`)
     .bind(...qg.binds)
-    .first<{ id: string }>();
+    .first<{ id: string; missing_fields: string | null }>();
   if (!row) return c.json({ error: "not_found" }, 404);
+
+  // ── The contact axis, on the CLICK as well as on the list (issue 1) ───────
+  //
+  // The `?list=query` filter above keeps an unreachable founder off the Query
+  // screen; without this, the click still writes the pending `queries` row, and
+  // that row is what `screeningStatus` reads as the `Incomplete, Queried` SINK.
+  // The deck would latch — row 7 empties the whitelist on a sink — while being
+  // on no list at all: an un-actionable deck, created by a button. The rule
+  // belongs on both halves or on neither.
+  //
+  // Same 409 and the same `contact_incomplete` code as the compose-and-send in
+  // `routes/pipeline.ts`, so a screen needs one message for one refusal. That
+  // route refuses on REACHABILITY (no deliverable address) and this one on the
+  // client's whole contact axis — the difference is a live contradiction between
+  // his flow and two e2e fixtures, written up in the handoff rather than
+  // resolved here; the narrower of the two cannot be the one that guards
+  // membership, because membership is what he asked about.
+  //
+  // The DECK axis is deliberately not consulted: §3 item 1 makes Send to Query
+  // the unreadable deck's only exit.
+  if (SCREENING_NARROWS_LISTS[edition] && !contactComplete({ missingFields: parseMissingFields(row.missing_fields) })) {
+    return c.json({ error: "contact_incomplete", missingFields: parseMissingFields(row.missing_fields) }, 409);
+  }
 
   // Idempotent on the thing that matters: if the deck already has a query
   // nobody has answered, it is already ON the list and a second pending row
@@ -1383,10 +1485,36 @@ decks.post("/:id/send-to-assign", requireTask("assign", ...SEND_TO_ASSIGN_ROLES)
   const { edition } = c.var.user;
   const id = c.req.param("id");
   const qg = oneDeck(c.var.user, id);
-  const row = await c.env.DB.prepare(`SELECT d.status FROM decks d ${qg.whereClause()}`)
+  const row = await c.env.DB.prepare(
+    `SELECT d.status, d.ai_complete, d.missing_fields FROM decks d ${qg.whereClause()}`,
+  )
     .bind(...qg.binds)
-    .first<{ status: string | null }>();
+    .first<{ status: string | null; ai_complete: number | null; missing_fields: string | null }>();
   if (!row) return c.json({ error: "not_found" }, 404);
+
+  // ── BOTH axes, on the click as well as on the list (issue 1) ──────────────
+  //
+  // The marker is the ONLY authority for the `AI Evaluated, Assigned` sink, and
+  // the sink latches the row — so writing one on an incomplete deck would make
+  // the Dashboard announce a deck as assigned while `?list=assign` refuses it,
+  // which is the two-authorities defect this route was built to avoid in the
+  // first place. His flow is the same on both halves: an incomplete deck, on
+  // either axis, is off the Assign screen.
+  //
+  // The RATING check is deliberately not re-asked here. The roster skips the
+  // gate for an already-allocated deck on purpose (`isAllocatedDeck` — a deck
+  // scored before the gate was raised must not drop off the screen it is being
+  // worked on), so refusing the marker on the gate would contradict the carve-out
+  // the list depends on. The gate is withheld where it belongs: the whitelist
+  // offers Reject, not Send to Assign, at `belowThreshold`.
+  const screening = {
+    aiComplete: row.ai_complete !== 0,
+    missingFields: parseMissingFields(row.missing_fields),
+    statusId: row.status ?? undefined,
+  };
+  if (SCREENING_NARROWS_LISTS[edition] && !(deckComplete(screening) && contactComplete(screening))) {
+    return c.json({ error: "deck_incomplete", missingFields: screening.missingFields }, 409);
+  }
 
   // `decks.status` is the PIPELINE stage; `decks.stage` is the startup's
   // FUNDING stage ("Seed", "Pre-seed") and is not this at all. The same trap

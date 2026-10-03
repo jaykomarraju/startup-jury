@@ -42,7 +42,11 @@ export function FounderUpload() {
           ? `That file is larger than ${MAX_DECK_SIZE_LABEL}.`
           : code === "pdf_required"
             ? "Decks must be PDF files."
-            : "Upload failed. Try again.",
+            : // We stopped waiting; nothing was refused, so the deck may be on
+              // file and "try again" could submit it twice (issue 3's deadline).
+              code === "upload_timeout"
+              ? "That upload didn't finish in time. Check My Startup before trying again, in case it arrived."
+              : "Upload failed. Try again.",
       );
     } finally {
       setBusy(false);

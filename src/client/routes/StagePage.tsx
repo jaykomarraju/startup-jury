@@ -1792,6 +1792,45 @@ const JURY_PIPELINE_V3: Partial<Omit<StageConfig, "roleVariants">> = {
   emptyDescription: "Assigned decks appear here until they are sent to intro calls.",
 };
 
+/**
+ * The PROGRAMME ASSOCIATE's Jury Pipeline — the staff layout, with no Action.
+ *
+ * Oct-2 issue 2: "The program associate should be able to see jury pipeline only
+ * as read only." Measured, they could not reach the screen at all, so the ask was
+ * to GRANT read rather than withdraw write.
+ *
+ * Built by listing `JURY_PIPELINE_V3`'s columns WITHOUT its action cell rather
+ * than by setting `readOnly` over it. `readOnly` filters the string `"action"`,
+ * and this variant declares its own `col("action", …)` — which read-only
+ * deliberately KEEPS, because "read-only suppresses the transitions the screen
+ * did not ask for, not a cell it declared" (see `tableColumns`). Setting the flag
+ * alone would have left `JuryPipelineActionCell` on the associate's screen.
+ *
+ * `readOnly` is set as well, so any transition the base config would otherwise
+ * append is suppressed too, and so the intent is legible rather than implied by
+ * an absent column.
+ *
+ * The write half needs nothing: `shortlist` — the one transition this screen
+ * offers — has never listed the associate in `performAction`'s role list, and
+ * `test/unit/jury-pipeline-readonly.test.ts` asserts the refusal is the SERVER's
+ * over the whole four-stage window, not a `disabled` attribute's.
+ */
+const JURY_PIPELINE_READONLY: Partial<Omit<StageConfig, "roleVariants">> = {
+  columns: [
+    "startup",
+    col("evaluators", "Jury members & status", (row) => <JuryMembersCell row={row} />),
+    "ai",
+    "jury",
+    "avg",
+    "addl",
+    "assignedDate",
+    "status",
+  ],
+  legend: undefined,
+  readOnly: true,
+  emptyDescription: "Assigned decks appear here until they are sent to intro calls.",
+};
+
 // ── R7-JURY — the jury's own `panel-jurypipeline`, "Evaluated" ──────────────
 //
 // `AISJ_IC_Jury_V4/panel-jurypipeline` declares TWELVE `<th>`, in this order:
@@ -1926,6 +1965,7 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
       superuser: JURY_PIPELINE_V3,
       admin: JURY_PIPELINE_V3,
       program_manager: JURY_PIPELINE_V3,
+      program_associate: JURY_PIPELINE_READONLY,
       jury: JURY_PIPELINE_JURY,
     },
   },

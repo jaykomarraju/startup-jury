@@ -144,6 +144,8 @@ const V3_STATUS_TONES: Record<ScreeningValue, PillTone> = {
   rejected: "red",
   complete: "green",
   completeEdited: "green",
+  // Issue 5 — the variant of `complete` it is, so it takes `complete`'s tone.
+  reevaluated: "green",
   // His open item. Red, because it is a deck nobody can act on any more.
   noResponse: "red",
   // The three sinks. Queried is in flight with the founder (blue, as the
@@ -180,6 +182,9 @@ const V3_STATUS_HINTS: Partial<Record<ScreeningValue, string>> = {
   // Edit, so the gloss has to name it or the cell argues with its own menu.
   incompleteContactEdited:
     "The details were edited and something required is still blank, so this deck still cannot be emailed. Edit it again (Actions ▾ · Edit).",
+  // Issue 5 — the word alone does not say which run the Rating column is from.
+  reevaluated:
+    "Complete, and the AI has scored this deck more than once; the rating shown is the latest run. Send to Assign is active.",
   belowThreshold: "Scored below the AI screening gate. Reject, or set it aside.",
   belowThresholdEdited: "The details were edited; the score is still below the AI screening gate.",
   contactEdited: "Saving the details, then re-running the three checks.",
@@ -327,6 +332,12 @@ const V3_ACTIVE_ACTIONS: Record<ScreeningValue, readonly string[]> = {
   // I6 / I11 · D ∧ C ∧ R — the one pair that can be sent to Assign.
   complete: [V3_ASSIGN, V3_EDIT, "archive"],
   completeEdited: [V3_ASSIGN, "archive"],
+  // Oct-2026 issue 5 · a passing deck the AI has read twice. It INHERITS
+  // `complete`'s set verbatim — the word is a fact about the deck's history,
+  // not a change in what may be done to it, and `screeningStatus` only ever
+  // returns it where `complete` or `completeEdited` would have stood. Edit is
+  // kept (C8's reading) because this is the richer of the two it displaces.
+  reevaluated: [V3_ASSIGN, V3_EDIT, "archive"],
 
   // ── His open item, and his three sinks (row 7's latch) ──────────────────
   // C7 — the ONE re-armed action on a latched deck. Row 7 and his own open item

@@ -137,11 +137,34 @@ const INCUBATOR_NAV: NavItem[] = [
   {
     // PM (decision maker) oversees jury shortlist/reject decisions here; jury sees
     // their own evaluated decks.
+    //
+    // ── Oct-2 issue 2 · the PROGRAMME ASSOCIATE reads this screen ────────────
+    // "The program associate should be able to see jury pipeline only as read
+    // only." Measured, the associate cannot reach this screen at all — they are
+    // not in `roles`, and `0029` persisted their matrix cell at `granted = 0` —
+    // so the ask is to GRANT read, not to withdraw write. The WRITE half needs
+    // nothing: `jurypipeline`'s only transition is `shortlist` (the Action
+    // select's "Send to intro calls"), and `incubator.ts` has never listed the
+    // associate on it.
+    //
+    // GRANTED at integration, 2026-10-02. GATE, NOT GRANT: reach is this list
+    // AND the matrix cell, so it was four coupled edits landed together —
+    // adding the role here alone is inert and reddens three checks:
+    //   1. `"program_associate"` in `roles` below;
+    //   2. the same role in `DEFAULT_ROLE_PERMISSIONS.incubator.jurypipeline`
+    //      (`src/shared/types.ts`) — else `permissions.test.ts`'s nav derivation
+    //      and the harness's "seed takes no nav item away" both go red;
+    //   3. a migration flipping the persisted row to 1 (0040 is the precedent;
+    //      a `role_permissions` row beats the code default, so without it the
+    //      grant is invisible on every existing workspace, production included);
+    //   4. `roleVariants.program_associate` on `INCUBATOR_STAGE_CONFIG.jurypipeline`
+    //      with `readOnly: true`, or the associate lands on the V3 Action select.
+    // `test/unit/jury-pipeline-readonly.test.ts` fails on a half-landed grant.
     id: "jurypipeline",
     label: "Jury Pipeline",
     icon: "Gavel",
     section: "Evaluation",
-    roles: ["admin", "program_manager", "jury"],
+    roles: ["admin", "program_manager", "program_associate", "jury"],
     task: "jurypipeline",
     labelOverrides: { jury: "Evaluated" },
   },

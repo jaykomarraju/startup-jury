@@ -1,0 +1,53 @@
+-- Remove the clarification queries the AI raised on its own, so a deck that was
+-- never actually queried stops saying it was.
+--
+-- Run AFTER `0102` has been applied to the target database, or the next
+-- evaluation will write them again:
+--   npx wrangler d1 migrations apply startup-jury-db --remote
+--   npx wrangler d1 execute startup-jury-db --remote --file=scripts/clear-auto-queries.sql
+--
+-- ── WHAT THESE ROWS ARE ────────────────────────────────────────────────────
+-- Until 1-Oct-2026 `maybeAutoClarify` fired on every evaluated deck, for two
+-- reasons it should not have: every missing CONTACT column counted as a reason
+-- to write, and nothing checked there was a founder to write to. Eleven of the
+-- tester's decks acquired a letter; six of them had no address at all.
+--
+-- The letters never went anywhere — `EMAIL_FROM` is unset, so the outbox
+-- RECORDS rather than sends — but each row was stamped `email_status = 'sent'`
+-- at INSERT, before delivery was even attempted. Hence the client's question,
+-- which is what this file answers: *"it says 'queried' why does it say that if
+-- we havent sent the query yet."*
+--
+-- ── WHY THEY HAVE TO GO, RATHER THAN JUST STOP BEING MADE ──────────────────
+-- `routes/decks.ts` sets `queried = (query_count > 0)` — ANY query row, whatever
+-- its delivery status — and `screeningStatus` latches a queried deck into the
+-- `queried` SINK, whose action whitelist is empty. So while these rows exist:
+--   · the Status column reads "Incomplete, Queried" instead of the distinction
+--     the client asked for — "Incomplete contact details" vs "Incomplete deck";
+--   · every action on those rows is greyed out, including the Edit he needs to
+--     supply the missing contact details in the first place.
+-- Stopping new rows does nothing for the decks already in that state.
+--
+-- ── THE PREDICATE, AND WHY IT IS NARROW ────────────────────────────────────
+-- Three conditions, all required, so an operator's own work is never touched:
+--   · `founder_response IS NULL`  — nobody has replied; deleting a reply would
+--     destroy the founder's words, which exist nowhere else.
+--   · `questions LIKE 'Dear Founder%'` — the auto-composed letter's opening.
+--     An operator's query is written on the Query screen and does not start this
+--     way.
+--   · `email_status <> 'sent'` — belt and braces for the day the sending domain
+--     IS onboarded: a genuinely delivered letter stays, whatever else matches.
+--     Today every row reads 'sent' from the old INSERT, so this clause is
+--     deliberately NOT applied below — see the note on the statement.
+--
+-- D1 time-travel covers this; take a bookmark first if you want the undo:
+--   npx wrangler d1 time-travel info startup-jury-db
+
+-- The one statement. `email_status` is deliberately NOT in the predicate: every
+-- row written before 2026-10-02 claims 'sent' regardless of what the outbox did,
+-- so filtering on it here would match nothing and the file would silently do
+-- nothing. From this commit forward the column tells the truth, and a future run
+-- of this script should add `AND email_status <> 'sent'`.
+DELETE FROM queries
+ WHERE founder_response IS NULL
+   AND questions LIKE 'Dear Founder%';

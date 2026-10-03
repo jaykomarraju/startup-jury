@@ -897,12 +897,18 @@ pipeline.post(
       .first<{ id: string }>();
     const queryId = placeholder?.id ?? `qry_${crypto.randomUUID()}`;
     const stmts: D1PreparedStatement[] = [
+      // `'pending'`, not `'sent'` — the send has not been ATTEMPTED yet, let alone
+      // succeeded; it happens forty lines below. The row was stamped `'sent'` here
+      // and never corrected, so `queries` claimed delivery for letters the outbox
+      // had only recorded. The client asked the question that exposed it
+      // (2026-10-02): "it says 'queried' why does it say that if we havent sent
+      // the query yet". The real status is written back after `sendEmail` returns.
       placeholder
         ? c.env.DB.prepare(
-            "UPDATE queries SET questions = ?, email_status = 'sent', created_at = ? WHERE id = ?",
+            "UPDATE queries SET questions = ?, email_status = 'pending', created_at = ? WHERE id = ?",
           ).bind(questions, ts, queryId)
         : c.env.DB.prepare(
-            "INSERT INTO queries (id, deck_id, questions, email_status, created_at) VALUES (?, ?, ?, 'sent', ?)",
+            "INSERT INTO queries (id, deck_id, questions, email_status, created_at) VALUES (?, ?, ?, 'pending', ?)",
           ).bind(queryId, deck.id, questions, ts),
     ];
     // Raising a query on a deck still in manual review marks it Incomplete
@@ -959,6 +965,16 @@ pipeline.post(
       deckId: deck.id,
       queryId,
     });
+
+    // What the outbox actually did, written back onto the row. `EmailStatus` is
+    // `sent | failed | recorded`, and `recorded` is the honest answer on every
+    // deployment today: `EMAIL_FROM` is unset, so `emailDeliveryConfigured` is
+    // false and nothing leaves the building. The response already reported
+    // `sent.status`; the ROW did not, which is the half that fed the Query screen
+    // and the Dashboard.
+    await c.env.DB.prepare("UPDATE queries SET email_status = ? WHERE id = ?")
+      .bind(sent.status, queryId)
+      .run();
 
     return c.json({ ok: true, queryId, emailStatus: sent.status, delivered: sent.status === "sent" });
   },

@@ -579,6 +579,8 @@ type ScreeningDeckView = DeckView & {
   sendToAssignAt?: string;
   lastQueryAt?: string;
   lastQueryAnswered?: boolean;
+  /** Oct-2026 issue 5 — the AI run counter behind the `Reevaluated` pill. */
+  evaluationRuns?: number;
 };
 
 /** Six live decks and one archived one — the archived deck is the point. */
@@ -1574,6 +1576,26 @@ describe("V3 — the eleven-row whitelist (his §5 matrix · C6)", () => {
         contactEditedAt: hoursAgo(1),
       },
       active: ["Send to Assign", "Archive"],
+    },
+    {
+      // ── Oct-2026 issue 5 · "it should say reevaluated" ──────────────────
+      // The `Complete` row above with one field changed: the AI has read this
+      // deck twice. It INHERITS `Complete`'s active set verbatim — the word is a
+      // fact about the deck's history, not a change in what may be done to it —
+      // and `screeningStatus` only ever returns it where `Complete` or
+      // `Complete, Edited` would have stood, which is why no other row here
+      // moves.
+      status: "Reevaluated",
+      deck: {
+        statusId: "ai_evaluated",
+        status: "AI Evaluated",
+        aiComplete: true,
+        complete: true,
+        missingFields: [],
+        aiScore: 7.2,
+        evaluationRuns: 2,
+      },
+      active: ["Send to Assign", "Edit", "Archive"],
     },
     {
       // C7 · his own §7 open item, and the ONE action re-armed on a latched

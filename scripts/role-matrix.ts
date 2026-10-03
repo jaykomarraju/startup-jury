@@ -309,6 +309,53 @@ function reportInvariants() {
       can("incubator", "program_associate", "shortlisted", "schedule_intro") &&
       can("incubator", "program_associate", "intro", "send_signup"),
   );
+  // ── Oct-2 issue 2: the programme associate's Jury Pipeline is READ-ONLY ───
+  //
+  // "The program associate should be able to see jury pipeline only as read
+  // only." Two halves, and this harness holds the one that matters: a disabled
+  // button is not a rule (`role-boundary-leaks` — issue 21, /api/messages, the
+  // founder portal), so the boundary is stated over the STATE MACHINE, which is
+  // what `POST /decks/:id/transition` consults.
+  //
+  // The screen (`INCUBATOR_STAGE_CONFIG.jurypipeline`) lists four stages, and
+  // `JuryPipelineActionCell` runs exactly one transition out of them —
+  // `shortlist`, relabelled "Send to intro calls". Its other option navigates
+  // to Assign and writes nothing. So "read-only" is checkable without the
+  // screen: of every transition leaving the four stages, the associate may hold
+  // only `schedule_intro`, which belongs to Intro calls and is theirs by §8
+  // delegation — the Jury Pipeline screen never offers it, because a
+  // `shortlisted` row draws the `.jp-flowtag` badge instead of the select.
+  //
+  // Written as the WHOLE SET rather than a list of denials on purpose: granting
+  // the associate any new decision anywhere in the jury window reddens this,
+  // which a hand-maintained `!can(...)` list would not.
+  const JP_SCREEN_STAGES = ["assigned", "jury_evaluation", "shortlisted", "rejected"] as const;
+  const paInJuryWindow = getPipeline("incubator")
+    .transitions.filter((t) => (JP_SCREEN_STAGES as readonly string[]).includes(t.from))
+    .filter((t) => can("incubator", "program_associate", t.from, t.action))
+    .map((t) => `${t.from}/${t.action}`)
+    .sort();
+  check(
+    "Oct-2 issue 2 [incubator] the program_associate holds no Jury Pipeline decision — only Intro calls' schedule_intro",
+    paInJuryWindow.join(",") === "shortlisted/schedule_intro",
+    paInJuryWindow.join(",") || "(none)",
+  );
+
+  // The other half, and the reason it is one check rather than two: GATE, NOT
+  // GRANT means reach is `nav.ts`'s `roles` AND the matrix cell, so opening the
+  // screen to the associate is TWO edits (plus a migration, because `0029`
+  // persisted the cell at 0 and a persisted row beats the code default). This
+  // asserts they agree instead of asserting a value, so it holds before the
+  // grant and after it, and goes red on a half-landed one — in either
+  // direction, which `the default seed takes no nav item away from anyone`
+  // above only catches one way round.
+  const jpItem = NAV_BY_EDITION.incubator.find((i) => i.id === "jurypipeline")!;
+  check(
+    "Oct-2 issue 2 [incubator] jurypipeline's nav reach and its matrix cell move together for the program_associate",
+    canSeeNav("program_associate", jpItem) === canTask("incubator", "program_associate", "jurypipeline"),
+    `nav=${canSeeNav("program_associate", jpItem)} cell=${canTask("incubator", "program_associate", "jurypipeline")}`,
+  );
+
   check(
     "§8 [incubator] the jury still does the shortlisting",
     can("incubator", "jury", "jury_evaluation", "shortlist"),

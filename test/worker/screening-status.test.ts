@@ -118,6 +118,8 @@ interface Row {
   sendToAssignAt?: string;
   lastQueryAt?: string;
   lastQueryAnswered?: boolean;
+  /** Oct-2026 issue 5 — how many times the AI has evaluated this deck. */
+  evaluationRuns?: number;
 }
 
 async function deck(id: string, cookie: string): Promise<Row> {
@@ -864,5 +866,270 @@ describe("?list=assign consults the gate (issue 8)", () => {
     // ever reached by a deck that is complete on both of the first two.
     expect(await listNames(cookie, "query")).toContain("Deck sc_gate_query");
     await setGate(5);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Oct-2026 issue 1 · his first two checks narrow the two rosters
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * His flow of 2026-10-02, which adds LIST MEMBERSHIP to what his §5 action
+ * matrix already decided:
+ *
+ *   · incomplete CONTACT — off Assign AND off Query ("you cannot email a
+ *     founder you cannot reach", the same reason he gave for row 3);
+ *   · incomplete DECK with complete contacts — off Assign, still queryable,
+ *     because `docs/spec_screening_flow.md` §3 item 1 makes Send to Query that
+ *     state's only exit.
+ *
+ * Reached through the REAL evaluation path, like everything else in this file:
+ * the model that cannot find a phone number is what writes `missing_fields`, and
+ * a filter asserted against a hand-written row would not prove the server reads
+ * the column the model wrote.
+ */
+describe("issue 1 — an incomplete deck is on neither roster", () => {
+  /**
+   * Evaluate a deck that has no phone number anywhere — the contact axis fails.
+   *
+   * The model's `null` alone is not enough, and that is worth stating: the
+   * details are MERGED over the deck's own columns (`evaluate.ts:1004`,
+   * `mergeIntakeDetails`) precisely so a bulk upload keeps whatever was typed at
+   * intake, so the seeded phone number would survive a model that found none.
+   * The column has to be empty too.
+   */
+  async function evaluateWithoutPhone(id: string, score: number, complete = true) {
+    await env.DB.prepare("UPDATE decks SET founder_phone = NULL WHERE id = ?").bind(id).run();
+    const keys = await paramKeys();
+    return evaluateDeck(env as Env, id, {
+      callModel: async (): Promise<RawEvaluation> => ({
+        complete,
+        founder: "Ada Founder",
+        founder_email: "ada@testco.example",
+        founder_phone: null,
+        city: "Pune",
+        sector: "B2B SaaS",
+        scores: keys.map((key) => ({ key, value: score })),
+      }),
+    });
+  }
+
+  it("incomplete CONTACT is off Assign and off Query, even once it has been sent", async () => {
+    await setGate(5);
+    const cookie = await login(SUPER);
+    await seedDeck("sc_i1_contact");
+    await evaluateWithoutPhone("sc_i1_contact", 8);
+
+    const view = await deck("sc_i1_contact", cookie);
+    // The model read the deck perfectly well; the intake list is what failed.
+    expect(view.aiComplete).toBe(true);
+    expect(view.missingFields).toEqual(["founderPhone"]);
+    expect(screeningStatus(view as ScreeningDeck, { gate: GATE })).toBe("incompleteContact");
+
+    expect(await listNames(cookie, "assign")).not.toContain("Deck sc_i1_contact");
+    // The CLICK is refused, with the same code the compose-and-send uses.
+    const sent = await SELF.fetch(`${BASE}/api/decks/sc_i1_contact/send-to-query`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    expect(sent.status).toBe(409);
+    expect((await sent.json()) as { error: string }).toMatchObject({ error: "contact_incomplete" });
+    expect((await deck("sc_i1_contact", cookie)).queried).toBe(false);
+
+    // …and the LIST refuses it even when a `queries` row already exists, which
+    // is the case the guard cannot cover: every deck queried before this rule
+    // shipped. Written straight into the table, because that is what those rows
+    // are — history, not a click this build would make.
+    await env.DB.prepare(
+      "INSERT INTO queries (id, deck_id, questions, email_status, created_at) VALUES (?, ?, '', 'pending', ?)",
+    )
+      .bind("qry_sc_i1_contact", "sc_i1_contact", new Date().toISOString())
+      .run();
+    expect((await deck("sc_i1_contact", cookie)).queried).toBe(true);
+    expect(await listNames(cookie, "query")).not.toContain("Deck sc_i1_contact");
+    // And it is NOT LOST: the uploaded status screen draws every deck, always.
+    expect(await listNames(cookie)).toContain("Deck sc_i1_contact");
+  });
+
+  it("BOTH incomplete is off both too — the contact axis decides it", async () => {
+    await setGate(5);
+    const cookie = await login(SUPER);
+    await seedDeck("sc_i1_both", { complete: false });
+    await evaluateWithoutPhone("sc_i1_both", 8, false);
+    const view = await deck("sc_i1_both", cookie);
+    expect(screeningStatus(view as ScreeningDeck, { gate: GATE })).toBe("bothIncomplete");
+
+    const sent = await SELF.fetch(`${BASE}/api/decks/sc_i1_both/send-to-query`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    // The contact axis is what refuses it — the deck axis alone would have let
+    // it through, which is the next test.
+    expect(sent.status).toBe(409);
+    expect(await listNames(cookie, "query")).not.toContain("Deck sc_i1_both");
+    expect(await listNames(cookie, "assign")).not.toContain("Deck sc_i1_both");
+  });
+
+  it("incomplete DECK with complete contacts STAYS queryable (§3 item 1)", async () => {
+    await setGate(5);
+    const cookie = await login(SUPER);
+    await seedDeck("sc_i1_deck", { complete: false });
+    await evaluate("sc_i1_deck", 8, false);
+    const view = await deck("sc_i1_deck", cookie);
+    expect(screeningStatus(view as ScreeningDeck, { gate: GATE })).toBe("incompleteDeck");
+
+    const sent = await SELF.fetch(`${BASE}/api/decks/sc_i1_deck/send-to-query`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    expect(sent.status).toBe(200);
+    // THE NEGATIVE CONTROL FOR THE WHOLE CHANGE: the only state whose single
+    // exit is Send to Query keeps it. A filter that dropped this deck too would
+    // satisfy his sentence and strand the deck for ever.
+    expect(await listNames(cookie, "query")).toContain("Deck sc_i1_deck");
+    expect(await listNames(cookie, "assign")).not.toContain("Deck sc_i1_deck");
+  });
+
+  it("a raised `complete` mark cannot carry an unread deck onto Assign", async () => {
+    await setGate(5);
+    const cookie = await login(SUPER);
+    await seedDeck("sc_i1_raised", { complete: false });
+    await evaluate("sc_i1_raised", 8, false);
+    // The resubmit loop: the founder answers, `POST /api/queries/:id/respond`
+    // sets `complete = 1` with no model re-read and no change to `ai_complete`,
+    // and `restore` then walks the deck to `ai_evaluated` with no model run
+    // either. `isDeckComplete` — `deckListRoute`'s own predicate — says this
+    // deck is complete, which is why the roster asks the STATUS's axes instead.
+    await raiseQueryAndAnswer("sc_i1_raised", cookie);
+    await env.DB.prepare("UPDATE decks SET status = 'ai_evaluated' WHERE id = ?").bind("sc_i1_raised").run();
+
+    const view = await deck("sc_i1_raised", cookie);
+    expect(view.complete).toBe(true);
+    expect(view.aiComplete).toBe(false);
+    expect(screeningStatus(view as ScreeningDeck, { gate: GATE })).toBe("incompleteDeck");
+    expect(await listNames(cookie, "assign")).not.toContain("Deck sc_i1_raised");
+    expect(await listNames(cookie)).toContain("Deck sc_i1_raised");
+  });
+
+  it("Send to Assign is refused on an incomplete deck, on either axis", async () => {
+    await setGate(5);
+    const cookie = await login(SUPER);
+    const sendToAssign = (id: string) =>
+      SELF.fetch(`${BASE}/api/decks/${id}/send-to-assign`, { method: "POST", headers: { cookie } });
+
+    // The marker is the ONLY authority for the `AI Evaluated, Assigned` sink and
+    // the sink LATCHES the row (row 7 empties the whitelist), so a marker on an
+    // incomplete deck would have the Dashboard calling a deck assigned while
+    // `?list=assign` refuses it — two authorities for one fact, which is the
+    // defect this route exists to avoid.
+    await seedDeck("sc_i1_a_deck", { complete: false });
+    await evaluate("sc_i1_a_deck", 8, false);
+    expect((await sendToAssign("sc_i1_a_deck")).status).toBe(409);
+    expect((await deck("sc_i1_a_deck", cookie)).sendToAssignAt).toBeUndefined();
+
+    await seedDeck("sc_i1_a_contact");
+    await evaluateWithoutPhone("sc_i1_a_contact", 8);
+    expect((await sendToAssign("sc_i1_a_contact")).status).toBe(409);
+    expect((await deck("sc_i1_a_contact", cookie)).sendToAssignAt).toBeUndefined();
+
+    // NEGATIVE CONTROL — a complete deck still marks, and a deck below the gate
+    // still marks: the rating check is deliberately NOT re-asked here, because
+    // the roster's own `isAllocatedDeck` carve-out depends on a marked deck
+    // staying listed whatever it scored.
+    await seedDeck("sc_i1_a_ok");
+    await evaluate("sc_i1_a_ok", 3);
+    expect((await sendToAssign("sc_i1_a_ok")).status).toBe(200);
+    expect((await deck("sc_i1_a_ok", cookie)).sendToAssignAt).toEqual(expect.any(String));
+  });
+
+  /** Query the deck and record a founder response — the shipped resubmit loop. */
+  async function raiseQueryAndAnswer(id: string, cookie: string) {
+    const raise = await SELF.fetch(`${BASE}/api/decks/${id}/queries`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ questions: "Please resend the deck." }),
+    });
+    expect(raise.status).toBe(200);
+    const row = await env.DB.prepare("SELECT id FROM queries WHERE deck_id = ? LIMIT 1")
+      .bind(id)
+      .first<{ id: string }>();
+    const res = await SELF.fetch(`${BASE}/api/queries/${row!.id}/respond`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ response: "Deck re-attached." }),
+    });
+    expect(res.status).toBe(200);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Oct-2026 issue 5 · "If a deck is reevaluated again … it should say reevaluated"
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The product CAN tell a re-run from a first run, with no migration:
+ * `ai/evaluate.ts` writes one `pipeline_events` row per run at
+ * `action = 'ai_evaluated'` under a fresh id, and nothing deletes them.
+ *
+ * The four candidates that CANNOT, each measured rather than assumed, are named
+ * on `reevaluated` in `shared/deckStats.ts` — the `evaluations` AI row above all,
+ * because it is the obvious one and it is deleted and re-inserted under a fixed
+ * id on every run. That is asserted here.
+ */
+describe("issue 5 — the row says Reevaluated once the AI has read it twice", () => {
+  it("serves the run count and flips the status on the second run", async () => {
+    await setGate(5);
+    const cookie = await login(SUPER);
+    await seedDeck("sc_re_twice");
+
+    await evaluate("sc_re_twice", 8);
+    const first = await deck("sc_re_twice", cookie);
+    expect(first.evaluationRuns).toBe(1);
+    expect(screeningStatus(first as ScreeningDeck, { gate: GATE })).toBe("complete");
+
+    await evaluate("sc_re_twice", 8);
+    const second = await deck("sc_re_twice", cookie);
+    expect(second.evaluationRuns).toBe(2);
+    expect(screeningStatus(second as ScreeningDeck, { gate: GATE })).toBe("reevaluated");
+    // Still assignable — the word is a fact about the deck's history, not a
+    // change in what may be done to it.
+    expect(await listNames(cookie, "assign")).toContain("Deck sc_re_twice");
+  });
+
+  it("the `evaluations` table could not have answered this", async () => {
+    const cookie = await login(SUPER);
+    await seedDeck("sc_re_source");
+    await evaluate("sc_re_source", 8);
+    await evaluate("sc_re_source", 6);
+
+    const ai = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM evaluations WHERE deck_id = ? AND evaluator_id IS NULL",
+    )
+      .bind("sc_re_source")
+      .first<{ n: number }>();
+    // One row for two runs: evaluate.ts deletes the AI evaluation and re-inserts
+    // it under the fixed id `${deckId}_ai_eval`.
+    expect(ai!.n).toBe(1);
+
+    const events = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM pipeline_events WHERE deck_id = ? AND action = 'ai_evaluated'",
+    )
+      .bind("sc_re_source")
+      .first<{ n: number }>();
+    expect(events!.n).toBe(2);
+    expect((await deck("sc_re_source", cookie)).evaluationRuns).toBe(2);
+  });
+
+  it("a re-run does not relabel a deck whose word is an instruction", async () => {
+    await setGate(5);
+    const cookie = await login(SUPER);
+    await seedDeck("sc_re_below");
+    await evaluate("sc_re_below", 3);
+    await evaluate("sc_re_below", 3);
+    const view = await deck("sc_re_below", cookie);
+    expect(view.evaluationRuns).toBe(2);
+    // Below the gate on both runs, and "Below threshold" is why Reject is the
+    // only action the row offers. The history must not overwrite that.
+    expect(screeningStatus(view as ScreeningDeck, { gate: GATE })).toBe("belowThreshold");
   });
 });

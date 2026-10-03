@@ -39,6 +39,19 @@ import { describe, it, expect, afterEach } from "vitest";
  * The negative control for the OTHER direction is what matters most now, and it
  * is the last test in the file: VC is unchanged, because his spec is the
  * incubator's.
+ *
+ * ── OCT-2026 ISSUE 1 · HIS FIRST TWO CHECKS NOW NARROW THE ROSTERS TOO ──────
+ * *"incomplete decks shouldnt show up in the assign screen"*, and with it the
+ * flow he wrote out: an incomplete CONTACT is off the Assign roster AND off the
+ * Query roster ("you cannot email a founder you cannot reach"); an incomplete
+ * DECK is off Assign but stays queryable, because §3 item 1 of
+ * `docs/spec_screening_flow.md` makes Send to Query that state's only exit.
+ *
+ * `?list=query` on the seed is **empty** from here, where it was NimbusHR:
+ * NimbusHR is `ai_complete = 0 AND missing_fields = 'founderPhone'`, so it fails
+ * the contact axis and his own §2 FINAL STATUSES map sends that pair to
+ * **Archived**, never to "Incomplete, Queried". The assertion below says so with
+ * the reason, rather than being relaxed to a count.
  */
 
 const BASE = "https://example.com";
@@ -59,8 +72,10 @@ interface Row {
   name: string;
   statusId?: string;
   complete?: boolean;
+  aiComplete?: boolean;
   aiScore?: number;
   missingFields?: string[];
+  queried?: boolean;
 }
 
 async function list(cookie: string, which?: "assign" | "query"): Promise<Row[]> {
@@ -93,14 +108,17 @@ describe("GET /api/decks?list= — the Assign/Query partition", () => {
     // Measured baseline: 3 assignable and 15 decks in all, both unchanged by
     // row 3 — the Assign arm is the half of his sentence that survives.
     expect(names(assign)).toEqual(["FinStack", "GreenGrid Energy", "TaxPilot"]);
-    // Query was ["NimbusHR", "PayRoute"] and is now NimbusHR alone. NimbusHR
-    // has a `queries` row; PayRoute has none and was listed purely because its
-    // stage is `incomplete` — which is the derivation row 3 deletes.
-    expect(names(query)).toEqual(["NimbusHR"]);
-    expect(query[0].id).toBe(all.find((d) => d.name === "NimbusHR")!.id);
-    // …and PayRoute is on neither list while still being in the whole table.
-    expect(names(assign)).not.toContain("PayRoute");
-    expect(names(all)).toContain("PayRoute");
+    // Query was ["NimbusHR", "PayRoute"], then NimbusHR alone (row 3 dropped
+    // PayRoute, which had no `queries` row and was listed purely for its
+    // `incomplete` stage), and is now EMPTY (Oct-2026 issue 1). NimbusHR has the
+    // `queries` row but it is missing a required contact detail, and his flow
+    // keeps that deck off the Query screen.
+    expect(names(query)).toEqual([]);
+    // …and both are still in the whole table and on neither roster.
+    for (const name of ["PayRoute", "NimbusHR"]) {
+      expect(names(assign)).not.toContain(name);
+      expect(names(all)).toContain(name);
+    }
 
     const assignIds = new Set(assign.map((d) => d.id));
     expect(query.filter((d) => assignIds.has(d.id))).toEqual([]);
@@ -111,14 +129,27 @@ describe("GET /api/decks?list= — the Assign/Query partition", () => {
     expect(all.length).toBeGreaterThan(assign.length + query.length);
   });
 
-  it("every deck on Assign is marked complete; every deck on Query is not", async () => {
+  it("every deck on Assign is marked complete, on BOTH of his axes", async () => {
     const cookie = await login(SU);
-    for (const d of await list(cookie, "assign")) {
+    const assign = await list(cookie, "assign");
+    expect(assign.length).toBeGreaterThan(0);
+    for (const d of assign) {
       expect(d.complete).toBe(true);
       expect(d.missingFields ?? []).toEqual([]);
+      // Oct-2026 issue 1 — and the model's OWN verdict, un-ANDed. `complete` is
+      // the frozen AND and the resubmit loop raises it without re-reading the
+      // deck, so it cannot stand in for this.
+      expect(d.aiComplete).not.toBe(false);
     }
+  });
+
+  it("every deck on Query has complete contact details (issue 1)", async () => {
+    const cookie = await login(SU);
+    // Vacuous on the seed, which is now empty here, and that is the point of
+    // the pair: the row set is asserted by name above and the PROPERTY here, so
+    // a future seed row cannot quietly reintroduce an unreachable founder.
     for (const d of await list(cookie, "query")) {
-      expect(d.complete === false || (d.missingFields ?? []).length > 0).toBe(true);
+      expect(d.missingFields ?? []).toEqual([]);
     }
   });
 
@@ -153,13 +184,13 @@ describe("GET /api/decks?list= — the Assign/Query partition", () => {
       query: await list(cookie, "query"),
       all: await list(cookie),
     };
-    // Before: Assign 3 · Query 1. After: Assign 2 · Query 1 — the deck LEFT
+    // Before: Assign 3 · Query 0. After: Assign 2 · Query 0 — the deck LEFT
     // Assign, which is the half of his sentence that survives, and it did not
     // arrive on Query, which is row 3.
     expect(before.assign.length).toBe(3);
-    expect(before.query.length).toBe(1);
+    expect(before.query.length).toBe(0);
     expect(after.assign.length).toBe(2);
-    expect(after.query.length).toBe(1);
+    expect(after.query.length).toBe(0);
     expect(names(after.assign)).not.toContain("FinStack");
     expect(names(after.query)).not.toContain("FinStack");
     // And it is NOT LOST, which is the invariant that replaced "it moved". The
@@ -224,6 +255,86 @@ describe("GET /api/decks?list= — the Assign/Query partition", () => {
 
     // Put the stage back — this file's decks are shared with its siblings.
     await env.DB.prepare("UPDATE decks SET status = 'incomplete' WHERE id = ?").bind(deck.id).run();
+  });
+
+  // ── Oct-2026 issue 1 · his flow, on the two rosters ───────────────────────
+  //
+  // These run against the SEED decks and put them back, like the (b)/(c) cases
+  // above: the point of this file is that the rule holds on the real response
+  // however the deck arrived at its state.
+  describe("issue 1 — his first two checks narrow the rosters", () => {
+    /** Send a seeded deck to Query the way the product records it. */
+    const sendToQuery = (id: string, cookie: string) =>
+      SELF.fetch(`${BASE}/api/decks/${id}/send-to-query`, { method: "POST", headers: { cookie } });
+
+    it("an incomplete CONTACT deck stays off Query even though it WAS queried", async () => {
+      const cookie = await login(SU);
+      const nimbus = (await list(cookie)).find((d) => d.name === "NimbusHR")!;
+      // NimbusHR is the seed's own queried fixture — `qry_seed_nimbus`, raised
+      // long before this rule — so the row-3 gate is satisfied and the only
+      // thing keeping it off the list is the contact axis. That is the case the
+      // click guard cannot cover and the list filter has to.
+      expect(nimbus.queried).toBe(true);
+      expect(nimbus.missingFields).toEqual(["founderPhone"]);
+      expect(names(await list(cookie, "query"))).not.toContain("NimbusHR");
+      expect(names(await list(cookie, "assign"))).not.toContain("NimbusHR");
+      expect(names(await list(cookie))).toContain("NimbusHR");
+      // And it cannot be sent again either — one rule, both halves.
+      expect((await sendToQuery(nimbus.id, cookie)).status).toBe(409);
+    });
+
+    it("an incomplete DECK with complete contacts STAYS queryable (§3 item 1)", async () => {
+      const cookie = await login(SU);
+      const pay = (await list(cookie)).find((d) => d.name === "PayRoute")!;
+      // PayRoute is `ai_complete = 0` with one missing detail. Fill the detail
+      // in and only the DECK axis is left failing — the one state whose only
+      // exit is Send to Query, which must therefore keep working.
+      await env.DB.prepare("UPDATE decks SET missing_fields = NULL, founder_phone = '+91 90000 11111' WHERE id = ?")
+        .bind(pay.id)
+        .run();
+      expect((await sendToQuery(pay.id, cookie)).status).toBe(200);
+
+      const query = await list(cookie, "query");
+      expect(names(query)).toContain("PayRoute");
+      expect(query.find((d) => d.name === "PayRoute")!.aiComplete).toBe(false);
+      // Off Assign all the same: the deck itself could not be read.
+      expect(names(await list(cookie, "assign"))).not.toContain("PayRoute");
+
+      await env.DB.prepare("UPDATE decks SET missing_fields = 'founderPhone', founder_phone = NULL WHERE id = ?")
+        .bind(pay.id)
+        .run();
+      await env.DB.prepare("DELETE FROM queries WHERE deck_id = ? AND questions = ''").bind(pay.id).run();
+    });
+
+    it("a raised `complete` mark cannot carry an unread deck onto Assign", async () => {
+      const cookie = await login(SU);
+      const pay = (await list(cookie)).find((d) => d.name === "PayRoute")!;
+      // The reachable shape, and the reason the roster asks `ai_complete` rather
+      // than `complete`: `POST /api/queries/:id/respond` sets `complete = 1`
+      // without re-reading the deck and without touching `ai_complete`, and
+      // `restore` then walks the deck to `ai_evaluated` with no model run. Here
+      // that end state is written directly — the paths are pinned in
+      // `screening-status.test.ts`; what is pinned here is the ROSTER.
+      await env.DB.prepare(
+        "UPDATE decks SET status = 'ai_evaluated', complete = 1, ai_complete = 0, missing_fields = NULL, ai_score = 8.0 WHERE id = ?",
+      )
+        .bind(pay.id)
+        .run();
+
+      const row = (await list(cookie)).find((d) => d.name === "PayRoute")!;
+      // `isDeckComplete` — `deckListRoute`'s own predicate — says this deck is
+      // complete, which is exactly why a second predicate was needed.
+      expect(row.complete).toBe(true);
+      expect(row.aiComplete).toBe(false);
+      expect(names(await list(cookie, "assign"))).not.toContain("PayRoute");
+      expect(names(await list(cookie))).toContain("PayRoute");
+
+      await env.DB.prepare(
+        "UPDATE decks SET status = 'incomplete', complete = 0, ai_complete = 0, missing_fields = 'founderPhone', ai_score = NULL WHERE id = ?",
+      )
+        .bind(pay.id)
+        .run();
+    });
   });
 
   it("an unrecognised ?list= value is the whole table, not an empty one", async () => {

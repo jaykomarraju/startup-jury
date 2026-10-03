@@ -48,6 +48,65 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// ── Multipart uploads: the only calls with a deadline ────────────────────────
+//
+// `fetch` has no timeout. A POST whose socket stalls — or whose Worker was
+// killed part-way through reading a large body — never settles, so a caller
+// that raised a `busy` flag before awaiting it never lowers it again. That is
+// precisely what the operator reported on 1-Oct: ten decks sent as one
+// request, and "Uploading…" still on the screen forty minutes later. No other
+// call needs this; a GET that hangs leaves a screen empty, not lying.
+//
+// The deadline is scaled to the bytes being sent, because a legitimate 20 MB
+// upload over a slow uplink IS slow — it is not stuck. The point is not to be
+// strict, it is that the promise ALWAYS settles so the screen can say
+// something true.
+
+/** The wait every upload gets before its size is considered at all. */
+const UPLOAD_DEADLINE_FLOOR_MS = 60_000;
+/** The slowest uplink worth waiting for: 150 bytes/ms ≈ 1.2 Mbit/s. */
+const UPLOAD_BYTES_PER_MS = 150;
+
+export function uploadDeadlineMs(bytes: number): number {
+  return UPLOAD_DEADLINE_FLOOR_MS + Math.ceil(Math.max(0, bytes) / UPLOAD_BYTES_PER_MS);
+}
+
+/** Every file in a form, summed — what the deadline is scaled to. */
+function formBytes(form: FormData): number {
+  let total = 0;
+  form.forEach((v) => {
+    if (typeof v !== "string" && typeof (v as Blob).size === "number") total += (v as Blob).size;
+  });
+  return total;
+}
+
+/**
+ * A multipart POST that is guaranteed to settle. A missed deadline is reported
+ * as `upload_timeout` rather than as a generic failure, because the two mean
+ * different things to the operator: the server never refused anything, so the
+ * decks in that request may well have landed and must be checked for before a
+ * retry spends the credits again.
+ */
+async function postForm<T>(path: string, form: FormData): Promise<T> {
+  const ac = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ac.abort();
+  }, uploadDeadlineMs(formBytes(form)));
+  try {
+    const res = await fetch(path, { method: "POST", body: form, signal: ac.signal });
+    // The deadline covers getting the body UP; a JSON reply is not worth racing.
+    clearTimeout(timer);
+    return await json<T>(res);
+  } catch (err) {
+    if (timedOut) throw new ApiError(0, { error: "upload_timeout", message: "The upload did not finish in time." });
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function listDecks(filter?: {
   programId?: string;
   cohortId?: string;
@@ -397,7 +456,7 @@ export interface SingleUploadResult {
 }
 
 export function uploadSingle(form: FormData): Promise<SingleUploadResult> {
-  return fetch("/api/decks/upload", { method: "POST", body: form }).then((r) => json(r));
+  return postForm("/api/decks/upload", form);
 }
 
 /** Per-file outcome of a bulk upload — rejects are reported, not fatal. */
@@ -416,8 +475,13 @@ export interface BulkUploadResult {
   results?: BulkUploadRow[];
 }
 
+/**
+ * One request's worth of a bulk batch. The CALLER decides how many files that
+ * is (`chunkBulk` in `UploadPage`), because the ceilings this has to stay under
+ * are the Worker's, not the API's.
+ */
 export function uploadBulk(form: FormData): Promise<BulkUploadResult> {
-  return fetch("/api/decks/bulk", { method: "POST", body: form }).then((r) => json(r));
+  return postForm("/api/decks/bulk", form);
 }
 
 /** Re-upload a deck as a new version (auto re-scores — Session 5 versioning). */

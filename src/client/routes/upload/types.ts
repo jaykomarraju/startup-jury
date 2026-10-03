@@ -49,6 +49,13 @@ export interface StagedDeck {
   checked: boolean;
 
   deckId?: string;
+  /**
+   * This deck is in the request that is in flight right now. A bulk batch is
+   * several bounded requests since issue 3, so "the batch is busy" is no longer
+   * the same statement as "this deck is being sent" — the operator who waited
+   * forty minutes had no way to tell which of their ten decks had moved.
+   */
+  uploading?: boolean;
   uploadError?: string;
   intakeFlag?: "duplicate" | "returning";
   intakeNote?: string;

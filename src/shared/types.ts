@@ -161,7 +161,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Edition, Record<string, readonly R
     remind: ["superuser", "program_manager", "program_associate"],
     query: ["superuser", "admin", "program_manager", "program_associate"],
     introcall: ["superuser", "admin", "program_manager", "program_associate", "jury"],
-    jurypipeline: ["superuser", "admin", "program_manager", "jury"],
+    jurypipeline: ["superuser", "admin", "program_manager", "program_associate", "jury"],
     shortlistsignup: ["superuser", "admin", "program_manager"],
     // §8 Q5 / F0919 / F0926 — the PM reaches both post-intro-call stages (0040).
     signuppipeline: ["superuser", "admin", "program_manager", "program_associate"],

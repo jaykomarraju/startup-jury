@@ -877,6 +877,11 @@ export type ScreeningStatus =
   | "rejected"
   /** I6 · `D ∧ C ∧ R` — the one status that can be Sent to Assign. */
   | "complete"
+  /**
+   * Ours, not his (Oct-2026 issue 5) · `I6 ∧ the AI has run more than once`.
+   * See `screeningStatus` for why it sits only on the passing status.
+   */
+  | "reevaluated"
   /** I7 · the transient re-check. `screeningStatus` NEVER returns it — see below. */
   | "contactEdited"
   /** I8 · `contactEditedAt ∧ ¬C`. */
@@ -931,6 +936,7 @@ export const SCREENING_STATUS_LABELS: Record<ScreeningValue, string> = {
   belowThreshold: "Below threshold",
   rejected: "Rejected",
   complete: "Complete",
+  reevaluated: "Reevaluated",
   contactEdited: "Contact details edited",
   incompleteContactEdited: "Incomplete contact details, Edited",
   incompleteDeckEdited: "Incomplete decks, Edited",
@@ -966,6 +972,8 @@ export const SCREENING_STATUS_ORDER: readonly ScreeningValue[] = [
   "rejected",
   "complete",
   "completeEdited",
+  // Beside its own base word, like every Edited twin above it.
+  "reevaluated",
   "noResponse",
   "queried",
   "assigned",
@@ -1058,6 +1066,18 @@ export interface ScreeningDeck extends StatDeck {
   lastQueryAt?: string | null;
   /** Whether that query was answered — S2-SERVER's second no-response field. */
   lastQueryAnswered?: boolean;
+  /**
+   * How many times the AI has evaluated this deck — `COUNT(pipeline_events)`
+   * at `action = 'ai_evaluated'`, served as `evaluationRuns`
+   * (`routes/decks.ts`).
+   *
+   * **Absent, or anything at or below 1, reads as a FIRST run**, the same
+   * reading as every other field here: absent never invents a claim. The deck's
+   * own `evaluations` row cannot answer this — `ai/evaluate.ts:1052` deletes it
+   * and re-inserts under a fixed id on every run, so the table holds one AI row
+   * for ever however often the model has looked.
+   */
+  evaluationRuns?: number;
 }
 
 /** What `screeningStatus` needs besides the deck. */
@@ -1101,14 +1121,25 @@ export interface ScreeningOptions {
  * (`ai_complete = 1`) whose intake list has since been emptied still sits at
  * stage `incomplete` until the resubmit loop moves it, and blaming the deck
  * there names the one cause its own column rules out.
+ *
+ * ── EXPORTED 2026-10-02, for the same reason `ratingAtOrAboveGate` was ───────
+ * The client's flow of 2026-10-02 makes his first two checks decide LIST
+ * MEMBERSHIP as well as the status word: an incomplete deck leaves the Assign
+ * roster, and an incomplete CONTACT leaves the Query roster too. That filter
+ * runs in `routes/decks.ts` beside the AI gate, and it has to ask the axes the
+ * STATUS asks — not `isDeckComplete` (`shared/queries.ts`), which reads the
+ * frozen ANDed `decks.complete` column and so cannot see an `ai_complete = 0`
+ * deck whose mark was raised by the resubmit loop. Two predicates for one of
+ * his questions is how a row came to read "Incomplete decks" while sitting on
+ * the Assign screen.
  */
-function deckComplete(deck: ScreeningDeck): boolean {
+export function deckComplete(deck: ScreeningDeck): boolean {
   if (deck.aiComplete !== undefined) return deck.aiComplete;
   return v3DeckState(deck) !== "incomplete";
 }
 
-/** `C` — the intake checklist. */
-function contactComplete(deck: ScreeningDeck): boolean {
+/** `C` — the intake checklist. Exported with `deckComplete`; see there. */
+export function contactComplete(deck: ScreeningDeck): boolean {
   return (deck.missingFields ?? []).length === 0;
 }
 
@@ -1143,6 +1174,23 @@ function contactComplete(deck: ScreeningDeck): boolean {
  */
 export function ratingAtOrAboveGate(deck: ScreeningDeck, gate: number): boolean {
   return deck.aiScore === undefined || deck.aiScore >= gate;
+}
+
+/**
+ * **Oct-2026 issue 5** — *"If a deck is reevaluated again, i guess it should say
+ * reevaluated."*
+ *
+ * The product CAN tell, with no migration: `ai/evaluate.ts` writes one
+ * `pipeline_events` row per run at `action = 'ai_evaluated'` with a fresh id,
+ * and nothing deletes them. `routes/decks.ts` counts them into
+ * `evaluationRuns`. Four other candidates were measured and all of them are
+ * blind to a re-run: the `evaluations` AI row is deleted and re-inserted under
+ * the fixed id `${deckId}_ai_eval`; `decks.content_version` moves when the FILE
+ * is replaced, which is neither necessary nor sufficient for a re-score;
+ * `ai_attempts` is reset to 0 by a success; and `deck_versions` tracks uploads.
+ */
+function reevaluated(deck: ScreeningDeck): boolean {
+  return (deck.evaluationRuns ?? 0) > 1;
 }
 
 /**
@@ -1205,6 +1253,22 @@ export function isQueryUnanswered(deck: ScreeningDeck, now = Date.now()): boolea
  * after an edit reads "Incomplete contact details, Edited", because contact was
  * asked first. His eleven rows have no such state and this order is why.
  *
+ * ── `reevaluated`, and why it displaces ONLY the passing word (issue 5) ─────
+ * The client asked for the word and left the placement open ("i guess"). Every
+ * other status in this machine is an INSTRUCTION — `incompleteDeck` is why the
+ * only exit is Send to Query, `belowThreshold` is why the only exit is Reject,
+ * `incompleteContact` is why neither handoff is offered. Writing "Reevaluated"
+ * over any of those would delete the reason the row's buttons are what they
+ * are, for the sake of a fact about history. `complete` is the one word that
+ * carries no instruction beyond "it passed", so that is where "it passed, on
+ * the second look" fits — and it is the same slot his own `completeEdited`
+ * occupies for the Edit branch, which is the precedent for a composed word at
+ * all.
+ *
+ * **It wins over `completeEdited`** when both hold: the edit is usually WHY the
+ * deck was re-read, so the re-read is the later and the stronger statement. A
+ * client question, recorded in the handoff with this reading shipped.
+ *
  * ── The one status this function never returns ──────────────────────────────
  * **I7, `contactEdited`.** His "Contact details edited" row is a system
  * re-check with no buttons of its own, and it lasts for the duration of one
@@ -1252,14 +1316,16 @@ export function screeningStatus(deck: ScreeningDeck, opts: ScreeningOptions): Sc
   if (deck.contactEditedAt) {
     if (!c) return "incompleteContactEdited";
     if (!d) return "incompleteDeckEdited";
-    return r ? "completeEdited" : "belowThresholdEdited";
+    if (!r) return "belowThresholdEdited";
+    return reevaluated(deck) ? "reevaluated" : "completeEdited";
   }
 
   // ── The fresh branch: deck, then contact, then rating ────────────────────
   if (!d && !c) return "bothIncomplete";
   if (!c) return "incompleteContact";
   if (!d) return "incompleteDeck";
-  return r ? "complete" : "belowThreshold";
+  if (!r) return "belowThreshold";
+  return reevaluated(deck) ? "reevaluated" : "complete";
 }
 
 /**

@@ -355,13 +355,36 @@ export function EvaluatePage() {
 
   const everyParamScored = allScored.every((p) => values[p.key] != null);
 
-  /** The server refuses a submit whose big overrides carry no rationale. */
+  /**
+   * What to put on screen when `POST /decks/:id/evaluate` refuses.
+   *
+   * It refuses for three reasons an evaluator can act on, and the action is
+   * different for each: write the override rationale, ask to be assigned, get
+   * the deck re-uploaded. "Try again" is the one answer that works for none of
+   * them — and for a juror whose assignment was pulled (`not_assigned`) or a
+   * deck whose file is gone (the F-FOUL `no_pdf` guard) it never will, so the
+   * screen said "Unable to score the deck" and gave no reason. That is Oct-2026
+   * issue 6's second half, and it is the same defect the Upload screen carried
+   * into 1-Oct.
+   *
+   * `rationale_required` and `no_pdf` both arrive with a message written for
+   * this reader, so the rule is general: print the server's own words whenever
+   * it sent any, name the ones that send none, and keep `fallback` for a
+   * network failure that is not an `ApiError` at all.
+   */
   function reportScoreError(err: unknown, fallback: string) {
-    if (err instanceof ApiError && err.code === "rationale_required") {
-      setError(err.message);
+    if (!(err instanceof ApiError)) {
+      setError(fallback);
       return;
     }
-    setError(fallback);
+    if (err.code === "not_assigned") {
+      setError(
+        "This deck is not assigned to you, so your scores can't be recorded. Ask a programme manager to add you as an evaluator.",
+      );
+      return;
+    }
+    const written = typeof err.body.message === "string" ? err.body.message.trim() : "";
+    setError(written || fallback);
   }
 
   async function submit() {

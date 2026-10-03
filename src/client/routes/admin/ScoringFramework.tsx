@@ -107,12 +107,29 @@ function CardTitle({ icon, children }: { icon: ReactNode; children: ReactNode })
   );
 }
 
-function Field({ label, children }: { label: ReactNode; children: ReactNode }) {
+/**
+ * `hint` sits OUTSIDE the `<label>` on purpose: a wrapping label's whole text
+ * is the control's accessible name, so folding the sentence in would rename
+ * every field it is added to — including `Shortlist threshold`, which the
+ * prototype, the audit log and four suites all spell exactly.
+ */
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: ReactNode;
+  hint?: ReactNode;
+  children: ReactNode;
+}) {
   return (
-    <label className="flex flex-col gap-1">
-      <span className="text-[11.5px] font-medium text-fg-muted">{label}</span>
-      {children}
-    </label>
+    <div className="flex flex-col gap-1">
+      <label className="flex flex-col gap-1">
+        <span className="text-[11.5px] font-medium text-fg-muted">{label}</span>
+        {children}
+      </label>
+      {hint && <p className="text-[11px] leading-snug text-fg-muted">{hint}</p>}
+    </div>
   );
 }
 
@@ -651,7 +668,10 @@ export function ScoringFrameworkSection() {
               ))}
             </select>
           </Field>
-          <Field label="Shortlist threshold">
+          <Field
+            label="Shortlist threshold"
+            hint="The blended AI + jury score a deck must reach to be shortlisted, applied after it has been evaluated."
+          >
             {/* W7-D (§9): a position on the scale — canonical 0–10 stored, the
                 org's scale shown and typed. Identity on the default 0–10. */}
             <input
@@ -667,6 +687,37 @@ export function ScoringFrameworkSection() {
               }
             />
           </Field>
+          <Field
+            label="AI gate threshold"
+            hint="The AI score a deck must reach to go to evaluators at all. Below it the deck reads Below threshold and can only be rejected or archived."
+          >
+            {/* Issue 4 (2026-10-02) — this number decided every screening
+                verdict and had no control ANYWHERE in the client. An admin who
+                moved `Shortlist threshold` to 4 and watched a 4.8 deck stay
+                Below threshold was on the right screen editing the wrong
+                threshold: the verdict (`shared/deckStats.ts` → `screeningStatus`)
+                reads the gate, the floor above reads the shortlist. The console
+                round-tripped the gate on every save, so it was unmovable rather
+                than unsaved — hence a control and TWO sentences, not a second
+                unexplained number box.
+
+                Canonical 0–10 stored and the org's scale shown and typed, the
+                same W7-D boundary as its neighbour: without the conversion a
+                0–100 workspace that typed 40 would store 400 and the column's
+                own CHECK would refuse the save. */}
+            <input
+              className="sj-input"
+              type="number"
+              min={SCORE_SCALE_BOUNDS[settings.scoreScale].min}
+              max={SCORE_SCALE_BOUNDS[settings.scoreScale].max}
+              step={settings.scoreScale === "0-100" ? 1 : 0.1}
+              disabled={ro}
+              value={toDisplayScale(settings.aiGateThreshold, settings.scoreScale)}
+              onChange={(e) =>
+                patch({ aiGateThreshold: fromDisplayScale(Number(e.target.value), settings.scoreScale) })
+              }
+            />
+          </Field>
         </div>
         <AiWeightPreview
           preview={weightPreview}
@@ -675,9 +726,10 @@ export function ScoringFrameworkSection() {
           scale={settings.scoreScale}
         />
         <p className="mt-2 text-[11px] text-fg-muted">
-          A programme with its own shortlist minimum overrides this; every other deck is held to
-          the organisation&apos;s threshold. Changing the scale or formula re-scores every stored
-          evaluation in this workspace; the AI split is applied when a score is read, so it never
+          A programme with its own shortlist minimum overrides the organisation&apos;s shortlist
+          threshold; every other deck is held to it. The AI gate is the organisation&apos;s alone
+          and is applied once, when the deck is scored. Changing the scale or formula re-scores
+          every stored evaluation in this workspace; the AI split is applied when a score is read, so it never
           rewrites one. Programmes and cohorts created from now on carry their own{" "}
           {aiWeightLabel(NEW_PROGRAMME_AI_WEIGHT_PCT)} split and are not moved by this control.
         </p>

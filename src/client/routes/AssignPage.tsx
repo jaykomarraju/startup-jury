@@ -295,9 +295,30 @@ export function AssignPage() {
       ),
     [assignable, sector, stage, assignedFilter],
   );
+  /**
+   * **Empty for the incubator as of 2026-10-02.** The client: "incomplete decks
+   * shouldnt show up in the assign screen", and his flow spells out both axes —
+   * incomplete CONTACT and incomplete DECK each stay off Assign.
+   *
+   * These rows were drawn deliberately: greyed, unselectable, carrying a `title`
+   * explaining why the deck is not assignable. The intent was to tell the
+   * operator where the deck went rather than let it vanish. He has looked at that
+   * and asked for it gone — the Dashboard's Status column is where a deck's
+   * whereabouts are now answered, and `screeningStatus` says it in words the
+   * Assign screen's grey row never could ("Incomplete contact details" against
+   * "Incomplete deck").
+   *
+   * Edition-gated rather than deleted, and gated the SAME WAY the server narrows
+   * the roster (`SCREENING_NARROWS_LISTS` in `routes/decks.ts`): VC is out of
+   * scope this wave and keeps the rows. One rule, two places, same switch — if
+   * VC is ever brought in, both move together.
+   */
   const visibleIncomplete = useMemo(
-    () => incomplete.filter((d) => (!sector || d.sector === sector) && (!stage || d.stage === stage)),
-    [incomplete, sector, stage],
+    () =>
+      edition === "incubator"
+        ? []
+        : incomplete.filter((d) => (!sector || d.sector === sector) && (!stage || d.stage === stage)),
+    [edition, incomplete, sector, stage],
   );
 
   // A deck the filter hides is not part of what Confirm writes.

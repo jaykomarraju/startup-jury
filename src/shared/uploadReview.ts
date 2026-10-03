@@ -202,6 +202,8 @@ const SCREENING_TONES: Record<ScreeningValue, UploadStatusTone> = {
   // Settled — nothing is owed on these.
   complete: "good",
   completeEdited: "good",
+  // Oct-2026 issue 5 — a variant of `complete`, so it takes `complete`'s tone.
+  reevaluated: "good",
   assigned: "good",
   // The operator has something to do.
   incompleteContact: "warn",

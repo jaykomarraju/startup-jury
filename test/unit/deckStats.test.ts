@@ -15,6 +15,8 @@ import {
   ASSIGNED_TILE_CONFIRMED_BY_FINAL_STATUS_MAP,
   isScreeningIncompleteTile,
   isQueryUnanswered,
+  contactComplete,
+  deckComplete,
   screeningStatus,
   screeningStatusLabel,
   screeningStatusRank,
@@ -569,6 +571,28 @@ describe("V3 superuser Dashboard stat boxes", () => {
       expect(screeningStatusLabel({ ...stripped, missingFields: [] }, { gate: 5 })).toBe("Complete");
     });
 
+    // ── Oct-2026 issue 1 · the two axes, now exported for the list filter ──
+    it("the two axes are exported, and they are NOT `isDeckComplete`", () => {
+      // `routes/decks.ts` narrows both rosters with these (his 2026-10-02 flow),
+      // and it has to ask the STATUS's axes rather than `deckListRoute`'s own
+      // `isDeckComplete`. This is the row where the two disagree: the resubmit
+      // loop raises the frozen ANDed `complete` column without re-reading the
+      // deck or touching `ai_complete`, so `isDeckComplete` says yes while the
+      // model never managed to read the deck at all.
+      const unread: ScreeningDeck = { statusId: "ai_evaluated", aiScore: 8, aiComplete: false, complete: true };
+      expect(deckComplete(unread)).toBe(false);
+      expect(contactComplete(unread)).toBe(true);
+      expect(at(unread)).toBe("incompleteDeck");
+      // Absent reads as complete on both, matching each column's DEFAULT 1.
+      expect(deckComplete({})).toBe(true);
+      expect(contactComplete({})).toBe(true);
+      // …except that an absent VERDICT on a row whose stage says `incomplete`
+      // is read as the deck's fault, which is the one exception `deckComplete`
+      // carries forward from `v3StatusKey` (the manual `flag_incomplete` route).
+      expect(deckComplete({ statusId: "incomplete" })).toBe(false);
+      expect(contactComplete({ missingFields: ["city"] })).toBe(false);
+    });
+
     it("absent columns read as complete — the columns' own DEFAULT 1", () => {
       // A caller that selected neither column must not turn every row red.
       // Every field on `ScreeningDeck` is optional for the same reason: two of
@@ -611,6 +635,64 @@ describe("V3 superuser Dashboard stat boxes", () => {
       expect(at({ statusId: "assigned", assignedTo: "u1", aiComplete: true, aiScore: 7.2 })).not.toBe("assigned");
       expect(at({ statusId: "assigned", assignedTo: "u1", aiComplete: true, aiScore: 7.2 })).toBe("complete");
       expect(at({ statusId: "ai_evaluated", aiScore: 7.2, sendToAssignAt: "2026-09-29T10:00:00Z" })).toBe("assigned");
+    });
+
+    // ── Oct-2026 issue 5 · "it should say reevaluated" ─────────────────────
+    describe("reevaluated — the AI has read this deck more than once", () => {
+      it("displaces `complete`, and only once the count is above one", () => {
+        // The count is `COUNT(pipeline_events WHERE action = 'ai_evaluated')`,
+        // served as `evaluationRuns`. One run is a first evaluation, which is
+        // every deck the model has scored exactly once.
+        expect(at({ ...evaluated, evaluationRuns: 1 })).toBe("complete");
+        expect(at({ ...evaluated, evaluationRuns: 2 })).toBe("reevaluated");
+        expect(screeningStatusLabel({ ...evaluated, evaluationRuns: 2 }, { gate: 5 })).toBe("Reevaluated");
+      });
+
+      it("absent, zero and one all read as a FIRST run", () => {
+        // Same reading as every other field on `ScreeningDeck`: absent never
+        // invents a claim. A caller that did not select the count loses a word;
+        // it does not relabel every scored deck.
+        expect(at(evaluated)).toBe("complete");
+        expect(at({ ...evaluated, evaluationRuns: 0 })).toBe("complete");
+      });
+
+      it("never displaces a word the operator has to act on", () => {
+        // The reason it sits only on the passing status: every other status is
+        // an INSTRUCTION — why the only exit is Query, or Reject, or Edit — and
+        // "Reevaluated" over any of them deletes that reason for the sake of a
+        // fact about history.
+        const twice = { evaluationRuns: 3 };
+        expect(at({ ...evaluated, ...twice, aiScore: 4.1 })).toBe("belowThreshold");
+        expect(at({ ...evaluated, ...twice, aiComplete: false })).toBe("incompleteDeck");
+        expect(at({ ...evaluated, ...twice, missingFields: ["founderPhone"] as const })).toBe("incompleteContact");
+        expect(at({ ...evaluated, ...twice, aiComplete: false, missingFields: ["city"] as const })).toBe(
+          "bothIncomplete",
+        );
+        expect(at({ ...evaluated, ...twice, statusId: "rejected" })).toBe("rejected");
+        // And the three sinks still answer first — row 7's latch is unmoved.
+        expect(at({ ...evaluated, ...twice, statusId: "archived" })).toBe("archived");
+        expect(at({ ...evaluated, ...twice, sendToAssignAt: "2026-09-29T10:00:00Z" })).toBe("assigned");
+        // The queried sink takes an UNRESOLVED deck, as `isQueriedSinkCurrent`
+        // already requires (it asks `deckListRoute`, which reads the ANDed
+        // `complete`) — so this is the same fixture the sink test above uses.
+        expect(
+          at({ ...evaluated, ...twice, aiComplete: false, missingFields: ["founderPhone"], queried: true }),
+        ).toBe("queried");
+        // Nothing is said before the model has run at all, whatever the count.
+        expect(at({ statusId: "uploaded", ...twice })).toBe("awaitingAi");
+      });
+
+      it("wins over `completeEdited`, because the edit is why it was re-read", () => {
+        const edited = { ...evaluated, contactEditedAt: "2026-10-01T09:00:00Z" };
+        expect(at({ ...edited, evaluationRuns: 1 })).toBe("completeEdited");
+        expect(at({ ...edited, evaluationRuns: 2 })).toBe("reevaluated");
+        // The edited branch's own order is untouched above the rating check.
+        expect(at({ ...edited, evaluationRuns: 2, missingFields: ["city"] as const })).toBe(
+          "incompleteContactEdited",
+        );
+        expect(at({ ...edited, evaluationRuns: 2, aiComplete: false })).toBe("incompleteDeckEdited");
+        expect(at({ ...edited, evaluationRuns: 2, aiScore: 4.1 })).toBe("belowThresholdEdited");
+      });
     });
 
     it("Rejected is an INTERMEDIATE, and Archive is what makes it final", () => {
@@ -808,11 +890,14 @@ describe("V3 superuser Dashboard stat boxes", () => {
       // sessions build `Record<ScreeningValue, …>` maps against this — S2-DASH's
       // eleven-row action whitelist is one — so a duplicate or a missing entry
       // is a hole in somebody else's exhaustiveness check.
+      // Seventeen since Oct-2026 issue 5 added `reevaluated` — the second value
+      // in here that is ours and not his (`awaitingAi` is the first).
       const labelled = Object.keys(SCREENING_STATUS_LABELS) as ScreeningValue[];
-      expect(labelled).toHaveLength(16);
-      expect(new Set(SCREENING_STATUS_ORDER).size).toBe(16);
+      expect(labelled).toHaveLength(17);
+      expect(SCREENING_STATUS_LABELS.reevaluated).toBe("Reevaluated");
+      expect(new Set(SCREENING_STATUS_ORDER).size).toBe(17);
       expect([...SCREENING_STATUS_ORDER].sort()).toEqual([...labelled].sort());
-      expect(new Set(Object.values(SCREENING_STATUS_LABELS)).size).toBe(16);
+      expect(new Set(Object.values(SCREENING_STATUS_LABELS)).size).toBe(17);
     });
 
     it("C2 — the filter list and the pill set are exported SEPARATELY", () => {
@@ -829,8 +914,12 @@ describe("V3 superuser Dashboard stat boxes", () => {
       // Eleven, NOT six: his verbatim six-word list is not transcribed anywhere
       // in this repo, so narrowing eleven to six is a question, not a guess.
       // Shipping the wider list keeps every displayed value filterable.
-      expect(SCREENING_FILTER_OPTIONS).toHaveLength(11);
+      expect(SCREENING_FILTER_OPTIONS).toHaveLength(12);
       expect(SCREENING_FILTER_OPTIONS).toContain("assigned");
+      // `reevaluated` is ours and his row 6 cannot have omitted a word he had
+      // not asked for yet, so the same rule applies: a value a row can show is
+      // filterable.
+      expect(SCREENING_FILTER_OPTIONS).toContain("reevaluated");
     });
 
     it("sorts on the flow's order, not on the string", () => {

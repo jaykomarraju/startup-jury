@@ -308,7 +308,10 @@ export async function maybeAutoClarify(
   const queryId = `qry_${crypto.randomUUID()}`;
   const questions = await questionsFor(env.DB, scope, input.deckName, areas);
   await env.DB.prepare(
-    "INSERT INTO queries (id, deck_id, questions, email_status, created_at) VALUES (?, ?, ?, 'sent', ?)",
+    // `'pending'` until the outbox answers — see the same correction in
+    // `routes/pipeline.ts`. Writing `'sent'` here is what let eleven production
+    // rows claim delivery for letters that were only recorded.
+    "INSERT INTO queries (id, deck_id, questions, email_status, created_at) VALUES (?, ?, ?, 'pending', ?)",
   )
     .bind(queryId, input.deckId, questions, ts)
     .run();
@@ -326,7 +329,7 @@ export async function maybeAutoClarify(
     founderName: input.founderName,
     questions,
   });
-  await sendEmail(
+  const sent = await sendEmail(
     env,
     {
       kind: "founder_query",
@@ -342,6 +345,8 @@ export async function maybeAutoClarify(
     },
     now,
   );
+  // The row now says what the outbox DID, not what this function intended.
+  await env.DB.prepare("UPDATE queries SET email_status = ? WHERE id = ?").bind(sent.status, queryId).run();
 
   return { triggered: true, queryId, areas };
 }

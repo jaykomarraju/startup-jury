@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { evaluateDeck, type RawEvaluation } from "../../src/server/ai/evaluate";
 import {
   autoClarifyBlock,
@@ -38,6 +38,34 @@ interface SeedOpts {
   founderPhone?: string | null;
   city?: string | null;
 }
+
+/**
+ * **Auto-clarification is OFF by default as of `0102`** (the client, 2026-10-02:
+ * "the operator will choose whether they want to send to query or not"), so every
+ * case below that exercises the TRIGGER has to turn it on first. Without this the
+ * whole file passes vacuously with `reason: "disabled"`, which is the quietest
+ * possible way for a trigger suite to stop testing the trigger.
+ *
+ * `beforeEach` at FILE scope, deliberately: a `beforeAll` inside a `describe` is
+ * rolled back by this pool's isolated storage, which has cost this repo a day
+ * before. The one case that wants it OFF turns it off itself.
+ */
+beforeEach(async () => {
+  await env.DB.prepare(
+    "UPDATE org_scoring_settings SET auto_clarification = 1 WHERE edition = 'incubator'",
+  ).run();
+});
+
+/**
+ * And put it back. **Worker D1 state is shared across test FILES in this pool**
+ * — documented, and it has cost this repo a day before — so a `beforeEach` that
+ * only turns things on leaks the ON state into whichever file runs next. It did:
+ * `scoring-framework.test.ts`'s "serves the prototype's shipped defaults" read
+ * `autoClarification: true` from this file's leftovers and failed.
+ */
+afterEach(async () => {
+  await env.DB.prepare("UPDATE org_scoring_settings SET auto_clarification = 0").run();
+});
 
 async function seedDeck(id: string, opts: SeedOpts = {}): Promise<void> {
   const {
@@ -126,7 +154,14 @@ describe("a weak deck with complete contact is clarified, to the founder's own a
 
     const rows = (await queriesOf("ac_weak")).results;
     expect(rows).toHaveLength(1);
-    expect(rows[0].email_status).toBe("sent");
+    // `recorded`, NOT `sent` — and the difference is the client's own question
+    // (2026-10-02): "it says 'queried' why does it say that if we havent sent the
+    // query yet". The row used to be stamped `'sent'` at INSERT, before delivery
+    // was even attempted, and never corrected. It now carries what the outbox
+    // actually did, and with `EMAIL_FROM` unset that is `recorded`: composed,
+    // audited, and delivered nowhere. It becomes `sent` the day the sending
+    // domain is onboarded, with no code change.
+    expect(rows[0].email_status).toBe("recorded");
     expect(rows[0].questions).not.toBe("");
 
     const mail = (await queryMailOf("ac_weak")).results;
@@ -312,5 +347,39 @@ describe("autoClarifyBlock is the authoritative predicate", () => {
         }
       }
     }
+  });
+});
+
+describe("0102 — the shipped default is OFF, and that is the whole point", () => {
+  it("leaves every workspace not auto-sending", async () => {
+    // Asked of the **vc** workspace, which `beforeEach` does not touch — so this
+    // reads what `0102` actually left behind rather than what this test just
+    // wrote. Setting the row to 0 here and then asserting it is 0 would be the
+    // vacuous shape: true of the assertion, silent about the migration.
+    const vc = await env.DB.prepare(
+      "SELECT auto_clarification AS v FROM org_scoring_settings WHERE edition = 'vc'",
+    ).first<{ v: number }>();
+    expect(vc, "no vc workspace to read — this case proves nothing without one").toBeTruthy();
+    expect(vc!.v, "0102 did not turn auto-clarification off for every workspace").toBe(0);
+
+    // And the incubator, which `beforeEach` DID turn on, goes back off for the
+    // second half of this case.
+    await env.DB.prepare(
+      "UPDATE org_scoring_settings SET auto_clarification = 0 WHERE edition = 'incubator'",
+    ).run();
+
+    // And with it off, an otherwise perfectly clarifiable deck is left alone —
+    // weak signal, reachable founder, and still no letter. That is the behaviour
+    // the client asked for: the deck says incomplete and the operator decides.
+    await seedDeck("ac_default_off");
+    await evaluate("ac_default_off", 3);
+    expect(await maybeAutoClarify(env as Env, INPUT("ac_default_off"))).toMatchObject({
+      triggered: false,
+      reason: "disabled",
+    });
+    const q = await env.DB.prepare(
+      "SELECT count(*) AS n FROM queries WHERE deck_id = ?",
+    ).bind("ac_default_off").first<{ n: number }>();
+    expect(q!.n, "a query row was written while auto-clarification was off").toBe(0);
   });
 });

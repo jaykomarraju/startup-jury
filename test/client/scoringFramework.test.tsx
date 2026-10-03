@@ -5,6 +5,7 @@ import { ScoringFrameworkSection } from "../../src/client/routes/admin/ScoringFr
 import { AreaWeightsSection } from "../../src/client/routes/admin/AreaWeights";
 import { AdminSaveContext, type AdminSaveState } from "../../src/client/routes/admin/saveContext";
 import { DEFAULT_SCORING_SETTINGS, decisionScore } from "../../src/shared/scoring";
+import { screeningStatus } from "../../src/shared/deckStats";
 import {
   DEFAULT_VISIBILITY,
   VISIBILITY_ROLES,
@@ -338,6 +339,128 @@ describe("Scoring framework section", () => {
     vi.mocked(getScoringFramework).mockRejectedValue(new Error("boom"));
     mountSection(<ScoringFrameworkSection />);
     expect(await screen.findByText(/Couldn't load the scoring framework/)).toBeInTheDocument();
+  });
+});
+
+// ── Issue 4 (2026-10-02) · the AI gate finally has a control ─────────────────
+//
+// *"Right now the selected threshold is not working on decks evaluation. Even
+// when I changed the threshold to 4, the decks I uploaded are showing 4.8 as
+// below threshold."*
+//
+// He was on the right screen editing the wrong number. The one threshold this
+// console exposed writes `shortlist_threshold`; the screening verdict
+// (`shared/deckStats.ts` → `screeningStatus`) is decided by
+// `org_scoring_settings.ai_gate_threshold`, which migration 0082 created, the
+// route has validated and persisted since S2-SERVER, `/api/config/summary` has
+// served since 2026-10-01 — and which **no control in the client could move**.
+// It even round-tripped through this section's save, so it was unmovable rather
+// than unsaved. 4.8 was correctly below a gate of 5 the whole time.
+//
+// This is NOT a prototype control: `admin/s-fw.html`, decoded out of
+// `ADMIN_B64`, carries exactly one threshold input (`Shortlist threshold`) plus
+// the cohort bands. The addition is deliberate — a number that decides every
+// verdict and that an organisation cannot choose is worse than a fifth box —
+// and both controls therefore say what they govern, because four thresholds is
+// the standing fault this screen keeps feeding (`deckStats.ts:855`).
+describe("AI gate threshold (issue 4)", () => {
+  /** The client's own deck: evaluated, complete, scored 4.8. */
+  const HIS_DECK = {
+    statusId: "ai_evaluated",
+    aiScore: 4.8,
+    aiComplete: true,
+    missingFields: [],
+  } as const;
+
+  it("is on the screen, named apart from the shortlist floor, and says what each governs", async () => {
+    mountSection(<ScoringFrameworkSection />);
+    await screen.findByText("AI engine behaviour");
+
+    // Two controls, two different numbers, neither of them the other's.
+    expect(screen.getByLabelText("AI gate threshold")).toHaveValue(
+      DEFAULT_SCORING_SETTINGS.aiGateThreshold,
+    );
+    expect(screen.getByLabelText("Shortlist threshold")).toHaveValue(
+      DEFAULT_SCORING_SETTINGS.shortlistThreshold,
+    );
+    expect(DEFAULT_SCORING_SETTINGS.aiGateThreshold).not.toBe(
+      DEFAULT_SCORING_SETTINGS.shortlistThreshold,
+    );
+
+    // …and the screen says which decision each one makes. A second unexplained
+    // box beside the first is the defect, not the fix.
+    expect(screen.getByText(/must reach to go to evaluators at all/)).toBeInTheDocument();
+    expect(screen.getByText(/must reach to be shortlisted/)).toBeInTheDocument();
+  });
+
+  it("saves the number the VERDICT reads — set 4, and his 4.8 deck stops reading Below threshold", async () => {
+    const { saved } = mountSection(<ScoringFrameworkSection />);
+    await screen.findByText("AI engine behaviour");
+    // This file's `beforeEach` re-arms the mocks but does not clear their call
+    // log, and an earlier test in the describe above saves the DEFAULTS — so
+    // `calls[0]` here would be a neighbour's gate of 5 and this test would
+    // "fail" against its own fix.
+    vi.mocked(saveScoringFramework).mockClear();
+
+    fireEvent.change(screen.getByLabelText("AI gate threshold"), { target: { value: "4" } });
+    await waitFor(() => expect(saved.state?.dirty).toBe(true));
+    await saved.state!.onSave();
+    await waitFor(() =>
+      expect(saveScoringFramework).toHaveBeenCalledWith(
+        // The shortlist floor is NOT what moved — the two are separate columns
+        // and the save proves it rather than leaving it to the label.
+        expect.objectContaining({
+          aiGateThreshold: 4,
+          shortlistThreshold: DEFAULT_SCORING_SETTINGS.shortlistThreshold,
+        }),
+        {},
+      ),
+    );
+
+    // The assertion that is actually his complaint: the number this control
+    // just saved, handed to the function that decides the word on the row.
+    const sent = vi.mocked(saveScoringFramework).mock.calls[0][0];
+    expect(screeningStatus(HIS_DECK, { gate: sent.aiGateThreshold })).toBe("complete");
+    // …and it is the gate doing it, not the test: the same deck at the gate he
+    // could not reach is exactly what he was looking at.
+    expect(screeningStatus(HIS_DECK, { gate: 5 })).toBe("belowThreshold");
+  });
+
+  it("converts on a 0–100 org, so a typed 40 stores canonical 4 and never 400", async () => {
+    // W7-D: a threshold is a POSITION on the scale. Without the conversion the
+    // column's own CHECK (0–10) refuses the save and the admin sees a failure
+    // with no cause on screen.
+    vi.mocked(getScoringFramework).mockResolvedValue(
+      serveFramework({
+        scoring: { ...DEFAULT_SCORING_SETTINGS, scoreScale: "0-100", aiGateThreshold: 5 },
+      }),
+    );
+    const { saved } = mountSection(<ScoringFrameworkSection />);
+    await screen.findByText("AI engine behaviour");
+    vi.mocked(saveScoringFramework).mockClear(); // see the note in the test above
+
+    // A canonical 5 is half way up this org's scale.
+    expect(screen.getByLabelText("AI gate threshold")).toHaveValue(50);
+
+    fireEvent.change(screen.getByLabelText("AI gate threshold"), { target: { value: "40" } });
+    await waitFor(() => expect(saved.state?.dirty).toBe(true));
+    await saved.state!.onSave();
+    await waitFor(() =>
+      expect(saveScoringFramework).toHaveBeenCalledWith(
+        expect.objectContaining({ aiGateThreshold: 4 }),
+        {},
+      ),
+    );
+    // And a 4.8 deck passes a gate the admin authored as "40 out of 100".
+    const sent = vi.mocked(saveScoringFramework).mock.calls[0][0];
+    expect(screeningStatus(HIS_DECK, { gate: sent.aiGateThreshold })).toBe("complete");
+  });
+
+  it("is read-only for a role the server says may not change the framework", async () => {
+    vi.mocked(getScoringFramework).mockResolvedValue(serveFramework({ editable: false }));
+    mountSection(<ScoringFrameworkSection />, "jury");
+    await screen.findByText(/only an administrator can change/i);
+    expect(screen.getByLabelText("AI gate threshold")).toBeDisabled();
   });
 });
 

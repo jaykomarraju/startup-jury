@@ -112,7 +112,32 @@ test.describe.serial("an operator emails two flagged founders", () => {
   let alpha: Flagged;
   let beta: Flagged;
 
-  test("each founder's recorded email names only their own startup and areas", async ({ page }) => {
+/**
+   * PARKED 2026-10-02, pending one answer from the client — NOT a regression, and
+   * deliberately not deleted.
+   *
+   * His flow of that date: "if a deck is incomplete contact details firstly … send
+   * to query or send to assign should be not active and also not show up in assign
+   * or query screen". Shipped literally, `missing_fields` being the whole intake
+   * checklist, so a deck missing ANY required field is off the Query screen and
+   * `POST /send-to-query` answers 409 `contact_incomplete`.
+   *
+   * This spec encodes the opposite and older flow, which was built on purpose: the
+   * Query screen's last column is "Parameters needing response", and the fixture
+   * below STRIPS a required detail precisely so the letter can ask the founder for
+   * it. Both cannot be true.
+   *
+   * The two readings agree on four of the six decks he was looking at and differ
+   * on two — BiocharIND and NatureMark have a working email address and are
+   * missing only a phone or a city, so we CAN reach them to ask. His stated reason
+   * ("you cannot send any Email Query too if contact details are not available")
+   * points at reachability; his literal words point at the whole checklist.
+   *
+   * One line decides it in `routes/decks.ts` — `contactComplete` against the
+   * reachability predicate — so this stays `fixme` rather than being rewritten
+   * toward an answer that may flip. See `docs/parity-requests/OCT2-LISTS.md` §3.
+   */
+  test.fixme("each founder's recorded email names only their own startup and areas", async ({ page }) => {
     test.setTimeout(120_000);
     await login(page, "sunita.rao@demo.startupjury.ai"); // incubator program associate
     alpha = await flaggedDeck(page, "Alpha", "founderPhone");
@@ -198,7 +223,11 @@ test.describe.serial("an operator emails two flagged founders", () => {
     await expect(page.getByRole("checkbox", { name: `Select ${alpha.name}` })).toBeVisible();
   });
 
-  test("the recorded email is the letter verbatim, under the operator's subject, with the response link", async () => {
+  // Parked WITH its sibling above, not on its own merits: this is a
+  // `describe.serial` block and `alpha` / `beta` are set by that test, so it
+  // would fail on `undefined` rather than on anything it asserts. The two are one
+  // unit. Un-park them together.
+  test.fixme("the recorded email is the letter verbatim, under the operator's subject, with the response link", async () => {
     const rows = recordedQueryEmails([alpha.deckId, beta.deckId]);
     expect(rows).toHaveLength(2);
     for (const mail of rows) {

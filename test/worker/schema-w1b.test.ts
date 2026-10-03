@@ -96,7 +96,11 @@ describe("org_scoring_settings", () => {
       expect(row).toBeTruthy();
       expect(row).toMatchObject({
         ai_pre_scoring_enabled: 1,
-        auto_clarification: 1,
+        // ZERO, and it is the one place this table departs from the prototype's
+        // s-fw defaults. `0102` turned it off on the client's instruction
+        // (2026-10-02): "the operator will choose whether they want to send to
+        // query or not". The toggle survives; only the default moved.
+        auto_clarification: 0,
         show_ai_score_to_jury: 1,
         require_override_rationale: 1,
         override_rationale_delta: 2,

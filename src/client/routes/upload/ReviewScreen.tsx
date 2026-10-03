@@ -87,6 +87,13 @@ export interface ReviewScreenProps {
   onBack: () => void;
   onUpload: () => void;
   busy: boolean;
+  /**
+   * How far the running batch has got, in decks whose request has settled —
+   * null when nothing is in flight. It exists because a bulk batch is several
+   * bounded requests now (`chunkBulk`): "Uploading…" on its own cannot tell an
+   * operator whether anything is moving, which is the whole of issue 3.
+   */
+  progress: { done: number; total: number } | null;
   preview: BatchCostPreview;
   error: ReactNode;
   canBuy: boolean;
@@ -264,7 +271,11 @@ export function ReviewScreen(props: ReviewScreenProps) {
             // decks stay ticked, so this is still how they are tried again.
             className={props.showDashboard ? BTN_SECONDARY : BTN_PRIMARY}
           >
-            {props.busy ? "Uploading…" : "Upload selected decks"}
+            {props.busy
+              ? props.progress
+                ? `Uploading ${props.progress.done} of ${props.progress.total}…`
+                : "Uploading…"
+              : "Upload selected decks"}
           </button>
           {props.showDashboard && (
             <Link to="/app/alldecks" className={BTN_PRIMARY}>
@@ -327,11 +338,15 @@ function DeckRow({
   // The word is NOT lower-cased any more: "Incomplete contact details" is the
   // client's own string, and lower-casing turned "Awaiting AI evaluation" into
   // "awaiting ai evaluation".
-  const meta = d.deckId
-    ? `${d.fileName} · ${status ? status.label : "uploaded"}`
-    : d.uploadError
-      ? `${d.fileName} · not uploaded`
-      : `${d.fileName} · not yet analysed`;
+  // In flight comes FIRST: while a request is out this deck has no verdict and
+  // no failure, and "not yet analysed" reads as though nothing is happening.
+  const meta = d.uploading
+    ? `${d.fileName} · uploading…`
+    : d.deckId
+      ? `${d.fileName} · ${status ? status.label : "uploaded"}`
+      : d.uploadError
+        ? `${d.fileName} · not uploaded`
+        : `${d.fileName} · not yet analysed`;
   return (
     <li
       data-testid="up-deck-row"
@@ -352,6 +367,11 @@ function DeckRow({
         <div className="mb-[3px] truncate text-[10.5px] text-fg-muted">{meta}</div>
         <div className="flex flex-wrap gap-1">
           <span className={`${BADGE} bg-stone text-fg-muted`}>{formatBytes(d.size)}</span>
+          {d.uploading && (
+            <span className={`${BADGE} bg-blue-lt font-medium text-blue-dk`} data-testid="up-row-uploading">
+              Uploading…
+            </span>
+          )}
           {d.slides !== null && <span className={`${BADGE} bg-blue-lt text-blue-dk`}>{d.slides} slides</span>}
           {(d.issues.length > 0 || d.intakeFlag || d.uploadError) && (
             <span className={`${BADGE} bg-warn-lt font-medium text-warn`}>⚠ Review</span>
