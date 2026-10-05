@@ -278,6 +278,30 @@
     background: var(--surface);
     border-bottom: 1px solid var(--stone-dk);
   }
+
+  /* ── Phone width ───────────────────────────────────────────────────────
+     Measured on production at 390px: the Dashboard's subtitle ("Recent
+     activity · 23 decks · Updated just now") was squeezed into roughly a
+     200px column beside the search box and wrapped to FIVE lines, because
+     `.tb` is a non-wrapping row whose action group does not shrink.
+
+     Systemic rather than per-screen, deliberately: the same wrap is latent on
+     every screen that adopts the frame — Evaluate, Config, My Parameters and
+     the analytics kit all render this toolbar. Letting the row wrap and giving
+     the title block the full first line fixes each of them once.
+
+     `align-items: flex-start` because once the row wraps, centring the actions
+     against a two-line title block leaves them floating. */
+  @media (max-width: 639px) {
+    .tb {
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+    .tb > :first-child {
+      flex-basis: 100%;
+      min-width: 0;
+    }
+  }
   .tbt {
     font-size: 13.5px;
     font-weight: 600;
@@ -347,6 +371,20 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  /* The JURYbuddy launcher is `position: fixed` in the bottom-right corner, and
+     the frame's body scrolls UNDER it — so at phone width the last row of any
+     screen comes to rest beneath the button. Shrinking the launcher helped and
+     could not finish the job: a fixed element over a scrolling region is only
+     fully cleared by reserving space at the end of that region.
+
+     Phone only. On a desktop the content pane is wide enough that the launcher
+     sits in empty gutter, and the reserved strip would be visible dead space. */
+  @media (max-width: 639px) {
+    .sj-frame > :last-child {
+      padding-bottom: 72px;
+    }
   }
 
   /* Sidebar item badge family (prototype `.bx`). */

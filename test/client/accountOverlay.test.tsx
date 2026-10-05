@@ -4,8 +4,21 @@ import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom";
 import { AccountPage } from "../../src/client/routes/AccountPage";
 import { BuyCreditsPage } from "../../src/client/routes/BuyCreditsPage";
 import { AuthContext, type AuthUser } from "../../src/client/auth/AuthProvider";
-import type { PublishedPriceBook } from "../../src/shared/priceBook";
-import { quoteOrder, type AccountOrderView, type AccountProfile, type AccountType } from "../../src/shared/accountOrder";
+import { formatMinor, seatPlanFor, type PublishedPriceBook } from "../../src/shared/priceBook";
+import {
+  billingCurrencyFor,
+  resolveBillingLocale,
+  validateBillingAddress,
+  type BillingAddress,
+} from "../../src/shared/plans";
+import {
+  ANNUAL_SEAT_MONTHS,
+  quoteOrder,
+  taxSettingsOf,
+  type AccountOrderView,
+  type AccountProfile,
+  type AccountType,
+} from "../../src/shared/accountOrder";
 import { catalogueFixture } from "../unit/fixtures/accountCatalogue";
 
 /**
@@ -62,7 +75,26 @@ const PROFILE: AccountProfile = {
 interface Server {
   book: PublishedPriceBook | null;
   saved: boolean;
+  /**
+   * V6-CURRENCY — the billing address `0104` added, as the route stores it:
+   * all four fields or none (`toBilling` returns null unless every column is
+   * set), because `validateBillingAddress` requires all four.
+   */
+  billing: BillingAddress | null;
   calls: Array<{ method: string; url: string; body: unknown }>;
+}
+
+/** `billingPayload()` in `src/server/routes/account.ts`, same resolver. */
+function billingPayload() {
+  const b = server.billing;
+  const tax = server.book ? taxSettingsOf(server.book.tax) : { ratePct: 0, registration: null, inclusive: false, internationalNotice: false };
+  return {
+    name: b?.name ?? null,
+    city: b?.city ?? null,
+    country: b?.country ?? null,
+    address: b?.address ?? null,
+    locale: resolveBillingLocale(b?.country ?? null, tax),
+  };
 }
 
 let server: Server;
@@ -116,7 +148,7 @@ function json(status: number, body: unknown) {
 }
 
 beforeEach(() => {
-  server = { book: catalogueFixture(), saved: false, calls: [] };
+  server = { book: catalogueFixture(), saved: false, billing: null, calls: [] };
   lastAccountType = "individual";
   vi.stubGlobal(
     "fetch",
@@ -126,7 +158,13 @@ beforeEach(() => {
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       server.calls.push({ method, url, body });
       if (url === "/api/account" && method === "GET") {
-        return json(200, { profile: PROFILE, saved: server.saved, orders: [], paymentConfigured: false });
+        return json(200, {
+          profile: PROFILE,
+          saved: server.saved,
+          billing: billingPayload(),
+          orders: [],
+          paymentConfigured: false,
+        });
       }
       if (url === "/api/pricing/published") {
         return server.book ? json(200, server.book) : json(404, { error: "not_published" });
@@ -134,9 +172,29 @@ beforeEach(() => {
       if (url === "/api/account/profile" && method === "PUT") {
         server.saved = true;
         lastAccountType = body.accountType;
-        return json(200, { ok: true, profile: { ...PROFILE, ...body } });
+        return json(200, { ok: true, profile: { ...PROFILE, ...body }, billing: billingPayload() });
+      }
+      // V6 · `#acs-billing` PATCHes only itself, and cannot create a profile.
+      if (url === "/api/account/profile" && method === "PATCH") {
+        if (!server.saved) return json(409, { error: "account_required" });
+        const fields = validateBillingAddress(body.billing ?? {});
+        if (Object.keys(fields).length > 0) return json(400, { error: "invalid_billing_address", fields });
+        server.billing = body.billing as BillingAddress;
+        return json(200, { ok: true, profile: PROFILE, billing: billingPayload() });
       }
       if (url === "/api/account/orders" && method === "POST") {
+        // V6-CURRENCY's invariant: a customer with an Indian billing address is
+        // never priced in USD. The route REFUSES rather than re-denominating, so
+        // a screen that let the currency drift fails here instead of passing.
+        const required = billingCurrencyFor(server.billing?.country ?? null);
+        if (required && body.currency !== required) {
+          return json(400, {
+            error: "currency_not_for_billing_country",
+            required,
+            requested: body.currency,
+            country: server.billing?.country ?? null,
+          });
+        }
         return json(200, {
           ok: true,
           order: orderFrom(body, lastAccountType),
@@ -463,6 +521,184 @@ describe("the Individual branch", () => {
       extraCredits: 0,
     });
   });
+
+  /**
+   * **V6 · the annual route**, `#acs-trial` → `#acs-annual` → `#acs-billing` →
+   * `#acs-payment`. `acStartAnnual()` is the only way into the annual screen in
+   * the mockup, so this walk is what makes it reachable at all.
+   *
+   * The order body is asserted against the CATALOGUE, not a literal: `orderFrom`
+   * re-prices every POST through `quoteOrder` and throws if the wizard sent
+   * something the book refuses, so a cart that could not be bought fails here.
+   */
+  it("walks the trial → annual subscription → billing details → payment", async () => {
+    const premium = seatPlanFor(catalogueFixture(), "premium", ANNUAL_SEAT_MONTHS)!;
+    mount("/app/account", SUPERUSER);
+    await screen.findByRole("heading", { level: 1, name: "Create your account" });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+    await screen.findByRole("heading", { level: 1, name: "Choose your seat" });
+    fireEvent.click(screen.getByTestId("ac-tier-premium"));
+    fireEvent.click(screen.getByTestId("ac-period-6"));
+    fireEvent.click(screen.getByTestId("ac-take-trial"));
+    await screen.findByRole("heading", { level: 1, name: "Your 3-deck free trial" });
+    for (let i = 0; i < 3; i += 1) fireEvent.click(screen.getByTestId("ac-use-trial-deck"));
+
+    // V6's third option in the "Trial complete" panel.
+    fireEvent.click(screen.getByTestId("ac-try-annual"));
+    await screen.findByRole("heading", { level: 1, name: "Annual subscription" });
+    expect(activeStep()).toBe("Seat & pricing");
+    expect(screen.getByTestId("ac-ann-baseprice")).toHaveTextContent(formatMinor(premium.amounts.INR, "₹"));
+    fireEvent.click(screen.getByTestId("ac-ann-seat-premium-plus"));
+    expect(screen.getByTestId("ac-ann-seat-premium")).toHaveTextContent("2");
+    expect(screen.getByTestId("ac-ann-total")).toHaveTextContent(formatMinor(premium.amounts.INR * 2, "₹"));
+
+    // ── Billing details: the screen V6 puts between the cart and the money ──
+    fireEvent.click(screen.getByTestId("ac-ann-continue"));
+    await screen.findByRole("heading", { level: 1, name: "Billing details" });
+    expect(activeStep()).toBe("Payment");
+    assertNoCardField();
+    expect(screen.getByTestId("ac-billing-continue")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Billing name"), { target: { value: "Acme Pvt Ltd" } });
+    fireEvent.change(screen.getByLabelText("City"), { target: { value: "Hyderabad" } });
+    fireEvent.change(screen.getByLabelText("Country"), { target: { value: "India" } });
+    fireEvent.change(screen.getByLabelText("Communication address"), { target: { value: "12 MG Road, 500001" } });
+    expect(screen.getByTestId("ac-billing-continue")).toBeEnabled();
+    fireEvent.click(screen.getByTestId("ac-billing-continue"));
+
+    await screen.findByRole("heading", { level: 1, name: "Complete payment" });
+    const summary = screen.getByTestId("ac-order-summary");
+    expect(within(summary).getByTestId("ac-total")).toHaveTextContent(
+      formatMinor(Math.round(premium.amounts.INR * 2 * 1.18), "₹"),
+    );
+    // V6's `billToLine()` — the address that set the currency, echoed here.
+    expect(within(summary).getByTestId("ac-line-billto")).toHaveTextContent("Hyderabad, India");
+    // The provider is named but not integrated (§1.2 / §1.3).
+    expect(screen.getByTestId("ac-provider-note")).toHaveTextContent("Razorpay");
+    expect(screen.getByTestId("ac-no-provider")).toBeInTheDocument();
+    // "Back to plan selection" returns to Billing, as `acPayBack()` does.
+    fireEvent.click(screen.getByRole("button", { name: /Back to plan selection/ }));
+    await screen.findByRole("heading", { level: 1, name: "Billing details" });
+    expect(screen.getByLabelText("City")).toHaveValue("Hyderabad");
+    fireEvent.click(screen.getByTestId("ac-billing-continue"));
+    await screen.findByRole("heading", { level: 1, name: "Complete payment" });
+
+    fireEvent.click(screen.getByTestId("ac-pay"));
+    await screen.findByRole("heading", { level: 1, name: "Order recorded" });
+    expect(server.calls.find((c) => c.method === "POST")?.body).toEqual({
+      planCode: premium.code,
+      currency: "INR",
+      paymentMethod: "upi",
+      quantity: 2,
+      extraCredits: 0,
+    });
+    expect(screen.getByTestId("ac-receipt-status")).toHaveTextContent("Recorded — not charged");
+    expect(screen.queryByText("Payment successful")).toBeNull();
+    // An individual's receipt offers no team screen — V6 gives it to enterprise.
+    expect(screen.queryByTestId("ac-receipt-team")).toBeNull();
+  });
+
+  /**
+   * **V6-CURRENCY, from the client's side.** The billing address sets the
+   * currency, and `POST /orders` REFUSES a currency that disagrees with the
+   * saved country (`currency_not_for_billing_country`) rather than
+   * re-denominating. So the screen has to adopt the resolved currency at the
+   * billing step. The stubbed route enforces that invariant, which is what
+   * makes this a test rather than a demonstration: a client that kept quoting
+   * INR after a UK address gets a 400 here.
+   */
+  it("adopts the currency the billing address resolves to, before anything is charged", async () => {
+    const premium = seatPlanFor(catalogueFixture(), "premium", ANNUAL_SEAT_MONTHS)!;
+    mount("/app/account", SUPERUSER);
+    await screen.findByRole("heading", { level: 1, name: "Create your account" });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+    await screen.findByRole("heading", { level: 1, name: "Choose your seat" });
+    // Nothing is on file yet, so the picker is still open — V6 removes it only
+    // once an address has decided the question.
+    expect(screen.getByRole("radio", { name: /INR/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("ac-tier-premium"));
+    fireEvent.click(screen.getByTestId("ac-period-12"));
+    fireEvent.click(screen.getByTestId("ac-take-trial"));
+    await screen.findByRole("heading", { level: 1, name: "Your 3-deck free trial" });
+    for (let i = 0; i < 3; i += 1) fireEvent.click(screen.getByTestId("ac-use-trial-deck"));
+    fireEvent.click(screen.getByTestId("ac-try-annual"));
+    await screen.findByRole("heading", { level: 1, name: "Annual subscription" });
+    // Still INR here: the address has not been given.
+    expect(screen.getByTestId("ac-ann-baseprice")).toHaveTextContent(formatMinor(premium.amounts.INR, "₹"));
+
+    fireEvent.click(screen.getByTestId("ac-ann-continue"));
+    await screen.findByRole("heading", { level: 1, name: "Billing details" });
+    fireEvent.change(screen.getByLabelText("Billing name"), { target: { value: "Northstar Ltd" } });
+    fireEvent.change(screen.getByLabelText("City"), { target: { value: "London" } });
+    fireEvent.change(screen.getByLabelText("Country"), { target: { value: "United Kingdom" } });
+    fireEvent.change(screen.getByLabelText("Communication address"), { target: { value: "3 Finsbury Ave" } });
+    // The note is the shared resolver's sentence, not one this screen wrote.
+    expect(screen.getByTestId("ac-billing-currency")).toHaveTextContent("Billed in USD, no GST applied");
+    fireEvent.click(screen.getByTestId("ac-billing-continue"));
+
+    await screen.findByRole("heading", { level: 1, name: "Complete payment" });
+    const summary = screen.getByTestId("ac-order-summary");
+    // Re-quoted in USD, and no GST — the two consequences of the same address.
+    expect(within(summary).getByTestId("ac-total")).toHaveTextContent(formatMinor(premium.amounts.USD, "$"));
+    expect(within(summary).queryByTestId("ac-gst-line")).toBeNull();
+    expect(within(summary).getByTestId("ac-untaxed-line")).toHaveTextContent("Not included");
+    expect(within(summary).getByTestId("ac-line-billto")).toHaveTextContent("London, United Kingdom");
+
+    fireEvent.click(screen.getByTestId("ac-pay"));
+    await screen.findByRole("heading", { level: 1, name: "Order recorded" });
+    expect(server.calls.find((c) => c.method === "POST")?.body).toMatchObject({
+      planCode: premium.code,
+      currency: "USD",
+    });
+    expect(screen.getByTestId("ac-receipt-amount")).toHaveTextContent("(excl. local taxes)");
+  });
+
+  it("opens in the currency a saved billing country already decided, with no choice offered", async () => {
+    // Two things at once, and the address is deliberately NOT India so neither
+    // can pass by coincidence: the catalogue's base currency is INR, so a build
+    // that ignored `billing.locale` on load would quote ₹ here.
+    //   • the order currency is seeded from the saved country, not from the base
+    //   • V6 deletes `CurrencyPicker` — the list is narrowed to the one legal
+    //     currency and the picker hides itself below two, so a customer cannot
+    //     choose one `POST /orders` would refuse.
+    server.saved = true;
+    server.billing = { name: "Northstar Ltd", city: "London", country: "United Kingdom", address: "3 Finsbury Ave" };
+    const premium = seatPlanFor(catalogueFixture(), "premium", ANNUAL_SEAT_MONTHS)!;
+    mount("/app/account", SUPERUSER);
+    await screen.findByRole("heading", { level: 1, name: "Create your account" });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+    await screen.findByRole("heading", { level: 1, name: "Choose your seat" });
+    expect(screen.queryByRole("radio", { name: /INR/ })).toBeNull();
+    expect(screen.queryByRole("radio", { name: /USD/ })).toBeNull();
+    fireEvent.click(screen.getByTestId("ac-tier-premium"));
+    expect(screen.getByTestId("ac-period-12")).toHaveTextContent(formatMinor(premium.amounts.USD, "$"));
+    expect(screen.getByTestId("ac-period-12")).not.toHaveTextContent(formatMinor(premium.amounts.INR, "₹"));
+  });
+
+  it("sends an individual who wants Enterprise bundles through the Organization branch", async () => {
+    // `acUpgradeToEnt()` — V6 flips the account type and collects org details.
+    // `quoteOrder` would refuse an enterprise plan for an individual, so there
+    // is no Continue to offer until that has happened.
+    mount("/app/account", SUPERUSER);
+    await screen.findByRole("heading", { level: 1, name: "Create your account" });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+    await screen.findByRole("heading", { level: 1, name: "Choose your seat" });
+    fireEvent.click(screen.getByTestId("ac-tier-premium"));
+    fireEvent.click(screen.getByTestId("ac-period-6"));
+    fireEvent.click(screen.getByTestId("ac-take-trial"));
+    await screen.findByRole("heading", { level: 1, name: "Your 3-deck free trial" });
+    for (let i = 0; i < 3; i += 1) fireEvent.click(screen.getByTestId("ac-use-trial-deck"));
+    fireEvent.click(screen.getByTestId("ac-try-annual"));
+    await screen.findByRole("heading", { level: 1, name: "Annual subscription" });
+
+    fireEvent.click(screen.getByTestId("ac-ann-entplans"));
+    await screen.findByRole("heading", { level: 1, name: "Enterprise Plans" });
+    expect(screen.getByTestId("ac-entplan-ent_s10")).toHaveTextContent("10 Premium seats");
+    expect(screen.queryByTestId("ac-entplan-continue")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("ac-entplan-upgrade"));
+    await screen.findByRole("heading", { level: 1, name: "What best describes your organisation?" });
+    expect(stepLabels()).toEqual(["Account", "Org type", "Org details", "Plan", "Payment", "Done"]);
+  });
 });
 
 describe("Buy credits", () => {
@@ -527,6 +763,14 @@ describe("the Organization branch", () => {
     fireEvent.change(screen.getByLabelText("Country"), { target: { value: "India" } });
     fireEvent.click(screen.getByRole("button", { name: /Create account/ }));
 
+    // V6 · `#acs-super` — the step the mockup inserts after Org details. It
+    // shares the "Org details" stepper position, exactly as V6's `setSteps`
+    // map does (`super: 2`).
+    await screen.findByRole("heading", { level: 1, name: "Nominate your super user" });
+    expect(activeStep()).toBe("Org details");
+    expect(screen.getByLabelText("Super user — full name")).toHaveValue("Nisha Kapoor");
+    fireEvent.click(screen.getByTestId("ac-super-continue"));
+
     await screen.findByRole("heading", { level: 1, name: "Choose your Enterprise plan" });
     expect(activeStep()).toBe("Plan");
     expect(server.calls.find((c) => c.method === "PUT")?.body).toMatchObject({
@@ -584,6 +828,28 @@ describe("the Organization branch", () => {
     expect(screen.getByTestId("ac-receipt")).toHaveTextContent("Large Organisation Plan · Organization");
     expect(screen.getByTestId("ac-receipt-decks")).toHaveTextContent("7,500 decks ready to use");
     assertNoCardField();
+
+    // ── V6 · `#acs-team`, reached from the receipt ──
+    // Nothing in V6's drawn flow navigates to `team` (its only caller is the
+    // Role screen, which V6 marks "removed from flow"), and the success screen
+    // says "Invite team members". So the receipt is the entry, for an
+    // ORGANISATION only — V6 gives the screen to "enterprise only".
+    fireEvent.click(screen.getByTestId("ac-receipt-team"));
+    await screen.findByRole("heading", { level: 1, name: "Add your team" });
+    expect(screen.getByTestId("ac-team-seats")).toHaveTextContent("0 / 3 seats used");
+    fireEvent.change(screen.getByLabelText("Work email"), { target: { value: "meera.sharma@acme.vc" } });
+    fireEvent.click(screen.getByTestId("ac-team-add"));
+    expect(screen.getByTestId("ac-team-members").children).toHaveLength(1);
+    expect(screen.getByTestId("ac-team-seats")).toHaveTextContent("1 / 3 seats used");
+    // The same address twice is refused — V6's `aetAdd()` would list it twice.
+    fireEvent.change(screen.getByLabelText("Work email"), { target: { value: "Meera.Sharma@acme.vc" } });
+    fireEvent.click(screen.getByTestId("ac-team-add"));
+    expect(screen.getByTestId("ac-team-error")).toHaveTextContent("already on the list");
+    expect(screen.getByTestId("ac-team-members").children).toHaveLength(1);
+    assertNoCardField();
+    // "Confirm & go to dashboard" closes the overlay, as both V6 buttons do.
+    fireEvent.click(screen.getByTestId("ac-team-confirm"));
+    await screen.findByText("the dashboard");
   });
 });
 
@@ -651,6 +917,10 @@ describe("the incubator ADMIN gets v3's seat flow", () => {
     fireEvent.change(screen.getByLabelText("Organization name"), { target: { value: "Acme" } });
     fireEvent.change(screen.getByLabelText("Country"), { target: { value: "India" } });
     fireEvent.click(screen.getByRole("button", { name: /Create account/ }));
+
+    // V6 · `#acs-super` now stands between Org details and the plan.
+    await screen.findByRole("heading", { level: 1, name: "Nominate your super user" });
+    fireEvent.click(screen.getByTestId("ac-super-continue"));
 
     await screen.findByRole("heading", { level: 1, name: "Choose your Enterprise plan" });
     expect(screen.getByTestId("ac-orgextra")).toBeInTheDocument();

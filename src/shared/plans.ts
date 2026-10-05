@@ -200,6 +200,20 @@ export function taxFromInclusive(totalMinor: number, ratePct: number): TaxBreakd
 export const BASE_CURRENCY = "INR";
 
 /**
+ * Does GST apply to a price in this currency?
+ *
+ * Extracted from `priceBreakdown`'s first line — which read
+ * `currency !== BASE_CURRENCY` and still means exactly that, byte for byte — so
+ * that `resolveBillingLocale` below cannot answer the question differently. The
+ * arithmetic is untouched; only the predicate now has a name, and there is one
+ * of it. A second copy of `=== "INR"` is how a product ends up charging GST on
+ * a screen that says it does not.
+ */
+export function gstApplies(currency: string | null | undefined): boolean {
+  return currency === BASE_CURRENCY;
+}
+
+/**
  * The breakdown for `amountMinor` under the org's tax settings.
  *
  * **GST is the INR-billing tax.** The prototype states the rule once — "GST at
@@ -225,7 +239,7 @@ export function priceBreakdown(
   tax: TaxSettings,
   currency: string = BASE_CURRENCY,
 ): TaxBreakdown {
-  if (currency !== BASE_CURRENCY) {
+  if (!gstApplies(currency)) {
     const amount = Math.max(0, Math.trunc(amountMinor));
     return {
       subtotalMinor: amount,
@@ -239,6 +253,173 @@ export function priceBreakdown(
   return tax.inclusive
     ? taxFromInclusive(amountMinor, tax.ratePct)
     : taxOnExclusive(amountMinor, tax.ratePct);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V6-CURRENCY · the BILLING ADDRESS decides the currency, and the currency
+// decides GST.
+//
+// `AISJ_MyAccount_V6.HTM`'s billing screen (`#acs-billing`) states the rule in
+// the sub-line, verbatim:
+//
+//   "We use this to set your billing currency and generate your invoice. Indian
+//    billing addresses are charged in INR with GST; every other country is
+//    billed in USD with no GST."
+//
+// Before this block NOTHING in the product mapped a country to a currency: the
+// client sent `currency` with the order and the server priced whatever it was
+// handed. That is the whole defect — the billing address was collected (by the
+// org screen, for an organisation only) and then never consulted.
+//
+// ── THREE RULES THIS BLOCK HOLDS ITSELF TO ──────────────────────────────────
+//
+//  1. **One place answers it.** `billingCurrencyFor` is the only country →
+//     currency map in the repo, `gstApplies` is the only "does GST apply", and
+//     `resolveBillingLocale` composes them. The screens, the order route and the
+//     invoice all read the same answer.
+//  2. **The rate is a SETTING, never a literal here.** `resolveBillingLocale`
+//     takes `TaxSettings` and reports `tax.ratePct`; it does not spell `18`.
+//     `GST_DEFAULT_RATE_PCT` above is the one default in the file, and the
+//     configured rate beats it. This product already grew four low-credit
+//     thresholds by putting a constant next to a setting; a second GST rate
+//     would be the same mistake with money on it.
+//  3. **Nothing is derived and then stored.** There is no `billing_currency`
+//     column (`0104` deliberately adds none): the currency is a function of the
+//     country, so storing it creates two answers that drift. The currency an
+//     order was actually priced in IS persisted — on the intent — because that
+//     is a historical fact, not a derivation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * V6: "every other country is billed in USD with no GST". One constant, so the
+ * non-Indian branch is named rather than spelled at each call site.
+ */
+export const INTERNATIONAL_CURRENCY = "USD";
+
+/**
+ * How a typed billing country can spell India.
+ *
+ * V6's field is an `<input list="bill-country-list">` — a datalist is a HINT,
+ * not a constraint, so the value is free text and "IN" or "Bharat" reach the
+ * server. The prototype's own check is `c==='india'||c==='in'||c==='bharat'`;
+ * the two added here are the ISO-3 code and the long form, which a paste or an
+ * autofill produces. Everything else is international, which is the safe
+ * direction to err: a country this list fails to recognise is billed USD with
+ * no GST, i.e. we do not collect a tax we then cannot attribute.
+ */
+const INDIA_COUNTRY_NAMES: readonly string[] = ["india", "in", "ind", "bharat", "republic of india"];
+
+/** Does this billing country make the customer an Indian-GST customer? */
+export function isIndianBillingCountry(country: string | null | undefined): boolean {
+  if (typeof country !== "string") return false;
+  return INDIA_COUNTRY_NAMES.includes(country.trim().toLowerCase());
+}
+
+/**
+ * The ONE currency a customer with this billing country may be billed in, or
+ * `null` when no billing country is on file.
+ *
+ * **`null` is load-bearing and is not a default.** Production holds two
+ * `account_profiles` rows written before a billing address could be captured at
+ * all, and `0104`'s new columns are NULL on both. Answering "INR" for them
+ * would start adding 18 % GST to what they are quoted; answering "USD" would
+ * stop charging GST that may be due. Both are a billing change made by a
+ * migration, which is not a migration's business. So an unrecorded country
+ * resolves to `null`, the order route leaves the currency alone exactly as it
+ * does today, and the V6 billing screen is what fills it in.
+ */
+export function billingCurrencyFor(country: string | null | undefined): string | null {
+  if (typeof country !== "string" || !country.trim()) return null;
+  return isIndianBillingCountry(country) ? BASE_CURRENCY : INTERNATIONAL_CURRENCY;
+}
+
+/** Everything the billing address implies, resolved once. */
+export interface BillingLocale {
+  /** The country as recorded, trimmed. Null when none is on file. */
+  country: string | null;
+  /** The only currency this customer may be billed in. Null when unresolved. */
+  currency: string | null;
+  /** True when GST applies — by construction `gstApplies(currency)`. */
+  taxed: boolean;
+  /** The CONFIGURED rate when GST applies, else 0. Never a literal. */
+  ratePct: number;
+  /** V6's note for the billing screen. Null while nothing is resolved. */
+  note: string | null;
+}
+
+/**
+ * `country` + the org's tax settings → the currency, the tax treatment and the
+ * sentence V6 prints under the country field.
+ *
+ * `tax` is REQUIRED rather than defaulted: the rate belongs to the published
+ * catalogue (`pricing_settings.gst_rate_pct`, via `taxSettingsOf`), and a
+ * default here would be a second GST rate living beside the real one.
+ */
+export function resolveBillingLocale(
+  country: string | null | undefined,
+  tax: TaxSettings,
+): BillingLocale {
+  const recorded = typeof country === "string" && country.trim() ? country.trim() : null;
+  const currency = billingCurrencyFor(recorded);
+  const taxed = gstApplies(currency);
+  return {
+    country: recorded,
+    currency,
+    taxed,
+    ratePct: taxed ? tax.ratePct : 0,
+    // V6's two sentences, which is why they live here and not in three screens.
+    note:
+      currency === null
+        ? null
+        : taxed
+          ? `Billed in ${currency} with ${tax.ratePct}% GST — GST-compliant invoice provided.`
+          : `Billed in ${currency}, no GST applied.`,
+  };
+}
+
+/** The four fields V6's `#acs-billing` captures. */
+export interface BillingAddress {
+  /** "Name or company to appear on the invoice". */
+  name: string;
+  city: string;
+  /** Free text — the datalist is a hint. `billingCurrencyFor` interprets it. */
+  country: string;
+  /** The multi-line "Communication address" — street, area, postal code. */
+  address: string;
+}
+
+/** Same shape as `accountOrder.ts`'s `FieldErrors`, declared here to keep plans.ts leaf-level. */
+export type BillingFieldErrors = Record<string, string>;
+
+const BILLING_MAX = 120;
+/** The address is a textarea, so it gets a textarea's budget. */
+const BILLING_ADDRESS_MAX = 500;
+
+/**
+ * The billing screen's own validation. `{}` means the screen may continue.
+ *
+ * All four fields are required, which is V6's rule and not an invention:
+ * `acBillingValidate()` enables Continue only on `name && city && country &&
+ * addr`. The country matters most — it is the currency — but a GST invoice with
+ * no address on it is not a GST invoice, so the server asks for the same four.
+ */
+export function validateBillingAddress(b: {
+  name?: unknown;
+  city?: unknown;
+  country?: unknown;
+  address?: unknown;
+}): BillingFieldErrors {
+  const errors: BillingFieldErrors = {};
+  const need = (key: "name" | "city" | "country" | "address", message: string, max: number) => {
+    const value = typeof b[key] === "string" ? (b[key] as string).trim() : "";
+    if (!value) errors[key] = message;
+    else if (value.length > max) errors[key] = `Keep this under ${max} characters.`;
+  };
+  need("name", "Enter the name or company to appear on the invoice.", BILLING_MAX);
+  need("city", "Enter your city.", BILLING_MAX);
+  need("country", "Enter your billing country.", BILLING_MAX);
+  need("address", "Enter your communication address.", BILLING_ADDRESS_MAX);
+  return errors;
 }
 
 /** `n` units of a price. Integer multiplication, so nothing drifts. */

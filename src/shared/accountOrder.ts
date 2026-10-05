@@ -26,6 +26,7 @@ import {
   groupOf,
   extraCreditRateMinor,
   listedPlans,
+  seatPlanFor,
   type BillingPeriod,
   type PlanGroupId,
   type PricePlanRow,
@@ -36,6 +37,10 @@ import {
 import {
   currencySymbol,
   priceBreakdown,
+  PLAN_LABELS,
+  PLANS,
+  type BillingAddress,
+  type Plan,
   type TaxBreakdown,
   type TaxSettings,
 } from "./plans";
@@ -48,12 +53,39 @@ export type AccountScreen =
   | "account"
   | "orgtype"
   | "orgdetails"
+  /**
+   * `#acs-orgplan` — the organisation's enterprise seat-count plans.
+   *
+   * **V6 does not draw this screen and it is NOT being deleted.** `AISJ_MyAccount_V6`
+   * drops the `<div id="acs-orgplan">` markup but keeps every line of its driver
+   * (`renderOrgPlans`, `acOrgPlan`, `acOrgPlanKey`, `acSetOrgSel`, the `acGo`
+   * hook and the `acRefreshPricing` branch), and the file's own comment calls
+   * the ₹ `PRICING.ent` figures behind it "dead code — unreachable path". That
+   * is a statement about the INCUBATOR superuser mockup, which is the only file
+   * V6 re-exports. In this build the screen is still reached by a case V6 does
+   * not draw: the VC edition's organisation branch, where `seatFlow` is false
+   * and `LegacyOrgPlanScreen` renders it (`e2e/account-purchase.spec.ts`, the
+   * out-of-scope tripwire, walks exactly that path). V6's `entplans` replaces
+   * it only for the incubator, and only with FIXED bundles — so the incubator
+   * path moves to `super` and `orgplan` keeps serving the edition that was
+   * never rescoped.
+   */
   | "orgplan"
   | "plan"
   /** V3-PT · `#acs-trial` — the three free decks, used one at a time. */
   | "trial"
   /** V3-PT · `#acs-paidtrial` — buy 10–50 more decks at the paid-trial rate. */
   | "paidtrial"
+  /** V6 · `#acs-super` — nominate the organisation's top account authority. */
+  | "super"
+  /** V6 · `#acs-annual` — one Premium seat, plus seats and credits added to it. */
+  | "annual"
+  /** V6 · `#acs-entplans` — the fixed annual bundles, reached from `annual`. */
+  | "entplans"
+  /** V6 · `#acs-billing` — the address that decides currency, tax and invoice. */
+  | "billing"
+  /** V6 · `#acs-team` — invite colleagues and assign roles, after the order. */
+  | "team"
   | "payment"
   | "success";
 
@@ -101,15 +133,28 @@ export function stepperFor(
     type === "organization"
       ? [...STEPS_ORGANIZATION]
       : [...(seatFlow ? STEPS_INDIVIDUAL_SEATS : STEPS_INDIVIDUAL)];
+  // V6's `setSteps()`, both maps verbatim, with one key the file leaves out.
+  //
+  //   enterprise {account:0,orgtype:1,orgdetails:2,super:2,plan:3,trial:3,
+  //               paidtrial:3,annual:3,entplans:3,billing:4,payment:4,success:5}
+  //   individual {account:0,plan:1,trial:1,paidtrial:1,annual:1,entplans:1,
+  //               super:2,billing:2,payment:2,success:2}
+  //
+  // `team` is in V6's `SCREENS` but in neither map, so the prototype renders a
+  // stepper with NOTHING active on it — `idx` is `undefined` there and every
+  // step falls through to "todo". It is the post-purchase step, so it takes the
+  // last position (already "done" on arrival, which is what it is).
   const index =
     type === "organization"
       ? {
-          account: 0, orgtype: 1, orgdetails: 2, orgplan: 3, plan: 3,
-          trial: 3, paidtrial: 3, payment: 4, success: 5,
+          account: 0, orgtype: 1, orgdetails: 2, super: 2, orgplan: 3, plan: 3,
+          trial: 3, paidtrial: 3, annual: 3, entplans: 3,
+          billing: 4, payment: 4, success: 5, team: 5,
         }[screen]
       : {
           account: 0, orgtype: 0, orgdetails: 0, orgplan: 1, plan: 1,
-          trial: 1, paidtrial: 1, payment: 2, success: 2,
+          trial: 1, paidtrial: 1, annual: 1, entplans: 1,
+          super: 2, billing: 2, payment: 2, success: 2, team: 2,
         }[screen];
   const onSuccess = screen === "success";
   // v3 relabels the LAST step, not index 2 — the individual branch's labels are
@@ -317,6 +362,292 @@ export function validateOrgDetails(o: {
     tooLong(errors, k, typeof o[k] === "string" ? (o[k] as string) : null);
   }
   return errors;
+}
+
+// ── V6 · `#acs-billing` — the address that decides the money ─────────────────
+
+/**
+ * `#bill-country-list`, verbatim and in the mockup's order.
+ *
+ * It is a `<datalist>` in V6, not a `<select>`: the field accepts anything typed
+ * and these are suggestions. So this list is NOT a validation allow-list the way
+ * `COUNTRIES` is for `#acs-orgdetails` — a customer in a country V6 did not list
+ * must still be able to be billed. `validateBillingDetails` therefore checks
+ * that the field is FILLED, never that it is one of these.
+ */
+export const BILLING_COUNTRIES = [
+  "India",
+  "United States",
+  "United Kingdom",
+  "United Arab Emirates",
+  "Singapore",
+  "Canada",
+  "Australia",
+  "Germany",
+  "Other",
+] as const;
+
+/**
+ * **The address itself, its validation and the currency it implies all live in
+ * `src/shared/plans.ts`** — `BillingAddress`, `validateBillingAddress` and
+ * `resolveBillingLocale`, beside the `TaxSettings` the rate comes from. This
+ * lane wrote neither, on purpose and then in fact: a second copy of
+ * "India → INR + GST" next to this form is precisely how the product grew four
+ * different AI-gate thresholds, and the server refuses an order whose currency
+ * disagrees with the saved country (`currency_not_for_billing_country`), so a
+ * screen answering it differently would simply produce a 400.
+ *
+ * Only the screen's own furniture is here: the datalist and a blank seed.
+ */
+export const EMPTY_BILLING_ADDRESS: BillingAddress = { name: "", city: "", country: "", address: "" };
+
+// ── V6 · `#acs-super` — the organisation's top account authority ──────────────
+
+/** `#ac-super-name` / `#ac-super-email`. */
+export interface SuperUserNomination {
+  name: string;
+  email: string;
+}
+
+/**
+ * `acSuperNext()` — V6 refuses to continue on a blank email and focuses the
+ * field (`if(e && !e.value.trim()){ e.focus(); return; }`); it never checks the
+ * name. This adds the work-email check the Account screen already applies,
+ * because V6's own hint says "They'll log in with this email and set their
+ * password" — a personal mailbox the rest of the wizard rejects cannot be the
+ * one account that manages billing.
+ */
+export function validateSuperUser(s: { name?: unknown; email?: unknown }): FieldErrors {
+  const errors: FieldErrors = {};
+  const name = typeof s.name === "string" ? s.name.trim() : "";
+  const email = typeof s.email === "string" ? s.email.trim() : "";
+  if (!name) errors.name = "Enter the super user's full name.";
+  if (!email) errors.email = "Enter the super user's work email.";
+  else if (!isEmail(email)) errors.email = "Enter a valid email address.";
+  else if (!isWorkEmail(email)) errors.email = "Personal email addresses are not accepted.";
+  tooLong(errors, "name", name);
+  return errors;
+}
+
+// ── V6 · `#acs-team` — add your team ─────────────────────────────────────────
+
+/** `AET_ROLES`, verbatim. */
+export const TEAM_ROLES = [
+  "Superuser",
+  "Program Manager",
+  "Program Associate",
+  "Jury Member",
+] as const;
+
+export type TeamSeatTierId = "basic" | "configurable" | "customisable";
+
+/**
+ * `AET_PLANS` — the three seat tiers the Team screen previews, in the mockup's
+ * own words. `seats: null` is V6's `Infinity`: unlimited.
+ *
+ * These are SEAT CEILINGS, not prices — no amount appears on this screen, so
+ * nothing here is a price literal. The "Preview plan" pills let a superuser see
+ * what each ceiling allows before buying it, which is what V6 draws.
+ */
+export const TEAM_SEAT_TIERS: readonly {
+  id: TeamSeatTierId;
+  /** The pill's label, e.g. "Basic (3 seats)". */
+  pill: string;
+  /** The plan bar's name. */
+  name: string;
+  sub: string;
+  seats: number | null;
+  /** V6 hides "Upgrade plan" on the unlimited tier. */
+  upgradable: boolean;
+}[] = [
+  { id: "basic", pill: "Basic (3 seats)", name: "Basic plan", sub: "Up to 3 users · Fixed monthly quota", seats: 3, upgradable: true },
+  { id: "configurable", pill: "Configurable (5 seats)", name: "Configurable plan", sub: "Up to 5 users · CRM sync included", seats: 5, upgradable: true },
+  { id: "customisable", pill: "Customisable (unlimited)", name: "Customisable plan", sub: "Unlimited users · Dedicated support + SLA", seats: null, upgradable: false },
+];
+
+export function teamSeatTier(id: TeamSeatTierId) {
+  // Non-null: `id` is the union of the three literals above.
+  return TEAM_SEAT_TIERS.find((t) => t.id === id)!;
+}
+
+/** `aetSeatsFull()` — `p.seats!==Infinity && aetMembers.length>=p.seats`. */
+export function teamSeatsFull(id: TeamSeatTierId, memberCount: number): boolean {
+  const seats = teamSeatTier(id).seats;
+  return seats !== null && memberCount >= seats;
+}
+
+/** `aet-pb-seat` — "2 / 3 seats used", or "Unlimited seats". */
+export function teamSeatLabel(id: TeamSeatTierId, memberCount: number): string {
+  const seats = teamSeatTier(id).seats;
+  return seats === null ? "Unlimited seats" : `${memberCount} / ${seats} seats used`;
+}
+
+/** V6's `aetMembers` rows — client-side until a server route exists for them. */
+export interface TeamInvite {
+  email: string;
+  role: string;
+  /** Each member's own 3 configurable parameters (`m.params`). */
+  params: [string, string, string];
+}
+
+/** `aetInitials()` — two letters from the local part, split on `. _ -`. */
+export function teamInitials(email: string): string {
+  const local = email.split("@")[0] ?? "";
+  const parts = local.split(/[._-]/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  return local.slice(0, 2).toUpperCase();
+}
+
+// ── V6 · `#acs-annual` — one Premium seat, plus what you add to it ────────────
+
+/**
+ * **10 GB of storage per seat, on Standard / Pro / Premium alike.** V6 states it
+ * on every seat row of `#acs-annual` ("Standard seat (10 GB storage)", …) and on
+ * the base line, and never varies it by tier. One constant, so no screen can
+ * disagree with another about it.
+ */
+export const SEAT_STORAGE_GB = 10;
+
+/** The annual seat's period, in months. `#acs-annual` sells nothing shorter. */
+export const ANNUAL_SEAT_MONTHS = 12;
+
+/**
+ * `annSeats` — how many of each annual seat tier the cart holds.
+ *
+ * V6's base line is "1 Premium Seat (10 GB storage) — Annual · 125 Credits
+ * included", and `annTotal()` adds `annBase` to the stepper counts. Here the
+ * base is simply `premium: 1` in the starting cart, so one sum covers both and
+ * nothing is special-cased: `annualCartQuote` prices what the cart says.
+ */
+export type AnnualSeatCounts = Record<Plan, number>;
+
+export interface AnnualCart {
+  seats: AnnualSeatCounts;
+  /** Extra decks taken with the subscription, at the Premium credit rate. */
+  extraCredits: number;
+}
+
+/** V6's starting cart: the subscription "starts with one Premium seat". */
+export function initialAnnualCart(): AnnualCart {
+  return { seats: { standard: 0, pro: 0, premium: 1 }, extraCredits: 0 };
+}
+
+export function annualSeatsTotal(cart: AnnualCart): number {
+  return PLANS.reduce((n, tier) => n + Math.max(0, cart.seats[tier] ?? 0), 0);
+}
+
+/** One priced row of the annual cart. `unitMinor` is the catalogue's own figure. */
+export interface AnnualCartLine {
+  key: string;
+  label: string;
+  sub: string;
+  quantity: number;
+  unitMinor: number;
+  amountMinor: number;
+  /** Decks the line grants, from the catalogue row's `units`. */
+  units: number | null;
+}
+
+/**
+ * Why a cart cannot be placed as one order.
+ *
+ * `mixed_tiers` is not a rule of V6's — it is a limit of THIS build, and it is
+ * recorded rather than papered over. `POST /api/account/orders` takes a single
+ * `planCode` with a `quantity` and re-prices it server-side (§1.1: the server
+ * never trusts a price from the client). A cart holding two different seat
+ * tiers is two catalogue rows, so there is no `planCode` that describes it, and
+ * the only ways to "fix" that from this lane would be to send one tier's code
+ * with the other tier's money — which is the class of bug this programme keeps
+ * finding — or to compute a total here that the server would not agree with.
+ */
+export type AnnualCartBlock = "nothing_priced" | "mixed_tiers";
+
+export interface AnnualCartQuote {
+  lines: AnnualCartLine[];
+  seatsTotal: number;
+  extraCredits: number;
+  extraMinor: number;
+  subtotalMinor: number;
+  breakdown: TaxBreakdown;
+  /** Decks the whole cart grants, or null when no row states any. */
+  unitsTotal: number | null;
+  /** The one catalogue line this cart reduces to, ready for `placeOrder`. */
+  order: { planCode: string; quantity: number; extraCredits: number } | null;
+  blocked: AnnualCartBlock | null;
+}
+
+/**
+ * The annual cart, priced from the PUBLISHED catalogue and taxed by the one
+ * tax rule (`priceBreakdown` ← `taxSettingsOf`). No figure in this function is
+ * written here: the seat prices are `seat_<tier>_12` rows, the extra-credit rate
+ * is derived from the Premium annual seat the same way `extraCreditRate` does
+ * it, and the GST rate is the catalogue's.
+ */
+export function annualCartQuote(
+  book: PublishedPriceBook,
+  cart: AnnualCart,
+  currency: string,
+): AnnualCartQuote {
+  const listed = new Set(listedPlans(book).map((p) => p.id));
+  const lines: AnnualCartLine[] = [];
+  const codes: { planCode: string; quantity: number }[] = [];
+  let unitsTotal: number | null = null;
+
+  for (const tier of PLANS) {
+    const quantity = Math.max(0, Math.trunc(cart.seats[tier] ?? 0));
+    if (quantity === 0) continue;
+    const plan = seatPlanFor(book, tier, ANNUAL_SEAT_MONTHS);
+    const unitMinor = plan && listed.has(plan.id) ? (plan.amounts[currency] ?? 0) : 0;
+    if (!plan || unitMinor <= 0) continue;
+    lines.push({
+      key: `seat_${tier}`,
+      label: `${PLAN_LABELS[tier]} seat (${SEAT_STORAGE_GB} GB storage)`,
+      sub: "Annual",
+      quantity,
+      unitMinor,
+      amountMinor: unitMinor * quantity,
+      units: plan.units,
+    });
+    codes.push({ planCode: plan.code, quantity });
+    if (plan.units !== null) unitsTotal = (unitsTotal ?? 0) + plan.units * quantity;
+  }
+
+  // The rate the extras are priced at, derived from the PREMIUM annual seat —
+  // the same choice `renderOrgExtra()` makes, because V6's base seat is Premium.
+  const rate = extraCreditRateMinor(book, "premium", currency) ?? 0;
+  const extraCredits = Math.max(0, Math.trunc(cart.extraCredits));
+  const extraMinor = rate > 0 ? Math.round(rate * extraCredits) : 0;
+  if (extraCredits > 0 && extraMinor > 0) {
+    lines.push({
+      key: "extra_credits",
+      label: `${extraCredits.toLocaleString("en-IN")} extra deck credits`,
+      sub: "1 credit = 1 deck · credits never expire",
+      quantity: extraCredits,
+      unitMinor: Math.round(rate),
+      amountMinor: extraMinor,
+      units: extraCredits,
+    });
+    unitsTotal = (unitsTotal ?? 0) + extraCredits;
+  }
+
+  const subtotalMinor = lines.reduce((sum, l) => sum + l.amountMinor, 0);
+  const blocked: AnnualCartBlock | null =
+    codes.length === 0 ? "nothing_priced" : codes.length > 1 ? "mixed_tiers" : null;
+
+  return {
+    lines,
+    seatsTotal: annualSeatsTotal(cart),
+    extraCredits,
+    extraMinor,
+    subtotalMinor,
+    breakdown: priceBreakdown(subtotalMinor, taxSettingsOf(book.tax), currency),
+    unitsTotal,
+    order:
+      blocked === null && codes[0]
+        ? { planCode: codes[0].planCode, quantity: codes[0].quantity, extraCredits }
+        : null,
+    blocked,
+  };
 }
 
 // ── Payment method ───────────────────────────────────────────────────────────

@@ -34,7 +34,7 @@ import { requireAuth, requireTask } from "../auth/middleware";
 // off the session and never off the request, which is what keeps §2's one piece of
 // good news true: not one of the 211 existing predicates takes its key from the
 // browser, and a `scopeOf(c.req.query())` would not compile.
-import { scopeOf, scoped, insertScope, type TenantScope } from "../../shared/tenant";
+import { scopeOf, insertScope, type TenantScope } from "../../shared/tenant";
 // The Billing audit category — the same one W3-C's `recordCreditMovement` writes.
 import { changedFragment, recordAudit } from "../audit/log";
 import { LOW_CREDIT_THRESHOLD } from "../../shared/notifications";
@@ -44,10 +44,8 @@ import {
   priceBreakdown,
   publishablePlans,
   type CreditsBillingView,
-  type InvoiceView,
   type PlanGroup,
   type PublishedPlan,
-  type TaxSettings,
 } from "../../shared/plans";
 import {
   issueMissingInvoices,
@@ -62,6 +60,11 @@ import {
   usageTotals,
 } from "../billing/ledger";
 import { paymentConfigured, recordPaymentIntent, type IntentPurpose } from "../billing/provider";
+// V6-INVOICE — the two templates, the record behind them, and the 10 GB-per-seat
+// figure. All in `src/server/billing/**` so this router stays a router.
+import { loadInvoiceRecord, renderInvoiceDocument } from "../billing/invoice";
+import { storageAllowanceForSeats } from "../billing/storage";
+import { emailDeliveryConfigured } from "../email/outbox";
 
 const billing = new Hono<AppEnv>();
 billing.use("*", requireAuth);
@@ -154,7 +157,36 @@ billing.get("/", async (c) => {
     intents: await listIntents(c.env, scope, 10),
     paymentConfigured: paymentConfigured(c.env),
   };
-  return c.json(view);
+
+  // ── V6 additions, served BESIDE `CreditsBillingView` ──────────────────────
+  //
+  // `CreditsBillingView` lives in `src/shared/plans.ts`, another lane's file this
+  // wave, so these two are additive keys on the payload rather than fields on the
+  // interface. Both exist so that a screen never writes the answer into copy.
+  //
+  // `storage` — "10 GB storage each" appears on four V6 plan screens and is
+  // markup in the prototype (`:2671`, `:2674`, `:3271`). Served from the seat
+  // model instead (`src/server/billing/storage.ts`).
+  //
+  // `invoiceDelivery` — V6's success screen promises "GST-compliant invoice sent
+  // to your registered email" (`:2807`). With `EMAIL_FROM` unset on every
+  // deployment that sentence is false, so the screen is handed the condition and
+  // the sentence that is true, rather than a literal to print unconditionally.
+  // This is the 2026-10-02 correction applied before the fact: do not tell the
+  // customer something was sent until something says it was.
+  const emailConfigured = emailDeliveryConfigured(c.env);
+  return c.json({
+    ...view,
+    storage: storageAllowanceForSeats(subscription.seats),
+    invoiceDelivery: {
+      configured: emailConfigured,
+      // Both branches keep V6's "suitable for input tax credit", because that is
+      // a property of the DOCUMENT, not of the delivery.
+      promise: emailConfigured
+        ? "GST-compliant invoice sent to your registered email · suitable for input tax credit"
+        : "GST-compliant invoice available to download · suitable for input tax credit",
+    },
+  });
 });
 
 // ── PUT /subscription — billing contact and cycle ────────────────────────────
@@ -363,91 +395,56 @@ billing.get("/invoices/:id", async (c) => {
   return c.json(invoice);
 });
 
-const escapeHtml = (s: string): string =>
-  s.replace(
-    /[&<>"']/g,
-    (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch] ?? ch,
-  );
-
-function invoiceDocument(
-  invoice: InvoiceView,
-  org: { name: string; gstin: string | null; email: string | null },
-  tax: TaxSettings,
-): string {
-  const row = (label: string, value: string) =>
-    `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`;
-  const amount = (m: number) => formatMinor(m, invoice.currency);
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<title>${escapeHtml(invoice.number)}</title>
-<style>
- body{font:13px/1.5 -apple-system,"Segoe UI",sans-serif;color:#1A1E2E;margin:40px;max-width:640px}
- h1{font-size:18px;margin:0 0 2px} .sub{color:#6B6355;font-size:12px;margin:0 0 24px}
- table{border-collapse:collapse;width:100%;margin-bottom:20px}
- th,td{text-align:left;padding:6px 0;border-bottom:1px solid #E8E3D9;vertical-align:top}
- th{font-weight:600;color:#6B6355;width:200px}
- .tot td,.tot th{border-bottom:none;font-weight:700;font-size:15px}
- .note{color:#6B6355;font-size:11.5px;border-top:1px solid #E8E3D9;padding-top:12px}
-</style></head><body>
-<h1>Tax invoice ${escapeHtml(invoice.number)}</h1>
-<p class="sub">${escapeHtml(org.name)}${org.gstin ? ` · GSTIN ${escapeHtml(org.gstin)}` : ""}</p>
-<table>
-${row("Issued", invoice.issuedAt.slice(0, 10))}
-${row("Billed to", org.email ?? "—")}
-${invoice.registration ? row("Our GST registration", invoice.registration) : ""}
-${row("Description", invoice.description)}
-${invoice.units !== null ? row("Credits", String(invoice.units)) : ""}
-${row("Subtotal", amount(invoice.subtotalMinor))}
-${row(`GST (${invoice.ratePct}%)`, amount(invoice.taxMinor))}
-<tr class="tot"><th>Total</th><td>${escapeHtml(amount(invoice.totalMinor))}</td></tr>
-</table>
-<p class="note">GST-compliant invoice · suitable for input tax credit.
-${invoice.reference ? `Transaction ID: ${escapeHtml(invoice.reference)}.` : ""}
-${tax.inclusive ? "Prices are inclusive of GST." : "GST added at checkout."}</p>
-</body></html>`;
-}
-
 /**
- * The document behind "Download invoice". Printable HTML rather than a generated
- * PDF: a PDF writer is a dependency on the critical path for a page a browser
- * already prints, and §1.3's rule about vendors on this lane is the same rule.
+ * The document behind V6's "Download invoice" (`AISJ_MyAccount_V6.HTM:2810`).
+ *
+ * **The server renders it and hands back a real response.** The prototype does
+ * the opposite — `acDownloadInvoice()` (`:3417`) builds the markup in the page and
+ * `window.open`s it, which needs a popup allowance it then apologises for
+ * ("Please allow pop-ups to download the invoice") and which a sandboxed client
+ * cannot do at all. A tax document also must not be assembled by code the
+ * customer can edit.
+ *
+ * Printable HTML rather than a generated PDF: a PDF writer is a dependency on the
+ * critical path for a page a browser already prints, and §1.3's rule about vendors
+ * on this lane is the same rule. The stylesheet carries `@media print`.
+ *
+ * Which of the two templates, and what the document may legally claim, are
+ * decided in `src/server/billing/invoice.ts` from the STORED record — not from
+ * today's settings, and not from the billing address, which is one rule owned by
+ * `src/shared/plans.ts`. This handler only resolves the record and serves it.
  */
 billing.get("/invoices/:id/document", async (c) => {
   const { edition } = c.var.user;
   const scope = scopeOf(c.var.user);
-  const invoice = await loadInvoice(c.env, scope, c.req.param("id"));
-  if (!invoice) return c.json({ error: "not_found" }, 404);
-  const subscription = await readSubscription(c.env, scope);
-  const tax = await readTaxSettings(c.env);
-  // The customer's own trading name goes on their tax invoice, so an unscoped read
-  // here would print one customer's branding on another's GST document. `org_settings`
-  // is T1-CONFIG's table; the statement is in this file, so the predicate is this
-  // session's (§11 — the FILE's owner scopes the statement).
-  const orgQ = scoped(scope).on("o");
-  const org = await c.env.DB.prepare(
-    `SELECT o.branding_json FROM org_settings o ${orgQ.whereClause()}`,
-  )
-    .bind(...orgQ.binds)
-    .first<{ branding_json: string | null }>();
-  let name = edition === "vc" ? "Investor workspace" : "Incubator workspace";
-  try {
-    const parsed = JSON.parse(org?.branding_json ?? "{}") as {
-      orgName?: string;
-    };
-    if (parsed.orgName) name = parsed.orgName;
-  } catch {
-    // Branding is free-form JSON written by the Set up wizard; a malformed blob
-    // must not stop an invoice being issued.
-  }
-  const html = invoiceDocument(
-    invoice,
-    { name, gstin: subscription.gstin, email: subscription.billingEmail },
-    tax,
+  const record = await loadInvoiceRecord(
+    c.env,
+    scope,
+    c.req.param("id"),
+    edition === "vc" ? "Investor workspace" : "Incubator workspace",
   );
+  if (!record) return c.json({ error: "not_found" }, 404);
+
+  const html = renderInvoiceDocument(record);
+  if (html === null) {
+    // A non-INR invoice carrying tax. Refused rather than rendered either way:
+    // see `invoiceTemplateOf`. 409 because the stored row, not the request, is
+    // what is wrong — and a named error is what gets it repaired.
+    return c.json(
+      {
+        error: "invoice_tax_contradicts_currency",
+        detail:
+          `Invoice ${record.number} is in ${record.currency} and carries tax. ` +
+          "An export invoice cannot declare a supply without payment of IGST over a taxed line, " +
+          "and a GST tax invoice cannot be issued in a foreign currency. The row needs repair.",
+      },
+      409,
+    );
+  }
   return new Response(html, {
     headers: {
       "content-type": "text/html; charset=utf-8",
-      "content-disposition": `attachment; filename="${invoice.number}.html"`,
+      "content-disposition": `attachment; filename="${record.number}.html"`,
     },
   });
 });

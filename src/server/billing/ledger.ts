@@ -486,11 +486,6 @@ export async function issueMissingInvoices(env: Env, scope: TenantScope): Promis
   if (pending.length === 0) return 0;
 
   const tax = await readTaxSettings(env);
-  const subQ = scoped(scope).on("s");
-  const sub = await env.DB.prepare(`SELECT s.gstin FROM billing_subscriptions s ${subQ.whereClause()}`)
-    .bind(...subQ.binds)
-    .first<{ gstin: string | null }>();
-
   const t = insertScope(scope);
   let issued = 0;
   for (const row of pending) {
@@ -524,7 +519,27 @@ export async function issueMissingInvoices(env: Env, scope: TenantScope): Promis
           breakdown.taxMinor,
           breakdown.totalMinor,
           tax.ratePct,
-          tax.registration ?? sub?.gstin ?? null,
+          // ── V6-INVOICE · THE SELLER'S GSTIN, AND ONLY THE SELLER'S ────────
+          //
+          // This was `tax.registration ?? sub?.gstin ?? null`: OUR GST
+          // registration, falling back to THE CUSTOMER'S, into one column.
+          // `0046`'s own comment on `billing_subscriptions.gstin` says it plainly
+          // — "The CUSTOMER's GSTIN (ours is `pricing_settings.gst_registration`)"
+          // — and `routes/billing.ts` then printed this column under the label
+          // "Our GST registration".
+          //
+          // So on any workspace where `pricing_settings.gst_registration` is NULL
+          // (it is nullable, and the Price configuration screen can clear it), the
+          // invoice declared the CUSTOMER as the supplier of their own purchase.
+          // That is not a cosmetic mislabel: a GST tax invoice naming the wrong
+          // supplier GSTIN is unusable for input tax credit, which is the one job
+          // V6 (`:2807`) gives this document. The customer's GSTIN belongs in the
+          // "Billed to" block and is read from the subscription at render time
+          // (`invoice.ts`, `loadInvoiceRecord`).
+          //
+          // NULL is now the honest value when we hold no registration, and the
+          // template omits the line rather than printing someone else's number.
+          tax.registration,
           row.reference,
           row.created_at,
         )

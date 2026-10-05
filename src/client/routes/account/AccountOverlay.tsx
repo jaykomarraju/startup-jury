@@ -44,27 +44,45 @@ import {
   type PlanGroupId,
   type PublishedPriceBook,
 } from "../../../shared/priceBook";
-import { PLAN_LABELS, type Plan } from "../../../shared/plans";
 import {
+  PLAN_LABELS,
+  resolveBillingLocale,
+  validateBillingAddress,
+  type BillingAddress,
+  type BillingLocale,
+  type Plan,
+} from "../../../shared/plans";
+import {
+  EMPTY_BILLING_ADDRESS,
   INDIVIDUAL_GROUPS,
   ORGANIZATION_GROUPS,
   PAID_TRIAL_PACKS,
   FREE_TRIAL_DECKS,
+  TEAM_ROLES,
+  annualCartQuote,
   billableCurrencies,
+  initialAnnualCart,
   nextAfterAccount,
   planScreenFor,
   purchasablePlans,
   quoteOrder,
   sellableGroups,
   stepperFor,
+  teamSeatsFull,
+  taxSettingsOf,
   validateAccountFields,
   validateOrgDetails,
+  validateSuperUser,
   type AccountOrderView,
   type AccountProfile,
   type AccountScreen,
+  type AnnualCart,
   type FieldErrors,
   type OrgKind,
   type PaymentMethod,
+  type SuperUserNomination,
+  type TeamInvite,
+  type TeamSeatTierId,
 } from "../../../shared/accountOrder";
 import {
   AccountApiError,
@@ -72,13 +90,17 @@ import {
   getPublishedCatalogue,
   orderDocumentUrl,
   placeOrder,
+  saveBillingAddress,
   saveProfile,
   type AccountState,
 } from "./accountApi";
 import {
   AccountScreen as AccountStep,
+  AnnualSubscriptionScreen,
   BTN_GHOST,
+  BillingDetailsScreen,
   Card,
+  EnterprisePlansScreen,
   EnterpriseSeatScreen,
   LegacyOrgPlanScreen,
   LegacyPlanScreen,
@@ -89,6 +111,8 @@ import {
   ReceiptScreen,
   SeatScreen,
   Stepper,
+  SuperUserScreen,
+  TeamScreen,
   TrialScreen,
   type AccountDraft,
   type OrgDraft,
@@ -102,6 +126,19 @@ const OVERLAY_VARS = {
 } as CSSProperties;
 
 export type AccountEntry = "account" | "buy-credits";
+
+/**
+ * What `resolveBillingLocale` answers when there is nothing to resolve against.
+ * `note: null` is what keeps V6's `#bill-currency-note` hidden, and `currency:
+ * null` is what leaves the currency picker alone — neither is a default.
+ */
+const UNRESOLVED_LOCALE: BillingLocale = {
+  country: null,
+  currency: null,
+  taxed: false,
+  ratePct: 0,
+  note: null,
+};
 
 function accountDraftOf(p: AccountProfile): AccountDraft {
   return {
@@ -144,6 +181,12 @@ function orderErrorMessage(err: unknown): string {
   switch (code) {
     case "not_priced_in_currency":
       return "That plan is not sold in this currency. Choose another currency or plan.";
+    case "currency_not_for_billing_country":
+      // The server refuses rather than re-denominating, so the honest fix is to
+      // go back to the address that set the currency.
+      return "Your billing address sets the currency for this order. Go back to Billing details and check the country.";
+    case "invalid_billing_address":
+      return "Your billing details are incomplete. Go back and fill all four fields.";
     case "organization_required":
       return "Annual plans are for organisation accounts. Switch your account type to Organization first.";
     case "plan_not_purchasable":
@@ -203,6 +246,32 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
   /** `iTrialLeft`, counted up rather than down. Local, spends nothing. */
   const [trialUsed, setTrialUsed] = useState(0);
   const [orgPlanCode, setOrgPlanCode] = useState<string | null>(null);
+
+  // ── V6's five new screens ─────────────────────────────────────────────────
+  /** `#acs-super` — `#ac-super-name` / `#ac-super-email`. */
+  const [superUser, setSuperUser] = useState<SuperUserNomination>({ name: "", email: "" });
+  /** `#acs-billing` — the address that decides the currency, tax and invoice. */
+  const [billing, setBilling] = useState<BillingAddress>(EMPTY_BILLING_ADDRESS);
+  /**
+   * `billingBackTarget` — which screen sent us to Billing, and the flag that
+   * says we went through it at all. `acPayBack()` in V6 always returns to
+   * Billing; here Payment returns there only on the paths that visit it, so the
+   * legacy and VC flows keep going back to their own plan screen.
+   */
+  const [billingBack, setBillingBack] = useState<AccountScreen | null>(null);
+  /** `annSeats` + the extra decks taken with them. Starts at one Premium seat. */
+  const [annualCart, setAnnualCart] = useState<AnnualCart>(initialAnnualCart);
+  /** `entBundleKey` — the chosen fixed Enterprise bundle. */
+  const [entPlanCode, setEntPlanCode] = useState<string | null>(null);
+  /** `acPayMode` — which selection the Payment screen is pricing. */
+  const [payMode, setPayMode] = useState<"" | "annual" | "entplans">("");
+  /** `#acs-team` — `aetPlanKey`, `aetMembers` and the add-member row. */
+  const [teamTier, setTeamTier] = useState<TeamSeatTierId>("basic");
+  const [teamMembers, setTeamMembers] = useState<TeamInvite[]>([]);
+  const [teamEmail, setTeamEmail] = useState("");
+  const [teamRole, setTeamRole] = useState<string>(TEAM_ROLES[1]);
+  const [teamError, setTeamError] = useState<string | null>(null);
+
   const [method, setMethod] = useState<PaymentMethod>("upi");
   const [orderError, setOrderError] = useState<string | null>(null);
   const [order, setOrder] = useState<AccountOrderView | null>(null);
@@ -233,9 +302,32 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
           const o = orgDraftOf(acct.profile, edition === "vc" ? "investor" : "incubator");
           setOrgKind(o.kind);
           setOrg(o.draft);
+          // V6 ships `#acs-super` with both fields already filled (with mock
+          // names). The faithful translation is the organisation's own contact
+          // person, who is the likeliest super user — not a blank screen and not
+          // somebody else's name. The BILLING screen stays empty on purpose:
+          // V6 hides its currency note until a country is typed, so prefilling
+          // a country would decide the currency behind the customer's back.
+          setSuperUser({ name: o.draft.contactName, email: o.draft.email });
+          setBilling({
+            name: acct.billing.name ?? "",
+            city: acct.billing.city ?? "",
+            country: acct.billing.country ?? "",
+            address: acct.billing.address ?? "",
+          });
           setSaved(acct.saved);
           const currencies = billableCurrencies(catalogue);
-          setCurrency(currencies.includes(catalogue.baseCurrency) ? catalogue.baseCurrency : currencies[0] ?? catalogue.baseCurrency);
+          // V6-CURRENCY: a billing country ALREADY on file has already decided
+          // the currency, and `POST /orders` will refuse any other. So the
+          // picker's default is the resolved one, not the catalogue's base —
+          // otherwise an Indian customer would be quoted in whatever the base
+          // happens to be and then refused at Pay. `null` means no country is
+          // recorded, and then nothing is enforced and the base stands.
+          const resolved = acct.billing.locale.currency;
+          const fallback = currencies.includes(catalogue.baseCurrency)
+            ? catalogue.baseCurrency
+            : currencies[0] ?? catalogue.baseCurrency;
+          setCurrency(resolved && currencies.includes(resolved) ? resolved : fallback);
         }
       })
       .catch((err: unknown) => {
@@ -373,6 +465,35 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
   const accountType = account?.accountType ?? "individual";
 
   /**
+   * V6-CURRENCY — what the typed billing country implies, resolved by
+   * `src/shared/plans.ts` and by nothing here. `tax` is the PUBLISHED
+   * catalogue's, through `taxSettingsOf`, so the note never names a rate of its
+   * own. `currency` is null until a country is typed, which is exactly when V6
+   * reveals `#bill-currency-note`.
+   */
+  const billingLocale = useMemo(
+    // Before the catalogue lands there is no configured rate to report, and the
+    // one thing this must not do is name a rate of its own — so it reports
+    // nothing resolved at all, which is the same state as "no country typed".
+    () => (book ? resolveBillingLocale(billing.country, taxSettingsOf(book.tax)) : UNRESOLVED_LOCALE),
+    [billing.country, book],
+  );
+
+  /**
+   * The currencies the customer may still choose between.
+   *
+   * V6 deletes `CurrencyPicker`: the address decides. Rather than delete a
+   * control three other prototypes still draw, the LIST is narrowed — once a
+   * billing country is on file there is exactly one legal currency, and
+   * `CurrencyPicker` renders nothing below two. A picker left open here would
+   * offer a currency `POST /orders` refuses.
+   */
+  const offeredCurrencies = useMemo(() => {
+    const fixed = billingLocale.currency;
+    return fixed && currencies.includes(fixed) ? [fixed] : currencies;
+  }, [billingLocale.currency, currencies]);
+
+  /**
    * The selection, always valid for the screen it is shown on. Derived during
    * render rather than repaired in an effect: an effect leaves one committed
    * frame with nothing selected, and a Continue clicked in that frame did nothing.
@@ -394,6 +515,21 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
     [book, tier, months],
   );
 
+  /** `#acs-entplans` — V6's fixed bundles are the catalogue's enterprise rows. */
+  const entSelected = useMemo(
+    () => (entPlanCode && orgPlans.some((p) => p.code === entPlanCode) ? entPlanCode : null),
+    [entPlanCode, orgPlans],
+  );
+
+  /**
+   * `#acs-annual`'s running total — priced from the catalogue and taxed by the
+   * one tax rule, in `annualCartQuote`. Nothing here adds money up.
+   */
+  const annualQuote = useMemo(
+    () => (book ? annualCartQuote(book, annualCart, currency) : null),
+    [book, annualCart, currency],
+  );
+
   /**
    * What the person is buying right now. Three shapes share one quote:
    *   a paid-trial pack (`paidPack` decks of `paid_trial`),
@@ -409,7 +545,16 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
     }
     let code: string | null = null;
     let extras: { quantity?: number; extraCredits?: number } = {};
-    if (paidPack > 0) {
+    // V6's `acPayMode` branches come FIRST: an annual cart or an Enterprise
+    // bundle is what the customer picked last, and it must beat the seat or
+    // organisation default that is still sitting in state behind it.
+    if (payMode === "annual") {
+      if (!annualQuote?.order) return null;
+      code = annualQuote.order.planCode;
+      extras = { quantity: annualQuote.order.quantity, extraCredits: annualQuote.order.extraCredits };
+    } else if (payMode === "entplans") {
+      code = entSelected;
+    } else if (paidPack > 0) {
       code = paidTrialPlan(book)?.code ?? null;
       extras = { quantity: paidPack };
     } else if (accountType === "organization") {
@@ -422,7 +567,10 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
     if (!code) return null;
     const q = quoteOrder(book, code, currency, accountType, extras);
     return "error" in q ? null : q;
-  }, [book, seatFlow, legacySelectedCode, paidPack, accountType, orgSelected, seatPlan, extraCredits, currency]);
+  }, [
+    book, seatFlow, legacySelectedCode, paidPack, accountType, orgSelected, seatPlan,
+    extraCredits, currency, payMode, annualQuote, entSelected,
+  ]);
 
   /** The plan name the trial screen puts in "free on your <b>…</b>". */
   const chosenPlanName =
@@ -436,8 +584,113 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
   const go = (next: AccountScreen) => {
     setErrors({});
     setOrderError(null);
+    // `acGo`: "if(name==='plan'||name==='orgplan'||name==='account') acPayMode=''".
+    // Returning to a plan screen abandons the annual cart or Enterprise bundle,
+    // so the Payment screen cannot price a selection the customer left behind.
+    if (next === "plan" || next === "orgplan" || next === "account") {
+      setPayMode("");
+      setBillingBack(null);
+    }
     setScreen(next);
   };
+
+  /** `acGoBilling(back)` — remember who sent us, then show Billing details. */
+  const goBilling = (from: AccountScreen) => {
+    setBillingBack(from);
+    setErrors({});
+    setOrderError(null);
+    setScreen("billing");
+  };
+
+  /**
+   * `acBillingNext()` — validate, SAVE, and adopt the currency the address
+   * implies before the Payment screen quotes a single figure.
+   *
+   * The order of those three matters. `POST /orders` refuses a currency that
+   * disagrees with the saved billing country (`currency_not_for_billing_country`,
+   * and it refuses rather than re-denominating), so the currency has to change
+   * here — on the screen that explains why — and not underneath the customer at
+   * the moment they press Pay. The server's resolution wins over the local one:
+   * it is the one the order will be checked against.
+   */
+  async function continueFromBilling() {
+    const found = validateBillingAddress(billing);
+    if (Object.keys(found).length > 0) {
+      setErrors(found);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await saveBillingAddress(billing);
+      const resolved = res.billing.locale.currency;
+      // Only if the catalogue actually sells in it — otherwise every price on
+      // the next screen would read zero, which is worse than the wrong currency.
+      if (resolved && currencies.includes(resolved)) setCurrency(resolved);
+      go("payment");
+    } catch (err) {
+      setErrors(
+        err instanceof AccountApiError && Object.keys(err.fields).length
+          ? err.fields
+          : { country: "We couldn't save your billing details. Try again." },
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** `acSuperNext()`, with the work-email rule the Account screen already has. */
+  function continueFromSuperUser() {
+    const found = validateSuperUser(superUser);
+    if (Object.keys(found).length > 0) {
+      setErrors(found);
+      return;
+    }
+    go("orgplan");
+  }
+
+  /** `acStartAnnual()` — resets the cart, exactly as V6 does on every entry. */
+  function startAnnual() {
+    setPaidPack(0);
+    setAnnualCart(initialAnnualCart());
+    setPayMode("annual");
+    go("annual");
+  }
+
+  /** `acStartEntPlans()` — clears the bundle so nothing arrives pre-chosen. */
+  function startEnterprisePlans() {
+    setEntPlanCode(null);
+    setPayMode("entplans");
+    go("entplans");
+  }
+
+  /**
+   * `acUpgradeToEnt()` — V6 flips `accountType` to enterprise and jumps to Org
+   * details. This build goes to Org TYPE first, because `createOrganization`
+   * sends the `kind` that screen chooses and V6's jump would leave it at a
+   * default the customer never saw.
+   */
+  function upgradeToEnterprise() {
+    setAccount((a) => (a ? { ...a, accountType: "organization" } : a));
+    setSaved(false);
+    go("orgtype");
+  }
+
+  /** `aetAdd()`, plus the refusal V6 leaves out: a blank or repeated address. */
+  function addTeamMember() {
+    const email = teamEmail.trim();
+    if (teamSeatsFull(teamTier, teamMembers.length)) return;
+    if (!email) {
+      setTeamError("Enter a work email to invite.");
+      return;
+    }
+    if (teamMembers.some((m) => m.email.toLowerCase() === email.toLowerCase())) {
+      setTeamError("That address is already on the list.");
+      return;
+    }
+    setTeamError(null);
+    setTeamMembers((list) => [...list, { email, role: teamRole, params: ["", "", ""] }]);
+    setTeamEmail("");
+  }
 
   async function continueFromAccount() {
     if (!account) return;
@@ -520,7 +773,11 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
       // otherwise an organisation chooses its annual plan (`acs-orgplan`).
       const packChosen = pendingPayment && quote !== null && quote.group !== "enterprise";
       setPendingPayment(false);
-      go(packChosen ? "payment" : "orgplan");
+      // V6 puts `#acs-super` between Org details and the plan. It is added only
+      // on the incubator seat flow (§1.3 — the VC edition was not rescoped, and
+      // `e2e/account-purchase.spec.ts` walks the VC organisation branch straight
+      // from "Create account" to "Choose your plan").
+      go(packChosen ? "payment" : seatFlow ? "super" : "orgplan");
     } catch (err) {
       setErrors(err instanceof AccountApiError && Object.keys(err.fields).length ? err.fields : { name: "We couldn't save your organisation. Try again." });
     } finally {
@@ -543,6 +800,19 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
 
   /** `acTrialBack()` — the trial screens go back to whichever plan screen sent them. */
   const planScreen: AccountScreen = accountType === "organization" ? "orgplan" : "plan";
+  /**
+   * Where Payment's "Back to plan selection" goes.
+   *
+   * V6's `acPayBack()` is `acGo('billing')` unconditionally, because every V6
+   * path reaches Payment through Billing details. Here it is conditional: the
+   * legacy and VC flows never visit that screen, so they keep returning to
+   * their own plan screen and `e2e/account-purchase.spec.ts` stays green.
+   */
+  const paymentBack = (): AccountScreen => {
+    if (billingBack) return "billing";
+    if (seatFlow) return paidPack > 0 ? "paidtrial" : planScreen;
+    return quote ? planScreenFor(accountType, quote.group) : planScreen;
+  };
 
   /** The amber "Take a 3-deck free trial" button on both plan screens. */
   function takeTrial() {
@@ -628,6 +898,87 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         busy={busy}
       />
     );
+  } else if (screen === "super") {
+    body = (
+      <SuperUserScreen
+        draft={superUser}
+        onChange={(patch) => setSuperUser((s) => ({ ...s, ...patch }))}
+        errors={errors}
+        onBack={() => go("orgdetails")}
+        onContinue={continueFromSuperUser}
+      />
+    );
+  } else if (screen === "annual" && annualQuote) {
+    body = (
+      <AnnualSubscriptionScreen
+        book={book}
+        currency={currency}
+        cart={annualCart}
+        quote={annualQuote}
+        onSeats={(t, next) =>
+          setAnnualCart((c) => ({ ...c, seats: { ...c.seats, [t]: Math.max(0, next) } }))
+        }
+        onExtra={(credits) => setAnnualCart((c) => ({ ...c, extraCredits: credits }))}
+        canUpgradeToEnterprise={accountType !== "organization"}
+        onUpgradeToEnterprise={upgradeToEnterprise}
+        onEnterprisePlans={startEnterprisePlans}
+        onBack={() => go("trial")}
+        onContinue={() => goBilling("annual")}
+      />
+    );
+  } else if (screen === "entplans") {
+    body = (
+      <EnterprisePlansScreen
+        book={book}
+        currency={currency}
+        plans={orgPlans}
+        planCode={entSelected}
+        onPlan={setEntPlanCode}
+        isOrganization={accountType === "organization"}
+        onUpgradeToEnterprise={upgradeToEnterprise}
+        onBack={() => go("annual")}
+        onContinue={() => goBilling("entplans")}
+      />
+    );
+  } else if (screen === "billing") {
+    body = (
+      <BillingDetailsScreen
+        draft={billing}
+        onChange={(patch) => setBilling((b) => ({ ...b, ...patch }))}
+        errors={errors}
+        locale={billingLocale}
+        onBack={() => go(billingBack ?? planScreen)}
+        onContinue={continueFromBilling}
+        busy={busy}
+      />
+    );
+  } else if (screen === "team") {
+    body = (
+      <TeamScreen
+        tierId={teamTier}
+        onTier={setTeamTier}
+        members={teamMembers}
+        onAdd={addTeamMember}
+        onRemove={(i) => setTeamMembers((list) => list.filter((_, n) => n !== i))}
+        onParam={(i, slot, value) =>
+          setTeamMembers((list) =>
+            list.map((m, n) => {
+              if (n !== i) return m;
+              const params: TeamInvite["params"] = [...m.params];
+              params[slot] = value;
+              return { ...m, params };
+            }),
+          )
+        }
+        draftEmail={teamEmail}
+        draftRole={teamRole}
+        onDraftEmail={setTeamEmail}
+        onDraftRole={setTeamRole}
+        error={teamError ?? undefined}
+        onSkip={close}
+        onConfirm={close}
+      />
+    );
   } else if (screen === "orgplan") {
     body = seatFlow ? (
       <EnterpriseSeatScreen
@@ -637,7 +988,7 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         onPlan={setOrgPlanCode}
         extraCredits={extraCredits}
         onExtra={setExtraCredits}
-        currencies={currencies}
+        currencies={offeredCurrencies}
         currency={currency}
         onCurrency={setCurrency}
         onBack={() => go("orgdetails")}
@@ -651,7 +1002,7 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         plans={plansByGroup.enterprise ?? []}
         planCode={legacySelectedCode}
         onPlan={setPlanCode}
-        currencies={currencies}
+        currencies={offeredCurrencies}
         currency={currency}
         onCurrency={setCurrency}
         onBack={() => go("orgdetails")}
@@ -671,7 +1022,7 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         }}
         onPeriod={setMonths}
         onExtra={setExtraCredits}
-        currencies={currencies}
+        currencies={offeredCurrencies}
         currency={currency}
         onCurrency={setCurrency}
         onBack={() => go("account")}
@@ -691,7 +1042,7 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         plansByGroup={plansByGroup}
         planCode={legacySelectedCode}
         onPlan={setPlanCode}
-        currencies={currencies}
+        currencies={offeredCurrencies}
         currency={currency}
         onCurrency={setCurrency}
         onBack={() => go("account")}
@@ -713,6 +1064,10 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
           setPaidPack(0);
           go("paidtrial");
         }}
+        /* V6's third option, and the only route into `#acs-annual`. Offered on
+           the incubator seat flow only — the legacy plan screens sell packs and
+           monthly plans, not annual seats, so there is no cart to build there. */
+        onAnnual={seatFlow ? startAnnual : undefined}
       />
     );
   } else if (screen === "paidtrial") {
@@ -738,11 +1093,10 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         onMethod={setMethod}
         paymentConfigured={state.paymentConfigured}
         onPay={pay}
-        onBack={() =>
-          go(seatFlow ? (paidPack > 0 ? "paidtrial" : planScreen) : planScreenFor(accountType, quote.group))
-        }
+        onBack={() => go(paymentBack())}
         busy={busy}
         error={orderError}
+        billing={billingBack ? billing : null}
       />
     );
   } else if (screen === "success" && order) {
@@ -753,6 +1107,10 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         order={order}
         documentUrl={orderDocumentUrl(order.id)}
         onDashboard={close}
+        /* `#acs-team` is "enterprise only" in V6 and nothing in its drawn flow
+           reaches it; the receipt's own step 2 is "Invite team members", so this
+           is where an organisation gets it. */
+        onTeam={order.accountType === "organization" ? () => go("team") : undefined}
       />
     );
   } else {

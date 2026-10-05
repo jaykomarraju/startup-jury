@@ -310,7 +310,22 @@ describe("GET /api/billing", () => {
     expect(html).toContain("INV-2026-0001");
     expect(html).toContain("GST (18%)");
     expect(html).toContain("₹23,600");
-    expect(html).toContain("suitable for input tax credit");
+    // ── RESTATED by V6-INVOICE, and it was asserting a falsehood ────────────
+    //
+    // This line was `toContain("suitable for input tax credit")`. The seeded row
+    // it reads has no linked payment intent and no build can produce one
+    // (`ADAPTERS` is empty by design, `provider.ts`), so the document was
+    // promising input tax credit on a purchase nobody paid for — the same class
+    // of claim as the row stamped `'sent'` before delivery was attempted that the
+    // 2026-10-02 fix removed. The ITC line is now gated on a confirmed payment
+    // (`supportsInputTaxCredit`, `src/server/billing/invoice.ts`), so the true
+    // assertion for this row is the refusal, with the promise as the negative.
+    //
+    // The paid branch — where the promise IS made — is asserted in
+    // `test/worker/billing-invoice-v6.test.ts`.
+    expect(html).toContain("cannot be used to claim input tax credit");
+    expect(html).not.toContain("suitable for input tax credit");
+    expect(html).toContain("NOT A TAX INVOICE · NO PAYMENT RECEIVED");
   });
 
   it("404s an invoice from another edition", async () => {

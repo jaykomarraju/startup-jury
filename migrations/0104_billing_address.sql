@@ -1,0 +1,94 @@
+-- 0104 — the billing address V6 captures, and the currency it decides.
+--
+-- **The client's final My Account mockup, 2026-10-04**
+-- (`docs/prototype/source/incubator/AISJ_MyAccount_V6.HTM`, `#acs-billing`),
+-- verbatim: "We use this to set your billing currency and generate your
+-- invoice. Indian billing addresses are charged in INR with GST; every other
+-- country is billed in USD with no GST."
+--
+-- The screen captures four fields — Billing name, City, Country, Communication
+-- address — and its Continue button is gated on all four
+-- (`acBillingValidate()`). This migration is those four columns, and nothing
+-- else.
+--
+-- ══ WHY NEW COLUMNS AND NOT THE EXISTING `city` / `country` ═════════════════
+--
+-- `account_profiles` already carries `city` and `country`, so reusing them looks
+-- like the smaller change. It is not, measured against the code:
+--
+--   • They are the ORG DETAILS screen's fields. `0094`'s own header groups them
+--     under "Org details screen (Organization only) — the prototype's eleven
+--     fields", `routes/account.ts` writes them ONLY in the `orgBody` branch of
+--     the upsert, and `toProfile()` surfaces them only inside `profile.org`. An
+--     INDIVIDUAL account can therefore never record a country in them — and V6
+--     routes individuals through the billing screen too (`setSteps()` maps
+--     `billing` to the individual stepper's index 2).
+--   • They mean a different thing. The org's registered city/country is where
+--     the organisation is; the billing address is where the invoice goes. A
+--     Singapore-registered incubator may legitimately bill to an Indian
+--     address, and GST follows the second one.
+--   • Overloading them would make the currency depend on a field the Org
+--     details screen edits, so saving an unrelated screen would silently
+--     re-denominate a subscription.
+--
+-- So the billing address is its own four columns, on the same row. §3 of the
+-- lane brief prefers adding to `account_profiles` over a new table and that is
+-- right: the row is already "one commercial account per workspace" (`0053`) and
+-- the billing address is part of that record, not a collection.
+--
+-- ══ WHY THERE IS NO `billing_currency` COLUMN ══════════════════════════════
+--
+-- The currency is a FUNCTION of the country — `billingCurrencyFor()` in
+-- `src/shared/plans.ts` — so persisting it would create a second answer that
+-- drifts from the first the moment someone edits the country without going
+-- through the one code path that recomputes it. That drift class is exactly how
+-- this product came to have four low-credit thresholds and an AI gate threshold
+-- that was configured, saved and then ignored.
+--
+-- The currency an order was actually priced in IS persisted, and must be:
+-- `billing_payment_intents.currency` records what a customer was quoted, which
+-- is a historical fact rather than a derivation. Nothing here changes that.
+--
+-- ══ THE EXISTING CUSTOMER, STATED PLAINLY ══════════════════════════════════
+--
+-- Production holds TWO `account_profiles` rows (`0094`, measured read-only
+-- against the deployed `startup-jury-db`: `incubator 1, vc 1`, one customer,
+-- one commercial record per workspace). Both predate any billing screen, so
+-- neither has a billing country and neither can have one until someone fills
+-- the form.
+--
+-- **All four columns are therefore NULL, with no default and no backfill.**
+-- That is a decision, not an omission:
+--
+--   • Backfilling 'India' would start adding 18 % GST to every figure those two
+--     customers are quoted.
+--   • Backfilling anything else would move them to USD and stop charging GST
+--     that may be due.
+--
+-- Both are a change to what a real customer is billed, made by a migration,
+-- with no human in the loop. So `billingCurrencyFor(NULL)` returns `null`
+-- ("unresolved"), `POST /api/account/orders` leaves the requested currency
+-- exactly as it does today for an unresolved profile, and the invariant — an
+-- Indian billing address is never priced in USD — binds from the moment the
+-- address is recorded. Nothing a customer has already been quoted changes on
+-- the day this applies.
+--
+-- ══ WHY THIS IS NOT A REBUILD ══════════════════════════════════════════════
+--
+-- Four nullable columns are four `ALTER TABLE ... ADD COLUMN`s: cheap, no table
+-- copy, no foreign-key edge touched, nothing to stash. The rebuild recipe (and
+-- its three traps that each report success while corrupting data) applies to a
+-- change that moves a KEY; this one does not — `account_profiles` stays keyed
+-- `(tenant_id, edition)` and keeps `0094`'s shape untouched.
+--
+-- No `NOT NULL`, so no `DEFAULT` is needed to satisfy SQLite on a populated
+-- table, which also means nothing is written to the two rows that exist.
+--
+-- Index: none. The row is reached by its primary key `(tenant_id, edition)` on
+-- every read; there is no query that filters by billing country, and an index
+-- on a column with two NULLs in it would be decoration.
+
+ALTER TABLE account_profiles ADD COLUMN billing_name TEXT;
+ALTER TABLE account_profiles ADD COLUMN billing_city TEXT;
+ALTER TABLE account_profiles ADD COLUMN billing_country TEXT;
+ALTER TABLE account_profiles ADD COLUMN billing_address TEXT;

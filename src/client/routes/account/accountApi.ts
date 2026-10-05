@@ -4,6 +4,7 @@
  * line it depends on.
  */
 import type { PublishedPriceBook } from "../../../shared/priceBook";
+import type { BillingAddress, BillingLocale } from "../../../shared/plans";
 import type {
   AccountOrderView,
   AccountProfile,
@@ -12,9 +13,27 @@ import type {
   PaymentMethod,
 } from "../../../shared/accountOrder";
 
+/**
+ * V6 · what `GET /api/account` serves for `#acs-billing` — the four captured
+ * fields, each null until the screen has been filled, plus the ONE resolved
+ * answer about currency and tax.
+ *
+ * `locale.currency` is null when no billing country is on file. That is the
+ * screens' cue that the step has not been taken, and it is **not** a default:
+ * `POST /orders` enforces the currency only once a country exists.
+ */
+export interface AccountBillingView {
+  name: string | null;
+  city: string | null;
+  country: string | null;
+  address: string | null;
+  locale: BillingLocale;
+}
+
 export interface AccountState {
   profile: AccountProfile;
   saved: boolean;
+  billing: AccountBillingView;
   orders: AccountOrderView[];
   paymentConfigured: boolean;
 }
@@ -64,6 +83,22 @@ export const saveProfile = (input: ProfileInput) =>
   call<{ ok: true; profile: AccountProfile }>("/api/account/profile", {
     method: "PUT",
     body: JSON.stringify(input),
+  });
+
+/**
+ * V6 · `#acs-billing` saves ONLY itself.
+ *
+ * `PATCH /api/account/profile`, not the `PUT` above: the billing screen draws
+ * four fields and re-sending the whole Account screen from here would let the
+ * payment step fail on a validation error belonging to a screen three steps
+ * back — on a phone, where this flow actually happens, that is a dead end.
+ * A 400 comes back as `invalid_billing_address` with per-field messages, which
+ * `AccountApiError.fields` hands straight to the screen.
+ */
+export const saveBillingAddress = (billing: BillingAddress) =>
+  call<{ ok: true; profile: AccountProfile; billing: AccountBillingView }>("/api/account/profile", {
+    method: "PATCH",
+    body: JSON.stringify({ billing }),
   });
 
 export const placeOrder = (input: {

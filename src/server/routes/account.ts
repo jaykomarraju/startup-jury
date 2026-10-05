@@ -38,13 +38,24 @@ import { requireAuth, requireTask } from "../auth/middleware";
 import { scopeOf, scoped, insertScope, type TenantScope } from "../../shared/tenant";
 import { recordAudit } from "../audit/log";
 import { recordPaymentIntent, paymentConfigured, type IntentPurpose } from "../billing/provider";
-import { formatMinor } from "../../shared/plans";
+import {
+  billingCurrencyFor,
+  formatMinor,
+  resolveBillingLocale,
+  validateBillingAddress,
+  GST_DEFAULT_RATE_PCT,
+  type BillingAddress,
+  type BillingFieldErrors,
+  type BillingLocale,
+  type TaxSettings,
+} from "../../shared/plans";
 import type { PriceBook, PublishedPriceBook } from "../../shared/priceBook";
 import {
   billingCycleLine,
   isPaymentMethod,
   orderStatusLabel,
   quoteOrder,
+  taxSettingsOf,
   validateAccountFields,
   validateOrgDetails,
   type AccountOrderView,
@@ -83,6 +94,12 @@ interface ProfileRow {
   contact_dial: string | null;
   contact_phone: string | null;
   contact_email: string | null;
+  // V6-CURRENCY · `0104`. Distinct from `city`/`country` above, which are the Org
+  // details screen's fields — see `0104`'s header for why they are not reused.
+  billing_name: string | null;
+  billing_city: string | null;
+  billing_country: string | null;
+  billing_address: string | null;
 }
 
 function toProfile(r: ProfileRow): AccountProfile {
@@ -117,6 +134,39 @@ function toProfile(r: ProfileRow): AccountProfile {
 }
 
 /**
+ * The billing address, or null when the V6 billing screen has not been filled.
+ *
+ * All-or-nothing on purpose: `validateBillingAddress` requires all four fields,
+ * so a row either has a complete billing address or has none. A half-filled one
+ * cannot be written through this router, and reporting a partial object would
+ * invite a caller to resolve a currency from a country it had not checked.
+ */
+function toBilling(r: ProfileRow): BillingAddress | null {
+  if (!r.billing_name || !r.billing_city || !r.billing_country || !r.billing_address) return null;
+  return {
+    name: r.billing_name,
+    city: r.billing_city,
+    country: r.billing_country,
+    address: r.billing_address,
+  };
+}
+
+/**
+ * One workspace's commercial record: the profile the wizard's screens write,
+ * plus the billing address `0104` added.
+ *
+ * `AccountProfile` lives in `src/shared/accountOrder.ts`, which this wave does
+ * not own, so the billing address travels BESIDE it rather than inside it — and
+ * that turns out to be the better shape anyway: the API serves `billing` as its
+ * own object with the resolved currency attached, so no consumer has to know
+ * that a country means a currency.
+ */
+interface AccountRecord {
+  profile: AccountProfile;
+  billing: BillingAddress | null;
+}
+
+/**
  * The commercial record for one workspace.
  *
  * ── THE PLAN CORRECTION THAT LANDS HERE ────────────────────────────────────
@@ -132,12 +182,12 @@ function toProfile(r: ProfileRow): AccountProfile {
  * So the scope here carries BOTH columns — `.on()`, not `.onTenantOnly()`. The
  * helper's own `onTenantOnly` doc says the same thing and cites this migration.
  */
-async function readProfile(env: Env, scope: TenantScope): Promise<AccountProfile | null> {
+async function readProfile(env: Env, scope: TenantScope): Promise<AccountRecord | null> {
   const q = scoped(scope).on("p");
   const row = await env.DB.prepare(`SELECT p.* FROM account_profiles p ${q.whereClause()}`)
     .bind(...q.binds)
     .first<ProfileRow>();
-  return row ? toProfile(row) : null;
+  return row ? { profile: toProfile(row), billing: toBilling(row) } : null;
 }
 
 /**
@@ -261,6 +311,58 @@ async function loadOrder(
   return row ? toOrder(row) : null;
 }
 
+/**
+ * The tax settings a billing locale is resolved against.
+ *
+ * The published catalogue is the authority (`pricing_settings.gst_rate_pct` via
+ * `taxSettingsOf`). The fallback is **not a second GST rate**: it reuses
+ * `GST_DEFAULT_RATE_PCT`, the one default `plans.ts` declares and
+ * `test/unit/pricing-seam.test.ts` already pins, and it is reachable only when
+ * nothing is published — a state in which there is no price to tax, so the rate
+ * only ever labels an empty screen. Inventing an `18` here is the mistake this
+ * lane exists to avoid.
+ */
+function taxOf(book: PublishedPriceBook | null): TaxSettings {
+  if (book) return taxSettingsOf(book.tax);
+  return {
+    ratePct: GST_DEFAULT_RATE_PCT,
+    registration: null,
+    inclusive: false,
+    internationalNotice: true,
+  };
+}
+
+/**
+ * The billing block every consumer reads — the four captured fields plus the
+ * ONE resolved answer about currency and tax.
+ *
+ * The resolution happens here, on the server, and is served rather than
+ * recomputed: §4 of the lane brief — "the country driving the currency on read
+ * so every consumer gets one answer". A screen that re-derives it from the
+ * country is free to, because `resolveBillingLocale` is shared, but it does not
+ * have to.
+ */
+function billingPayload(
+  billing: BillingAddress | null,
+  book: PublishedPriceBook | null,
+): BillingAddressPayload {
+  return {
+    name: billing?.name ?? null,
+    city: billing?.city ?? null,
+    country: billing?.country ?? null,
+    address: billing?.address ?? null,
+    locale: resolveBillingLocale(billing?.country ?? null, taxOf(book)),
+  };
+}
+
+interface BillingAddressPayload {
+  name: string | null;
+  city: string | null;
+  country: string | null;
+  address: string | null;
+  locale: BillingLocale;
+}
+
 account.get("/", async (c) => {
   const { id } = c.var.user;
   // §2 B18 measured this route as leaking order history and receipts across
@@ -276,8 +378,12 @@ account.get("/", async (c) => {
     .bind(...listQ.binds)
     .all<OrderRow>();
   return c.json({
-    profile: saved ?? (await prefill(c.env, scope, id)),
+    profile: saved?.profile ?? (await prefill(c.env, scope, id)),
     saved: saved !== null,
+    // V6-CURRENCY. Always present, even unsaved: `locale.currency` is then null,
+    // which is the screens' cue that the billing step has not been taken. It is
+    // NOT a currency default — see `0104`'s header on the two production rows.
+    billing: billingPayload(saved?.billing ?? null, await publishedBook(c.env)),
     orders: (orders.results ?? []).map(toOrder),
     paymentConfigured: paymentConfigured(c.env),
   });
@@ -286,6 +392,47 @@ account.get("/", async (c) => {
 // ── PUT /profile — the Account and Org details screens ───────────────────────
 
 const text = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+
+/**
+ * V6-CURRENCY — the billing address, validated and written.
+ *
+ * Returns the field errors when the body is not a complete address, so both
+ * verbs refuse identically. Writing is a plain scoped `UPDATE` rather than a
+ * fifth column list bolted onto the two upserts above: the row is already there
+ * by the time this runs (PUT has just upserted it, PATCH has just checked it),
+ * and those two upserts carry the load-bearing `ON CONFLICT (tenant_id,
+ * edition)` commentary that should not be re-threaded for four nullable columns.
+ */
+async function writeBilling(
+  env: Env,
+  scope: TenantScope,
+  actorId: string,
+  body: Record<string, unknown>,
+): Promise<BillingFieldErrors | null> {
+  const candidate = {
+    name: body.name,
+    city: body.city,
+    country: body.country,
+    address: body.address,
+  };
+  const errors = validateBillingAddress(candidate);
+  if (Object.keys(errors).length > 0) return errors;
+  const q = scoped(scope).on("account_profiles");
+  await env.DB.prepare(
+    "UPDATE account_profiles SET billing_name = ?, billing_city = ?, billing_country = ?, " +
+      `billing_address = ?, updated_by = ?, updated_at = datetime('now') ${q.whereClause()}`,
+  )
+    .bind(
+      text(candidate.name),
+      text(candidate.city),
+      text(candidate.country),
+      text(candidate.address),
+      actorId,
+      ...q.binds,
+    )
+    .run();
+  return null;
+}
 
 account.put("/profile", async (c) => {
   const { id } = c.var.user;
@@ -316,6 +463,28 @@ account.put("/profile", async (c) => {
     const orgErrors = validateOrgDetails(orgBody);
     if (Object.keys(orgErrors).length > 0) {
       return c.json({ error: "invalid_org_details", fields: orgErrors }, 400);
+    }
+  }
+
+  // V6-CURRENCY — a full save MAY carry the billing address, and an omitted
+  // `billing` key leaves whatever is on file alone. That is the same rule the
+  // individual branch already applies to the organisation block below: the
+  // wizard saves one screen at a time, so a screen that does not draw a field
+  // must not be able to erase it. Validated BEFORE anything is written, so an
+  // invalid address does not half-save the profile.
+  const billingBody =
+    body.billing && typeof body.billing === "object"
+      ? (body.billing as Record<string, unknown>)
+      : null;
+  if (billingBody) {
+    const billingErrors = validateBillingAddress({
+      name: billingBody.name,
+      city: billingBody.city,
+      country: billingBody.country,
+      address: billingBody.address,
+    });
+    if (Object.keys(billingErrors).length > 0) {
+      return c.json({ error: "invalid_billing_address", fields: billingErrors }, 400);
     }
   }
 
@@ -411,7 +580,12 @@ account.put("/profile", async (c) => {
       .run();
   }
 
-  const after = (await readProfile(c.env, scope))!;
+  // After the upsert, so the row exists for the UPDATE to find. Already
+  // validated above.
+  if (billingBody) await writeBilling(c.env, scope, id, billingBody);
+
+  const record = (await readProfile(c.env, scope))!;
+  const after = record.profile;
   await recordAudit(c, {
     category: "billing",
     action: before ? "account_profile_updated" : "account_profile_created",
@@ -424,7 +598,65 @@ account.put("/profile", async (c) => {
     // row that two customers would share.
     targetId: `${scope.tenantId}:${scope.edition}`,
   });
-  return c.json({ ok: true, profile: after });
+  return c.json({
+    ok: true,
+    profile: after,
+    billing: billingPayload(record.billing, await publishedBook(c.env)),
+  });
+});
+
+// ── PATCH /profile — V6's billing screen, which saves only itself ────────────
+
+/**
+ * `#acs-billing` is its own step in both of V6's steppers, reached after the
+ * plan and before payment, and it draws four fields and nothing else. Making it
+ * re-send the whole Account screen to save them would mean the payment step
+ * could fail on a validation error belonging to a screen three steps back — and
+ * on a phone, where this flow actually happens, that is a dead end.
+ *
+ * So the billing screen PATCHes. It **cannot create** a profile: the row carries
+ * `work_email NOT NULL` and `0053`'s CHECK that an organisation account names
+ * its organisation, so there is no honest way to materialise one from an
+ * address. A caller with no profile gets the same `account_required` that
+ * `POST /orders` gives, which is the condition the Account screen fixes.
+ */
+account.patch("/profile", async (c) => {
+  const { id } = c.var.user;
+  const scope = scopeOf(c.var.user);
+  const body = ((await c.req.json().catch(() => null)) ?? {}) as Record<string, unknown>;
+  const billingBody =
+    body.billing && typeof body.billing === "object"
+      ? (body.billing as Record<string, unknown>)
+      : body;
+
+  const existing = await readProfile(c.env, scope);
+  if (!existing) return c.json({ error: "account_required" }, 409);
+
+  const errors: BillingFieldErrors | null = await writeBilling(c.env, scope, id, billingBody);
+  if (errors) return c.json({ error: "invalid_billing_address", fields: errors }, 400);
+
+  const record = (await readProfile(c.env, scope))!;
+  const payload = billingPayload(record.billing, await publishedBook(c.env));
+  await recordAudit(c, {
+    category: "billing",
+    action: "account_billing_address_saved",
+    // The currency is the consequence worth auditing: this is the one screen
+    // whose four text fields decide what a customer is charged in.
+    summary:
+      `Billing address saved — ${payload.city}, ${payload.country}` +
+      (payload.locale.currency
+        ? ` · billed in ${payload.locale.currency}${payload.locale.taxed ? ` with ${payload.locale.ratePct}% GST` : " with no GST"}`
+        : ""),
+    detail: {
+      country: payload.country,
+      currency: payload.locale.currency,
+      taxed: payload.locale.taxed,
+      ratePct: payload.locale.ratePct,
+    },
+    targetType: "account_profiles",
+    targetId: `${scope.tenantId}:${scope.edition}`,
+  });
+  return c.json({ ok: true, profile: record.profile, billing: payload });
 });
 
 // ── POST /orders — records an intent; charges nothing ────────────────────────
@@ -454,8 +686,43 @@ account.post("/orders", async (c) => {
   const quantity = typeof body.quantity === "number" ? body.quantity : undefined;
   const extraCredits = typeof body.extraCredits === "number" ? body.extraCredits : undefined;
 
-  const profile = await readProfile(c.env, scope);
-  if (!profile) return c.json({ error: "account_required" }, 409);
+  const record = await readProfile(c.env, scope);
+  if (!record) return c.json({ error: "account_required" }, 409);
+  const profile = record.profile;
+
+  // ══ V6-CURRENCY · THE INVARIANT ════════════════════════════════════════════
+  //
+  // **A customer whose billing country is India is never priced in USD.**
+  //
+  // It is enforced HERE, before a single figure is computed, and not on the
+  // screen that shows the total. `currency` arrives in the request body: a
+  // client that asked for USD with an Indian billing address would otherwise be
+  // obeyed, and `priceBreakdown` would then correctly apply no GST — producing a
+  // quote that is internally consistent, looks right, and is wrong. The screens
+  // cannot be the guard, because the body is what the server reads.
+  //
+  // REFUSED, not silently corrected. Re-denominating a purchase under the
+  // customer is worse than refusing it: ₹1,178 and $1,178 are not the same
+  // money, and the figure the screen last showed would no longer be the figure
+  // charged. The refusal names the required currency so the caller can retry
+  // with it — the same answer `GET /api/account` serves as `billing.locale`.
+  //
+  // `null` means NO billing country is on file, and then nothing is enforced:
+  // the request is priced exactly as it is today. `0104`'s header states why —
+  // the two rows in production predate the billing screen, and guessing their
+  // currency in either direction would change what a real customer is billed.
+  const requiredCurrency = billingCurrencyFor(record.billing?.country ?? null);
+  if (requiredCurrency && currency !== requiredCurrency) {
+    return c.json(
+      {
+        error: "currency_not_for_billing_country",
+        required: requiredCurrency,
+        requested: currency,
+        country: record.billing?.country ?? null,
+      },
+      400,
+    );
+  }
 
   const book = await publishedBook(c.env);
   if (!book) return c.json({ error: "not_published" }, 503);
@@ -564,15 +831,23 @@ account.get("/orders/:id/document", async (c) => {
   const scope = scopeOf(c.var.user);
   const order = await loadOrder(c.env, scope, c.req.param("id"));
   if (!order) return c.json({ error: "not_found" }, 404);
-  const profile = await readProfile(c.env, scope);
+  const record = await readProfile(c.env, scope);
+  const profile = record?.profile ?? null;
+  const billing = record?.billing ?? null;
   const registration = (await publishedBook(c.env))?.tax.gstRegistration ?? null;
 
+  // V6-CURRENCY — "We use this to ... generate your invoice." The billing name
+  // is the one the customer asked to appear on the invoice, so when it is on
+  // file it wins over the account holder's own name; the account's email stays,
+  // because the billing screen captures no email.
   const billedTo =
-    profile?.accountType === "organization" && profile.org
-      ? `${profile.org.name} · ${profile.org.contactName} · ${profile.org.email}`
-      : profile
-        ? `${profile.firstName} ${profile.lastName}${profile.organizationName ? ` · ${profile.organizationName}` : ""} · ${profile.workEmail}`
-        : "—";
+    billing && profile
+      ? `${billing.name} · ${profile.accountType === "organization" && profile.org ? profile.org.email : profile.workEmail}`
+      : profile?.accountType === "organization" && profile.org
+        ? `${profile.org.name} · ${profile.org.contactName} · ${profile.org.email}`
+        : profile
+          ? `${profile.firstName} ${profile.lastName}${profile.organizationName ? ` · ${profile.organizationName}` : ""} · ${profile.workEmail}`
+          : "—";
   const amount = (m: number) => escapeHtml(formatMinor(m, order.currency));
   const row = (label: string, value: string) =>
     `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`;
@@ -590,6 +865,20 @@ account.get("/orders/:id/document", async (c) => {
  th{font-weight:600;color:#6B6355;width:200px}
  .tot td,.tot th{border-bottom:none;font-weight:700;font-size:15px}
  .note{color:#6B6355;font-size:11.5px;border-top:1px solid #E8E3D9;padding-top:12px}
+ /* MOBILE-FIRST, standing client instruction. This document is opened on a
+    phone — it is the thing a customer taps "Download invoice" for — and the
+    billing address added above is the longest value on it. A 200px label column
+    beside it at 390px leaves 110px for a street address. So below 480px the
+    label/value pairs STACK: no fixed width, no min-width, and a 16px gutter
+    instead of 40px. Nothing here can overflow horizontally, because the only
+    table is label/value and it no longer has a column that insists on a size. */
+ @media (max-width:480px){
+  body{margin:16px}
+  th,td{display:block;width:auto;padding:2px 0}
+  th{border-bottom:none}
+  td{border-bottom:1px solid #E8E3D9;padding-bottom:8px}
+  .tot td{border-bottom:none}
+ }
 </style></head><body>
 <h1>Pro-forma invoice ${escapeHtml(number)}</h1>
 <p class="sub">ai.STARTUPJURY${registration ? ` · GSTIN ${escapeHtml(registration)}` : ""}</p>
@@ -598,6 +887,7 @@ account.get("/orders/:id/document", async (c) => {
 ${row("Issued", order.createdAt.slice(0, 10))}
 ${row("Reference", order.id)}
 ${row("Billed to", billedTo)}
+${billing ? row("Billing address", `${billing.address}, ${billing.city}, ${billing.country}`) : ""}
 ${row("Plan", order.planName)}
 ${order.units !== null ? row("Credits", String(order.units)) : ""}
 ${row("Billing cycle", billingCycleLine(order.period, order.periodMonths))}

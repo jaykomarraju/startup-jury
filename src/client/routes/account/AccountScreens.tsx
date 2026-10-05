@@ -40,8 +40,16 @@ import {
   type PricePlanRow,
   type PublishedPriceBook,
 } from "../../../shared/priceBook";
-import { PLAN_LABELS, type Plan } from "../../../shared/plans";
 import {
+  PLAN_LABELS,
+  validateBillingAddress,
+  type BillingAddress,
+  type BillingLocale,
+  type Plan,
+} from "../../../shared/plans";
+import {
+  ANNUAL_SEAT_MONTHS,
+  BILLING_COUNTRIES,
   BUSINESS_TYPES,
   COUNTRIES,
   DIAL_CODES,
@@ -50,19 +58,31 @@ import {
   FREE_TRIAL_DECKS,
   PAYMENT_METHODS,
   SEAT_PERIOD_VIEWS,
+  SEAT_STORAGE_GB,
+  TEAM_ROLES,
+  TEAM_SEAT_TIERS,
   seatPeriodWord,
   billingCycleLine,
   featureBullets,
   orderStatusLabel,
   periodLabel,
   symbolFor,
+  teamInitials,
+  teamSeatLabel,
+  teamSeatTier,
+  teamSeatsFull,
   type AccountOrderView,
   type AccountType,
+  type AnnualCart,
+  type AnnualCartQuote,
   type FieldErrors,
   type OrderQuote,
   type OrgKind,
   type PaymentMethod,
   type StepView,
+  type SuperUserNomination,
+  type TeamInvite,
+  type TeamSeatTierId,
 } from "../../../shared/accountOrder";
 
 // ── Primitives ───────────────────────────────────────────────────────────────
@@ -668,6 +688,79 @@ export function OrgDetailsScreen({
         <ContinueButton onClick={onCreate} busy={busy}>
           Create account
         </ContinueButton>
+      </Foot>
+    </Card>
+  );
+}
+
+// ── 1d. V6 · `#acs-super` — nominate your super user ─────────────────────────
+
+/**
+ * V6's organisation branch gained a step between Org details and the plan: the
+ * one account that "manages the team, roles and billing".
+ *
+ * Mobile-first, like every screen below it: the two fields are a one-column
+ * `grid` at every width, because they are a name and an email and there is no
+ * width at which pairing them helps. `Field` already renders a real `<label>`
+ * bound by `htmlFor`, so nothing here relies on placeholder text.
+ */
+export function SuperUserScreen({
+  draft,
+  onChange,
+  errors,
+  onBack,
+  onContinue,
+  busy,
+}: {
+  draft: SuperUserNomination;
+  onChange: (patch: Partial<SuperUserNomination>) => void;
+  errors: FieldErrors;
+  onBack: () => void;
+  onContinue: () => void;
+  busy?: boolean;
+}) {
+  return (
+    <Card>
+      <Heading
+        title="Nominate your super user"
+        sub={
+          <>
+            Your organisation needs one <b>super user</b> — the top account authority who manages the
+            team, roles and billing. You can reassign this later in Team &amp; roles.
+          </>
+        }
+      />
+      <div data-testid="ac-super">
+        <Field label="Super user — full name" htmlFor="su-name" error={errors.name}>
+          <input
+            id="su-name"
+            className={INPUT}
+            autoComplete="name"
+            placeholder="e.g. Priya Sharma"
+            value={draft.name}
+            onChange={(e) => onChange({ name: e.target.value })}
+          />
+        </Field>
+        <Field
+          label="Super user — work email"
+          htmlFor="su-email"
+          error={errors.email}
+          hint="They'll log in with this email and set their own password."
+        >
+          <input
+            id="su-email"
+            className={INPUT}
+            type="email"
+            autoComplete="email"
+            placeholder="name@company.com"
+            value={draft.email}
+            onChange={(e) => onChange({ email: e.target.value })}
+          />
+        </Field>
+      </div>
+      <Foot>
+        <BackButton onClick={onBack} />
+        <ContinueButton onClick={onContinue} busy={busy} testId="ac-super-continue" />
       </Foot>
     </Card>
   );
@@ -1512,6 +1605,7 @@ export function TrialScreen({
   onBack,
   onPayChosen,
   onPaidTrial,
+  onAnnual,
 }: {
   planName: string;
   used: number;
@@ -1519,6 +1613,13 @@ export function TrialScreen({
   onBack: () => void;
   onPayChosen: () => void;
   onPaidTrial: () => void;
+  /**
+   * V6's third option in the "Trial complete" panel — `acStartAnnual()`. It is
+   * the ONLY way `#acs-annual` is reached in the mockup, so without this the
+   * new screen would be unreachable. Optional, so the callers that do not offer
+   * an annual subscription keep V6's two-button panel.
+   */
+  onAnnual?: () => void;
 }) {
   const left = Math.max(FREE_TRIAL_DECKS - used, 0);
   const done = left === 0;
@@ -1579,6 +1680,12 @@ export function TrialScreen({
               <Gift className="h-4 w-4" aria-hidden="true" />
               Try paid trials
             </button>
+            {onAnnual && (
+              <button type="button" className={BTN_GO} onClick={onAnnual} data-testid="ac-try-annual">
+                <Crown className="h-4 w-4" aria-hidden="true" />
+                Annual subscriptions
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -1688,6 +1795,550 @@ export function PaidTrialScreen({
   );
 }
 
+// ── 3b. V6 · `#acs-annual` — the annual subscription ─────────────────────────
+
+/**
+ * `.ann-step` — a −/N/+ quantity stepper.
+ *
+ * Mobile-first: the row it sits in is a `flex-wrap` at phone width, so the
+ * stepper drops below its own label instead of squeezing it. The buttons are
+ * 36 px, not V6's 30 px, because 30 px is below the 24 px minimum target with
+ * no padding around it and these are the controls a customer taps on a phone
+ * to add a seat. `aria-label` names the tier, so a screen reader hears
+ * "Add a Premium seat", not "plus".
+ */
+function Stepper2({
+  value,
+  onChange,
+  label,
+  testId,
+  min = 0,
+}: {
+  value: number;
+  onChange: (next: number) => void;
+  /** What is being counted, e.g. "Premium seat". */
+  label: string;
+  testId: string;
+  min?: number;
+}) {
+  const btn =
+    "flex h-9 w-9 shrink-0 items-center justify-center rounded-[7px] border border-stone-dk bg-surface text-[18px] leading-none text-fg " +
+    "hover:border-olive hover:text-olive disabled:cursor-not-allowed disabled:opacity-40";
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      <button
+        type="button"
+        className={btn}
+        aria-label={`Remove a ${label}`}
+        data-testid={`${testId}-minus`}
+        disabled={value <= min}
+        onClick={() => onChange(Math.max(min, value - 1))}
+      >
+        −
+      </button>
+      <span
+        className="min-w-[38px] text-center font-mono text-[15px] font-bold text-fg"
+        data-testid={testId}
+        aria-live="polite"
+        aria-label={`${value} × ${label}`}
+      >
+        {value}
+      </span>
+      <button
+        type="button"
+        className={btn}
+        aria-label={`Add a ${label}`}
+        data-testid={`${testId}-plus`}
+        onClick={() => onChange(value + 1)}
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
+/** `.ann-row` — a label/sub pair with its stepper. Wraps before it overflows. */
+function AnnualRow({
+  title,
+  sub,
+  children,
+}: {
+  title: ReactNode;
+  sub: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="mb-[9px] flex flex-wrap items-center justify-between gap-x-3 gap-y-2.5 rounded-[10px] border border-stone-dk px-3.5 py-[11px]">
+      <div className="min-w-0 basis-full min-[380px]:basis-auto">
+        <b className="block text-[13px] text-fg">{title}</b>
+        <span className="block text-[11px] text-fg-muted">{sub}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+const ANNUAL_SECTION = "mb-2 mt-4 text-[10.5px] font-bold uppercase tracking-[.05em] text-fg-muted";
+
+/**
+ * `#acs-annual` — "Your subscription starts with one Premium seat. Add more
+ * seats (Standard / Pro / Premium — 10 GB storage each) and deck credit packs
+ * as you need."
+ *
+ * Every figure is a `seat_<tier>_12` row of the published catalogue; the base
+ * line is the Premium row, priced once, because the cart simply starts at
+ * `premium: 1`. The running total is `annualCartQuote`, which taxes through the
+ * one tax rule — this component does no arithmetic.
+ *
+ * **The cart can hold more than this build can order, and it says so.** A
+ * single `POST /api/account/orders` carries one `planCode`, so a cart with two
+ * different seat tiers has no order to place; the amber note names that and
+ * Continue stays shut rather than sending one tier's code with another tier's
+ * money. `quote.blocked` is the whole of that logic and it lives in
+ * `accountOrder.ts` beside the order shape it is a limit of.
+ */
+export function AnnualSubscriptionScreen({
+  book,
+  currency,
+  cart,
+  quote,
+  onSeats,
+  onExtra,
+  canUpgradeToEnterprise,
+  onUpgradeToEnterprise,
+  onEnterprisePlans,
+  onBack,
+  onContinue,
+}: {
+  book: PublishedPriceBook;
+  currency: string;
+  cart: AnnualCart;
+  quote: AnnualCartQuote;
+  onSeats: (tier: Plan, next: number) => void;
+  onExtra: (credits: number) => void;
+  /** V6's `#ac-ann-upgrade`, shown while the account is not an organisation. */
+  canUpgradeToEnterprise: boolean;
+  onUpgradeToEnterprise: () => void;
+  onEnterprisePlans: () => void;
+  onBack: () => void;
+  onContinue: () => void;
+}) {
+  const symbol = symbolFor(book, currency);
+  const money = (m: number) => formatMinor(m, symbol);
+  const base = seatPlanFor(book, "premium", ANNUAL_SEAT_MONTHS);
+  const baseMinor = base?.amounts[currency] ?? 0;
+  const premiumRate = extraCreditRateMinor(book, "premium", currency) ?? 0;
+
+  // No Premium annual seat priced in this currency means there is no
+  // subscription to start. Say it, rather than drawing a cart that totals zero.
+  if (!base || baseMinor <= 0) {
+    return (
+      <Card>
+        <Heading title="Annual subscription" />
+        <Note amber>
+          An annual subscription is not sold in {currency} right now. Choose another currency, or go
+          back and pick a shorter billing period.
+        </Note>
+        <Foot>
+          <BackButton onClick={onBack} />
+        </Foot>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <Heading
+        title="Annual subscription"
+        sub={
+          <>
+            Your subscription starts with one Premium seat. Add more seats (Standard / Pro / Premium
+            — {SEAT_STORAGE_GB} GB storage each) and deck credit packs as you need.{" "}
+            <b>Set a quantity for each</b> — leave at 0 if not needed.
+          </>
+        }
+      />
+
+      {canUpgradeToEnterprise && (
+        <div
+          data-testid="ac-ann-upgrade"
+          className="mt-3.5 flex flex-col gap-3 rounded-[11px] border border-gold bg-gold-lt px-[15px] py-3 min-[560px]:flex-row min-[560px]:items-center min-[560px]:justify-between"
+        >
+          <div className="text-[12.5px] leading-[1.5] text-gold-dk">
+            Growing a team? Upgrade to an Enterprise account to add and manage users.
+          </div>
+          <button
+            type="button"
+            className={`${BTN_AMBER} w-full justify-center min-[560px]:w-auto min-[560px]:shrink-0`}
+            onClick={onUpgradeToEnterprise}
+          >
+            <Building2 className="h-4 w-4" aria-hidden="true" /> Upgrade to Enterprise
+          </button>
+        </div>
+      )}
+
+      <div className="mb-1.5 mt-[18px] flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 rounded-xl border-[1.5px] border-olive bg-olive-lt px-4 py-3.5 text-[13px] text-fg">
+        <div className="min-w-0">
+          <b className="font-bold">
+            1 Premium Seat ({SEAT_STORAGE_GB} GB storage)
+          </b>{" "}
+          — Annual
+          {base.units !== null && <> · {base.units.toLocaleString("en-IN")} Credits included</>}
+        </div>
+        <div className="font-mono text-[16px] font-bold text-olive-dk" data-testid="ac-ann-baseprice">
+          {money(baseMinor)}
+        </div>
+      </div>
+      <p className="my-3.5 text-[12.5px] font-semibold text-fg">
+        Credits come with (equal no. of decks + reports + platform fees + ticket based support)
+      </p>
+
+      <div className={ANNUAL_SECTION}>Add seats</div>
+      <div data-testid="ac-ann-seats">
+        {seatTiers(book).map((tier) => {
+          const plan = seatPlanFor(book, tier, ANNUAL_SEAT_MONTHS);
+          const unit = plan?.amounts[currency] ?? 0;
+          if (!plan || unit <= 0) return null;
+          return (
+            <AnnualRow
+              key={tier}
+              title={`${PLAN_LABELS[tier]} seat (${SEAT_STORAGE_GB} GB storage)`}
+              sub={`Annual · ${money(unit)} / seat`}
+            >
+              <Stepper2
+                value={cart.seats[tier] ?? 0}
+                onChange={(next) => onSeats(tier, next)}
+                label={`${PLAN_LABELS[tier]} seat`}
+                testId={`ac-ann-seat-${tier}`}
+              />
+            </AnnualRow>
+          );
+        })}
+      </div>
+
+      {/* V6's "Add credit packs" rows are four fixed packs with their own
+          prices. This build sells extra decks at the rate DERIVED from the
+          annual seat (`extraCreditRate`), which is the one rate the server
+          re-prices against, so the pack sizes come from `EXTRA_CREDIT_PACKS`
+          and the money from the catalogue. V6 carries no discount anywhere, so
+          nothing here claims a saving against a base rate (§8 Q1). */}
+      <div className={ANNUAL_SECTION}>Add credit packs</div>
+      <ExtraCredits
+        testId="ac-ann-packs"
+        rateMinor={premiumRate}
+        symbol={symbol}
+        tierName={PLAN_LABELS.premium}
+        selected={cart.extraCredits}
+        onToggle={onExtra}
+      />
+
+      <div
+        className="mt-3.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-t border-stone pt-3.5 text-[12px] text-fg-2"
+        data-testid="ac-ann-total"
+      >
+        <span>
+          Subtotal · {quote.seatsTotal} seat{quote.seatsTotal === 1 ? "" : "s"}
+        </span>
+        <b className="font-mono text-[20px] text-fg">{money(quote.subtotalMinor)}</b>
+      </div>
+      {quote.breakdown.taxed && (
+        <div className="mt-1 flex justify-between text-[11.5px] text-fg-muted" data-testid="ac-ann-gst">
+          <span>GST ({quote.breakdown.ratePct}%) is added at checkout</span>
+          <span>{money(quote.breakdown.taxMinor)}</span>
+        </div>
+      )}
+
+      {quote.blocked === "mixed_tiers" && (
+        <Note amber>
+          This cart mixes seat tiers, and an order carries one plan — place one tier at a time, or
+          choose an Enterprise bundle below, which includes its seats.
+        </Note>
+      )}
+
+      <Foot>
+        <BackButton onClick={onBack} />
+        <ContinueButton
+          onClick={onContinue}
+          disabled={quote.order === null}
+          testId="ac-ann-continue"
+        >
+          Continue to payment
+        </ContinueButton>
+      </Foot>
+      <div className="mt-[18px] border-t border-stone pt-3.5">
+        <button
+          type="button"
+          className={`${BTN_GHOST} ${BTN_FULL}`}
+          data-testid="ac-ann-entplans"
+          onClick={onEnterprisePlans}
+        >
+          Enterprise Plans
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+// ── 3c. V6 · `#acs-entplans` — the fixed annual bundles ──────────────────────
+
+/**
+ * "Enterprise Plans. Fixed annual bundles for larger teams — seats and credits
+ * included."
+ *
+ * The bundles are the catalogue's `enterprise` rows — the same rows
+ * `EnterpriseSeatScreen` draws for the organisation branch, reached here from
+ * `#acs-annual` instead and worded as V6 words it. V6's own bundle cards carry
+ * a "You save $X" pill; there is no discount anywhere else in V6 and §8 Q1
+ * forbids publishing a saving derived from a base rate, so no pill is drawn.
+ *
+ * `quoteOrder` refuses an enterprise plan for an individual account
+ * (`organization_required`), so an individual gets the upgrade route in the
+ * footer instead of a Continue that the server would reject.
+ */
+export function EnterprisePlansScreen({
+  book,
+  currency,
+  plans,
+  planCode,
+  onPlan,
+  isOrganization,
+  onUpgradeToEnterprise,
+  onBack,
+  onContinue,
+}: {
+  book: PublishedPriceBook;
+  currency: string;
+  plans: PricePlanRow[];
+  planCode: string | null;
+  onPlan: (code: string) => void;
+  isOrganization: boolean;
+  onUpgradeToEnterprise: () => void;
+  onBack: () => void;
+  onContinue: () => void;
+}) {
+  const symbol = symbolFor(book, currency);
+  return (
+    <Card>
+      <Heading
+        title="Enterprise Plans"
+        sub="Fixed annual bundles for larger teams — seats and credits included."
+      />
+      <p className="mt-3.5 text-[12.5px] font-semibold text-fg">
+        Credits come with (equal no. of decks + reports + platform fees + ticket/call based support)
+      </p>
+      {plans.length === 0 ? (
+        <Note amber>
+          No Enterprise bundle is on sale in {currency} right now. Choose another currency, or go
+          back and build an annual subscription seat by seat.
+        </Note>
+      ) : (
+        <div
+          role="radiogroup"
+          aria-label="Enterprise bundles"
+          data-testid="ac-entplans"
+          /* Mobile-first: one column at phone width, and `auto-fit` only once
+             there is room for a 220 px card — never a fixed `min-width` that
+             could push the page wider than the viewport. */
+          className="mt-[18px] grid gap-3.5 min-[560px]:[grid-template-columns:repeat(auto-fit,minmax(220px,1fr))]"
+        >
+          {plans.map((plan) => {
+            const selected = plan.code === planCode;
+            const seats = plan.seats;
+            return (
+              <button
+                key={plan.code}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                data-testid={`ac-entplan-${plan.code}`}
+                onClick={() => onPlan(plan.code)}
+                className={`flex flex-col justify-start rounded-[13px] border-[1.5px] px-4 py-[18px] text-left transition-colors ${
+                  selected ? "border-gold bg-gold-lt" : "border-stone-dk bg-surface hover:border-gold/60"
+                }`}
+              >
+                <span className={`block text-[15px] font-semibold ${selected ? "text-gold-dk" : "text-fg"}`}>
+                  {plan.name}
+                </span>
+                <span className={`mb-3 mt-[3px] block text-[25px] font-bold ${selected ? "text-gold-dk" : "text-fg"}`}>
+                  {formatMinor(plan.amounts[currency] ?? 0, symbol)}
+                  <small className="ml-1 text-[12px] font-semibold">Annual</small>
+                </span>
+                <Bullets
+                  items={[
+                    ...(seats !== null ? [`${seats} Premium seats (${SEAT_STORAGE_GB} GB storage each)`] : []),
+                    ...(plan.units !== null ? [`${plan.units.toLocaleString("en-IN")} Credits`] : []),
+                    "Annual billing",
+                  ]}
+                  className="gap-[9px] text-[12.5px]"
+                />
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {!isOrganization && plans.length > 0 && (
+        <Note amber>
+          Enterprise bundles are sold to organisation accounts. Add your organisation's details and
+          this bundle is yours to buy.
+        </Note>
+      )}
+      <Foot>
+        <BackButton onClick={onBack} />
+        {isOrganization ? (
+          <ContinueButton onClick={onContinue} disabled={planCode === null} testId="ac-entplan-continue">
+            Continue to pay
+          </ContinueButton>
+        ) : (
+          <button
+            type="button"
+            className={BTN_AMBER}
+            data-testid="ac-entplan-upgrade"
+            onClick={onUpgradeToEnterprise}
+          >
+            <Building2 className="h-4 w-4" aria-hidden="true" /> Upgrade to Enterprise
+          </button>
+        )}
+      </Foot>
+    </Card>
+  );
+}
+
+// ── 3d. V6 · `#acs-billing` — the address that decides the money ─────────────
+
+/**
+ * "Billing details … We use this to set your billing currency and generate your
+ * invoice. Indian billing addresses are charged in **INR with GST**; every other
+ * country is billed in **USD with no GST**."
+ *
+ * The screen keeps saying that, because it is the only place the customer is
+ * told why their address changes their price. What it does NOT do is decide it:
+ * `locale` comes from `resolveBillingLocale` in `src/shared/plans.ts`, and so
+ * does the sentence under the country field (`locale.note`). The server refuses
+ * an order whose currency disagrees with the saved country, so a screen that
+ * answered this question for itself would produce a 400, not a difference.
+ *
+ * Mobile-first: one column at every width, each field a real `<label>`, the
+ * footer buttons wrapping instead of shrinking. Nothing on this screen has a
+ * width — it is the screen a customer is most likely to be filling on a phone.
+ */
+export function BillingDetailsScreen({
+  draft,
+  onChange,
+  errors,
+  locale,
+  onBack,
+  onContinue,
+  busy,
+}: {
+  draft: BillingAddress;
+  onChange: (patch: Partial<BillingAddress>) => void;
+  errors: FieldErrors;
+  /** `resolveBillingLocale(draft.country, taxSettingsOf(book.tax))`, from the caller. */
+  locale: BillingLocale;
+  onBack: () => void;
+  onContinue: () => void;
+  busy?: boolean;
+}) {
+  const complete = Object.keys(validateBillingAddress(draft)).length === 0;
+  return (
+    <Card>
+      <Heading
+        title="Billing details"
+        sub={
+          <>
+            We use this to set your billing currency and generate your invoice. Indian billing
+            addresses are charged in <b>INR with GST</b>; every other country is billed in{" "}
+            <b>USD with no GST</b>.
+          </>
+        }
+      />
+      <div className="grid gap-0" data-testid="ac-billing">
+        <Field label="Billing name" htmlFor="bill-name" error={errors.name}>
+          <input
+            id="bill-name"
+            className={INPUT}
+            autoComplete="organization"
+            placeholder="Name or company to appear on the invoice"
+            value={draft.name}
+            onChange={(e) => onChange({ name: e.target.value })}
+          />
+        </Field>
+        <Field label="City" htmlFor="bill-city" error={errors.city}>
+          <input
+            id="bill-city"
+            className={INPUT}
+            autoComplete="address-level2"
+            placeholder="e.g. Hyderabad"
+            value={draft.city}
+            onChange={(e) => onChange({ city: e.target.value })}
+          />
+        </Field>
+        {/* V6 uses a `<datalist>`, not a `<select>`: the suggestions are a
+            shortlist and a customer anywhere else must still be billable. The
+            input stays free text and validation only checks it is filled. */}
+        <Field
+          label="Country"
+          htmlFor="bill-country"
+          error={errors.country}
+          hint="Your country sets your currency and whether GST applies."
+        >
+          <input
+            id="bill-country"
+            className={INPUT}
+            list="ac-bill-countries"
+            autoComplete="country-name"
+            placeholder="e.g. India"
+            value={draft.country}
+            onChange={(e) => onChange({ country: e.target.value })}
+          />
+          <datalist id="ac-bill-countries">
+            {BILLING_COUNTRIES.map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
+        </Field>
+        <Field label="Communication address" htmlFor="bill-address" error={errors.address}>
+          <textarea
+            id="bill-address"
+            className={INPUT}
+            rows={3}
+            autoComplete="street-address"
+            placeholder="Street, area, postal code"
+            value={draft.address}
+            onChange={(e) => onChange({ address: e.target.value })}
+          />
+        </Field>
+      </div>
+      {/* `locale.note` is V6's own sentence, written once in `plans.ts` beside
+          the rule that produces it. Absent until a country has been typed,
+          which is exactly when V6 reveals `#bill-currency-note`. */}
+      {locale.note && (
+        <div data-testid="ac-billing-currency">
+          <Note>
+            {locale.note}
+            {locale.taxed && " It is suitable for input tax credit."}
+          </Note>
+        </div>
+      )}
+      <Note>
+        Your invoice is emailed to you and stays downloadable from this account. Payment itself is
+        taken by Razorpay — UPI, cards, net banking or wallets — on their own secure page.
+      </Note>
+      <Foot>
+        <BackButton onClick={onBack} />
+        <ContinueButton
+          onClick={onContinue}
+          busy={busy}
+          disabled={!complete}
+          testId="ac-billing-continue"
+        >
+          Continue to payment
+        </ContinueButton>
+      </Foot>
+    </Card>
+  );
+}
+
 // ── 4. Payment ───────────────────────────────────────────────────────────────
 
 const METHOD_ICONS: Record<PaymentMethod, ReactNode> = {
@@ -1777,6 +2428,7 @@ export function PaymentScreen({
   onBack,
   busy,
   error,
+  billing,
 }: {
   book: PublishedPriceBook;
   quote: OrderQuote;
@@ -1788,6 +2440,12 @@ export function PaymentScreen({
   onBack: () => void;
   busy: boolean;
   error: string | null;
+  /**
+   * V6's `billToLine()` — the address `#acs-billing` captured, echoed in the
+   * order summary so the customer can see which address set their currency
+   * before they pay. Absent on the paths that never visit that screen.
+   */
+  billing?: BillingAddress | null;
 }) {
   const symbol = symbolFor(book, quote.currency);
   const money = (m: number) => formatMinor(m, symbol);
@@ -1836,6 +2494,16 @@ export function PaymentScreen({
         <div className="mb-3.5 mt-[18px] flex items-center gap-[7px] text-[11px] text-fg-muted">
           <Lock className="h-[14px] w-[14px] shrink-0 text-[var(--ac-green)]" aria-hidden="true" />
           Your card, UPI or bank details are entered on the payment provider's secure page — never in this application.
+        </div>
+        {/* V6 names the provider: "Payments secured by Razorpay". It is named,
+            not integrated — `ADAPTERS` in `src/server/billing/provider.ts` is
+            empty by design until pricing is final, so this line says who will
+            take the payment and the button below says what happens today. No
+            method row is added for it: `PaymentMethod` is persisted, and a new
+            value is a schema change, not a copy change. */}
+        <div className="mb-3.5 text-[11px] leading-[1.55] text-fg-muted" data-testid="ac-provider-note">
+          Payments are processed by <b className="font-semibold text-fg-2">Razorpay</b> — UPI, cards,
+          net banking and wallets — on their own secure page.
         </div>
         {!paymentConfigured && (
           <div className="mb-3.5 rounded-[10px] border border-gold bg-gold-lt px-4 py-[11px] text-[12px] leading-[1.55] text-gold-dk" data-testid="ac-no-provider">
@@ -1895,6 +2563,14 @@ export function PaymentScreen({
             <b className="text-fg">Not included</b>
           </div>
         )}
+        {billing && (billing.city.trim() || billing.country.trim()) && (
+          <div className="mt-[13px] flex justify-between gap-3 text-[12.5px] text-fg-muted" data-testid="ac-line-billto">
+            <span>Billing to</span>
+            <b className="text-right font-semibold text-fg-2">
+              {[billing.city.trim(), billing.country.trim()].filter(Boolean).join(", ")}
+            </b>
+          </div>
+        )}
         <div className="mt-[15px] flex items-baseline justify-between border-t border-stone pt-3.5">
           <span className="text-[15px] font-bold text-fg">Total</span>
           <span className="text-[19px] font-bold text-fg" data-testid="ac-total">
@@ -1938,6 +2614,7 @@ export function ReceiptScreen({
   order,
   documentUrl,
   onDashboard,
+  onTeam,
 }: {
   book: PublishedPriceBook;
   /** The workspace's written product name (W4-B branding), e.g. "ai.STARTUPJURY". */
@@ -1945,6 +2622,13 @@ export function ReceiptScreen({
   order: AccountOrderView;
   documentUrl: string;
   onDashboard: () => void;
+  /**
+   * V6's `#acs-team`, which nothing in the mockup's drawn flow reaches (see
+   * `TeamScreen`). The success screen's own step 2 is "Invite team members", so
+   * the receipt is where this build offers it — for organisation accounts only,
+   * because that is the audience V6 gives the screen to ("enterprise only").
+   */
+  onTeam?: () => void;
 }) {
   const symbol = symbolFor(book, order.currency);
   const method = PAYMENT_METHODS.find((m) => m.id === order.paymentMethod);
@@ -2034,17 +2718,261 @@ export function ReceiptScreen({
       <div className="mt-[18px] flex gap-[9px] rounded-[10px] border border-stone-dk bg-offwhite px-4 py-[13px] text-left text-[12px] leading-[1.55] text-fg-2">
         <Mail className="mt-px h-[15px] w-[15px] shrink-0 text-[var(--ac-green)]" aria-hidden="true" />
         {order.taxed
-          ? "A GST-compliant tax invoice, suitable for input tax credit, is issued once payment is confirmed. The pro-forma below records this order."
-          : "The pro-forma below records this order. International prices are exclusive of local taxes."}
+          ? "A GST-compliant tax invoice, suitable for input tax credit, is emailed to your registered address and stays downloadable here — issued once payment is confirmed. The pro-forma below records this order."
+          : "Your invoice is emailed to your registered address and stays downloadable here. The pro-forma below records this order; international prices are exclusive of local taxes."}
       </div>
       <div className="mt-[22px] flex flex-col gap-[11px]">
         <button type="button" className={`${BTN_GO} ${BTN_FULL}`} onClick={onDashboard}>
           Go to dashboard <ArrowRight className="h-4 w-4" aria-hidden="true" />
         </button>
+        {onTeam && (
+          <button
+            type="button"
+            className={`${BTN_GHOST} ${BTN_FULL}`}
+            data-testid="ac-receipt-team"
+            onClick={onTeam}
+          >
+            Add your team <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
         <a href={documentUrl} download className={`${BTN_GHOST} ${BTN_FULL}`} data-testid="ac-download-invoice">
           <Download className="h-4 w-4" aria-hidden="true" /> Download pro-forma invoice
         </a>
       </div>
+    </Card>
+  );
+}
+
+// ── 6. V6 · `#acs-team` — add your team ──────────────────────────────────────
+
+/**
+ * "Add your team. Invite colleagues and assign their roles."
+ *
+ * **Where this screen sits, and why that is a decision.** V6 lists `team` in
+ * `SCREENS` and renders it with `renderTeam()`, but the only call that navigates
+ * to it is `acRoleNext()` — and the Role screen is commented "removed from
+ * flow", so nothing in the drawn mockup reaches it. Its own footer is "Skip for
+ * now" / "Confirm & go to dashboard", both `acctClose()`, and V6's success
+ * screen says "Invite team members — add colleagues and assign their roles from
+ * the dashboard". So it is a POST-PURCHASE step, and this build reaches it from
+ * the receipt for an organisation account. Recorded in `docs/parity-requests/`.
+ *
+ * The invites are client-side, exactly as `aetMembers` is in V6 — there is no
+ * route that creates a pending member yet, which is noted in the handoff. The
+ * screen therefore never claims an invitation was sent.
+ *
+ * Mobile-first: the add-member row is one stacked column at phone width and
+ * only becomes V6's `1fr 200px auto` grid at 640 px; the member list is cards,
+ * not a table, so there is nothing to scroll sideways.
+ */
+export function TeamScreen({
+  tierId,
+  onTier,
+  members,
+  onAdd,
+  onRemove,
+  onParam,
+  draftEmail,
+  draftRole,
+  onDraftEmail,
+  onDraftRole,
+  error,
+  onSkip,
+  onConfirm,
+}: {
+  tierId: TeamSeatTierId;
+  onTier: (id: TeamSeatTierId) => void;
+  members: TeamInvite[];
+  onAdd: () => void;
+  onRemove: (index: number) => void;
+  onParam: (index: number, slot: 0 | 1 | 2, value: string) => void;
+  draftEmail: string;
+  draftRole: string;
+  onDraftEmail: (v: string) => void;
+  onDraftRole: (v: string) => void;
+  error?: string;
+  onSkip: () => void;
+  onConfirm: () => void;
+}) {
+  const tier = teamSeatTier(tierId);
+  const full = teamSeatsFull(tierId, members.length);
+  return (
+    <Card>
+      <Heading
+        title="Add your team"
+        sub="Invite colleagues and assign their roles. All enterprise users are on Pro — configurable parameters are available to everyone."
+      />
+
+      <div
+        data-testid="ac-team-planbar"
+        className="mt-[18px] flex flex-wrap items-center gap-x-3 gap-y-2.5 rounded-xl border border-stone-dk bg-offwhite px-4 py-3.5"
+      >
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gold-lt text-gold-dk">
+          <Building2 className="h-[18px] w-[18px]" aria-hidden="true" />
+        </span>
+        <div className="min-w-0 flex-1 basis-full min-[420px]:basis-auto">
+          <b className="block text-[13.5px] text-fg">{tier.name}</b>
+          <span className="block text-[11.5px] text-fg-muted">{tier.sub}</span>
+        </div>
+        <span
+          data-testid="ac-team-seats"
+          className="rounded-full border border-stone-dk bg-surface px-2.5 py-[3px] text-[11px] font-semibold text-fg-2"
+        >
+          {teamSeatLabel(tierId, members.length)}
+        </span>
+      </div>
+
+      <div role="radiogroup" aria-label="Preview plan" className="mt-3.5 flex flex-wrap items-center gap-2">
+        <span className="text-[11.5px] text-fg-muted">Preview plan:</span>
+        {TEAM_SEAT_TIERS.map((t) => {
+          const on = t.id === tierId;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              data-testid={`ac-team-pill-${t.id}`}
+              onClick={() => onTier(t.id)}
+              className={`rounded-full border px-3 py-1 text-[12px] ${
+                on ? "border-fg font-semibold text-fg" : "border-stone-dk bg-surface text-fg-2 hover:border-gold"
+              }`}
+            >
+              {t.pill}
+            </button>
+          );
+        })}
+      </div>
+
+      <Note amber>
+        All enterprise users are on Pro — every team member can set their own 3 configurable
+        parameters from day one.
+      </Note>
+
+      {/* Mobile-first: stacked at phone width, V6's three-column row from 640px. */}
+      <div className="mt-5 grid items-end gap-3.5 min-[640px]:[grid-template-columns:1fr_200px_auto]">
+        <div>
+          <label htmlFor="ac-team-email" className="mb-[7px] block text-[12.5px] font-semibold text-fg">
+            Work email
+          </label>
+          <input
+            id="ac-team-email"
+            className={INPUT}
+            type="email"
+            placeholder="colleague@company.com"
+            value={draftEmail}
+            onChange={(e) => onDraftEmail(e.target.value)}
+          />
+        </div>
+        <div>
+          <label htmlFor="ac-team-role" className="mb-[7px] block text-[12.5px] font-semibold text-fg">
+            Role
+          </label>
+          <select
+            id="ac-team-role"
+            className={INPUT}
+            value={draftRole}
+            onChange={(e) => onDraftRole(e.target.value)}
+          >
+            {TEAM_ROLES.map((r) => (
+              <option key={r}>{r}</option>
+            ))}
+          </select>
+        </div>
+        <button
+          type="button"
+          className={`${BTN_GHOST} w-full justify-center min-[640px]:w-auto`}
+          data-testid="ac-team-add"
+          onClick={onAdd}
+          disabled={full}
+        >
+          Add
+        </button>
+      </div>
+      {error && (
+        <div role="alert" className="mt-2.5 text-[12px] text-signal-flagged" data-testid="ac-team-error">
+          {error}
+        </div>
+      )}
+      {full && (
+        <div className="mt-2.5 text-[12px] text-gold-dk" data-testid="ac-team-seatfull">
+          All seats on this plan are in use. Upgrade to add more members.
+        </div>
+      )}
+
+      <div className="my-5 border-t border-stone" />
+
+      <ul className="flex flex-col gap-3" data-testid="ac-team-members">
+        {members.map((m, i) => (
+          <li key={`${m.email}-${i}`} className="rounded-xl border border-stone-dk px-3.5 py-3">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2.5">
+              <span
+                aria-hidden="true"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-olive-lt font-mono text-[12px] font-bold text-olive-dk"
+              >
+                {teamInitials(m.email)}
+              </span>
+              <div className="min-w-0 flex-1 basis-full min-[420px]:basis-auto">
+                <b className="block truncate text-[13px] text-fg">{m.email}</b>
+                <span className="block text-[11.5px] text-fg-muted">{m.role}</span>
+              </div>
+              <span className="rounded-[5px] border border-gold bg-gold-lt px-[7px] py-[2px] text-[10px] font-semibold text-gold-dk">
+                Pro
+              </span>
+              <button
+                type="button"
+                className={`${BTN_GHOST} px-4 py-[7px]`}
+                data-testid={`ac-team-remove-${i}`}
+                onClick={() => onRemove(i)}
+              >
+                Remove
+              </button>
+            </div>
+            <div className="mt-3.5">
+              <div className="mb-2 text-[12.5px] font-semibold text-fg">
+                Their 3 configurable parameters
+              </div>
+              {([0, 1, 2] as const).map((slot) => (
+                <div key={slot} className="mb-2.5">
+                  <label
+                    htmlFor={`ac-team-param-${i}-${slot}`}
+                    className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[.04em] text-fg-muted"
+                  >
+                    Parameter {slot + 1}{" "}
+                    <span className="font-normal normal-case tracking-normal">
+                      — their own evaluation lens
+                    </span>
+                  </label>
+                  <input
+                    id={`ac-team-param-${i}-${slot}`}
+                    className={INPUT}
+                    placeholder="e.g. Founder resilience"
+                    value={m.params[slot]}
+                    onChange={(e) => onParam(i, slot, e.target.value)}
+                  />
+                </div>
+              ))}
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      {/* Nothing has been sent: there is no route that creates a pending
+          member yet, so the screen states what it holds rather than implying
+          an invitation went out. */}
+      <Note>
+        These members are held with your order. Invitations are sent from{" "}
+        <b>Admin console → Team &amp; roles</b> once your subscription is active.
+      </Note>
+
+      <Foot>
+        <button type="button" className={BTN_GHOST} data-testid="ac-team-skip" onClick={onSkip}>
+          Skip for now
+        </button>
+        <ContinueButton onClick={onConfirm} testId="ac-team-confirm">
+          Confirm &amp; go to dashboard
+        </ContinueButton>
+      </Foot>
     </Card>
   );
 }
