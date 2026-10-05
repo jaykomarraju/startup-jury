@@ -33,6 +33,9 @@ import {
 import type { DeckView, DeckAction } from "../types";
 import { exportDecks } from "../exportCsv";
 import {
+  ApiError,
+  sendDeckToQuery,
+  sendDeckToAssign,
   listDecks,
   getDeck,
   getDeckReport,
@@ -665,6 +668,44 @@ function juryPill(deck: DeckView): { label: string; tone: PillTone } {
   }
 }
 
+// ── Responsive tier ─────────────────────────────────────────────────────────
+
+/**
+ * True in the phone tier — below Tailwind's `sm`, which is where the shell has
+ * already swapped the 190px sidebar for the off-canvas drawer.
+ *
+ * Measured on production at iPhone 13 width: this screen's toolbar subtitle
+ * ("Recent activity · 23 decks · Updated just now") wrapped to FIVE lines. The
+ * cause is `.tb` (`index.css`) — a `flex-wrap: nowrap` row whose action group
+ * `.tbr` is `flex-shrink: 0`. The search box and the tag filter therefore keep
+ * their intrinsic ~280px while the title column, the only shrinkable item,
+ * collapses to what is left of a 390px viewport.
+ *
+ * A flex item cannot force a line break in a nowrap container, so the strip
+ * cannot be made to stack by styling anything inside it; it stacks by having
+ * one item instead of two. At this width the controls are handed to the
+ * SUBTITLE column — still wrapped in `.tbr`, so the narrow-toolbar rule
+ * `.tbr .tbb:not(.pr){display:none}` keeps hiding the non-primary actions
+ * exactly as it does today — which leaves `.tb` a single full-width column:
+ * subtitle on its own line, controls under it.
+ *
+ * Deliberately a media QUERY and not a `sm:` class pair: duplicating the
+ * controls into two breakpoint-gated copies would put two "Tag filter" and two
+ * "Search decks" controls in the accessibility tree at every width.
+ */
+function useIsPhone(): boolean {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia?.("(max-width: 639px)");
+    if (!mq) return;
+    const sync = () => setOn(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+  return on;
+}
+
 // ── Toolbar dropdown (`.tbb` + `.cust-drop`) ─────────────────────────────────
 
 interface MenuOption {
@@ -961,6 +1002,7 @@ export function DashboardPage() {
   // above — so the destination is still always reachable; `canAccessNav`
   // decides the sidebar, not this.)
   const navigate = useNavigate();
+  const isPhone = useIsPhone();
   const defaultView: ViewKey = isJury ? "assigned" : isIc ? "myvote" : edition === "vc" ? "uploaded" : "all";
   const [ctx, setCtx] = useActiveContext(edition);
   const [decks, setDecks] = useState<DeckView[] | null>(null);
@@ -1640,6 +1682,37 @@ export function DashboardPage() {
     }
   }
 
+  /**
+   * Send a deck to the Query or Assign screen — the recorded click, then the
+   * navigation. The order matters: the destination filters on its own roster, so
+   * navigating first lands the operator on a screen the deck is not yet on.
+   *
+   * A refusal is reported rather than swallowed. These routes answer 409
+   * `contact_incomplete` / `deck_incomplete` when the deck's own state forbids
+   * the handoff, and that is worth saying out loud — the operator has just been
+   * told by the option list that the action was available.
+   */
+  async function handOff(deck: DeckView, to: "query" | "assign") {
+    setRowBusy(deck.id);
+    setRowError(null);
+    try {
+      if (to === "query") await sendDeckToQuery(deck.id);
+      else await sendDeckToAssign(deck.id);
+      navigate(`/app/${to}`, { state: { deckIds: [deck.id] } });
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : undefined;
+      setRowError(
+        code === "contact_incomplete"
+          ? `${deck.name} has no founder email, so it can't be sent to Query. Add the contact details first.`
+          : code === "deck_incomplete"
+            ? `${deck.name} is still incomplete, so it can't be sent to Assign.`
+            : `Couldn't send ${deck.name} to ${to === "query" ? "Query" : "Assign"}. Try again.`,
+      );
+    } finally {
+      setRowBusy(null);
+    }
+  }
+
   async function saveRowEdit(deck: DeckView) {
     setRowBusy(deck.id);
     // I7 · his "Contact details edited" — the row shows that word and no active
@@ -1869,15 +1942,23 @@ export function DashboardPage() {
               });
               return;
             }
+            // RECORD the click, THEN navigate. Both of these used to navigate
+            // only, handing the id to the destination in router state — and both
+            // destinations resolve that id against their own `?list=` roster
+            // before acting on it. So a deck that was not already on the roster
+            // was silently dropped on arrival: the operator clicked Send to
+            // Query and nothing happened (2026-10-04, tester issue 13).
+            //
+            // Membership on both screens is a RECORDED action, which is the
+            // client's own rule — "the operator will choose whether they want to
+            // send to query or not". The routes that record it existed and had no
+            // caller anywhere in `src/client`.
             if (value === V3_ASSIGN) {
-              if (toAssign.ok) navigate("/app/assign", { state: { deckIds: [deck.id] } });
+              if (toAssign.ok) void handOff(deck, "assign");
               return;
             }
             if (value === V3_QUERY) {
-              // `QueryPage` resolves the handed id against `?list=query` before
-              // ticking anything, so this carries a suggestion, not an
-              // instruction.
-              if (toQuery.ok) navigate("/app/query", { state: { deckIds: [deck.id] } });
+              if (toQuery.ok) void handOff(deck, "query");
               return;
             }
             const action = actions.find((a) => a.action === value) ?? (value === "archive" ? archive : undefined);
@@ -2550,7 +2631,27 @@ export function DashboardPage() {
   const workspaceEmpty = decks !== null && scope.length === 0 && !narrowed;
 
   return (
-    <PanelFrame title={title} subtitle={subtitle} actions={toolbar} rail={rail}>
+    <PanelFrame
+      title={title}
+      // See `useIsPhone` — at phone width the controls move under the subtitle
+      // so the toolbar strip has one full-width column instead of two competing
+      // ones. `.tbr` is kept on the wrapper so the narrow-toolbar visibility
+      // rule still applies to the actions it holds.
+      subtitle={
+        isPhone ? (
+          <>
+            {subtitle}
+            <div data-testid="tb-stacked-actions" className="tbr mt-2 flex-wrap">
+              {toolbar}
+            </div>
+          </>
+        ) : (
+          subtitle
+        )
+      }
+      actions={isPhone ? undefined : toolbar}
+      rail={rail}
+    >
       {showFirstRun && (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent/40 bg-accent/5 px-4 py-3">
           <div className="text-sm text-fg">

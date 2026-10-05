@@ -44,15 +44,26 @@ describe("pipeline structural integrity", () => {
 });
 
 describe("incubator role permissions", () => {
-  it("jury can shortlist and reject during jury evaluation", () => {
-    expect(performAction("incubator", "jury_evaluation", "shortlist", "jury")).toEqual({
-      ok: true,
-      to: "shortlisted",
-    });
-    expect(performAction("incubator", "jury_evaluation", "reject", "jury")).toEqual({
-      ok: true,
-      to: "rejected",
-    });
+  it("the jury can no longer shortlist or reject — the incubator decides", () => {
+    // Changed 2026-10-04 on the client's instruction: "Not required since the
+    // below threshold levels are indicated automatically. It is the prerogative
+    // of the Incubator to take a final call. Juror is always an external guy."
+    //
+    // Asserted over `performAction` rather than over a screen, because this is a
+    // PERMISSION and the recurring defect in this repo is a client-side-only
+    // gate (`role-boundary-leaks`). Hiding the buttons without this would leave
+    // the transition reachable by anyone who could post to the route.
+    for (const action of ["shortlist", "reject"] as const) {
+      expect(performAction("incubator", "jury_evaluation", action, "jury")).toEqual({
+        ok: false,
+        error: "forbidden",
+      });
+    }
+    // And it MOVED rather than vanished — the decision-makers still hold it.
+    for (const role of ["program_manager", "admin", "superuser"] as const) {
+      expect(performAction("incubator", "jury_evaluation", "shortlist", role).ok, role).toBe(true);
+      expect(performAction("incubator", "jury_evaluation", "reject", role).ok, role).toBe(true);
+    }
   });
 
   it("jury cannot assign jury at the AI gate", () => {

@@ -7,7 +7,7 @@ import { EvaluationDrawer } from "../../src/client/components/EvaluationDrawer";
 import { EvaluationReportModal } from "../../src/client/components/EvaluationReport";
 import { getDeckReport, type DeckReportMatrix, type ReportGroup } from "../../src/client/api";
 import type { DeckView } from "../../src/client/types";
-import type { Role } from "../../src/shared/roles";
+import type { Edition, Role } from "../../src/shared/roles";
 
 /**
  * V3-REP — item 1, "evaluation report consistent at each stage".
@@ -33,7 +33,18 @@ vi.mock("../../src/client/api", async (importOriginal) => ({
 // v3 `_scripts.js`: the `.jr-ptbl` <thead> of the Parameter evaluation table.
 const V3_CORE_HEADERS = ["Parameter", "Weight", "AI", "My score", ""];
 // The columns v15 drew at intro/assign/jurypipeline/signup and v3 does not.
+//
+// Oct-2026 issue 19 took **Avg.** back out of this list for the REPORT MODAL
+// only — "Av. Score Column is missing in the eval report" — and where an issue
+// and a prototype disagree the issue wins (Aug-2026 log). The drawer below is
+// still v3's five columns, which is why the two constants are now separate:
+// `V3_DELETED_COLUMNS` is the drawer's, `JURY_AVG` is the one neither surface
+// ever got back.
 const V3_DELETED_COLUMNS = ["Jury Avg.", "Avg."];
+const JURY_AVG = "Jury Avg.";
+// `AISJ_IC_Jury_V4` `jr-ptbl`: the Avg. header and the `jr-ptot` footer row.
+const PROTO_AVG_HEADER = "Avg.";
+const PROTO_TOTAL_ROW = "Weighted total";
 // The `custBlock` table — Parameter · Weight · My score · ⌄.
 const V3_ADDITIONAL_HEADERS = ["Parameter", "Weight", "My score", ""];
 // `.jr-section` titles in the right-hand `.jr-eval` pane, in render order.
@@ -59,9 +70,15 @@ const PARAMS = [
   { key: "traction", name: "Traction & Validation", weight: 15 },
 ];
 
+/**
+ * V4-WEIGHT — the split `GET /decks/:id/report` stamps on its own deck block,
+ * and the one the Avg. column blends at. 40:60 is the prototype's default.
+ */
+const AI_WEIGHT_PCT = 40;
+
 function matrix(over: Partial<DeckReportMatrix> = {}): DeckReportMatrix {
   return {
-    deck: { id: "d1", name: "GreenRoute" },
+    deck: { id: "d1", name: "GreenRoute", aiWeightPct: AI_WEIGHT_PCT, aiWeightSource: "org" },
     columns: [{ id: "ai", kind: "ai", name: "AI", rank: 0 }],
     core: PARAMS.map((p) => ({ key: p.key, name: p.name, weight: p.weight, cells: {} })),
     additional: [],
@@ -74,14 +91,20 @@ function matrix(over: Partial<DeckReportMatrix> = {}): DeckReportMatrix {
 
 const DECK: DeckView = { id: "d1", name: "GreenRoute", sector: "ClimateTech", stage: "Seed", city: "Pune" };
 
-function principal(role: Role = "superuser"): AuthUser {
-  return { id: "u_super", name: "Test User", initials: "TU", role, edition: "incubator" };
+function principal(role: Role = "superuser", edition: Edition = "incubator"): AuthUser {
+  return { id: "u_super", name: "Test User", initials: "TU", role, edition };
 }
 
-function withAuth(node: ReactNode, role: Role = "superuser") {
+function withAuth(node: ReactNode, role: Role = "superuser", edition: Edition = "incubator") {
   return (
     <AuthContext.Provider
-      value={{ user: principal(role), loading: false, login: vi.fn(), logout: vi.fn(), updateUser: vi.fn() }}
+      value={{
+        user: principal(role, edition),
+        loading: false,
+        login: vi.fn(),
+        logout: vi.fn(),
+        updateUser: vi.fn(),
+      }}
     >
       {node}
     </AuthContext.Provider>
@@ -89,11 +112,11 @@ function withAuth(node: ReactNode, role: Role = "superuser") {
 }
 
 /** Mount the report modal on a named screen, the way its nav slug reaches it. */
-function atScreen(navId: string, node: ReactNode) {
+function atScreen(navId: string, node: ReactNode, role: Role = "superuser", edition: Edition = "incubator") {
   return render(
     <MemoryRouter initialEntries={[`/app/${navId}`]}>
       <Routes>
-        <Route path="/app/:navId" element={withAuth(node)} />
+        <Route path="/app/:navId" element={withAuth(node, role, edition)} />
       </Routes>
     </MemoryRouter>,
   );
@@ -229,9 +252,13 @@ describe("item 1 — the report is the same at every stage", () => {
       view.unmount();
     }
     expect(seen[0]).toEqual(seen[1]);
-    // The AI column is first and the jury-average columns are not there at all.
+    // Still stage-INDEPENDENT, which is all item 1 ever asked: v15 grew the
+    // two extra columns at intro only. Avg. is now on at BOTH stages (issue
+    // 19) and per-stage drift is what this test exists to catch.
     expect(seen[0].slice(0, 2)).toEqual(["Parameter", "Weight"]);
-    for (const gone of V3_DELETED_COLUMNS) expect(seen[0]).not.toContain(gone);
+    // `Jury Avg.` — a column per OTHER juror's mean — stays deleted; the report
+    // already widens one column per evaluator (issue 20).
+    expect(seen[0]).not.toContain(JURY_AVG);
   });
 
   it("still labels the stage — the server-enforced stage mechanism is untouched", async () => {
@@ -374,5 +401,159 @@ describe("the report modal says why the AI column is absent", () => {
     // Not the "run AI Evaluate" report: the AI has scored it, this viewer may not see it.
     expect(within(dialog).queryByText(V3_HIDE_AI_TILE)).toBeNull();
     expect(sectionText("Overall AI remarks")).not.toMatch(V3_HIDE_AI_OVERALL);
+  });
+});
+
+// ── Oct-2026 issues 17 + 19 — the Weighted total row and the Avg. column ─────
+//
+// 17: "In the Assigned screen, at the end of core parameters the weighted total
+//      is missing. The weighted total should appear for AI, My SCORE and Average
+//      score, which is what appears all over the platform."
+// 19: "Av. Score Column is missing in the eval report."
+//
+// Both land on the MODAL, which is the surface a juror opens from `jassigned`
+// (`EvaluatePage` → the sparkline cell, and the workbench's own report button).
+// The drawer above is a different component with a different column set, and it
+// has carried a Weighted total row all along — which is the "all over the
+// platform" shape the client is comparing against.
+
+describe("the report modal's core table ends in the prototype's jr-ptot row", () => {
+  /** A deck both the AI and one juror have scored, as the route returns it. */
+  const scored = () =>
+    matrix({
+      columns: [
+        { id: "ai", kind: "ai", name: "AI", rank: 0, total: 7.2 },
+        {
+          id: "u_jury",
+          kind: "human",
+          name: "Rajesh Kumar",
+          role: "jury",
+          roleLabel: "Jury Member",
+          initials: "RK",
+          rank: 1,
+          total: 6.4,
+        },
+      ],
+      core: [
+        { key: "problem", name: PARAMS[0].name, weight: 10, cells: { ai: { value: 8 }, u_jury: { value: 6 } } },
+        { key: "solution", name: PARAMS[1].name, weight: 10, cells: { ai: { value: 7 }, u_jury: { value: 5 } } },
+        { key: "traction", name: PARAMS[2].name, weight: 15, cells: { ai: { value: 6 }, u_jury: { value: 7 } } },
+      ],
+    });
+
+  /** Every `<td>` of a row, in order. */
+  function cellsOf(row: HTMLElement): string[] {
+    return [...row.querySelectorAll("td")].map((td) => (td.textContent ?? "").trim());
+  }
+
+  function rowOf(name: string): HTMLElement {
+    return screen.getByText(name).closest("tr") as HTMLElement;
+  }
+
+  async function openOn(navId = "jassigned", role: Role = "jury", edition: Edition = "incubator") {
+    atScreen(navId, <EvaluationReportModal deckId="d1" deckName="GreenRoute" onClose={() => {}} />, role, edition);
+    await waitFor(() => expect(screen.getByText(PARAMS[0].name)).toBeInTheDocument());
+  }
+
+  it("issue 17 — carries the weight sum, each evaluator's composite and the blended Avg.", async () => {
+    vi.mocked(getDeckReport).mockResolvedValue(scored());
+    await openOn();
+    // 7.2 AI · 6.4 juror at 40:60 → 2.88 + 3.84 = 6.72, printed to one decimal.
+    expect(cellsOf(screen.getByTestId("report-weighted-total"))).toEqual([
+      PROTO_TOTAL_ROW,
+      "35%", // 10 + 10 + 15 — the rows' own weights, not a hardcoded 100%
+      "7.2",
+      "6.4",
+      "6.7",
+    ]);
+  });
+
+  it("issue 19 — adds the Avg. column last and blends every row at the deck's split", async () => {
+    vi.mocked(getDeckReport).mockResolvedValue(scored());
+    await openOn();
+    const headers = headersOf(screen.getByRole("dialog").querySelector("table") as HTMLElement);
+    expect(headers).toHaveLength(5);
+    expect(headers.slice(0, 2)).toEqual(["Parameter", "Weight"]);
+    expect(headers.at(-1)).toBe(PROTO_AVG_HEADER);
+
+    // 8/6 → 6.8 · 7/5 → 5.8 · 6/7 → 6.6, all at 40% AI · 60% evaluator.
+    expect(cellsOf(rowOf(PARAMS[0].name))).toEqual([PARAMS[0].name, "10%", "8", "6", "6.8"]);
+    expect(cellsOf(rowOf(PARAMS[1].name))).toEqual([PARAMS[1].name, "10%", "7", "5", "5.8"]);
+    expect(cellsOf(rowOf(PARAMS[2].name))).toEqual([PARAMS[2].name, "15%", "6", "7", "6.6"]);
+    // And it says what the blend is, rather than printing an unexplained number.
+    expect(screen.getByText(/blends 40% AI with 60% evaluator/)).toBeInTheDocument();
+  });
+
+  it("falls back to the cells when a column carries no submitted roll-up", async () => {
+    const data = scored();
+    // The route admits this shape on purpose: columns come from `evaluations`
+    // AND from `scores`, independently, so per-parameter scores with no roll-up
+    // still earn a column.
+    data.columns[1] = { ...data.columns[1], total: undefined };
+    vi.mocked(getDeckReport).mockResolvedValue(data);
+    await openOn();
+    // (10·6 + 10·5 + 15·7) / 35 = 6.14, then 7.2/6.14 at 40:60 → 6.56.
+    expect(cellsOf(screen.getByTestId("report-weighted-total"))).toEqual([
+      PROTO_TOTAL_ROW,
+      "35%",
+      "7.2",
+      "6.1",
+      "6.6",
+    ]);
+  });
+
+  it("draws NO Avg. column when the payload carries no split — the W7-A rule", async () => {
+    const data = scored();
+    data.deck = { id: "d1", name: "GreenRoute" };
+    vi.mocked(getDeckReport).mockResolvedValue(data);
+    await openOn();
+    expect(screen.queryByRole("columnheader", { name: PROTO_AVG_HEADER })).toBeNull();
+    expect(screen.queryByText(/blends 40% AI/)).toBeNull();
+    // Issue 17 does not depend on the split: the row is still there, one short.
+    expect(cellsOf(screen.getByTestId("report-weighted-total"))).toEqual([
+      PROTO_TOTAL_ROW,
+      "35%",
+      "7.2",
+      "6.4",
+    ]);
+  });
+
+  it("leaves the VC edition's report exactly as it is — neither row nor column", async () => {
+    vi.mocked(getDeckReport).mockResolvedValue(scored());
+    await openOn("assign", "analyst", "vc");
+    expect(screen.queryByTestId("report-weighted-total")).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: PROTO_AVG_HEADER })).toBeNull();
+    expect(headersOf(screen.getByRole("dialog").querySelector("table") as HTMLElement)).toHaveLength(4);
+  });
+
+  it("adds neither to the Addl. parameters tab — those rows have no composite", async () => {
+    vi.mocked(getDeckReport).mockResolvedValue(
+      matrix({
+        ...scored(),
+        additional: [
+          {
+            role: "jury",
+            roleLabel: "Jury Member",
+            mode: "editable",
+            rows: [{ key: "add_1", name: "Barriers of entry", weight: 0, cells: { u_jury: { value: 8 } } }],
+          },
+        ],
+      }),
+    );
+    atScreen("jassigned", <EvaluationReportModal deckId="d1" deckName="GreenRoute" onClose={() => {}} />, "jury");
+    fireEvent.click(await screen.findByRole("tab", { name: "Addl. parameters" }));
+    await waitFor(() => expect(screen.getByText("Barriers of entry")).toBeInTheDocument());
+    expect(screen.queryByTestId("report-weighted-total")).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: PROTO_AVG_HEADER })).toBeNull();
+  });
+
+  it("stays out of blind scoring's way — no columns means nothing to average", async () => {
+    vi.mocked(getDeckReport).mockResolvedValue({ ...scored(), columns: [], aiScoreWithheld: true });
+    await openOn();
+    expect(headersOf(screen.getByRole("dialog").querySelector("table") as HTMLElement)).toEqual([
+      "Parameter",
+      "Weight",
+    ]);
+    expect(cellsOf(screen.getByTestId("report-weighted-total"))).toEqual([PROTO_TOTAL_ROW, "35%"]);
   });
 });

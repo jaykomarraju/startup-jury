@@ -481,6 +481,23 @@ export function isAllocatedDeck(deck: StatDeck): boolean {
   return Boolean(deck.sendToAssignAt) || Boolean(deck.assignedTo) || ASSIGNED_STAGES.includes(deck.statusId ?? "");
 }
 
+/**
+ * ── THE TWO INPUTS OF THE FIRST LINE ARE ONE FACT, AND THEY GO STALE TOGETHER ─
+ *
+ * Oct-3 issues 11 and 16, and this is the note that keeps them closed.
+ * `computeResult` (`server/ai/evaluate.ts`) writes `status = 'incomplete'` and
+ * `signal = 'flagged'` from the SAME branch — `!effective.complete`, where
+ * `effective.complete` is the model's verdict ANDed with the intake checklist —
+ * so a deck the model read perfectly well and scored 5.14 carries BOTH the
+ * moment one founder phone number is missing.
+ *
+ * Neither is re-derived at read time, which is deliberate (`decks.signal` is a
+ * persisted band, not a view), so whatever heals one has to heal the other in
+ * the same write. `PATCH /api/decks/:id` does, at its `details_completed`
+ * block: moving only the stage left the row in the Incomplete tile and fixed
+ * nothing the tester reported — measured, not inferred. Pinned in
+ * `test/worker/stage-rejoin.test.ts`.
+ */
 export function v3DeckState(deck: StatDeck): V3DeckState {
   if (deck.statusId === "incomplete" || deck.signal === "flagged") return "incomplete";
   if (POST_AI_STAGES.includes(deck.statusId ?? "") || deck.aiScore !== undefined) return "aieval";

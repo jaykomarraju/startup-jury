@@ -475,6 +475,15 @@ export function parseEvaluation(raw: RawEvaluation, params: ParameterRow[]): Par
     const key = typeof s.key === "string" ? s.key : "";
     const param = byKey.get(key);
     if (!param || seen.has(key)) continue;
+    // **An entry with no usable NUMBER is not a score of zero.** `clampScore`
+    // turned `{ key: "team" }` into a real `scores` row reading 0, attributed to
+    // `evaluator_kind = 'ai'` — a verdict on a parameter nothing scored, which
+    // then shows in the evaluator workbench's AI column as the model's opinion.
+    // Dropped instead: `computeResult` already counts an absent parameter as 0
+    // over the full denominator, so the composite is unchanged, but no row
+    // claims the AI said so. (Oct-3 issue 15; an out-of-range number is still
+    // clamped, which is a different thing — the model did answer.)
+    if (!Number.isFinite(s.value)) continue;
     seen.add(key);
     scores.push({
       parameterId: param.id,
@@ -514,6 +523,54 @@ export function parseEvaluation(raw: RawEvaluation, params: ParameterRow[]): Par
     extractions,
     scores,
   };
+}
+
+/**
+ * Why this model response cannot be persisted as an evaluation at all, or
+ * `null` when it can.
+ *
+ * **Oct-3 issue 15.** Two production rows named "Ushakiran" carry
+ * `ai_complete = 1` with `ai_score = 0.00`, and a third upload of the same deck
+ * ("UshaKiran Ecoplast") scored 5.51. That pair of columns is incoherent: the
+ * model is recorded as having read the deck *and* as having found nothing in it
+ * worth any marks. There was no third state for "the run produced nothing", so
+ * it was written as the second.
+ *
+ * How a run lands there, all funnelling into the same hole:
+ *
+ *   · `parseEvaluation` reads a MISSING `complete` as `true`
+ *     (`raw.complete !== false`), so a half-finished tool input is recorded as
+ *     the model's affirmative — this is the `ai_complete = 1` half;
+ *   · `computeResult` scores every rubric parameter over the full weight
+ *     denominator, and a payload with no mappable scores makes every term 0, so
+ *     the composite is exactly 0.00 — this is the `ai_score = 0.00` half;
+ *   · `evaluateDeck` then wrote that, cleared `ai_error`/`ai_failed_at`/
+ *     `ai_attempts`, **DELETEd whatever the previous run had scored**, emitted
+ *     "AI scoring complete", and left the deck off `pending_ai` where the §9
+ *     sweep can no longer see it. The credit stayed spent.
+ *
+ * Every downstream verdict then reads a failed run as a legitimately terrible
+ * deck — the AI gate first among them, which is exactly what the tester hit.
+ *
+ * A payload is an evaluation only if it affirmatively carries at least one score
+ * this org's rubric recognises, with a real number in it. The single payload
+ * that scores nothing and is still a genuine verdict is `complete: false` — the
+ * model saying the deck is not evaluable — and that one is kept, because it is
+ * how an Incomplete deck is legitimately recorded (and it stores
+ * `ai_complete = 0`, so it is already distinguishable from this).
+ */
+export function unscorableReason(raw: RawEvaluation, params: ParameterRow[]): string | null {
+  // An explicit "not evaluable" is a verdict the model MEANT. Not a broken run.
+  if (raw.complete === false) return null;
+  if (!Array.isArray(raw.scores)) return "the response carried no scores array";
+  const keys = new Set(params.map((p) => p.key));
+  const usable = raw.scores.filter(
+    (s) => typeof s?.key === "string" && keys.has(s.key) && Number.isFinite(s?.value),
+  ).length;
+  if (usable === 0) {
+    return `the response scored none of the ${params.length} rubric parameters`;
+  }
+  return null;
 }
 
 /**
@@ -666,7 +723,16 @@ function messagesBody(args: {
 }): Record<string, unknown> {
   return {
     model: args.model,
-    max_tokens: 4096,
+    // **Oct-3 issue 15 — 4096 was not enough room for this rubric.** The forced
+    // tool has to emit one `{key, value, comment}` per parameter (22 of them
+    // since the Jul-24 meeting, ~35 tokens each ≈ 770), one summarised
+    // `extractions` entry per key slide (8–12 at ~80 tokens ≈ 960), and the
+    // contact block. A terse run lands near 1.8k and a verbose one near 4k —
+    // i.e. the ceiling was inside the spread, so the SAME deck truncates on one
+    // run and not the next, which is what "UshaKiran Ecoplast scored 5.51 once
+    // and 0.00 twice" looks like from the outside. Doubling the headroom costs
+    // nothing when unused: output is billed per token generated, not per cap.
+    max_tokens: 8192,
     // Determinism (see the module header): no sampled thinking, and a forced
     // tool so only the numbers can vary run to run. NB no `temperature` —
     // claude-sonnet-5 rejects it with a 400.
@@ -769,8 +835,21 @@ export const callAnthropic: ModelCaller = async (req) => {
     throw new Error(`Anthropic API error ${res.status}: ${await res.text()}`);
   }
   const body = (await res.json()) as {
+    stop_reason?: string | null;
     content?: Array<{ type: string; name?: string; input?: unknown }>;
   };
+  // **`max_tokens` is the one stop reason that returns a plausible answer.** The
+  // request succeeds (200), the `tool_use` block is present, and `input` holds
+  // whichever properties the model had finished emitting — the rest, `scores`
+  // among them, are simply absent rather than malformed. Nothing here looked at
+  // `stop_reason`, so a cut-off run was parsed as a complete one and the deck
+  // was scored on the half that arrived. Checked before the block lookup
+  // because a truncation can also cut the tool call off before any input at
+  // all, and "ran out of room" is the more useful reason to record than
+  // "missing tool_use". (Oct-3 issue 15.)
+  if (body.stop_reason === "max_tokens") {
+    throw new Error("Anthropic response for submit_evaluation was truncated at max_tokens");
+  }
   const block = body.content?.find((b) => b.type === "tool_use" && b.name === "submit_evaluation");
   if (!block?.input) throw new Error("Anthropic response missing submit_evaluation tool_use");
   return block.input as RawEvaluation;
@@ -994,6 +1073,27 @@ export async function evaluateDeck(
   });
 
   const parsed = parseEvaluation(raw, params);
+
+  // ── A run that scored nothing is a FAILURE, not a score of zero ────────────
+  // Oct-3 issue 15, and see `unscorableReason` for the two columns that proved
+  // it. Throwing here rather than persisting is the whole fix, and it is a
+  // throw specifically because every caller already routes a thrown evaluation
+  // into the §9 health machinery that exists for exactly this:
+  // `recordEvalFailure` stamps the reason and bumps `ai_attempts`, the queue
+  // retries, the dead-letter handler marks it terminal and **refunds the
+  // credit**. Three things follow from not reaching the writes below:
+  //   · the deck stays at `pending_ai`, which `sweepStuckEvaluations` can see
+  //     and which `archive` is available from (`pipeline/incubator.ts`), so the
+  //     tester's "Archive should be active at least" holds here too;
+  //   · the previous run's `scores` / `deck_extractions` / `evaluations` rows
+  //     are not DELETEd by a run with nothing to replace them with — that is
+  //     how a deck that once scored 5.51 came to read 0.00;
+  //   · "AI scoring complete" is not announced for a run that completed nothing.
+  // Placed before the first DB read below so a dead run costs nothing further.
+  const unscorable = unscorableReason(raw, params);
+  if (unscorable) {
+    throw new Error(`submit_evaluation returned nothing usable: ${unscorable}`);
+  }
 
   // ── Upload validation (Session 5) ──────────────────────────────────────────
   // Whatever the uploader typed wins; the extraction fills the blanks (which is

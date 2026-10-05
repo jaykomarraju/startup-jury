@@ -70,7 +70,15 @@ function pipelineRow(page: Page) {
 async function openWorkspace(page: Page, slug = "incuration") {
   await page.goto(`/app/${slug}`);
   await expect(pipelineRow(page)).toBeVisible(NAV);
-  await pipelineRow(page).getByRole("button", { name: "Sign-up" }).click();
+  // Oct-3 issue 24 deactivated the ROW's Sign-up action on the Sign up Pipeline
+  // ("Should be deactivated, with a mouse over comment saying 'coming soon'").
+  // The workspace itself was deliberately left live, reached from the row's
+  // slide-over — so these four tests keep testing the workspace rather than the
+  // button that used to open it.
+  await pipelineRow(page).getByRole("button", { name: STARTUP, exact: true }).click();
+  const pane = page.getByRole("complementary", { name: `${STARTUP} detail` });
+  await pane.getByRole("tab", { name: "Sign-up" }).click();
+  await pane.getByRole("button", { name: "Open sign-up workspace" }).click();
   const dialog = page.getByRole("dialog", { name: "Sign-up workflow" });
   await expect(dialog.getByTestId("workspace-startup")).toHaveText(STARTUP, NAV);
   return dialog;

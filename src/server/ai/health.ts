@@ -64,6 +64,15 @@ export function classifyEvalError(reason: string | null | undefined): string | n
   if (r.includes("429") || r.includes("rate")) return "AI provider rate limit";
   if (r.includes("r2 object missing") || r.includes("no r2 key")) return "Deck PDF is missing";
   if (r.includes("deck not found")) return "Deck record is missing";
+  // Oct-3 issue 15 — the model started answering and ran out of output room.
+  // Checked BEFORE the `submit_evaluation` branch below, which the truncation
+  // message also matches, because the recovery differs: a cut-off run is worth
+  // retrying as-is, while a response that arrived whole and unusable is not.
+  if (r.includes("truncated") || r.includes("max_tokens")) {
+    return "AI response was cut off before it finished";
+  }
+  // …including a response that arrived intact but scored no rubric parameter at
+  // all. That used to be stored as a legitimate 0.00 (issue 15).
   if (r.includes("submit_evaluation")) return "AI returned an unusable response";
   // V4-SIZE — the deck reached the model and the model refused it on size:
   // a 413 `request_too_large`, or the page/context ceiling a very large PDF

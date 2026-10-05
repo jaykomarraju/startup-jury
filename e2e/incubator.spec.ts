@@ -37,7 +37,7 @@ test("program associate assigns an AI-gated deck to a jury member", async ({ pag
   await expect(row).toContainText("Rajesh Kumar");
 });
 
-test("jury member scores an assigned deck and shortlists it", async ({ page }) => {
+test("jury member scores an assigned deck — and does NOT get to shortlist it", async ({ page }) => {
   await login(page, "rajesh.kumar@demo.startupjury.ai");
   // Jury reaches the scoring form via their "Assigned" nav item.
   await page.goto("/app/jassigned");
@@ -63,11 +63,22 @@ test("jury member scores an assigned deck and shortlists it", async ({ page }) =
   // canonical set (migration 0025).
   await expect(page.getByText("Barriers of entry").first()).toBeVisible();
 
-  await page.getByRole("button", { name: "Shortlist" }).click();
+  // **No Shortlist, and no Reject.** The client, 2026-10-04: "Not required since
+  // the below threshold levels are indicated automatically. It is the prerogative
+  // of the Incubator to take a final call. Juror is always an external guy." The
+  // juror scores — everything above this line still works — and the decision is
+  // the incubator's.
+  //
+  // The buttons are gone AND the transitions are: `"jury"` is out of the role
+  // list on both `jury_evaluation` transitions, so this is not a hidden control
+  // over a live route, which is the failure mode this repo keeps reproducing.
+  await expect(page.getByRole("button", { name: "Shortlist" })).toBeHidden();
+  await expect(page.getByRole("button", { name: "Reject" })).toBeHidden();
 
-  // Deck leaves the allocation table once shortlisted. Exact — the row's
-  // Parameter scores cell is also labelled "…for InsureFlow".
-  await expect(page.getByRole("button", { name: "InsureFlow", exact: true })).toBeHidden();
+  // The juror can still SAVE their scores, which is the whole of their job here —
+  // the guard on the guard, so this case cannot pass by the workbench failing to
+  // render at all.
+  await expect(page.getByRole("button", { name: /Submit|Save/ }).first()).toBeVisible();
 });
 
 /**

@@ -13,6 +13,11 @@ import {
   aiWeightFor,
   decisionScore,
   shortlistFloor,
+  // The rubric band, re-derived when a completed deck rejoins the pipeline:
+  // `computeResult` writes `signal = 'flagged'` from the same branch that
+  // writes `status = 'incomplete'`, so the two go stale together. See the
+  // `details_completed` block in `PATCH /api/decks/:id`.
+  signalTag,
   withholdsAiScore,
   WEAK_SIGNAL_MAX,
   type ScoringSettings,
@@ -1121,6 +1126,99 @@ const EDIT_DECK_ROLES = [
 ] as const;
 
 /**
+ * Where an `incomplete` deck REJOINS the pipeline once its intake details are
+ * in — per edition, and the table doubles as the target stage.
+ *
+ * `ai_evaluated` is where `ai/evaluate.ts` would have landed the incubator deck
+ * had the details been there at evaluation time: both `PASS_STAGE.incubator`
+ * and `FAIL_STAGE.incubator` are that stage since the screening wave, so the
+ * target does not depend on the gate — a sub-gate deck waits at `ai_evaluated`
+ * with its low score, which is what makes `reject_ai_gate` reachable at all.
+ *
+ * **`vc: null` is a deliberate no-op, not an omission.** The VC edition is out
+ * of scope (client, 2026-10-01) and its own stages differ —
+ * `PASS_STAGE.vc = 'analyst_scoring'`, `FAIL_STAGE.vc = 'archived'` — so one
+ * target could not serve both, and nobody has asked for the VC behaviour to
+ * change. Same per-edition shape, and the same reason, as
+ * `SCREENING_NARROWS_LISTS` above.
+ */
+const DETAILS_COMPLETED_REJOINS: Record<Edition, string | null> = {
+  incubator: "ai_evaluated",
+  vc: null,
+};
+
+/**
+ * What is now provably STALE on a deck whose intake details have just been
+ * completed — the stage it should rejoin, and the rating band it should carry.
+ *
+ * **Both, because they are one fact written twice.** `computeResult`
+ * (`ai/evaluate.ts`) returns `status: 'incomplete'` AND `signal: 'flagged'`
+ * from the same `!effective.complete` branch, where `effective.complete` is the
+ * model's verdict ANDed with the intake checklist. So a deck the model read
+ * perfectly well and scored 5.14 carries both the moment one phone number is
+ * missing, and `v3DeckState` reads EITHER as "incomplete" — which is why
+ * repairing only the stage fixed none of the tester's stat-box rows.
+ *
+ * ── The three shared arms, and the trap each one avoids ─────────────────────
+ * *The deck must only be credited with what it has actually REACHED.*
+ *
+ *  · **the intake list is now empty** — the contact axis, freshly derived from
+ *    the columns this request just wrote, never the frozen `decks.complete`.
+ *  · **`ai_complete !== 0`** — the DECK axis. Without it, typing a phone number
+ *    into an unreadable deck would announce it as evaluated and put it on the
+ *    Assign roster. This is the arm that leaves Turaga (`ai_complete = 0`,
+ *    contacts fine) at `incomplete`, where Send to Query is its one exit
+ *    (`docs/spec_screening_flow.md` §3 item 1) — pinned in
+ *    `screening-status.test.ts`'s "BOTH incomplete, then the details are
+ *    entered" case, whose own comment warns that a stage move here would take
+ *    the deck off the roster it had just become eligible for.
+ *  · **the AI produced rubric rows** — "it has been evaluated", asked of the
+ *    one artefact that can answer it. `ai_score` cannot: `computeResult`
+ *    stores the composite of nothing as 0.00, so UshaKiran (`ai_complete = 1`,
+ *    `ai_score = 0.00`, no scores — the tester's separate issue 15) is
+ *    indistinguishable from a deck that genuinely scored low. Nor can the
+ *    `ai_evaluated` pipeline event, which is written on that run as well. A
+ *    deck nobody has evaluated — or one a human flagged through
+ *    `flag_incomplete`, which runs no model and writes no rows — keeps
+ *    everything it has, which is what the ground truth asks for.
+ *
+ * ── Why the STAGE asks one more question than the BAND ──────────────────────
+ * The stage is only repaired `from: 'incomplete'`: that is the one stage this
+ * staleness can produce, and asking it keeps this function out of every other
+ * transition's way — a deck shortlisted and then stripped of a detail must not
+ * be walked backwards to `ai_evaluated` by someone typing the detail back in.
+ *
+ * The band is repaired wherever it is still `flagged`, because the stage is not
+ * the only way out of `incomplete`: `restore` (`archived -> ai_evaluated`) and
+ * `founder_response` (`incomplete -> uploaded`) both move a deck without
+ * re-reading it, so a deck that has already left by one of those routes sits at
+ * a post-AI stage still carrying the contact arm's flag. One more condition
+ * here costs nothing and closes that door on the next edit.
+ */
+function repairsAfterDetails(
+  edition: Edition,
+  deck: {
+    status: string | null;
+    signal: string | null;
+    aiScore: number | null;
+    aiComplete: number | null;
+    aiScoreRows: number;
+    missingAfter: readonly string[];
+  },
+): { stage: string | null; band: string | null } {
+  const none = { stage: null, band: null };
+  const target = DETAILS_COMPLETED_REJOINS[edition];
+  if (!target) return none;
+  if (deck.missingAfter.length > 0 || deck.aiComplete === 0 || deck.aiScoreRows === 0) return none;
+  return {
+    stage: deck.status === "incomplete" ? target : null,
+    // A stale band is better than a `null` score read as 0.0 and announced as
+    // the weakest band, so the score has to be there to read it off.
+    band: deck.signal === "flagged" && deck.aiScore !== null ? signalTag(deck.aiScore) : null,
+  };
+}
+
+/**
  * PATCH /api/decks/:id — override what the AI recognised.
  *
  * Issue 12: "startup name, stage, sector, cohort must be automatically
@@ -1191,7 +1289,16 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
   const qrd = oneDeck(c.var.user, id);
   const row = await c.env.DB.prepare(
     "SELECT d.founder, d.founder_email, d.founder_phone, d.city, d.sector, d.status, " +
-      `d.ai_complete, d.complete FROM decks d ${qrd.whereClause()}`,
+      "d.ai_complete, d.complete, d.ai_score, d.signal, " +
+      // Did the model actually produce a VERDICT on this deck? `ai_score` cannot
+      // answer it — `computeResult` stores the composite even when it scored
+      // nothing, so an unreadable deck carries a truthful 0.00 — and neither can
+      // the `ai_evaluated` event, which is written on that run too. The rubric
+      // rows are the verdict. Correlated on `d.id`, which `qrd` has already
+      // scoped, so `scores` needs no predicate of its own (the rule written out
+      // at `DECK_DERIVED` above).
+      "(SELECT COUNT(*) FROM scores s WHERE s.deck_id = d.id AND s.evaluator_kind = 'ai') AS ai_score_rows " +
+      `FROM decks d ${qrd.whereClause()}`,
   )
     .bind(...qrd.binds)
     .first<{
@@ -1203,7 +1310,12 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
       status: string | null;
       ai_complete: number | null;
       complete: number | null;
+      ai_score: number | null;
+      signal: string | null;
+      ai_score_rows: number | null;
     }>();
+  /** What the completed details make stale — see `repairsAfterDetails`. */
+  let repairs: { stage: string | null; band: string | null } = { stage: null, band: null };
   if (row) {
     const missing = missingIntakeFields({
       founder: row.founder,
@@ -1240,6 +1352,14 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
     )
       .bind(missing.length > 0 ? missing.join(",") : null, id)
       .run();
+    repairs = repairsAfterDetails(edition, {
+      status: row.status,
+      signal: row.signal,
+      aiScore: row.ai_score,
+      aiComplete: row.ai_complete,
+      aiScoreRows: row.ai_score_rows ?? 0,
+      missingAfter: missing,
+    });
   }
 
   // ── 21-Sep item 6 · "Contact Details Edited" ────────────────────────────
@@ -1269,6 +1389,84 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
         stage,
         stage ?? "",
         contactEdited.sort().join(","),
+        new Date().toISOString(),
+      )
+      .run();
+  }
+
+  // ── Oct-3 issues 10, 11, 12, 14 and 16 · the deck leaves `incomplete` ─────
+  //
+  // Six tester rows, one cause: nothing moved a deck's STAGE off `incomplete`
+  // when the operator supplied what made it incomplete, so the stage and the
+  // status vocabulary disagreed for ever. BiocharIND passed both axes and
+  // scored 5.14 against a gate of 5 — its pill read "Complete, Edited" while
+  // `decks.status` still said `incomplete`, and four systems key off that
+  // stage: `v3DeckState` put it in the Incomplete tile, `deckListRoute` kept it
+  // off Assign, `reject_ai_gate` (which only exists `from: ai_evaluated`) was
+  // greyed on the two below-threshold decks, and Send to Assign read as
+  // unavailable because the roster would not have held it.
+  //
+  // So the stage moves, HERE, where the blocking arm was lifted. The two
+  // alternatives were measured and rejected: re-keying the tile, the rosters
+  // and the whitelist on the completeness columns instead changes what ~44
+  // references to `matchesV3Stat` count in order to fix one list, and it leaves
+  // `decks.status` permanently false — the Jury and Prog-manager pipelines, the
+  // kanban and every `pipeline_events.from_stage` would keep reporting a deck
+  // as Incomplete after it had been assigned.
+  //
+  // **`signal` is re-derived in the same breath, and that is not scope creep.**
+  // `computeResult` writes `signal = 'flagged'` and `status = 'incomplete'`
+  // from the SAME branch (`ai/evaluate.ts` — the branch is `!effective.complete`,
+  // and `effective.complete` is the model's verdict ANDed with the intake list),
+  // so a deck stopped by a missing phone number carries both. `v3DeckState`
+  // reads EITHER as "incomplete", so moving only the stage would have left the
+  // deck in the wrong stat box and fixed nothing the tester reported. The band
+  // comes from the score the AI already stored, so nothing is invented.
+  //
+  // **A SECOND event, never an overloaded first one.** `edit_contact` above
+  // stays a record of a CLICK (`from_stage === to_stage`) — that is what makes
+  // the audit trail truthful and it is the property that produced this bug, so
+  // it is kept deliberately. The stage move is a real transition with a real
+  // `from`/`to`, written after it so the history reads in order.
+  //
+  // `details_completed` is deliberately NOT added to `incubatorPipeline`:
+  // `allowedTransitions` would then offer it as a row action, and a one-click
+  // `incomplete -> ai_evaluated` is exactly the laundering the `ai_complete`
+  // guard below exists to prevent. A system `pipeline_events.action` with no
+  // transition entry is the established shape here — `ai_evaluated`,
+  // `ai_skipped`, `edit_contact` and `send_to_assign` are all four of them.
+  if ((repairs.stage || repairs.band) && row) {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (repairs.stage) {
+      sets.push("status = ?");
+      vals.push(repairs.stage);
+    }
+    if (repairs.band) {
+      sets.push("signal = ?");
+      vals.push(repairs.band);
+    }
+    const qrj = oneDeck(c.var.user, id, "decks");
+    await c.env.DB.prepare(`UPDATE decks SET ${sets.join(", ")} ${qrj.whereClause()}`)
+      .bind(...vals, ...qrj.binds)
+      .run();
+  }
+  // The EVENT belongs to the stage move alone. A band correction is a
+  // re-derivation of a number already stored, in the same category as the
+  // `complete = 1` raise above — the `edit_contact` row already records that
+  // the operator changed something. Only a change of stage is a transition.
+  if (repairs.stage && row) {
+    await c.env.DB.prepare(
+      "INSERT INTO pipeline_events (id, deck_id, actor_id, from_stage, to_stage, action, note, created_at) " +
+        "VALUES (?, ?, ?, ?, ?, 'details_completed', ?, ?)",
+    )
+      .bind(
+        `${id}_evt_${crypto.randomUUID()}`,
+        id,
+        c.var.user.id,
+        row.status ?? null,
+        repairs.stage,
+        "Intake details completed — deck returns to the stage its evaluation reached",
         new Date().toISOString(),
       )
       .run();

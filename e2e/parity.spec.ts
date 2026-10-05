@@ -441,6 +441,15 @@ const EXPECTED: Record<string, Screen> = {
     tables: [["", "STARTUP", "FOUNDER", "PHONE", "EMAIL", "STATUS", "PARAMETERS NEEDING RESPONSE"]],
   },
   "incubator/program_associate/evaluate": { title: "Evaluate", tables: [] },
+  // GRANTED 2026-10-02 (Oct-2 issue 2) — the programme associate reads the Jury
+  // Pipeline. Captured rather than hand-written, and the absent **ACTION**
+  // column is the point: their variant is `JURY_PIPELINE_READONLY`, so the
+  // read-only half shows up here as a column that is not drawn rather than as a
+  // button that is merely disabled.
+  "incubator/program_associate/jurypipeline": {
+    title: "Jury Pipeline",
+    tables: [["STARTUP", "JURY MEMBERS & STATUS", "AI SCORE", "JURY SCORE", "AVG. SCORE", "ADDL. PARAMETER SCORES", "ASSIGNED DATE", "STATUS"]],
+  },
   "incubator/program_associate/assign": { title: "Assign", tables: [] },
   "incubator/program_associate/introcalls": {
     title: "Intro calls",
@@ -503,9 +512,13 @@ const EXPECTED: Record<string, Screen> = {
   // score" are absent from the jury's table — their per-evaluator number is
   // "My score" and their deck-level one is "Avg. score" — and five columns the
   // staff screen never drew are present.
+  // ACTION dropped 2026-10-04 — the client, issue 20: "Action column is not
+  // required" on the juror's Evaluated screen. It pairs with issue 18: the juror
+  // no longer holds the shortlist/reject transitions at all, so a column whose
+  // only options were those two had nothing left to offer.
   "incubator/jury/jurypipeline": {
     title: "Evaluated",
-    tables: [["STARTUP", "AI SCORE", "PARAMETERS SCORE", "ADDL. PARAMETERS SCORE", "MY SCORE", "AVG. SCORE", "ASSIGNED DATE", "DUE DATE", "SUBMITTED DATE", "+/- DAYS", "STATUS", "ACTION"]],
+    tables: [["STARTUP", "AI SCORE", "PARAMETERS SCORE", "ADDL. PARAMETERS SCORE", "MY SCORE", "AVG. SCORE", "ASSIGNED DATE", "DUE DATE", "SUBMITTED DATE", "+/- DAYS", "STATUS"]],
   },
   "incubator/jury/introcalls": {
     title: "My Intro calls",

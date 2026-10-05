@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { X, Lock, Sparkles, CheckCircle2, PencilLine } from "lucide-react";
 import { Badge } from "./Badge";
 import { Button } from "./Button";
 import { scoreColor } from "./ScoreBars";
+import { AuthContext } from "../auth/AuthProvider";
 import {
   getDeckReport,
   type DeckReportMatrix,
@@ -11,7 +12,7 @@ import {
   type ReportGroup,
   type ReportRow,
 } from "../api";
-import { formatScore, scaleMax } from "../../shared/scoring";
+import { decisionScore, formatScore, scaleMax, weightedTotal } from "../../shared/scoring";
 import type { ScoreScale } from "../../shared/types";
 import {
   REPORT_STAGE_LABELS,
@@ -42,6 +43,33 @@ import {
  *
  * Every number is stored canonical 0–10 and printed on the org's scale, and
  * coloured by its rubric band (`scoreColor`, derived from `RUBRIC_BANDS`).
+ *
+ * ── Oct-2026 issues 17 and 19 ────────────────────────────────────────────────
+ *
+ * 17 — "at the end of core parameters the weighted total is missing. The
+ *      weighted total should appear for AI, My SCORE and Average score, which
+ *      is what appears all over the platform."
+ * 19 — "Av. Score Column is missing in the eval report."
+ *
+ * Both are the prototype's `jr-ptbl` footer, which this table never grew:
+ *
+ *   <th>Parameter</th><th class="c">Weight</th><th class="c">AI</th>
+ *   …<th class="c">My score</th><th class="c">Avg.</th>
+ *   <tr class="jr-ptot"><td>Weighted total</td><td class="c">100%</td>
+ *     <td class="c">{aiTot}</td>…<td id="jr-mytot">{myTot}</td>
+ *     <td id="jr-avgtot" data-ai data-jury>{avgTot}</td></tr>
+ *
+ * `AISJ_IC_Jury_V4` draws **Avg.** only at the intro stage (`__introCols`) and
+ * `AISJ_SuperuserV3` deletes it outright, which is the shape V3-REP pinned. The
+ * tester asks for it at every stage, and where an issue and a prototype
+ * disagree the issue text wins and the prototype supplies the visual detail —
+ * so the header is the prototype's literal `Avg.` and the footer row is its
+ * `jr-ptot`, drawn at every stage.
+ *
+ * **Incubator only.** The VC edition is out of scope (client, 2026-10-01) and
+ * this component is mounted at nine sites across seven route files, two of them
+ * VC — so the gate is the viewer's edition rather than an unconditional edit.
+ * A prop would be cleaner, but none of those seven files is this session's.
  */
 
 type Tab = "core" | "additional";
@@ -76,20 +104,93 @@ function ColumnHead({ col, scale }: { col: ReportColumn; scale: ScoreScale }) {
   );
 }
 
+/** One score, on the org's scale and in its rubric band's colour — or a dash. */
+function ScoreCell({ value, scale }: { value: number | null | undefined; scale: ScoreScale }) {
+  if (typeof value !== "number") return <span className="text-sm text-fg-muted">—</span>;
+  return (
+    <span className="font-mono text-sm font-semibold" style={{ color: scoreColor(value) }}>
+      {formatScore(value, scale)}
+    </span>
+  );
+}
+
+/**
+ * An evaluator's composite for the Weighted total row (issue 17): the submitted
+ * `evaluations.weighted_total` the report route puts on the column, else the
+ * weight-average of the cells on screen.
+ *
+ * The fallback is not belt-and-braces. `GET /decks/:id/report` sources columns
+ * from the roll-up AND from the per-parameter scores independently, precisely so
+ * that an evaluator with one and not the other still earns a column — so a
+ * column with cells and no total is a shape the route deliberately emits, and a
+ * footer that read "—" for it would be wrong rather than cautious.
+ */
+function columnTotal(col: ReportColumn, rows: ReportRow[]): number | undefined {
+  if (typeof col.total === "number") return col.total;
+  const scored = rows.flatMap((r) => {
+    const cell = r.cells[col.id];
+    return cell ? [{ weight: r.weight, value: cell.value }] : [];
+  });
+  return scored.length > 0 ? weightedTotal(scored) : undefined;
+}
+
+/**
+ * The Avg. column (issue 19) — `decisionScore`, which is the one helper the
+ * deck list's "Avg. score", the shortlist floor and the pipeline transition all
+ * blend with, so this cannot disagree with the number on the screen behind.
+ *
+ * Blended over the columns **on screen**, never from `deck.decisionScore`: that
+ * field averages every human evaluation on the deck, including the peers the
+ * hierarchy filter and the peer-visibility toggle withheld from this viewer, and
+ * a number derived from a withheld score still discloses it.
+ */
+function blend(
+  pick: (col: ReportColumn) => number | undefined,
+  columns: ReportColumn[],
+  aiWeightPct: number,
+): number | null {
+  let ai: number | undefined;
+  const human: number[] = [];
+  for (const col of columns) {
+    const v = pick(col);
+    if (typeof v !== "number") continue;
+    if (col.kind === "ai") ai = v;
+    else human.push(v);
+  }
+  return decisionScore(ai, human, aiWeightPct);
+}
+
 function Matrix({
   columns,
   rows,
   showWeight,
   scale,
+  aiWeightPct,
+  showTotals = false,
 }: {
   columns: ReportColumn[];
   rows: ReportRow[];
   showWeight: boolean;
   scale: ScoreScale;
+  /**
+   * The AI/jury split this deck is judged at — its cohort's, its programme's or
+   * the org's (V4-WEIGHT). Absent, there is no Avg. column at all: blending at
+   * a guessed 50:50 would show an evaluator a different Average from the one the
+   * server judges them on, which is the W7-A defect.
+   */
+  aiWeightPct?: number;
+  /** Issue 17 — the `jr-ptot` footer. The core table only; the role sections
+      have their own "Average of my scores" in the drawer and no composite here. */
+  showTotals?: boolean;
 }) {
   if (rows.length === 0) {
     return <p className="px-4 py-6 text-sm text-fg-muted">No parameters in this section.</p>;
   }
+  // Nothing to average with no evaluator columns at all — which is what blind
+  // scoring leaves behind (`columns: []`), and it already says why in its own
+  // banner above the table.
+  const showAvg = typeof aiWeightPct === "number" && columns.length > 0;
+  const weightSum = rows.reduce((sum, r) => sum + r.weight, 0);
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left">
@@ -106,6 +207,14 @@ function Matrix({
             {columns.map((c) => (
               <ColumnHead key={c.id} col={c} scale={scale} />
             ))}
+            {showAvg && (
+              <th
+                className="min-w-[5.5rem] px-3 py-2 text-center align-bottom text-xs font-medium text-fg"
+                title={`Blended ${aiWeightPct}% AI · ${100 - aiWeightPct}% evaluator — the split this deck is judged at`}
+              >
+                Avg.
+              </th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -121,21 +230,47 @@ function Matrix({
                 const cell = row.cells[c.id];
                 return (
                   <td key={c.id} className="px-3 py-2.5 text-center" title={cell?.comment ?? undefined}>
-                    {cell ? (
-                      <span
-                        className="font-mono text-sm font-semibold"
-                        style={{ color: scoreColor(cell.value) }}
-                      >
-                        {formatScore(cell.value, scale)}
-                      </span>
-                    ) : (
-                      <span className="text-sm text-fg-muted">—</span>
-                    )}
+                    <ScoreCell value={cell?.value} scale={scale} />
                   </td>
                 );
               })}
+              {showAvg && (
+                <td className="px-3 py-2.5 text-center">
+                  <ScoreCell
+                    value={blend((c) => row.cells[c.id]?.value, columns, aiWeightPct)}
+                    scale={scale}
+                  />
+                </td>
+              )}
             </tr>
           ))}
+          {showTotals && (
+            /* `jr-ptot` — the prototype's own weight cell reads a hard "100%";
+               this sums the rows instead, because the admin console's Scoring
+               framework lets the 13 weights add up to something else and the
+               footer must not state otherwise. */
+            <tr
+              className="border-t-2 border-olive bg-surface-2 font-semibold"
+              data-testid="report-weighted-total"
+            >
+              <td className="px-4 py-2.5 text-sm text-olive-dk">Weighted total</td>
+              {showWeight && (
+                <td className="px-2 py-2.5 text-center font-mono text-xs text-fg-muted">
+                  {weightSum}%
+                </td>
+              )}
+              {columns.map((c) => (
+                <td key={c.id} className="px-3 py-2.5 text-center">
+                  <ScoreCell value={columnTotal(c, rows)} scale={scale} />
+                </td>
+              ))}
+              {showAvg && (
+                <td className="px-3 py-2.5 text-center">
+                  <ScoreCell value={blend((c) => columnTotal(c, rows), columns, aiWeightPct)} scale={scale} />
+                </td>
+              )}
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
@@ -212,6 +347,7 @@ export function EvaluationReportModal({
   stage?: ReportStage;
 }) {
   const { navId } = useParams();
+  const viewerEdition = useContext(AuthContext)?.user?.edition ?? null;
   const effectiveStage = stage ?? reportStageForScreen(navId);
   const [tab, setTab] = useState<Tab>(initialTab);
   const [data, setData] = useState<DeckReportMatrix | null>(null);
@@ -236,6 +372,12 @@ export function EvaluationReportModal({
   const columns = data?.columns ?? [];
   const scale: ScoreScale = data?.scoring?.scoreScale ?? "0-10";
   const shownStage = data?.stage ?? effectiveStage;
+
+  // Issues 17 + 19, incubator only — see the header note. `aiWeightPct` rides in
+  // on the report's own deck block (`toDeckView`), so the Avg. column needs no
+  // second request and blends at the split the server judges THIS deck at.
+  const incubator = viewerEdition === "incubator";
+  const aiWeightPct = incubator ? data?.deck?.aiWeightPct : undefined;
 
   return (
     <div
@@ -333,8 +475,16 @@ export function EvaluationReportModal({
               )}
 
               {tab === "core" ? (
-                /* Issue 23 — the Core Parameters tab. */
-                <Matrix columns={columns} rows={data.core} showWeight scale={scale} />
+                /* Issue 23 — the Core Parameters tab; Oct-2026 17 + 19 — its
+                   Avg. column and its Weighted total footer. */
+                <Matrix
+                  columns={columns}
+                  rows={data.core}
+                  showWeight
+                  scale={scale}
+                  aiWeightPct={aiWeightPct}
+                  showTotals={incubator}
+                />
               ) : (
                 /* Issue 24 + §8.4 — the role sections this stage carries. */
                 <div className="flex flex-col">
@@ -356,6 +506,15 @@ export function EvaluationReportModal({
           <span className="text-xs text-fg-muted">
             Hover a score to read the evaluator&rsquo;s remark. Your own parameters are scored in the
             evaluation workbench; additional parameters are configured under My Parameters.
+            {/* The split is on the column's own tooltip too, but a blended number
+                nobody can see the weighting of is the complaint V4-WEIGHT fixed. */}
+            {typeof aiWeightPct === "number" && (
+              <>
+                {" "}
+                <b className="font-medium text-fg-2">Avg.</b> blends {aiWeightPct}% AI with{" "}
+                {100 - aiWeightPct}% evaluator — the split this deck is judged at.
+              </>
+            )}
           </span>
           <Button size="sm" variant="secondary" onClick={onClose}>
             Done

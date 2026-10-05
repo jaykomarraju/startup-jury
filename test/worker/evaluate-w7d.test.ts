@@ -310,7 +310,7 @@ describe("override delta and shortlist threshold — enforced canonical, explain
   it("the shortlist refusal quotes the threshold on the org's scale; the numbers on the wire stay canonical", async () => {
     await seedDeck("w7d_floor_010", { status: "jury_evaluation", assignedTo: "inc_jury", aiScore: 1 });
     await seedDeck("w7d_floor_15", { status: "jury_evaluation", assignedTo: "inc_jury", aiScore: 1 });
-    const jury = await login(JURY);
+    const jury = await login(PM);
 
     const ten = await send("POST", "/api/decks/w7d_floor_010/transition", jury, { action: "shortlist" });
     expect(ten.status).toBe(409);

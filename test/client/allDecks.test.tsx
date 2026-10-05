@@ -36,6 +36,8 @@ vi.mock("../../src/client/api", async (importOriginal) => {
     retryDeckAi: vi.fn(),
     updateThresholds: vi.fn(),
     transitionDeck: vi.fn(),
+    sendDeckToQuery: vi.fn(),
+    sendDeckToAssign: vi.fn(),
     updateDeckDetails: vi.fn(),
   };
 });
@@ -205,6 +207,11 @@ beforeEach(() => {
   // DeckPdfViewer fetches the PDF itself; nothing is stored in these tests.
   globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 404 })) as typeof fetch;
   vi.mocked(api.listDecks).mockResolvedValue({ decks: DECKS });
+  // The two row destinations RECORD the click before they navigate (2026-10-04,
+  // tester issue 13): membership on Query and Assign is a recorded action, and
+  // navigating without it landed the operator on a screen the deck was not on.
+  vi.mocked(api.sendDeckToQuery).mockResolvedValue({ ok: true } as never);
+  vi.mocked(api.sendDeckToAssign).mockResolvedValue({ ok: true } as never);
   vi.mocked(api.listPrograms).mockResolvedValue(PROGRAMS as unknown as api.ProgramsResponse);
   vi.mocked(api.getConfigSummary).mockResolvedValue({
     thresholdBest: 7,
@@ -1306,8 +1313,12 @@ describe("V3 — the row menu's two real destinations (S1-DASH items 2, 4, 5)", 
     fireEvent.change(screen.getByRole("combobox", { name: "Actions for PayRoute" }), {
       target: { value: "__query" },
     });
-    // Guarded NAVIGATION — it carries the selection, it does not email anyone.
-    expect(screen.getByText("at /app/query")).toBeInTheDocument();
+    // RECORDS the click, then navigates — awaited, because the handler now posts
+    // to `send-to-query` before moving. Until 2026-10-04 it only navigated, and
+    // `QueryPage` dropped the handed id because the deck was not yet on
+    // `?list=query`: the operator clicked and nothing happened (issue 13).
+    expect(await screen.findByText("at /app/query")).toBeInTheDocument();
+    expect(api.sendDeckToQuery).toHaveBeenCalledWith("d_pay");
     expect(seen.state).toEqual({ deckIds: ["d_pay"] });
   });
 

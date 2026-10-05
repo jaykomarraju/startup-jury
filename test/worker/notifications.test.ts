@@ -220,6 +220,13 @@ describe("preference → outbox, for every one of the ten events", () => {
 // 2. The nine missing producers, driven through their real call sites.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Oct-3 issue 15 — this fixture carried `scores: []` and still counted as a
+// successful evaluation, because a model response that scored nothing used to
+// persist as `ai_complete = 1` with `ai_score = 0.00`. `evaluateDeck` now
+// refuses that payload (`unscorableReason`), so a fixture called OK_EVAL has to
+// actually score something. One real rubric key is enough for the notification
+// producer this block is about, and it keeps the deck's composite low — the
+// alert fires on either side of the gate.
 const OK_EVAL: RawEvaluation = {
   startup_name: "Producer Co",
   complete: true,
@@ -228,7 +235,7 @@ const OK_EVAL: RawEvaluation = {
   founder_phone: "+91 90000 00000",
   city: "Bengaluru",
   sector: "Fintech",
-  scores: [],
+  scores: [{ key: "problem_market_clarity", value: 7 }],
 };
 
 function pdf(name: string): File {

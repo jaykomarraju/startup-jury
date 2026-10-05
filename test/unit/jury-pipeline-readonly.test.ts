@@ -68,10 +68,15 @@ describe("Jury Pipeline is read-only for the programme associate", () => {
   });
 
   /** The negative control's other side: read-only must not mean nobody decides. */
-  it("leaves the decision with the jury and the programme manager", () => {
-    for (const role of ["jury", "program_manager", "admin", "superuser"] as const) {
+  it("leaves the decision with the incubator — the programme manager, not the juror", () => {
+    // The juror was in this list until 2026-10-04, when the client took the
+    // decision off them entirely: "It is the prerogative of the Incubator to
+    // take a final call. Juror is always an external guy." So this case now
+    // carries BOTH halves — somebody still decides, and it is not the jury.
+    for (const role of ["program_manager", "admin", "superuser"] as const) {
       expect(performAction("incubator", "jury_evaluation", "shortlist", role).ok, role).toBe(true);
     }
+    expect(performAction("incubator", "jury_evaluation", "shortlist", "jury").ok).toBe(false);
   });
 
   /**

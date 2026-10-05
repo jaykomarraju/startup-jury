@@ -615,6 +615,30 @@ export function createQuery(id: string, questions: string) {
   );
 }
 
+/**
+ * Record that an operator SENT this deck to the Query screen.
+ *
+ * Query membership is a recorded action, not a derived one — a deck is on that
+ * roster because somebody put it there. Until 2026-10-04 neither of these two
+ * routes had a single caller in the client (`grep -rn "send-to" src/` hit only
+ * the server and the e2e specs): the Dashboard navigated to `/app/query` with
+ * the id in router state, `QueryPage` resolved it against `?list=query`, found
+ * the deck absent and dropped it. The operator clicked Send to Query and
+ * nothing happened, which is the tester's issue 13 exactly.
+ */
+export function sendDeckToQuery(id: string) {
+  return postJson<{ ok: true; queryId?: string }>(`/api/decks/${id}/send-to-query`);
+}
+
+/**
+ * Record the Send-to-Assign click. The marker this writes is the ONLY authority
+ * for the `AI Evaluated, Assigned` status and its stat tile, so a navigation
+ * that skipped it left the Dashboard unable to say the deck had been handed on.
+ */
+export function sendDeckToAssign(id: string) {
+  return postJson<{ ok: true }>(`/api/decks/${id}/send-to-assign`);
+}
+
 export function respondQuery(queryId: string, response: string) {
   return postJson<{ ok: true; status: string }>(`/api/queries/${queryId}/respond`, { response });
 }

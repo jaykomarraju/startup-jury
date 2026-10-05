@@ -356,9 +356,25 @@ function reportInvariants() {
     `nav=${canSeeNav("program_associate", jpItem)} cell=${canTask("incubator", "program_associate", "jurypipeline")}`,
   );
 
+  // REVERSED 2026-10-04. §8 had the juror making the shortlist call; the client
+  // took it off them: "Not required since the below threshold levels are
+  // indicated automatically. It is the prerogative of the Incubator to take a
+  // final call. Juror is always an external guy."
+  //
+  // Stated as both halves in ONE check, because either alone passes for the
+  // wrong reason — a juror with no decision is right only while somebody else
+  // still has it, and a PM with the decision is right only while the juror does
+  // not. Both `jury_evaluation` transitions are named: hiding a button while the
+  // route still says yes is this repo's recurring defect.
   check(
-    "§8 [incubator] the jury still does the shortlisting",
-    can("incubator", "jury", "jury_evaluation", "shortlist"),
+    "§8 [incubator] the jury SCORES, the incubator DECIDES — neither shortlist nor reject",
+    !can("incubator", "jury", "jury_evaluation", "shortlist") &&
+      !can("incubator", "jury", "jury_evaluation", "reject") &&
+      can("incubator", "program_manager", "jury_evaluation", "shortlist") &&
+      can("incubator", "program_manager", "jury_evaluation", "reject"),
+    `jury shortlist=${can("incubator", "jury", "jury_evaluation", "shortlist")} ` +
+      `jury reject=${can("incubator", "jury", "jury_evaluation", "reject")} ` +
+      `pm shortlist=${can("incubator", "program_manager", "jury_evaluation", "shortlist")}`,
   );
   check(
     "[incubator] the jury cannot assign itself work or send a signup",

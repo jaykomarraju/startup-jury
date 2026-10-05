@@ -14,7 +14,6 @@ const BASE = "https://example.com";
 
 // Seed logins (migrations/0002_seed.sql).
 const PA = "sunita.rao@demo.startupjury.ai"; // incubator program_associate
-const JURY = "rajesh.kumar@demo.startupjury.ai"; // incubator jury
 const ADMIN = "nisha.kapoor@demo.startupjury.ai"; // incubator admin
 const SUPER = "priya.sharma@demo.startupjury.ai"; // incubator superuser
 const FOUNDER = "meera.sharma@demo.startupjury.ai"; // incubator founder
@@ -131,7 +130,7 @@ async function seedDeck(id: string, opts: SeedDeckOpts = {}): Promise<void> {
 // ── 1. Per-program shortlist floor ───────────────────────────────────────────
 
 describe("per-program shortlist floor", () => {
-  it("blocks a juror shortlisting a deck below the program's minimum", async () => {
+  it("blocks a shortlist below the program's minimum", async () => {
     await seedProgram("prog_floor_hi", "High Bar Program", 7.5);
     await seedDeck("sl_below", {
       status: "jury_evaluation",
@@ -140,7 +139,7 @@ describe("per-program shortlist floor", () => {
       assignedTo: "inc_jury",
     });
 
-    const cookie = await login(JURY);
+    const cookie = await login(ADMIN);
     const res = await post("/api/decks/sl_below/transition", cookie, { action: "shortlist" });
     expect(res.status).toBe(409);
     const body = (await res.json()) as {
@@ -171,7 +170,7 @@ describe("per-program shortlist floor", () => {
       aiScore: 8.0,
       assignedTo: "inc_jury",
     });
-    const cookie = await login(JURY);
+    const cookie = await login(ADMIN);
     const res = await post("/api/decks/sl_above/transition", cookie, { action: "shortlist" });
     expect(res.status).toBe(200);
     const row = await env.DB.prepare("SELECT status FROM decks WHERE id = 'sl_above'").first<{
@@ -200,7 +199,7 @@ describe("per-program shortlist floor", () => {
       "INSERT INTO evaluations (id, deck_id, evaluator_id, weighted_total, verdict) VALUES ('ev_sl_avg', 'sl_avg', 'inc_jury', 5.0, 'scored')",
     ).run();
 
-    const cookie = await login(JURY);
+    const cookie = await login(ADMIN);
     const res = await post("/api/decks/sl_avg/transition", cookie, { action: "shortlist" });
     expect(res.status).toBe(409);
     expect(((await res.json()) as { score: number }).score).toBe(6.2);
@@ -214,7 +213,7 @@ describe("per-program shortlist floor", () => {
       aiScore: null,
       assignedTo: "inc_jury",
     });
-    const cookie = await login(JURY);
+    const cookie = await login(ADMIN);
     const res = await post("/api/decks/sl_unscored/transition", cookie, { action: "shortlist" });
     expect(res.status).toBe(409);
     expect(((await res.json()) as { message: string }).message).toContain("no score yet");
@@ -240,7 +239,7 @@ describe("per-program shortlist floor", () => {
       aiScore: 1.0,
       assignedTo: "inc_jury",
     });
-    const cookie = await login(JURY);
+    const cookie = await login(ADMIN);
     for (const id of ["sl_nofloor", "sl_noprogram"]) {
       const res = await post(`/api/decks/${id}/transition`, cookie, { action: "shortlist" });
       expect(res.status, id).toBe(409);
@@ -273,7 +272,7 @@ describe("per-program shortlist floor", () => {
       aiScore: null,
       assignedTo: "inc_jury",
     });
-    const cookie = await login(JURY);
+    const cookie = await login(ADMIN);
     expect(
       (await post("/api/decks/sl_org_unscored/transition", cookie, { action: "shortlist" })).status,
     ).toBe(200);
@@ -315,7 +314,7 @@ describe("per-program shortlist floor", () => {
       aiScore: 2.0,
       assignedTo: "inc_jury",
     });
-    const cookie = await login(JURY);
+    const cookie = await login(ADMIN);
     // Rejecting a low-scoring deck must never be blocked by the shortlist floor.
     expect((await post("/api/decks/sl_reject/transition", cookie, { action: "reject" })).status).toBe(200);
   });

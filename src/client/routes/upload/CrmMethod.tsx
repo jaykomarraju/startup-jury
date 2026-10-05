@@ -14,6 +14,13 @@ import { CRM_PROVIDERS } from "./Wizard";
  * shows only on a plan below Pro, and its "Upgrade to Pro →" is a link only for
  * a viewer who can buy. Email triage — added by Aug-2026 issue 13, which the
  * prototype predates — stays as the one intake that still raises a ticket.
+ *
+ * Oct-3 issue 27 — "CRM option: when clicked, it should say 'coming soon'". It
+ * now says so, in the one place a click lands: this panel, first thing. The
+ * notice is the whole change. The provider tiles stay as they are, because for
+ * an administrator they lead to the Admin console's CRM sync section, where a
+ * connection is really recorded (`e2e/crm-sync.spec.ts` walks that path) — what
+ * does not exist yet is the PULL, which is exactly what the notice says.
  */
 export function CrmMethod({
   canConfigure,
@@ -44,6 +51,17 @@ export function CrmMethod({
     "flex items-center gap-[7px] rounded-[7px] border border-stone-dk bg-surface px-[11px] py-[9px] text-[12px] font-medium text-fg-2";
   return (
     <>
+      <div
+        className="mb-2.5 flex items-center gap-[7px] rounded-[7px] border border-gold-dk/40 bg-offwhite px-[11px] py-2 text-[11.5px] font-medium text-gold-dk"
+        data-testid="up-crm-soon"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="13" height="13" className="shrink-0" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7v5l3 2" />
+        </svg>
+        Upload from CRM — coming soon. Decks can&rsquo;t be pulled from a CRM yet; use Single or Bulk
+        upload meanwhile.
+      </div>
       <p className="mb-2.5 text-[12px] leading-[1.6] text-fg-2">
         Connect your CRM to pull deals automatically when they match your configured filter rules.
       </p>

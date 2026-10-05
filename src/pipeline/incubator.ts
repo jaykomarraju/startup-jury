@@ -108,21 +108,34 @@ export const incubatorPipeline: PipelineConfig = {
       label: "Begin jury evaluation",
       roles: ["jury", "admin", "superuser"],
     },
-    // Jury scores + shortlists their assigned decks; the PM (decision maker) may
-    // also make or override the shortlist / reject decision.
+    // **The jury SCORES; it does not DECIDE.** The client, 2026-10-04, on the
+    // juror's Reject/Shortlist buttons: *"Should be deleted. Not required since
+    // the below threshold levels are indicated automatically. It is the
+    // prerogative of the Incubator to take a final call. Juror is always an
+    // external guy."*
+    //
+    // That is a PERMISSION statement, not a layout one, which is why `"jury"`
+    // comes out of both role lists here and not only off the buttons. This repo's
+    // recurring defect is a screen gated client-side while the route still says
+    // yes (`role-boundary-leaks` — issue 21, `/api/messages`, the founder
+    // portal), and an external evaluator holding a transition nobody draws is
+    // exactly that shape.
+    //
+    // The decision stays with the incubator: programme manager, admin and super
+    // user keep both, and keep them on the same screen.
     {
       from: "jury_evaluation",
       to: "shortlisted",
       action: "shortlist",
       label: "Shortlist",
-      roles: ["jury", "program_manager", "admin", "superuser"],
+      roles: ["program_manager", "admin", "superuser"],
     },
     {
       from: "jury_evaluation",
       to: "rejected",
       action: "reject",
       label: "Reject",
-      roles: ["jury", "program_manager", "admin", "superuser"],
+      roles: ["program_manager", "admin", "superuser"],
     },
     // Shortlist routes to the PM, who decides + schedules the intro call (or
     // delegates the scheduling to the associate, who keeps the action too).

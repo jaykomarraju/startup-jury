@@ -100,19 +100,64 @@ describe("the JURYbuddy launcher", () => {
     expect(screen.getByTestId("jb-launcher")).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("carries the spec's geometry: 60px circle bottom-right, panel above it", () => {
+  /**
+   * Class-set rather than substring membership: `toContain("bottom-7")` is also
+   * satisfied by `sm:bottom-7`, which is exactly the distinction these two
+   * tests now turn on.
+   */
+  function classes(el: HTMLElement): Set<string> {
+    return new Set(el.className.split(/\s+/).filter(Boolean));
+  }
+
+  it("carries the spec's geometry from `sm:` up: 60px circle bottom-right, panel above it", () => {
     mount("incubator", "superuser");
     const btn = screen.getByTestId("jb-launcher");
     // `#jb-launcher{right:28px; bottom:28px; width:60px; height:60px;
-    //  border-radius:50%; z-index:1000}` — in our tokens, same numbers.
-    for (const c of ["fixed", "bottom-7", "right-7", "z-[1000]", "h-[60px]", "w-[60px]", "rounded-full"]) {
-      expect(btn.className, c).toContain(c);
+    //  border-radius:50%; z-index:1000}` — in our tokens, same numbers. They
+    // are `sm:`-prefixed because the spec is a 1440px console with no phone
+    // tier, so its numbers are only claimed for the tier it was measured on;
+    // the phone tier is pinned by the test below. `fixed`, `rounded-full` and
+    // the z-indexes are unconditional — they are not sizes.
+    for (const c of ["fixed", "sm:bottom-7", "sm:right-7", "z-[1000]", "sm:h-[60px]", "sm:w-[60px]", "rounded-full"]) {
+      expect(classes(btn), c).toContain(c);
     }
     fireEvent.click(btn);
     const panel = screen.getByTestId("jb-panel");
     // `#jb-panel{bottom:100px; width:360px; max-height:520px; z-index:999}`
-    for (const c of ["fixed", "bottom-[100px]", "w-[360px]", "max-h-[520px]", "z-[999]"]) {
-      expect(panel.className, c).toContain(c);
+    for (const c of ["fixed", "sm:bottom-[100px]", "sm:w-[360px]", "sm:max-h-[520px]", "z-[999]"]) {
+      expect(classes(panel), c).toContain(c);
+    }
+  });
+
+  /**
+   * The phone tier, added after measuring production at iPhone 13 width: the
+   * spec's 60px disc 28px in from the corner lands inside a 390px content
+   * column and covered the deck table's header row and the upload screen's
+   * credit badge. 44px in the shell's own 16px gutter keeps it tappable and
+   * out of the padding box.
+   */
+  it("uses a smaller, gutter-aligned geometry at phone width, and no spec size below `sm:`", () => {
+    mount("incubator", "superuser");
+    const btn = screen.getByTestId("jb-launcher");
+    const btnClasses = classes(btn);
+    for (const c of ["bottom-4", "right-4", "h-11", "w-11"]) {
+      expect(btnClasses, c).toContain(c);
+    }
+    // The desktop numbers must not ALSO apply unprefixed, or the phone tier
+    // never takes effect — this is the half-applied-fix failure.
+    for (const c of ["bottom-7", "right-7", "h-[60px]", "w-[60px]"]) {
+      expect(btnClasses, `${c} must be sm:-gated only`).not.toContain(c);
+    }
+
+    fireEvent.click(btn);
+    const panelClasses = classes(screen.getByTestId("jb-panel"));
+    // Gutter-to-gutter instead of a fixed 360px, which clips below 388px, and
+    // capped against the viewport instead of a flat 520px.
+    for (const c of ["left-4", "right-4", "max-h-[70vh]", "bottom-[72px]"]) {
+      expect(panelClasses, c).toContain(c);
+    }
+    for (const c of ["w-[360px]", "max-h-[520px]", "bottom-[100px]"]) {
+      expect(panelClasses, `${c} must be sm:-gated only`).not.toContain(c);
     }
   });
 });

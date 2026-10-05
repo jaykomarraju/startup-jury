@@ -936,22 +936,39 @@ export function EvaluatePage() {
                         : " · not scored yet"}
                     </span>
                   )}
-                  <button
-                    type="button"
-                    className="tbb"
-                    disabled={busy}
-                    onClick={() => decide("reject")}
-                  >
-                    Reject
-                  </button>
-                  <button
-                    type="button"
-                    className="tbb pr"
-                    disabled={busy}
-                    onClick={() => decide("shortlist")}
-                  >
-                    Shortlist
-                  </button>
+                  {/*
+                    Hidden from the JURY, 2026-10-04. The client: "It is the
+                    prerogative of the Incubator to take a final call. Juror is
+                    always an external guy." The server agrees — `"jury"` is out
+                    of both transitions' role lists in `pipeline/incubator.ts`,
+                    so this is the drawing of a rule and not the rule itself.
+
+                    Gated on the VIEWER'S ROLE rather than on `juryAssigned`,
+                    which is computed from the slug: a juror who reaches this
+                    workbench from `/app/evaluate` instead of `/app/jassigned`
+                    must not get the buttons back. A programme manager keeps
+                    both, on every route.
+                  */}
+                  {user?.role !== "jury" && (
+                    <>
+                      <button
+                        type="button"
+                        className="tbb"
+                        disabled={busy}
+                        onClick={() => decide("reject")}
+                      >
+                        Reject
+                      </button>
+                      <button
+                        type="button"
+                        className="tbb pr"
+                        disabled={busy}
+                        onClick={() => decide("shortlist")}
+                      >
+                        Shortlist
+                      </button>
+                    </>
+                  )}
                 </>
               }
             />

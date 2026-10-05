@@ -363,6 +363,46 @@ describe("the W5-A consumers", () => {
     expect(within(row).queryByRole("button", { name: "Complete signup" })).not.toBeInTheDocument();
   });
 
+  /**
+   * Oct-3 issue 24 — "Sign up action button … should be deactivated, with a
+   * mouse over comment saying 'coming soon'". `cuRender`'s `openSuWork` button,
+   * on the Sign up Pipeline.
+   *
+   * The tooltip is asserted on the WRAPPER, not the button: `Button` carries
+   * `disabled:pointer-events-none`, so a `title` on the disabled button is
+   * markup a hover can never reach — the comment the client asked for would not
+   * exist on screen. The wrapper is the fix, so it is what the test pins.
+   */
+  it("Sign up Pipeline — the row's Sign-up action is deactivated, and says coming soon on hover", async () => {
+    mockApi([deck({ id: "d1", name: "LedgerLite", statusId: "signup", status: "Signup" })], [signup({ deckId: "d1" })]);
+    render(<StagePage config={INCUBATOR_STAGE_CONFIG.incuration} />);
+    const row = await screen.findByRole("row", { name: /LedgerLite/ });
+
+    const button = await within(row).findByRole("button", { name: "Sign-up" });
+    expect(button).toBeDisabled();
+    expect(button.parentElement).toHaveAttribute("title", "Sign-up — coming soon");
+  });
+
+  /**
+   * The scope control. Issue 24 names the Sign up Pipeline; Onboard ready draws
+   * the SAME button out of the same `actionCell`, and it is how a seat gets
+   * allocated (`e2e/pipeline-stages.spec.ts` walks it). A flag set on the
+   * renderer instead of the screen would deactivate both and this is the only
+   * place that would say so.
+   */
+  it("Onboard ready keeps its Sign-up action live — the deactivation is one screen's", async () => {
+    mockApi(
+      [deck({ id: "d1", name: "LedgerLite", statusId: "onboard_ready", status: "Ready to Onboard" })],
+      [signup({ deckId: "d1", status: "completed" })],
+    );
+    render(<StagePage config={INCUBATOR_STAGE_CONFIG.curation} />);
+    const row = await screen.findByRole("row", { name: /LedgerLite/ });
+
+    const button = await within(row).findByRole("button", { name: "Sign-up" });
+    expect(button).toBeEnabled();
+    expect(button.parentElement).not.toHaveAttribute("title");
+  });
+
   it("the Sign-up tab draws the red Seatless card with Allocate seat, and allocates through the pipeline's verb", async () => {
     const calls = mockApi(
       [deck({ id: "d1", name: "LedgerLite", statusId: "signup", status: "Signup" })],
@@ -659,12 +699,13 @@ describe("V3 · Jury Pipeline is redrawn for the three staff roles, and not for 
     }) as typeof fetch;
   }
 
-  it("the jury draws their own twelve columns — not the staff nine, and not V3's eight", async () => {
+  it("the jury draws their own eleven columns — not the staff nine, and not V3's eight", async () => {
     mockJuryApi([underJury(), assigned()]);
     renderAs("jury");
     await screen.findByRole("row", { name: /InsureFlow/ });
 
-    // `panel-jurypipeline`'s `<th>` set, in the prototype's order.
+    // `panel-jurypipeline`'s `<th>` set, in the prototype's order, less the
+    // Action the client deleted on 3-Oct (issue 20).
     expect(headers(screen.getByRole("table"))).toEqual([
       "Startup",
       "AI score",
@@ -677,7 +718,6 @@ describe("V3 · Jury Pipeline is redrawn for the three staff roles, and not for 
       "Submitted date",
       "+/- Days",
       "Status",
-      "Action",
     ]);
     // `.jp-tb-title`, which the sidebar has always called "Evaluated".
     expect(screen.getByRole("heading", { level: 1, name: "Evaluated" })).toBeInTheDocument();
@@ -771,25 +811,52 @@ describe("V3 · Jury Pipeline is redrawn for the three staff roles, and not for 
   });
 
   /**
-   * The Action column is the one place the prototype and the build disagree
-   * about substance rather than shape. `jpAction`'s options are View deck ·
-   * Submit · Save draft · Re-assign; a juror in the build holds neither a draft
-   * nor a re-assign, and DOES hold shortlist and reject, which the prototype's
-   * select never offers.
+   * Oct-3 issue 20 — "Action column is not required" on the jury's Evaluated
+   * screen. It used to be the one place the prototype and the build disagreed
+   * about substance rather than shape: `jpActionSelect` offered View deck plus
+   * the juror's own `shortlist` / `reject`, which `pipeline/incubator.ts` grants
+   * them and which the prototype's select never offered.
    *
-   * What shipped takes the prototype's SHAPE — one `Action ▾` select, View deck
-   * first — and keeps the build's substance inside it. The assertion that
-   * matters is the second one: the two transitions must still be reachable.
-   * Dropping them to match the prototype's option list literally would remove
-   * two permissions `pipeline/incubator.ts` grants.
+   * The client settled it the other way (issue 18, on the same two buttons in
+   * the evaluation report): "the below threshold levels are indicated
+   * automatically. It is the prerogative of the Incubator to take a final call.
+   * Juror is always an external guy." So the column goes, and with it the only
+   * screen that offered a juror a pipeline decision.
+   *
+   * Three assertions, because the column could come back three ways: the header,
+   * the select, and the TRANSITIONS the select carried — `tableColumns` appends
+   * the built-in Action to any screen whose list omits it, so dropping
+   * `"action"` without `readOnly` would redraw Shortlist / Reject as buttons.
    */
-  it("the Action column is the prototype's select, and the juror's two transitions survive inside it", async () => {
+  it("the jury's Action column is gone — no header, no select, and neither transition as a button", async () => {
     mockJuryApi([underJury()]);
     renderAs("jury");
     const row = await screen.findByRole("row", { name: /InsureFlow/ });
 
+    expect(screen.queryByRole("columnheader", { name: "Action" })).not.toBeInTheDocument();
+    expect(within(row).queryByRole("combobox", { name: "Action for InsureFlow" })).not.toBeInTheDocument();
+    expect(within(row).queryAllByRole("option")).toEqual([]);
+    for (const gone of ["Shortlist", "Reject", "View deck"]) {
+      expect(within(row).queryByRole("button", { name: gone }), gone).not.toBeInTheDocument();
+    }
+  });
+
+  /**
+   * The scope control for the test above: issue 20 names the JURY's screen, and
+   * the same slug's staff variants decide the deck. A `readOnly` set one object
+   * too high, or on the base config, would take the decision away from the three
+   * roles that hold it — and `pmpipeline` would still look right, so nothing
+   * else would catch it.
+   */
+  it.each(STAFF)("%s keeps their Action select on the same slug", async (role) => {
+    mockApi([underJury()]);
+    renderAs(role);
+    const row = await screen.findByRole("row", { name: /InsureFlow/ });
+
+    expect(screen.getByRole("columnheader", { name: "Action" })).toBeInTheDocument();
     expect(within(row).getByRole("combobox", { name: "Action for InsureFlow" })).toBeInTheDocument();
-    expect(optionsOf(row)).toEqual(["Action ▾", "View deck", "Shortlist", "Reject"]);
+    // `jpToIntroCalls` is the `shortlist` transition under the prototype's label.
+    expect(optionsOf(row)).toEqual(["Action ▾", "Send to intro calls"]);
   });
 
   // The program associate has no `jurypipeline` nav at all (`nav.ts`,

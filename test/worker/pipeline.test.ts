@@ -143,8 +143,12 @@ describe("incubator happy path: upload → AI → assign → jury → shortlist 
       .first<{ n: number }>();
     expect(humanCount!.n).toBe(storable);
 
-    // Jury shortlists → shortlisted.
-    expect((await post(`/api/decks/${id}/transition`, jury, { action: "shortlist" })).status).toBe(200);
+    // The PM shortlists → shortlisted. The JURY scored, two steps above; it does
+    // not decide (2026-10-04 — "It is the prerogative of the Incubator to take a
+    // final call"). The happy path is otherwise unchanged, and the audit below
+    // still expects the same six events in the same order.
+    const decider = await login(PM);
+    expect((await post(`/api/decks/${id}/transition`, decider, { action: "shortlist" })).status).toBe(200);
     expect(await statusOf(id)).toBe("shortlisted");
 
     // Associate schedules intro → intro.
@@ -184,13 +188,17 @@ describe("incubator happy path: upload → AI → assign → jury → shortlist 
 });
 
 describe("reject → archive branch", () => {
-  it("jury rejects during evaluation, PM archives", async () => {
+  it("the PM rejects during evaluation, then archives", async () => {
+    // Was "jury rejects…" until 2026-10-04. The client: "It is the prerogative
+    // of the Incubator to take a final call. Juror is always an external guy."
+    // `"jury"` is out of the role list on both `jury_evaluation` transitions, so
+    // the decision-maker here is the programme manager. The BRANCH this case
+    // exists for — reject, then archive — is unchanged.
     const id = "pipe_reject";
     await seedDeck(id, "jury_evaluation");
-    const jury = await login(JURY);
     const pm = await login(PM);
 
-    expect((await post(`/api/decks/${id}/transition`, jury, { action: "reject" })).status).toBe(200);
+    expect((await post(`/api/decks/${id}/transition`, pm, { action: "reject" })).status).toBe(200);
     expect(await statusOf(id)).toBe("rejected");
     expect((await post(`/api/decks/${id}/transition`, pm, { action: "archive" })).status).toBe(200);
     expect(await statusOf(id)).toBe("archived");
@@ -618,7 +626,21 @@ describe("deck list exposes per-role actions + status id", () => {
     const deck = body.decks.find((d) => d.id === id)!;
     expect(deck.statusId).toBe("jury_evaluation");
     const actions = deck.actions.map((a) => a.action);
-    expect(actions).toEqual(expect.arrayContaining(["shortlist", "reject"]));
+    // A juror holds NO decision at `jury_evaluation` as of 2026-10-04 — the
+    // client: "It is the prerogative of the Incubator to take a final call.
+    // Juror is always an external guy." `"jury"` is out of both transitions'
+    // role lists, so the server offers them nothing here. This case is about
+    // `statusId` and `actions` being SERVED at all, so it keeps both halves.
+    expect(actions).not.toContain("shortlist");
+    expect(actions).not.toContain("reject");
+
+    // The guard on the guard: the decision did not vanish, it moved. A
+    // programme manager sees exactly what the juror no longer does.
+    const pmBody = (await (await get("/api/decks", await login(PM))).json()) as {
+      decks: Array<{ id: string; actions: Array<{ action: string }> }>;
+    };
+    const pmActions = pmBody.decks.find((d) => d.id === id)!.actions.map((a) => a.action);
+    expect(pmActions).toEqual(expect.arrayContaining(["shortlist", "reject"]));
   });
 });
 

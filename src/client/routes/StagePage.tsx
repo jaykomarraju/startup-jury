@@ -263,6 +263,20 @@ export interface StageConfig {
    */
   workspace?: boolean;
   /**
+   * Oct-3 issue 24 — the row's **Sign-up** action is drawn but DEFERRED:
+   * disabled, with a "coming soon" tooltip, instead of opening the workspace.
+   *
+   * Screen-scoped rather than a `workspace` mode, because the client named the
+   * Sign up Pipeline only ("Sign up action button … should be deactivated, with
+   * a mouse over comment saying 'coming soon'") and Onboard ready opens the same
+   * workspace to allocate a cohort seat, which is live and tested.
+   *
+   * The workspace itself is NOT withdrawn: the row's slide-over keeps its
+   * Sign-up tab and its "Open sign-up workspace" button, so nothing that works
+   * today becomes unreachable — the ROW ACTION is what the client deactivated.
+   */
+  signupComingSoon?: boolean;
+  /**
    * W9-B — decided rows stay on the screen with their outcome (F0627; the reading
    * agreed with `W9-E` in §9). A deck now in one of these stages is kept when its
    * latest pipeline event FROM `statuses` went to a stage OUTSIDE them. That event
@@ -966,15 +980,32 @@ export function StagePage({ config: base }: { config: StageConfig }) {
         ) : (
           <div className="flex flex-wrap justify-end gap-2">
             {signup && (
-              <Button
-                size="sm"
-                variant="secondary"
-                title={signup.readOnly ? "Read-only — a Super user or Admin must assign you" : undefined}
-                onClick={() => setWorkspace({ signupId: signup.signupId, tab: "agr" })}
-              >
-                {signup.readOnly ? <Lock className="mr-1 h-3.5 w-3.5" /> : <Signature className="mr-1 h-3.5 w-3.5" />}
-                Sign-up
-              </Button>
+              // Issue 24's tooltip hangs on the SPAN, not the button: `Button`
+              // sets `disabled:pointer-events-none`, so a `title` on the
+              // disabled button itself never reaches a hover — the "mouse over
+              // comment" the client asked for would silently not exist.
+              <span className="inline-flex" title={config.signupComingSoon ? "Sign-up — coming soon" : undefined}>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={config.signupComingSoon}
+                  title={
+                    config.signupComingSoon
+                      ? "Sign-up — coming soon"
+                      : signup.readOnly
+                        ? "Read-only — a Super user or Admin must assign you"
+                        : undefined
+                  }
+                  onClick={() => setWorkspace({ signupId: signup.signupId, tab: "agr" })}
+                >
+                  {signup.readOnly ? (
+                    <Lock className="mr-1 h-3.5 w-3.5" />
+                  ) : (
+                    <Signature className="mr-1 h-3.5 w-3.5" />
+                  )}
+                  Sign-up
+                </Button>
+              </span>
             )}
             {actions.length === 0 && !signup && <span className="text-xs text-fg-muted">—</span>}
             {actions.map((a) => (
@@ -1845,6 +1876,10 @@ const JURY_PIPELINE_READONLY: Partial<Omit<StageConfig, "roleVariants">> = {
 // table at all**, because their per-evaluator number IS "My score" and their
 // deck-level one IS "Avg. score".
 //
+// ELEVEN of those twelve ship: the client deleted Action from this screen on
+// 3-Oct (issue 20), so the prototype's `<th>` list is no longer the parity
+// target for the last column. See `readOnly` below before restoring it.
+//
 // It is a SEPARATE object from `JURY_PIPELINE_V3`, not a widening of it:
 // `StagePage` applies exactly one variant per role with no composition, and the
 // two screens disagree about the two things V3 is (Status deleted, the
@@ -1912,14 +1947,24 @@ const JURY_PIPELINE_JURY: Partial<Omit<StageConfig, "roleVariants">> = {
       const s = jurorStatus(row, ctx.viewerId);
       return <Badge tone={s.key === "submitted" ? "positive" : "amber"}>{s.label}</Badge>;
     }),
-    "action",
   ],
   minWidth: "92rem",
   rowDetail: { reports: true, assignments: true },
-  // `jpActionSelect` — one `Action ▾` select whose first option is View deck
-  // (the `#jp-side` "Pitch deck" pane). The prototype's other three options are
-  // deliberately NOT built; the handoff records why, and what a juror keeps.
-  actionMenu: {},
+  // Oct-3 issue 20 — "Action column is not required" on the jury's Evaluated
+  // screen, for the reason issue 18 gives about the same two transitions on the
+  // evaluation report: "the below threshold levels are indicated automatically.
+  // It is the prerogative of the Incubator to take a final call. Juror is always
+  // an external guy." So `jpActionSelect` — View deck plus the juror's shortlist
+  // / reject, the one place the build kept the prototype's shape and its own
+  // substance — goes, and with it the only screen that offered a juror a
+  // pipeline decision.
+  //
+  // `"action"` is dropped from the column list above AND `readOnly` set, the way
+  // `JURY_PIPELINE_READONLY` does it: dropping it alone is not enough, because
+  // `tableColumns` APPENDS the built-in Action to any screen whose list omits
+  // it. The juror keeps the deck through the Evaluation drawer their startup
+  // name opens, and scores it on Evaluate — neither is this column.
+  readOnly: true,
   // `jpFoot` — counted on the JUROR's own status, like the column above it.
   footer: (rows, ctx) => {
     const n = (key: string) => count(rows, (r) => jurorStatus(r, ctx.viewerId).key === key);
@@ -2016,6 +2061,11 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
     ],
     minWidth: "88rem",
     workspace: true,
+    // Oct-3 issue 24 — `cuRender`'s `openSuWork` button, deactivated for every
+    // role that reaches this screen (admin · PM · associate, and the superuser
+    // over them): the client is holding the sign-up workflow back, as they
+    // already held back the console's whole Sign-up group.
+    signupComingSoon: true,
     toolbar: {
       filters: [
         { id: "paid-all", label: "Paid / All docs", match: (r) => payOf(r) === "paid" && docsOf(r) === "complete" },

@@ -149,17 +149,21 @@ describe("PATCH re-derives the mark UPWARD ONLY", () => {
     expect(res.status).toBe(200);
 
     expect(await marks("ac_fix")).toMatchObject({ complete: 1, ai_complete: 1, missing_fields: null });
-    // The stage is NOT moved — this repairs the mark, not the pipeline.
+    // ── THE STAGE MOVES TOO, AND THIS ASSERTION USED TO SAY THE OPPOSITE ─────
     //
-    // S2-SERVER, 2026-09-30: `deckListRoute` still reads the mark, and the
-    // ASSIGN arm of it is unchanged — a deck whose mark is now 1 is back on the
-    // Assign roster. What the client's row 3 deleted is the other arm, the
-    // CONCLUSION that a deck off Assign is therefore on Query. So the sentence
-    // this comment used to make ("the mark is what routes it") is still true of
-    // Assign and no longer true of Query, where membership is now the recorded
-    // Send-to-Query click. Pinned end to end in `route-partition.test.ts` and
-    // `screening-status.test.ts`.
-    expect((await marks("ac_fix"))!.status).toBe("incomplete");
+    // It read `.toBe("incomplete")`, under the comment "this repairs the mark,
+    // not the pipeline" — S1-DASH's deliberate scope boundary. The client's
+    // 3-Oct rows 10, 11, 12, 14 and 16 are all that boundary: a deck complete
+    // on both axes and scoring 5.14 against a gate of 5 read "Complete,
+    // Edited" while `decks.status` still said `incomplete`, so it sat in the
+    // Incomplete stat box, never reached the Assign screen, and had Reject
+    // greyed out (`reject_ai_gate` exists only `from: ai_evaluated`).
+    //
+    // `deckListRoute`'s ASSIGN arm needs BOTH — the mark AND an assignable
+    // stage — so raising the mark alone never put this deck back on the roster
+    // the old comment credited it with. The full case, including the four arms
+    // that decline the move, is `stage-rejoin.test.ts`.
+    expect((await marks("ac_fix"))!.status).toBe("ai_evaluated");
   });
 
   // NEGATIVE CONTROL for the `ai_complete` arm of the guard. Remove it and the
@@ -296,10 +300,15 @@ describe("a contact correction is recorded, not just applied", () => {
     const rows = (await events("ce_write")).results;
     expect(rows).toHaveLength(1);
     expect(rows[0].note).toBe("city,founderPhone");
-    // An edit is NOT a transition and must not read as one.
+    // An edit is NOT a transition and must not read as one. That property is
+    // kept deliberately — it is what makes the audit trail truthful — and the
+    // 3-Oct stage move is a SECOND, separate `details_completed` event rather
+    // than an overload of this one (`stage-rejoin.test.ts`).
     expect(rows[0].from_stage).toBe("incomplete");
     expect(rows[0].to_stage).toBe("incomplete");
-    // …and the deck did not move.
+    // …and THIS deck did not move, because `seedDeck` runs no evaluation: it
+    // has no rubric rows, so the AI never reached a verdict to return it to.
+    // A deck that HAS one does move; see `stage-rejoin.test.ts`.
     expect((await marks("ce_write"))!.status).toBe("incomplete");
   });
 
