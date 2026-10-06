@@ -51,6 +51,8 @@
 
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
+// Explicit, because eslint does not put the Node globals in scope for `.mjs` here.
+import { Buffer } from "node:buffer";
 
 const TENANT = "t_gcw";
 const EDITION = "incubator";
