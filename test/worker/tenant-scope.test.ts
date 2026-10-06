@@ -118,12 +118,19 @@ const MARKER = "ZZTENANTB";
 const TENANT_B = "t_zz_isolation";
 const TENANT_B_SLUG = "zz-isolation";
 /**
- * Tenant A's login handle. `0083` seeded it as `default`; `0106` renames it when
- * the pilot customer's workspace stops being a placeholder and becomes Global
- * Carbon Warriors. Named here because the slug is what a caller supplies to
- * disambiguate a login, so a rename is a behaviour change, not cosmetics.
+ * Tenant A's login handle, and the round trip is worth recording.
+ *
+ * `0083` seeded it as `default`. `0106` renamed it to `global-carbon-warriors` on
+ * the belief that `t_default` already WAS the pilot customer's workspace — the 23
+ * ClimateTech decks in it looked like their pipeline. `SELECT uploaded_by` showed
+ * every one was uploaded through a demo login during QA, so `0109` gives the slug
+ * back and provisions GCW as `t_gcw`, its own organisation.
+ *
+ * Named here because the slug is what a caller supplies to disambiguate a login,
+ * so renaming one is a behaviour change rather than cosmetics — and because this
+ * one assertion is the only place in the suite that depends on it.
  */
-const TENANT_A_SLUG = "global-carbon-warriors";
+const TENANT_A_SLUG = "default";
 
 /** Tenant A is the backfilled organisation every seeded row belongs to. */
 const TENANT_A = "t_default";

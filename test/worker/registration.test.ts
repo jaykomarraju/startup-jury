@@ -33,14 +33,35 @@ import {
 } from "../../src/server/middleware/rateLimit";
 
 const BASE = "https://example.com";
-const GCW_DOMAIN = "globalcarbonwarriors.com";
+/**
+ * The domain this suite registers against, and it is deliberately NOT a real
+ * customer's.
+ *
+ * These cases were first written against `globalcarbonwarriors.com`, because `0106`
+ * put that domain on `t_default`. `0109` takes it back off — the pilot customer got
+ * their own organisation once `SELECT uploaded_by` showed `t_default`'s 23 decks were
+ * all QA uploads — and six cases here went red, which is the suite correctly
+ * reporting that it had been depending on a specific customer's provisioning.
+ *
+ * A registration test needs A domain claimed by AN organisation. It does not need a
+ * real one, and borrowing one couples the suite to a commercial decision that can
+ * change on any given afternoon. `.example` is reserved by RFC 2606 and can never be
+ * registered, so this cannot collide with anybody.
+ */
+const TEST_DOMAIN = "testworkspace.example";
 const DEMO_ADMIN = "priya.sharma@demo.startupjury.ai";
 const DEMO_PASSWORD = "demo1234";
 
-beforeEach(() => {
+beforeEach(async () => {
   // See the header. Also means each case's IP bucket starts empty at the burst
   // layer, so one case cannot spend another's budget.
   __resetLocalRateLimitState();
+  // The suite's own fixture: `t_default` claims the test domain so registration has
+  // a workspace to resolve to. Written here rather than relied upon from a migration,
+  // so the cases below hold whatever a migration later decides about real customers.
+  await env.DB.prepare("UPDATE organizations SET email_domain = ? WHERE id = 't_default'")
+    .bind(TEST_DOMAIN)
+    .run();
 });
 
 async function post(path: string, body: unknown): Promise<Response> {
@@ -124,24 +145,29 @@ async function login(email: string, password: string, tenant?: string): Promise<
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("0106 · the migration", () => {
-  it("rebrands t_default as the pilot customer and gives it a domain to claim", async () => {
+  it("gives organizations the two columns registration resolves a tenant from", async () => {
+    // `0106` added the columns AND briefly renamed `t_default` to the pilot customer.
+    // `0109` undoes the rename — the customer has their own organisation, provisioned
+    // by `scripts/provision-gcw.sql`, because `t_default`'s 23 decks turned out to be
+    // QA uploads rather than theirs. What `0106` contributes that outlives that is the
+    // SCHEMA, so that is what this asserts.
+    //
+    // Read with no `email_domain` binding on purpose: the value is this suite's
+    // fixture (see `beforeEach`), and asserting it here would only re-read what the
+    // setup just wrote.
     const row = await env.DB.prepare(
-      "SELECT name, slug, email_domain, default_edition, status FROM organizations WHERE id = 't_default'",
-    ).first<{
-      name: string;
-      slug: string;
-      email_domain: string | null;
-      default_edition: string;
-      status: string;
-    }>();
-    // `organizations.name` is the PLATFORM's name for the customer; the
-    // customer-facing one is `org_settings.branding_json.orgName` and is set in the
-    // console, not here (`0083:98-99`).
-    expect(row!.name).toBe("Global Carbon Warriors");
-    expect(row!.slug).toBe("global-carbon-warriors");
-    expect(row!.email_domain).toBe(GCW_DOMAIN);
+      "SELECT name, slug, default_edition, status FROM organizations WHERE id = 't_default'",
+    ).first<{ name: string; slug: string; default_edition: string; status: string }>();
+    expect(row!.name).toBe("ai.STARTUPJURY Demo Workspace");
+    expect(row!.slug).toBe("default");
     expect(row!.default_edition).toBe("incubator");
     expect(row!.status).toBe("active");
+
+    // And the columns exist to be resolved from, which is the part registration needs.
+    const cols = await env.DB.prepare(
+      "SELECT count(*) AS n FROM pragma_table_info('organizations') WHERE name IN ('email_domain','default_edition')",
+    ).first<{ n: number }>();
+    expect(cols!.n).toBe(2);
   });
 
   it("leaves every account that predates it signing in — nothing is pending", async () => {
@@ -159,7 +185,7 @@ describe("0106 · the migration", () => {
     await env.DB.prepare(
       "INSERT INTO organizations (id, name, slug, status, email_domain) VALUES ('t_dupe', 'Dupe', 'dupe', 'active', ?)",
     )
-      .bind(GCW_DOMAIN)
+      .bind(TEST_DOMAIN)
       .run()
       .then(
         () => {
@@ -181,7 +207,7 @@ describe("0106 · the migration", () => {
   });
 
   it("refuses an approval_state outside the vocabulary", async () => {
-    const email = `check-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `check-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     await expect(seedAccount(email, { approvalState: "maybe" })).rejects.toThrow(/CHECK/i);
     await purge(email);
   });
@@ -243,7 +269,7 @@ describe("two routers on /api/auth", () => {
 
 describe("POST /api/auth/register", () => {
   it("creates a pending jury account in the domain's workspace", async () => {
-    const email = `happy-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `happy-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     const res = await register(email, { name: "  Asha Verma  ", title: "Climate Analyst" });
     expect(res.status).toBe(202);
     expect(await res.json()).toMatchObject({ status: "pending_approval" });
@@ -290,7 +316,7 @@ describe("POST /api/auth/register", () => {
     // The client posts `{ email, password, firstName, lastName, name, designation? }`.
     // `title` is this route's own name for the field and `designation` is the screen's;
     // reading only one of them would silently drop a field the registrant filled in.
-    const email = `shape-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `shape-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     const res = await post("/api/auth/register", {
       email,
       password: "correct horse battery",
@@ -310,8 +336,8 @@ describe("POST /api/auth/register", () => {
     // `users.email` is UNIQUE per tenant with no COLLATE NOCASE and login is a plain
     // `=`. An address stored with a capital letter registers and then cannot sign in.
     const id = crypto.randomUUID();
-    const typed = `Mixed.Case-${id}@${GCW_DOMAIN.toUpperCase()}`;
-    const stored = `mixed.case-${id}@${GCW_DOMAIN}`;
+    const typed = `Mixed.Case-${id}@${TEST_DOMAIN.toUpperCase()}`;
+    const stored = `mixed.case-${id}@${TEST_DOMAIN}`;
     expect(await register(typed)).toMatchObject({ status: 202 });
     expect(await userRow(stored)).toBeTruthy();
     await purge(stored);
@@ -334,11 +360,11 @@ describe("POST /api/auth/register", () => {
   });
 
   it("refuses a short password and a missing name", async () => {
-    const email = `short-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `short-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     expect((await register(email, { password: "1234567" })).status).toBe(400);
     expect(await userRow(email)).toBeNull();
 
-    const email2 = `noname-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email2 = `noname-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     expect((await register(email2, { name: "   " })).status).toBe(400);
     expect(await userRow(email2)).toBeNull();
   });
@@ -347,7 +373,7 @@ describe("POST /api/auth/register", () => {
     // The anti-enumeration decision, asserted as INDISTINGUISHABILITY rather than as
     // a status code: a 409 here would answer "does firstname.lastname@<company> work
     // at <company>?" for anybody who can guess a name.
-    const email = `dupe-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `dupe-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     const first = await register(email);
     const second = await register(email, { name: "Someone Else", password: "another password" });
 
@@ -379,7 +405,7 @@ describe("POST /api/auth/register", () => {
     // commercial fact to somebody who has proved nothing.
     await env.DB.prepare("UPDATE organizations SET status = 'suspended' WHERE id = 't_default'").run();
     try {
-      const email = `suspended-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+      const email = `suspended-${crypto.randomUUID()}@${TEST_DOMAIN}`;
       const res = await register(email);
       expect(res.status).toBe(403);
       expect(await res.json<{ error: string }>()).toMatchObject({ error: "no_workspace_for_domain" });
@@ -394,7 +420,7 @@ describe("POST /api/auth/login · the four failure modes", () => {
   it("refuses a pending registrant with 403 pending_approval, not a credential error", async () => {
     // The live-call failure this exists for: told "your password is wrong", a
     // registrant retypes their password instead of ringing their administrator.
-    const email = `pending-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `pending-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     await register(email, { password: "a good long password" });
 
     const res = await login(email, "a good long password");
@@ -414,7 +440,7 @@ describe("POST /api/auth/login · the four failure modes", () => {
   });
 
   it("signs the same account in the moment an administrator approves it", async () => {
-    const email = `approved-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `approved-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     await register(email, { password: "a good long password" });
     await env.DB.prepare(
       "UPDATE users SET active = 1, approval_state = 'approved', role = 'program_manager' WHERE email = ?",
@@ -435,14 +461,14 @@ describe("POST /api/auth/login · the four failure modes", () => {
   });
 
   it("refuses a deactivated and a declined account with 403 account_disabled", async () => {
-    const off = `off-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const off = `off-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     await seedAccount(off, { active: 0 });
     const res = await login(off, DEMO_PASSWORD);
     expect(res.status).toBe(403);
     expect(await res.json<{ error: string }>()).toMatchObject({ error: "account_disabled" });
     await purge(off);
 
-    const no = `declined-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const no = `declined-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     await seedAccount(no, { approvalState: "declined" });
     const res2 = await login(no, DEMO_PASSWORD);
     expect(res2.status).toBe(403);
@@ -451,7 +477,7 @@ describe("POST /api/auth/login · the four failure modes", () => {
   });
 
   it("refuses a live account whose organisation was suspended, as disabled not as a typo", async () => {
-    const email = `orgoff-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `orgoff-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     await seedAccount(email);
     await env.DB.prepare("UPDATE organizations SET status = 'suspended' WHERE id = 't_default'").run();
     try {
@@ -468,7 +494,7 @@ describe("POST /api/auth/login · the four failure modes", () => {
   it("keeps an unknown address and a wrong password byte-identical", async () => {
     // Anything that separates these two is an enumeration oracle. Asserted on the
     // whole response, not just the status.
-    const unknown = await login(`nobody-${crypto.randomUUID()}@${GCW_DOMAIN}`, DEMO_PASSWORD);
+    const unknown = await login(`nobody-${crypto.randomUUID()}@${TEST_DOMAIN}`, DEMO_PASSWORD);
     const wrong = await login(DEMO_ADMIN, "definitely not the password");
     expect(unknown.status).toBe(401);
     expect(wrong.status).toBe(401);
@@ -478,7 +504,7 @@ describe("POST /api/auth/login · the four failure modes", () => {
   it("surfaces must_change_password on login and on /me", async () => {
     // §5.2: the flag is written by three routes and was enforced and reported by
     // none, so the console read "Temporary — not yet changed" for every row forever.
-    const email = `temp-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `temp-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     await seedAccount(email, { mustChange: 1 });
 
     const res = await login(email, DEMO_PASSWORD);
@@ -503,7 +529,10 @@ describe("POST /api/auth/login · the four failure modes", () => {
     // come through here, and the slug moved in `0106`.
     const plain = await login(DEMO_ADMIN, DEMO_PASSWORD);
     expect(plain.status).toBe(200);
-    const named = await login(DEMO_ADMIN, DEMO_PASSWORD, "global-carbon-warriors");
+    // `default`, not `global-carbon-warriors`: `0106` renamed the slug and `0109`
+    // gave it back when the pilot customer moved to their own organisation. The slug
+    // is the handle a caller supplies to disambiguate a login, so it is behaviour.
+    const named = await login(DEMO_ADMIN, DEMO_PASSWORD, "default");
     expect(named.status).toBe(200);
     const wrongSlug = await login(DEMO_ADMIN, DEMO_PASSWORD, "no-such-customer");
     expect(wrongSlug.status).toBe(401);
@@ -518,7 +547,7 @@ describe("POST /api/auth/login · the four failure modes", () => {
 describe("password reset", () => {
   it("always answers 202, whether or not the address exists", async () => {
     const real = await post("/api/auth/forgot-password", { email: DEMO_ADMIN });
-    const fake = await post("/api/auth/forgot-password", { email: `ghost-${crypto.randomUUID()}@${GCW_DOMAIN}` });
+    const fake = await post("/api/auth/forgot-password", { email: `ghost-${crypto.randomUUID()}@${TEST_DOMAIN}` });
     const nonsense = await post("/api/auth/forgot-password", { email: "not an address" });
     expect(real.status).toBe(202);
     expect(fake.status).toBe(202);
@@ -530,7 +559,7 @@ describe("password reset", () => {
   });
 
   it("mints a stored, hashed, expiring token for a live account and none for a pending one", async () => {
-    const live = `reset-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const live = `reset-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     const liveId = await seedAccount(live);
     await post("/api/auth/forgot-password", { email: live });
 
@@ -552,7 +581,7 @@ describe("password reset", () => {
 
     // A pending registrant gets nothing: login refuses them either way, so a live
     // credential would only be a credential for an account that cannot be used.
-    const pending = `pendingreset-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const pending = `pendingreset-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     await register(pending, { password: "a good long password" });
     await post("/api/auth/forgot-password", { email: pending });
     const none = await env.DB.prepare(
@@ -572,7 +601,7 @@ describe("password reset", () => {
     //
     // Delivery is gated off (`EMAIL_FROM` is `""`), so the assertion is on the OUTBOX
     // row — which is also the thing an operator would look at on the day.
-    const email = `link-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `link-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     const id = await seedAccount(email);
     await post("/api/auth/forgot-password", { email });
 
@@ -605,7 +634,7 @@ describe("password reset", () => {
   });
 
   it("supersedes an earlier live link when a new one is minted", async () => {
-    const email = `super-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `super-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     const id = await seedAccount(email);
     await post("/api/auth/forgot-password", { email });
     await post("/api/auth/forgot-password", { email });
@@ -625,7 +654,7 @@ describe("password reset", () => {
     // The raw token is never returned by any route and only its hash is stored, so
     // the row is planted here with a hash this test computed — which is also the
     // proof that `hashToken` is what the route looks a token up by.
-    const email = `redeem-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `redeem-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     const id = await seedAccount(email, { mustChange: 1 });
     const token = `raw-${crypto.randomUUID()}`;
     await env.DB.prepare(
@@ -662,7 +691,7 @@ describe("password reset", () => {
   });
 
   it("refuses an expired token, an unknown token and a short password", async () => {
-    const email = `expired-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `expired-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     const id = await seedAccount(email);
     const token = `stale-${crypto.randomUUID()}`;
     await env.DB.prepare(
@@ -694,7 +723,7 @@ describe("password reset", () => {
 
 describe("the rate limiter", () => {
   it("429s a registration flood against one address, with Retry-After", async () => {
-    const email = `flood-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `flood-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     const allowed = AUTH_RATE_LIMITS.register.email!;
     for (let i = 0; i < allowed; i++) {
       // Each of these is a duplicate after the first, which is a 202 either way — so
@@ -719,7 +748,7 @@ describe("the rate limiter", () => {
   it("locks an address out after a run of wrong passwords", async () => {
     // §5.3 measured 40 wrong-password logins answered 401 forty times in 292 ms. This
     // is the brake on that.
-    const email = `guess-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `guess-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     await seedAccount(email);
 
     for (let i = 0; i < LOGIN_FAILURES_PER_WINDOW; i++) {
@@ -746,7 +775,7 @@ describe("the rate limiter", () => {
     // `__resetLocalRateLimitState` clears only the in-isolate layer — so reusing the
     // locked-out address above would have been reading a stale KV bucket and calling
     // it a cleared one. That is the shape of a vacuous test, in the other direction.
-    const email = `clears-${crypto.randomUUID()}@${GCW_DOMAIN}`;
+    const email = `clears-${crypto.randomUUID()}@${TEST_DOMAIN}`;
     await seedAccount(email);
 
     // Spend most of the budget, then succeed.
