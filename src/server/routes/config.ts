@@ -46,7 +46,11 @@ import {
 import { loadSeatCapability } from "./aiPrompts";
 // W3-C — the audit trail. Every mutation below records what changed; the
 // writer swallows its own errors so a trail failure never fails a save.
-import { money, packPriceMinor, recordCreditMovement } from "../audit/log";
+// `recordAudit` directly, alongside the `events.ts` helpers: the refused credit
+// grant below belongs in the BILLING category, and `auditConfig` fixes the
+// category at `config`.
+import { MAX_CREDIT_BALANCE } from "../../shared/plans";
+import { money, packPriceMinor, recordAudit, recordCreditMovement } from "../audit/log";
 import {
   auditConfig,
   auditScoreVisibility,
@@ -67,6 +71,118 @@ interface SettingsRow {
   threshold_best: number;
   threshold_mediocre: number;
 }
+
+/**
+ * `org_settings`' own column defaults, as the values a workspace with no row
+ * behaves as — `migrations/0089_org_settings_tenant_rebuild.sql:47-59`.
+ *
+ * They are here for the AUDIT, not the read: every upsert below creates the
+ * absent row AT these defaults, so they are exactly the "before" a first save's
+ * audit sentence should name. Without them `auditThresholds(c, previous ??
+ * submitted, submitted)` compares the submitted value against itself, sees no
+ * change, and records a workspace's first threshold save nowhere at all.
+ *
+ * `test/worker/config-upsert.test.ts` asserts these against what the migrated
+ * schema actually stores, so a `DEFAULT` changed in a later migration fails there
+ * rather than quietly making every first-save audit row wrong.
+ */
+const SETTINGS_DEFAULTS = {
+  plan: "standard",
+  credits_balance: 0,
+  branding_json: "{}",
+  threshold_best: 7,
+  threshold_mediocre: 5,
+  ai_system_prompt: null,
+} as const satisfies SettingsRow;
+
+/**
+ * The ceiling on `POST /credits`, which SETS an absolute balance.
+ *
+ * The old `:1310` rejected only non-integers and negatives, and this is the route
+ * the console's **Plan & credits** Save actually calls (`ConfigPage.tsx:834`) — the
+ * capped `/credits/purchase` below has zero callers in the client. Each credit is
+ * one deck's worth of real Anthropic calls billed to the operator
+ * (`decks.ts:2393` reserves one per upload; four model calls follow), so an
+ * unbounded SET is an unbounded bill reachable from a number input with no `max`.
+ *
+ * 5000 is five times the largest pack the price catalogue sells
+ * (`MAX_CREDIT_PACK`) and roughly two hundred times the whole deployed corpus
+ * (23 real decks plus 30 seeded). Nothing legitimate is above it; a value that
+ * is, is a typo — a pasted figure or an extra zero — and the refusal is audited
+ * so a near miss is findable afterwards.
+ *
+ * **Deliberately NOT an `isPlatformOwner` gate.** `PLATFORM_OWNER_EMAILS` is `""`
+ * in production and that check fails CLOSED (`routes/pricing.ts`), which would
+ * lock the operator out of the only working top-up path. A bound refuses the
+ * mistake; an owner gate would refuse everyone.
+ */
+// The value itself now lives in `src/shared/plans.ts` — see the import above.
+
+/**
+ * A pack adds 1..`MAX_CREDIT_PACK` credits — the largest enterprise pack in `0033`,
+ * and the literal `1000` that was already at `/credits/purchase`.
+ *
+ * The asymmetry with `MAX_CREDIT_BALANCE` is deliberate: this caps ONE PACK, not
+ * the resulting balance, so enough purchases can carry the balance past the
+ * ceiling the SET refuses. Left that way on purpose — `/credits/purchase` has zero
+ * callers in the client, so it is reachable only by a deliberate curl, each call is
+ * bounded and each writes a `purchase` ledger row with a reference, and a ceiling
+ * on the accumulated balance would make a legitimate top-up fail for a reason
+ * nothing on screen could explain. The unbounded path was the SET, and that is the
+ * one now bounded.
+ */
+const MAX_CREDIT_PACK = 1000;
+
+/**
+ * ── WHY EVERY SETTINGS WRITE BELOW IS AN UPSERT, AND WHAT A BARE `UPDATE` COST ─
+ *
+ * `org_settings` and `org_scoring_settings` hold ONE ROW PER WORKSPACE and
+ * nothing in the running product creates that row: `0002_seed.sql:11` and
+ * `0026:52` insert the two editions of the FIRST customer, and a migration runs
+ * once. So on any workspace that was not seeded — every second customer, and
+ * every freshly provisioned one — a bare `UPDATE … WHERE tenant_id = ? AND
+ * edition = ?` matched zero rows, reported a `changes: 0` nobody read, and the
+ * route answered 200.
+ *
+ * Four of these routes then ECHOED THE REQUEST BACK as the response, which is
+ * what made the loss invisible: the screen said "Saved" and the reload showed the
+ * old value. MEASURED on production's `(t_default, incubator)`: `POST
+ * /api/config/credits` returned `{"creditsBalance":50}` and wrote a `+50
+ * credit_ledger` row while `org_settings` had no row at all — so the books and
+ * the gate disagreed permanently, with nothing logged, and the next upload was
+ * 402 for a balance the console said was 50.
+ *
+ * Two rules, applied to all eight statements in this file:
+ *
+ *   1. **`INSERT … ON CONFLICT (tenant_id, edition) DO UPDATE`** — the shape
+ *      `permissions.ts:138`, `account.ts:535` and `visibilityWrites` below
+ *      already use. A save against a workspace with no row CREATES it, with
+ *      every column the route does not write left at its schema default.
+ *   2. **Return a read-back, never the request.** `loadSettings` /
+ *      `loadScoringSettings` AFTER the write, and a 500 when the row still is not
+ *      there. A write that did not land must not report success — that is the
+ *      whole defect, and echoing the request is how it hid.
+ *
+ * ── THE PARTIAL-INDEX TRAP, AND WHY IT DOES NOT APPLY TO THESE TWO TABLES ────
+ *
+ * `0101`'s header is the warning: a conflict target must match a uniqueness
+ * constraint EXACTLY, and the `WHERE` of a PARTIAL index is part of that
+ * constraint. Name the wrong one and the upsert does not fail — it resolves
+ * against ANOTHER TENANT'S ROW and overwrites it, 200 and no error. So the target
+ * here was checked against the migrated schema rather than inferred from
+ * `0089`/`0090`. MEASURED, `pragma_index_list` after the full chain:
+ *
+ *   org_settings          sqlite_autoindex_org_settings_1          unique=1 origin=pk partial=0
+ *   org_scoring_settings  sqlite_autoindex_org_scoring_settings_1  unique=1 origin=pk partial=0
+ *
+ * One uniqueness constraint each — the composite primary key `(tenant_id,
+ * edition)`, not partial, nothing else. Unlike the five tables of `0091`–`0095`,
+ * these two were rebuilt by `0089`/`0090` at a time when NO upsert named them, so
+ * they never carried a `<table>__pre_tenant_key` transitional index for `0101` to
+ * drop. `test/worker/config-upsert.test.ts` asserts that constraint list rather
+ * than trusting this comment, so a later migration that adds a partial unique
+ * index here fails the test instead of silently redirecting these writes.
+ */
 
 interface ParamRow {
   id: string;
@@ -110,13 +226,79 @@ async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
  * against — core weights, the AI prompt, or the additional-parameter set —
  * invalidates the previous AI run, so a re-score becomes allowed (see
  * routes/decks.ts /rescore).
+ *
+ * The EIGHTH statement of the upsert sweep above, and the one not on
+ * `plan_pilot_gcw.md` §7's list of seven. It belongs with them: six routes in
+ * this file batch it, and on a workspace with no `org_settings` row it matched
+ * zero rows — so a rubric edit that DID persist (the `parameters` rows exist)
+ * left the version it has to invalidate untouched, and `/rescore` stayed blocked
+ * for a reason nothing recorded. `/scoring-framework` is the sharp case: this is
+ * its only `org_settings` write.
+ *
+ * `excluded` is not usable for an increment, so the `DO UPDATE` names the table:
+ * `org_settings.criteria_version + 1`, which keeps the bump atomic exactly as the
+ * `UPDATE` was. The INSERT seeds **2**, not the column default 1, because a row
+ * created by a bump is a row one bump past the default.
+ *
+ * `anchors.ts:232` and `aiPrompts.ts:259,340` each hold their own copy of the old
+ * `UPDATE` and have the same hole. They are not this lane's files; see the report.
  */
 function bumpCriteriaVersion(c: Context<AppEnv>, scope: TenantScope): D1PreparedStatement {
-  const q = scoped(scope).on("org_settings");
+  const t = insertScope(scope);
   return c.env.DB.prepare(
-    `UPDATE org_settings SET criteria_version = criteria_version + 1 ${q.whereClause()}`,
-  ).bind(...q.binds);
+    `INSERT INTO org_settings (${t.columns}, criteria_version) VALUES (${t.placeholders}, 2) ` +
+      "ON CONFLICT (tenant_id, edition) DO UPDATE SET " +
+      "criteria_version = org_settings.criteria_version + 1",
+  ).bind(...t.binds);
 }
+
+/** A column of `org_settings` this file writes — the keys of `SettingsRow`, nothing else. */
+type SettingsColumn = keyof SettingsRow;
+
+/**
+ * One `org_settings` upsert: the workspace's row, created if absent, with
+ * `columns` set from the submitted values.
+ *
+ * The column list, the placeholders and the `DO UPDATE SET` list are built from
+ * the SAME array, which is the point — the hazard in hand-writing six of these is
+ * a `SET` list that has drifted from the `VALUES` list, and that mistake is
+ * silent in exactly the way the bug being fixed here was. Same reasoning as
+ * `insertScope`'s (`src/shared/tenant.ts`): the parts that must agree are
+ * produced together.
+ *
+ * `columns` is typed `SettingsColumn`, so the only strings that can reach the SQL
+ * are the six column names `SettingsRow` declares — no runtime guard is needed and
+ * a request body cannot become one. The accumulating writes (`criteria_version`
+ * above, `/credits/purchase` below) need a table-qualified right-hand side rather
+ * than `excluded`, so they stay longhand instead of going through this.
+ */
+function settingsUpsert(
+  c: Context<AppEnv>,
+  scope: TenantScope,
+  columns: readonly SettingsColumn[],
+  values: readonly unknown[],
+): D1PreparedStatement {
+  const t = insertScope(scope);
+  const placeholders = columns.map(() => "?").join(", ");
+  const assignments = columns.map((col) => `${col} = excluded.${col}`).join(", ");
+  return c.env.DB.prepare(
+    `INSERT INTO org_settings (${t.columns}, ${columns.join(", ")}) ` +
+      `VALUES (${t.placeholders}, ${placeholders}) ` +
+      `ON CONFLICT (tenant_id, edition) DO UPDATE SET ${assignments}`,
+  ).bind(...t.binds, ...values);
+}
+
+/**
+ * ── THE READ-BACK, AND WHY A NULL IS A 500 AND NOT AN EMPTY RESPONSE ─────────
+ *
+ * Every write route below finishes with `await loadSettings(c, scope)` and
+ * returns THAT. A `null` from it is not "nothing saved yet": the upsert that just
+ * ran either inserted the row or updated it, so an absent row means the write did
+ * not land — and reporting success for a write that did not land is the entire
+ * defect this sweep removes. The routes answer 500 `settings_write_lost`, which is
+ * loud, lands in the worker log, and is distinguishable from the 404 `not_found`
+ * the READ routes above already return for an unprovisioned workspace.
+ */
 
 function loadSettings(c: Context<AppEnv>, scope: TenantScope): Promise<SettingsRow | null> {
   const q = scoped(scope).on("o");
@@ -1146,15 +1328,47 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
   };
 
   const recompute = compositionChanged(before, after);
+  // UPSERT 1 of 8 — `plan_pilot_gcw.md` §7's `config.ts:1151`. This was the one
+  // statement in the file writing `org_scoring_settings`, and on a workspace with
+  // no row it matched nothing while the route answered with `after` — the object
+  // it had just computed from the request. Every toggle on the console's largest
+  // section reverted on reload, including `ai_gate_threshold`, which decides what
+  // the Dashboard calls screened out.
+  //
+  // All fifteen value columns are written, so the INSERT is complete and needs no
+  // schema default: `after` is resolved field by field from `before`, and
+  // `loadScoringSettings` falls back to `DEFAULT_SCORING_SETTINGS` — the
+  // migration's own column defaults — when there is no row to read.
+  //
+  // The BIND ORDER is reversed from the `UPDATE` it replaces: the scope pair now
+  // leads instead of trailing, because an INSERT names its columns in order.
+  // `insertScope` supplies both halves together so they cannot come apart.
+  const sfw = insertScope(scope);
   const stmts: D1PreparedStatement[] = [
     c.env.DB.prepare(
-      "UPDATE org_scoring_settings SET ai_pre_scoring_enabled = ?, auto_clarification = ?, " +
-        "show_ai_score_to_jury = ?, require_override_rationale = ?, override_rationale_delta = ?, " +
-        "jury_sees_peer_scores = ?, score_scale = ?, composite_formula = ?, ai_weight_pct = ?, " +
-        "shortlist_threshold = ?, ai_gate_threshold = ?, show_three_score_view = ?, show_score_drift = ?, " +
-        "include_ai_evidence = ?, intro_call_ai_prompts = ?, updated_at = datetime('now'), " +
-        `updated_by = ? ${scoped(scope).on("org_scoring_settings").whereClause()}`,
+      `INSERT INTO org_scoring_settings (${sfw.columns}, ai_pre_scoring_enabled, auto_clarification, ` +
+        "show_ai_score_to_jury, require_override_rationale, override_rationale_delta, " +
+        "jury_sees_peer_scores, score_scale, composite_formula, ai_weight_pct, " +
+        "shortlist_threshold, ai_gate_threshold, show_three_score_view, show_score_drift, " +
+        "include_ai_evidence, intro_call_ai_prompts, updated_at, updated_by) " +
+        `VALUES (${sfw.placeholders}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?) ` +
+        "ON CONFLICT (tenant_id, edition) DO UPDATE SET " +
+        "ai_pre_scoring_enabled = excluded.ai_pre_scoring_enabled, " +
+        "auto_clarification = excluded.auto_clarification, " +
+        "show_ai_score_to_jury = excluded.show_ai_score_to_jury, " +
+        "require_override_rationale = excluded.require_override_rationale, " +
+        "override_rationale_delta = excluded.override_rationale_delta, " +
+        "jury_sees_peer_scores = excluded.jury_sees_peer_scores, " +
+        "score_scale = excluded.score_scale, composite_formula = excluded.composite_formula, " +
+        "ai_weight_pct = excluded.ai_weight_pct, shortlist_threshold = excluded.shortlist_threshold, " +
+        "ai_gate_threshold = excluded.ai_gate_threshold, " +
+        "show_three_score_view = excluded.show_three_score_view, " +
+        "show_score_drift = excluded.show_score_drift, " +
+        "include_ai_evidence = excluded.include_ai_evidence, " +
+        "intro_call_ai_prompts = excluded.intro_call_ai_prompts, " +
+        "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
     ).bind(
+      ...sfw.binds,
       after.aiPreScoringEnabled ? 1 : 0,
       after.autoClarification ? 1 : 0,
       after.showAiScoreToJury ? 1 : 0,
@@ -1171,8 +1385,6 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
       after.includeAiEvidence ? 1 : 0,
       after.introCallAiPrompts ? 1 : 0,
       userId,
-      scope.tenantId,
-      scope.edition,
     ),
   ];
   if (recompute) stmts.push(bumpCriteriaVersion(c, scope));
@@ -1182,7 +1394,12 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
   stmts.push(...visibilityStmts);
   await c.env.DB.batch(stmts);
 
-  await auditScoringFramework(c, before, after);
+  // The READ-BACK, not `after`. `after` is what this route computed from the
+  // request; `stored` is what D1 now holds, and on the workspace this lane exists
+  // for those two used to differ silently. Audit the stored value too — "shortlist
+  // threshold changed from 7 to 8" should be a statement about the database.
+  const stored = await loadScoringSettings(c.env.DB, scope);
+  await auditScoringFramework(c, before, stored);
 
   const [incubator, vc] = await Promise.all([
     loadScoreVisibility(c.env.DB, inEdition(scope, "incubator")),
@@ -1202,7 +1419,7 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
   await auditScoreVisibility(c, moved);
 
   const rescored = recompute ? await rescoreEdition(c.env, scope) : { decks: 0, evaluations: 0 };
-  return c.json({ ok: true, scoring: after, visibility: { incubator, vc }, rescored });
+  return c.json({ ok: true, scoring: stored, visibility: { incubator, vc }, rescored });
 });
 
 // ── Cohort thresholds ────────────────────────────────────────────────────────
@@ -1216,19 +1433,29 @@ config.put("/thresholds", requireTask("adminconsole", "admin"), async (c) => {
     return c.json({ error: "invalid_threshold" }, 400);
   }
   if (best <= mediocre) return c.json({ error: "best_below_mediocre" }, 400);
+  // UPSERT 2 of 8 — §7's `config.ts:1221`. The `?? best` in the audit call below
+  // was the second half of the same blindness: with no row the "before" became the
+  // submitted value, `auditThresholds` saw nothing change and returned early, so
+  // the save was neither stored nor logged and still answered 200 with the numbers
+  // the admin had typed. `SETTINGS_DEFAULTS` replaces that fallback with the values
+  // the upsert actually creates the row at.
   const previous = await loadSettings(c, scope);
-  const q = scoped(scope).on("org_settings");
-  await c.env.DB.prepare(
-    `UPDATE org_settings SET threshold_best = ?, threshold_mediocre = ? ${q.whereClause()}`,
-  )
-    .bind(best, mediocre, ...q.binds)
-    .run();
+  await settingsUpsert(c, scope, ["threshold_best", "threshold_mediocre"], [best, mediocre]).run();
+  const stored = await loadSettings(c, scope);
+  if (!stored) return c.json({ error: "settings_write_lost" }, 500);
   await auditThresholds(
     c,
-    { best: previous?.threshold_best ?? best, mediocre: previous?.threshold_mediocre ?? mediocre },
-    { best, mediocre },
+    {
+      best: previous?.threshold_best ?? SETTINGS_DEFAULTS.threshold_best,
+      mediocre: previous?.threshold_mediocre ?? SETTINGS_DEFAULTS.threshold_mediocre,
+    },
+    { best: stored.threshold_best, mediocre: stored.threshold_mediocre },
   );
-  return c.json({ ok: true, thresholdBest: best, thresholdMediocre: mediocre });
+  return c.json({
+    ok: true,
+    thresholdBest: stored.threshold_best,
+    thresholdMediocre: stored.threshold_mediocre,
+  });
 });
 
 // ── AI system prompt ─────────────────────────────────────────────────────────
@@ -1238,40 +1465,58 @@ config.put("/ai-prompt", requireTask("adminconsole", "admin"), async (c) => {
   const scope = scopeOf(c.var.user);
   const body = await readBody<{ prompt: string }>(c);
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
-  const q = scoped(scope).on("org_settings");
+  // UPSERT 3 of 8 — §7's `config.ts:1243`, and one of the four that echoed the
+  // request: the response carried the prompt the admin had just typed whether or
+  // not a row took it, which is why nobody noticed that the evaluator kept using
+  // the built-in default. The two statements stay in ONE batch and in THIS order:
+  // the upsert creates the row at `criteria_version` 1, then the bump makes it 2.
+  // Reversed, the bump's own INSERT would seed 2 and the prompt's `DO UPDATE`
+  // would leave it there — the same number, but by accident rather than by rule.
   await c.env.DB.batch([
-    c.env.DB.prepare(`UPDATE org_settings SET ai_system_prompt = ? ${q.whereClause()}`).bind(
-      prompt ? prompt : null,
-      ...q.binds,
-    ),
+    settingsUpsert(c, scope, ["ai_system_prompt"], [prompt ? prompt : null]),
     // The prompt is part of the scoring criteria → allow a re-score.
     bumpCriteriaVersion(c, scope),
   ]);
+  const stored = await loadSettings(c, scope);
+  if (!stored) return c.json({ error: "settings_write_lost" }, 500);
   await auditConfig(
     c,
     "ai_prompt_updated",
-    prompt ? "AI system prompt updated" : "AI system prompt cleared — the built-in default applies",
+    stored.ai_system_prompt
+      ? "AI system prompt updated"
+      : "AI system prompt cleared — the built-in default applies",
     { targetType: "org_settings", targetId: edition },
   );
-  return c.json({ ok: true, aiSystemPrompt: prompt });
+  // The read-back, so "" (cleared) and a stored prompt are both the database's
+  // answer rather than the request's. `ai_system_prompt` is NULL when cleared and
+  // the client's `FullConfig` carries a string, so NULL maps back to "".
+  return c.json({ ok: true, aiSystemPrompt: stored.ai_system_prompt ?? "" });
 });
 
 // ── Branding ─────────────────────────────────────────────────────────────────
 
 config.put("/branding", requireTask("adminconsole", "admin"), async (c) => {
   const { edition } = c.var.user;
-  const q = scoped(scopeOf(c.var.user)).on("org_settings");
+  const scope = scopeOf(c.var.user);
   const body = await readBody<{ branding: Record<string, unknown> }>(c);
   const branding = body.branding && typeof body.branding === "object" ? body.branding : {};
-  await c.env.DB.prepare(`UPDATE org_settings SET branding_json = ? ${q.whereClause()}`)
-    .bind(JSON.stringify(branding), ...q.binds)
-    .run();
-  await auditConfig(c, "branding_updated", `Branding updated: ${Object.keys(branding).join(", ") || "cleared"}`, {
-    targetType: "org_settings",
-    targetId: edition,
-    detail: branding,
-  });
-  return c.json({ ok: true, branding });
+  // UPSERT 4 of 8 — §7's `config.ts:1266`, echoing at `:1272`. The console's
+  // branding card renders the wordmark and accent straight from this response, so
+  // a lost save showed the NEW branding until the next reload — the most
+  // convincing form of the failure, because the screen agreed with the admin.
+  await settingsUpsert(c, scope, ["branding_json"], [JSON.stringify(branding)]).run();
+  const stored = await loadSettings(c, scope);
+  if (!stored) return c.json({ error: "settings_write_lost" }, 500);
+  // `parseBranding` on the way back out, not `branding`: a value D1 refused, or a
+  // key the column's round trip dropped, has to be absent from the response too.
+  const savedBranding = parseBranding(stored.branding_json);
+  await auditConfig(
+    c,
+    "branding_updated",
+    `Branding updated: ${Object.keys(savedBranding).join(", ") || "cleared"}`,
+    { targetType: "org_settings", targetId: edition, detail: savedBranding },
+  );
+  return c.json({ ok: true, branding: savedBranding });
 });
 
 // ── Plan tier ────────────────────────────────────────────────────────────────
@@ -1281,23 +1526,31 @@ config.put("/plan", requireTask("upgrade", "admin"), async (c) => {
   const scope = scopeOf(c.var.user);
   const body = await readBody<{ plan: string }>(c);
   if (!isPlan(body.plan)) return c.json({ error: "invalid_plan" }, 400);
+  // UPSERT 5 of 8 — §7's `config.ts:1286`, echoing at `:1296`. This one decides
+  // what the rest of the console will LET the admin do: `planAllowsCore` /
+  // `planAllowsAdditional` gate the rubric editors off the stored plan. A lost
+  // upgrade returned `additionalEnabled: true`, unlocked the additional-parameter
+  // cards for that one render, and refused every write they made.
   const current = await loadSettings(c, scope);
-  const q = scoped(scope).on("org_settings");
-  await c.env.DB.prepare(`UPDATE org_settings SET plan = ? ${q.whereClause()}`)
-    .bind(body.plan, ...q.binds)
-    .run();
-  if (current && current.plan !== body.plan) {
-    await auditConfig(c, "plan_changed", `Plan changed from ${current.plan} to ${body.plan}`, {
+  await settingsUpsert(c, scope, ["plan"], [body.plan]).run();
+  const stored = await loadSettings(c, scope);
+  if (!stored) return c.json({ error: "settings_write_lost" }, 500);
+  // `current ?? SETTINGS_DEFAULTS` rather than `if (current && …)`: the first save
+  // on a workspace with no row IS a plan change — from the column default the
+  // upsert would have created the row at — and it used to be recorded nowhere.
+  const wasPlan = current?.plan ?? SETTINGS_DEFAULTS.plan;
+  if (wasPlan !== stored.plan) {
+    await auditConfig(c, "plan_changed", `Plan changed from ${wasPlan} to ${stored.plan}`, {
       targetType: "org_settings",
       targetId: edition,
-      detail: { from: current.plan, to: body.plan },
+      detail: { from: wasPlan, to: stored.plan },
     });
   }
   const cap = await loadSeatCapability(c, scope);
   return c.json({
     ok: true,
-    plan: body.plan,
-    additionalEnabled: planAllowsAdditional(body.plan, cap.addl),
+    plan: stored.plan,
+    additionalEnabled: planAllowsAdditional(stored.plan, cap.addl),
   });
 });
 
@@ -1308,24 +1561,63 @@ config.post("/credits", requireTask("upgrade", "admin"), async (c) => {
   const body = await readBody<{ credits: number }>(c);
   const credits = Number(body.credits);
   if (!Number.isInteger(credits) || credits < 0) return c.json({ error: "invalid_credits" }, 400);
+  // THE BOUND. See `MAX_CREDIT_BALANCE` for the number and why this is a bound and
+  // not an owner gate. A distinct code, not `invalid_credits`: the two refusals
+  // mean opposite things to whoever has to fix them ("that is not a number" vs
+  // "that number is too large"), and `max` travels so a client can say which.
+  //
+  // The refusal is AUDITED. 400s record nothing anywhere in this file, and an
+  // attempt to set the balance to six figures is the single most interesting thing
+  // that can happen on this route — reaching it needs only a typo in a number
+  // input that has no `max` attribute (`ConfigPage.tsx:834`). `recordAudit`
+  // directly rather than `auditConfig`, because this belongs in the BILLING
+  // category beside the grant it was trying to be, not in `config`.
+  if (credits > MAX_CREDIT_BALANCE) {
+    await recordAudit(c, {
+      category: "billing",
+      action: "credits_grant_refused",
+      summary:
+        `Refused a credit balance of ${credits} — above the ${MAX_CREDIT_BALANCE} ceiling. ` +
+        "The balance was not changed.",
+      detail: { requested: credits, max: MAX_CREDIT_BALANCE },
+      targetType: "org_settings",
+      targetId: scope.edition,
+    });
+    return c.json({ error: "credits_above_max", max: MAX_CREDIT_BALANCE }, 400);
+  }
+  // UPSERT 6 of 8 — §7's `config.ts:1313`, echoing at `:1327`, and the worst of
+  // the set because it is the money. MEASURED on production: this returned
+  // `{"creditsBalance":50}` and `recordCreditMovement` wrote a `+50 credit_ledger`
+  // row while `org_settings` had NO ROW AT ALL. `sum(delta)` over the ledger said
+  // 50, the gate at `decks.ts:2393` read nothing, and the next upload was 402 —
+  // the books and the gate disagreeing permanently with nothing logged.
   const settings = await loadSettings(c, scope);
-  const q = scoped(scope).on("org_settings");
-  await c.env.DB.prepare(`UPDATE org_settings SET credits_balance = ? ${q.whereClause()}`)
-    .bind(credits, ...q.binds)
-    .run();
+  await settingsUpsert(c, scope, ["credits_balance"], [credits]).run();
+  const stored = await loadSettings(c, scope);
+  if (!stored) return c.json({ error: "settings_write_lost" }, 500);
   // F0054 — the balance is a mutable integer; the ledger is what explains it.
   // An admin SET is recorded as the signed movement it actually performed.
-  const delta = credits - (settings?.credits_balance ?? 0);
+  //
+  // The delta is now MEASURED — the read-back minus the row that was there — not
+  // `credits` minus the row that was there. They are the same number whenever the
+  // write landed, and when it does not the ledger stays silent instead of
+  // inventing a movement the column never made. That is the invariant
+  // `test/worker/config-upsert.test.ts` asserts: `sum(delta)` over the ledger and
+  // `credits_balance` agree, on a workspace that started with no row.
+  const was = settings?.credits_balance ?? SETTINGS_DEFAULTS.credits_balance;
+  const delta = stored.credits_balance - was;
   if (delta !== 0) {
     await recordCreditMovement(c, {
       delta,
       reason: "adjustment",
       note: "Administrator adjustment",
       action: "credits_adjusted",
-      summary: `Credit balance set to ${credits} by an administrator (${delta > 0 ? "+" : ""}${delta})`,
+      summary:
+        `Credit balance set to ${stored.credits_balance} by an administrator ` +
+        `(${delta > 0 ? "+" : ""}${delta})`,
     });
   }
-  return c.json({ ok: true, creditsBalance: credits });
+  return c.json({ ok: true, creditsBalance: stored.credits_balance });
 });
 
 // ── Buy credits (self-serve top-up) ───────────────────────────────────────────
@@ -1339,30 +1631,44 @@ config.post("/credits/purchase", requireTask("upgrade", "admin"), async (c) => {
   const scope = scopeOf(c.var.user);
   const body = await readBody<{ credits: number }>(c);
   const credits = Number(body.credits);
-  // A pack adds 1..1000 credits (1000 = the largest enterprise pack).
-  if (!Number.isInteger(credits) || credits < 1 || credits > 1000) {
+  if (!Number.isInteger(credits) || credits < 1 || credits > MAX_CREDIT_PACK) {
     return c.json({ error: "invalid_pack" }, 400);
   }
-  // Atomic increment so a concurrent upload/reserve can't clobber the top-up.
-  // §2 B9 lists "credit balance and credit purchase" among what `/api/config/*`
-  // crosses, and this is the write half: unscoped, one customer's top-up credited
-  // whichever `org_settings` row the edition matched first.
-  const uq = scoped(scope).on("org_settings");
+  // UPSERT 7 of 8 — §7's `config.ts:1351`, and the last of the seven. Same loss as
+  // `/credits` above with a real price and a fabricated `SIM…` transaction
+  // reference attached to it: a `purchase` ledger row with an amount, a reference
+  // and no balance behind it.
+  //
+  // Written longhand rather than through `settingsUpsert`, because the `DO UPDATE`
+  // ACCUMULATES: `org_settings.credits_balance + excluded.credits_balance`, not
+  // `excluded.credits_balance`. `excluded` is only the row that was offered, so the
+  // table has to be named to read what is already there — and that keeps the
+  // increment atomic in SQL, which is what stops a concurrent upload's reserve
+  // (`decks/versions.ts:101`) from clobbering the top-up. §2 B9 lists "credit
+  // balance and credit purchase" among what `/api/config/*` crosses, and this is
+  // the write half: unscoped, one customer's top-up credited whichever
+  // `org_settings` row the edition matched first.
+  const t = insertScope(scope);
   await c.env.DB.prepare(
-    `UPDATE org_settings SET credits_balance = credits_balance + ? ${uq.whereClause()}`,
+    `INSERT INTO org_settings (${t.columns}, credits_balance) VALUES (${t.placeholders}, ?) ` +
+      "ON CONFLICT (tenant_id, edition) DO UPDATE SET " +
+      "credits_balance = org_settings.credits_balance + excluded.credits_balance",
   )
-    .bind(credits, ...uq.binds)
+    .bind(...t.binds, credits)
     .run();
-  const rq = scoped(scope).on("o");
-  const row = await c.env.DB.prepare(
-    `SELECT o.credits_balance FROM org_settings o ${rq.whereClause()}`,
-  )
-    .bind(...rq.binds)
-    .first<{ credits_balance: number }>();
+  const stored = await loadSettings(c, scope);
+  // Was `row?.credits_balance ?? 0` — which is how a balance of 0 and a row that
+  // does not exist became the same answer, and the reason this route could report
+  // a successful purchase against a workspace it had not written to.
+  if (!stored) return c.json({ error: "settings_write_lost" }, 500);
   // F0054 — "Purchased 50-credit pack · ₹20,000 · Transaction ID: RZP…" is made
   // of ledger columns, so the ledger row and the Billing audit row are written
   // together. The price comes from the master catalogue (0033); a pack size the
   // catalogue does not carry is still recorded, just without an amount.
+  //
+  // `delta: credits` and not the measured difference, unlike `/credits` above: a
+  // purchase's movement IS the pack size, and reading it back off the column would
+  // silently fold in any concurrent reserve that landed between the two statements.
   const pack = await packPriceMinor(c.env.DB, credits);
   const reference = `SIM${Date.now().toString(36).toUpperCase()}`;
   await recordCreditMovement(c, {
@@ -1378,7 +1684,7 @@ config.post("/credits/purchase", requireTask("upgrade", "admin"), async (c) => {
       (pack ? ` · ${money(pack.amountMinor, pack.currency)}` : "") +
       ` · Transaction ID: ${reference}`,
   });
-  return c.json({ ok: true, purchased: credits, creditsBalance: row?.credits_balance ?? 0 });
+  return c.json({ ok: true, purchased: credits, creditsBalance: stored.credits_balance });
 });
 
 export { config };

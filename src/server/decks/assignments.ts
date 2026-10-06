@@ -10,11 +10,34 @@
 // any row written before 0058's backfill — must keep counting.
 
 import { dueAtFrom } from "../../shared/assignment";
+import { delegatedAssigneePairsSql } from "../../shared/outOfOffice";
 
-/** The (deck_id, evaluator_id) pairs that may score a deck. */
-export const ASSIGNEE_PAIRS_SQL =
+/**
+ * The two pairs that exist because somebody was ASSIGNED: the join table, and the
+ * legacy `decks.assigned_to` the note above explains.
+ */
+const BASE_ASSIGNEE_PAIRS_SQL =
   "SELECT deck_id, evaluator_id FROM deck_assignments " +
   "UNION SELECT id AS deck_id, assigned_to AS evaluator_id FROM decks WHERE assigned_to IS NOT NULL";
+
+/**
+ * The (deck_id, evaluator_id) pairs that may score a deck — assignment OR active
+ * out-of-office cover.
+ *
+ * Delegation belongs HERE and nowhere else. Seven call sites embed these pairs
+ * (`routes/decks.ts:570`, `routes/pipeline.ts:529` and `:1430`,
+ * `routes/assignments.ts:111`, `routes/analytics.ts:175` and `:637`,
+ * `scheduled.ts:118`), and they are the gates that decide both whether a deck
+ * appears in an evaluator's list at all and whether they may score it. Adding a
+ * second predicate at each one would be seven answers to "is this person allowed
+ * to score this deck?", which is how this repo got four low-credit thresholds.
+ *
+ * `delegatedAssigneePairsSql` takes the BASE pairs rather than reading this
+ * constant, so cover is exactly one hop: delegating to someone who is themselves
+ * out does not chain, which is what "cover" means and what keeps the SQL finite.
+ */
+export const ASSIGNEE_PAIRS_SQL =
+  `${BASE_ASSIGNEE_PAIRS_SQL} UNION ${delegatedAssigneePairsSql(BASE_ASSIGNEE_PAIRS_SQL)}`;
 
 /** May `userId` score `deckId` as one of its assigned evaluators? */
 export async function isAssignedEvaluator(db: D1Database, deckId: string, userId: string): Promise<boolean> {

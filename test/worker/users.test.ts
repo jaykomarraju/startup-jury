@@ -300,13 +300,26 @@ describe("user management — update (activate / deactivate)", () => {
     const off = await req("PATCH", `/api/users/${created.user.id}`, admin, { active: false });
     expect(off.status).toBe(200);
     expect(((await off.json()) as { user: UserView }).user.active).toBe(false);
-    // A deactivated user is refused at login (uniform 401).
+    // A deactivated user is refused at login. Since `0106` that refusal is
+    // `403 account_disabled` rather than the old uniform `401`, and the change is
+    // deliberate: `routes/auth.ts` draws the line at the PASSWORD CHECK. The loop
+    // that emits this runs only over candidates whose password already verified,
+    // so a caller who sees it already holds the credential and learns nothing —
+    // the same reasoning that makes the existing `409 tenant_required` safe.
+    // Telling a real employee "your account is disabled" instead of "wrong
+    // password" is the whole point; sending them to reset a password that was
+    // never wrong is what the old behaviour did.
+    //
+    // Asserting the CODE as well as the status, because "cannot log in" is the
+    // property under test and a bare status would also pass for a 403 raised by
+    // something else entirely.
     const denied = await SELF.fetch(`${BASE}/api/auth/login`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ email: "temp.staff@newteam.io", password: created.tempPassword }),
     });
-    expect(denied.status).toBe(401);
+    expect(denied.status).toBe(403);
+    expect(((await denied.json()) as { error: string }).error).toBe("account_disabled");
 
     // Reactivate.
     const on = await req("PATCH", `/api/users/${created.user.id}`, admin, { active: true });

@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { ChevronLeft, ChevronRight, X, FileText, ExternalLink, Loader2 } from "lucide-react";
 // Vite resolves this to a same-origin asset URL at build time (CSP-safe: the
 // pdf.js worker is self-hosted, never a CDN).
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { useCoarsePointer } from "./PanelFrame";
 
 type Status = "loading" | "ready" | "nopdf" | "error";
 
@@ -25,6 +26,7 @@ export function DeckPdfViewer({ deckId, className }: DeckPdfViewerProps) {
   const [pages, setPages] = useState<string[]>([]);
   const [lightbox, setLightbox] = useState<number | null>(null);
   const stripRef = useRef<HTMLDivElement>(null);
+  const coarse = useCoarsePointer();
 
   useEffect(() => {
     let cancelled = false;
@@ -85,6 +87,30 @@ export function DeckPdfViewer({ deckId, className }: DeckPdfViewerProps) {
   }, [lightbox, pages.length]);
 
   const fileUrl = `/api/decks/${deckId}/file`;
+
+  /**
+   * Dismiss, but only from the SURROUND and only under a finger.
+   *
+   * The finger half is `useCoarsePointer` and its reasoning is there; the short
+   * version is that losing a slide mid-presentation to a stray MOUSE click at
+   * 1440px is why tap-to-dismiss was withheld when this was written
+   * (docs/plan_pilot_gcw.md §11, "deliberately not fixed"), and a touch screen
+   * has no stray clicks to lose it to.
+   *
+   * `e.target !== e.currentTarget` is what makes "the surround" a fact rather
+   * than a guess: the slide, the two chevrons and the header bar are children,
+   * so a tap that lands on any of them is not a tap on the dark ground and
+   * never closes. That replaces the pair of `stopPropagation()` handlers this
+   * overlay used to carry, which had the opposite effect of the one intended —
+   * the body row is `flex-1`, so it covered the whole surround and swallowed
+   * every tap before the backdrop's own handler could see it. MEASURED at
+   * 393x659 before the change: tapping the dark ground left the lightbox open.
+   */
+  function dismissFromSurround(e: ReactMouseEvent<HTMLElement>) {
+    if (!coarse) return;
+    if (e.target !== e.currentTarget) return;
+    setLightbox(null);
+  }
 
   return (
     <div className={`rounded-lg border border-line bg-surface-2 ${className ?? ""}`}>
@@ -157,14 +183,20 @@ export function DeckPdfViewer({ deckId, className }: DeckPdfViewerProps) {
       </div>
 
       {lightbox !== null && pages[lightbox] && (
+        /* `z-[1100]` — over the JURYbuddy launcher, which is `z-[1000]` and
+           `position: fixed` (JuryBuddyLauncher.tsx:106). A full-screen slide is
+           the one surface a floating help bubble must not punch through: at
+           1440px the launcher sits on the slide's bottom-right corner. 1100
+           stays under the toast layer (`Toast.tsx` z-[3000]), so a toast raised
+           while a slide is open is still readable. */
         <div
-          className="fixed inset-0 z-[60] flex flex-col bg-navy/70 backdrop-blur-[1px]"
+          className="fixed inset-0 z-[1100] flex flex-col bg-navy/70 backdrop-blur-[1px]"
           role="dialog"
           aria-modal="true"
           aria-label={`Slide ${lightbox + 1} of ${pages.length}`}
-          onClick={() => setLightbox(null)}
+          onClick={dismissFromSurround}
         >
-          <div className="flex items-center justify-between px-5 py-3 text-white" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center justify-between px-5 py-3 text-white">
             <span className="font-mono text-sm">
               Slide {lightbox + 1} / {pages.length}
             </span>
@@ -172,18 +204,36 @@ export function DeckPdfViewer({ deckId, className }: DeckPdfViewerProps) {
               type="button"
               onClick={() => setLightbox(null)}
               aria-label="Close"
-              className="rounded-lg p-1.5 hover:bg-white/10"
+              /* 44x44 under a finger (`p-3` + a 20px glyph), 32 under a mouse —
+                 the iOS minimum applied to the one control that must never be
+                 missed, without growing the desktop header. */
+              className="rounded-lg p-1.5 hover:bg-white/10 max-sm:p-3"
             >
               <X className="h-5 w-5" />
             </button>
           </div>
-          <div className="flex flex-1 items-center justify-center gap-3 overflow-auto px-4 pb-5" onClick={(e) => e.stopPropagation()}>
+          {/* `relative` is the frame the phone chevrons pin themselves to — see
+              the buttons below. The row keeps `overflow-auto` for the desktop
+              layout, where the two in-flow chevrons plus a wide slide can
+              exceed the viewport on a short window. */}
+          <div
+            className="relative flex flex-1 items-center justify-center gap-3 overflow-auto px-4 pb-5"
+            onClick={dismissFromSurround}
+          >
+            {/* MEASURED at 393x659 before this change: the two chevrons are
+                in-flow siblings of a `max-w-full` image, so the row's content
+                is 36 + 361 + 36 + gaps = 445px in a 393px viewport and the
+                buttons centre at x=-16 and x=409 — 4px of each on screen, and
+                neither tappable. Below `sm` they come OUT of the flow and sit
+                over the slide's own edges, which is where a thumb reaches them;
+                the image then has the full row to itself. At `sm` and above
+                nothing changes: `static`, in flow, beside the slide. */}
             <button
               type="button"
               onClick={() => setLightbox((i) => (i === null ? i : Math.max(0, i - 1)))}
               disabled={lightbox === 0}
               aria-label="Previous slide"
-              className="shrink-0 rounded-full bg-white/10 p-2 text-white enabled:hover:bg-white/20 disabled:opacity-30"
+              className="shrink-0 rounded-full bg-white/10 p-2 text-white enabled:hover:bg-white/20 disabled:opacity-30 max-sm:absolute max-sm:left-2 max-sm:top-1/2 max-sm:z-10 max-sm:-translate-y-1/2 max-sm:bg-navy/70 max-sm:p-2.5"
             >
               <ChevronLeft className="h-6 w-6" />
             </button>
@@ -197,7 +247,7 @@ export function DeckPdfViewer({ deckId, className }: DeckPdfViewerProps) {
               onClick={() => setLightbox((i) => (i === null ? i : Math.min(pages.length - 1, i + 1)))}
               disabled={lightbox === pages.length - 1}
               aria-label="Next slide"
-              className="shrink-0 rounded-full bg-white/10 p-2 text-white enabled:hover:bg-white/20 disabled:opacity-30"
+              className="shrink-0 rounded-full bg-white/10 p-2 text-white enabled:hover:bg-white/20 disabled:opacity-30 max-sm:absolute max-sm:right-2 max-sm:top-1/2 max-sm:z-10 max-sm:-translate-y-1/2 max-sm:bg-navy/70 max-sm:p-2.5"
             >
               <ChevronRight className="h-6 w-6" />
             </button>

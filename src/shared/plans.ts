@@ -9,6 +9,25 @@ export type Plan = "standard" | "pro" | "premium";
 
 export const PLANS: readonly Plan[] = ["standard", "pro", "premium"];
 
+/**
+ * The ceiling on a workspace's evaluation-credit balance.
+ *
+ * SHARED because both ends need the same number and neither may own it alone:
+ * `POST /api/config/credits` is the authority and refuses above it with
+ * `400 credits_above_max` (`routes/config.ts`), while the console's Credits
+ * balance field uses it as the input's `max` so the control stops offering a
+ * value it knows will be rejected. Two copies of a threshold is the mistake this
+ * product already carries four of.
+ *
+ * 5000 is five times the largest pack the price catalogue sells and roughly two
+ * hundred times the whole deployed corpus. Each credit is one deck's worth of
+ * real model calls billed to the operator (`decks.ts` reserves one per upload),
+ * so an unbounded balance is an unbounded bill reachable from a number input.
+ * Nothing legitimate is above it; a value that is, is a pasted figure or an extra
+ * zero, and the server's refusal is audited so a near miss is findable.
+ */
+export const MAX_CREDIT_BALANCE = 5000;
+
 export const PLAN_LABELS: Record<Plan, string> = {
   standard: "Standard",
   pro: "Pro",

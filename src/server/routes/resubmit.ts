@@ -226,6 +226,15 @@ resubmit.post("/:token", async (c) => {
   });
 
   if (!added.ok) {
+    // Two arms, two answers. A founder on a tokenized link who attached the wrong
+    // file must be told THAT, not that we are out of credits — they cannot act on
+    // the second and would simply retry the same file.
+    if (added.error === "pdf_required") {
+      return c.json(
+        { error: "pdf_required", message: "Please upload your deck as a PDF." },
+        400,
+      );
+    }
     return c.json(
       {
         error: "no_credits",

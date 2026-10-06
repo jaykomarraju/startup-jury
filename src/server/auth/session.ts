@@ -1,8 +1,21 @@
 import type { SessionUser } from "../types";
 
-// Sessions are opaque tokens stored in KV with a TTL. The value is the
-// resolved principal so requests don't hit D1 on every call.
+// Sessions are opaque tokens stored in KV with a TTL. The value is the principal
+// as it stood AT LOGIN.
+//
+// It used to be the whole answer — "the resolved principal so requests don't hit
+// D1 on every call" is what this comment said, and it was true and it was the
+// bug. `requireAuth` now re-reads `role`, `active`, `deleted_at`,
+// `must_change_password` and `approval_state` from `users` on every request
+// (`middleware.ts`, with the three measured escapes that forced it), so what is
+// kept here is only the part that cannot change under a live session: `id`,
+// `tenantId`, `edition`, and the display fields. `role` is still written because
+// login and `/me` return it, but it is ADVISORY — the row wins.
 const PREFIX = "session:";
+// Seven days. Tolerable now in a way it was not before: the authority-bearing
+// fields are re-read per request, so the TTL bounds how long a stale *display*
+// name or a stale tenant mapping can live, not how long a removed admin keeps
+// administering. Shortening it would only add re-logins.
 const TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
 export const SESSION_COOKIE = "sj_session";
@@ -27,6 +40,13 @@ export async function createSession(
  * §6's closing note records that there is **no invalidation path** for it: "sessions
  * snapshot `role` and `edition` into KV for 7 days and will snapshot `tenant_id`
  * the same way, with no invalidation path when a principal's tenant changes."
+ *
+ * That sentence is now only half true, and the surviving half is the half this guard
+ * is about. `requireAuth` re-reads `role`, `active` and `deleted_at` per request, so
+ * a demotion, a deactivation and a removal all take effect at once. `tenant_id` is
+ * the one that still has no invalidation path — nothing in the tree writes it, so a
+ * drifted session simply reads no row and takes the same 401. Which leaves the case
+ * below: a session that never had the field at all.
  *
  * So on the deploy that ships tenancy, every live session is a value written before
  * `tenantId` existed. There are two ways to treat one:

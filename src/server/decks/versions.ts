@@ -41,11 +41,80 @@ import { scoped, type TenantScope } from "../../shared/tenant";
  */
 export const MAX_PDF_BYTES = 50 * 1024 * 1024;
 
+/**
+ * The bytes a PDF actually begins with — `%PDF`.
+ *
+ * ── WHY THE FILE NAME WAS NEVER ENOUGH ──────────────────────────────────────
+ * `isPdf` below was the whole of the gate and it read the NAME: anything called
+ * `*.pdf`, or anything the browser labelled `application/pdf`, was a deck. Measured
+ * 2026-10-01 on `POST /api/decks/upload` with a renamed text file and again with a
+ * 0-byte file — both accepted, and each one costs the customer four things in this
+ * order: the credit is reserved before the model is ever reached
+ * (`routes/decks.ts:2393`), the object is written to R2, four model calls are spent
+ * on something that is not a document, and the R2 object is then unreachable
+ * because nothing on the failure path owns it. The same gate sits on the PUBLIC,
+ * unauthenticated founder resubmit (`routes/resubmit.ts:207`), so an
+ * unauthenticated caller holding a live link could burn a customer's credits four
+ * model calls at a time.
+ *
+ * ── WHY FOUR BYTES AND NOT FIVE ─────────────────────────────────────────────
+ * ISO 32000-1 §7.5.2 writes the header as `%PDF-1.n`, so `%PDF-` — five bytes — is
+ * the stricter prefix and is the one libmagic matches. It is deliberately NOT what
+ * this constant holds, and the reason is measured rather than aesthetic:
+ * `grep -rn "37, 80, 68, 70" test/worker/` returns **27 lines in 20 files** — 19
+ * suites plus `apply-migrations.ts`, the pool's own setup file, which seeds every
+ * seeded deck's R2 object with exactly those four bytes and labels them `"%PDF"` in
+ * a comment, as does `deck-file-guard.test.ts:36`. Four bytes, no version byte.
+ * Requiring the fifth would redden a fifth of the worker suite in one change, in
+ * files this lane does not own and on the eve of a live call — and it would buy no
+ * discrimination that matters: nothing a person uploads begins `%PDF` and is not a
+ * PDF. Adding the `-` is a one-byte edit per fixture; it is recorded as a follow-up
+ * in the lane report rather than smuggled in here. Every e2e upload already sends
+ * real `%PDF-1.4` content, so only the worker fixtures are in the way.
+ */
+const PDF_SIGNATURE = Uint8Array.of(0x25, 0x50, 0x44, 0x46); // "%PDF"
+
+/**
+ * The CHEAP half of the gate, and the only half that can be a type predicate: a
+ * `File`, non-empty, named or typed as a PDF. Stays synchronous so the four call
+ * sites that already narrow `FormDataEntryValue` with it keep doing so unchanged.
+ *
+ * `file.size > 0` is new and belongs here rather than in `isPdfContent` below for a
+ * reason: a 0-byte upload is the one bad input that cannot be told from a good one
+ * by reading bytes, because there are none to read. Refusing it synchronously closes
+ * it at every existing call site — the single upload, the bulk loop, the
+ * authenticated re-upload and the public resubmit — without any of them changing a
+ * line. 0 bytes is never a document, and a browser produces one from a directory
+ * drag or a file that moved mid-upload.
+ */
 export function isPdf(file: unknown): file is File {
   return (
     file instanceof File &&
+    file.size > 0 &&
     (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"))
   );
+}
+
+/**
+ * The EXPENSIVE half: does this file begin like a PDF?
+ *
+ * Separate from `isPdf` because reading even four bytes off a `Blob` is async, and a
+ * `file is File` type predicate cannot be. So this is the one line each call site
+ * has to add — see `addDeckVersion` below, which does it for both re-upload paths,
+ * and the lane report for the two in `routes/decks.ts` that this lane does not own.
+ *
+ * Reads a four-byte SLICE, not the body: `file.slice(0, 4).arrayBuffer()` pulls four
+ * bytes however large the deck is, and leaves the file re-readable — `addDeckVersion`
+ * calls `args.file.arrayBuffer()` afterwards to store it, and a 50 MB deck must not
+ * be buffered twice. Verified against workerd, not assumed, because a `File` that
+ * had been backed by a consumable stream would have made the second read empty and
+ * stored a 0-byte object in R2: `test/worker/l5-hardening.test.ts` asserts the full
+ * body still comes back after this check has run.
+ */
+export async function isPdfContent(file: File): Promise<boolean> {
+  if (file.size < PDF_SIGNATURE.length) return false;
+  const head = new Uint8Array(await file.slice(0, PDF_SIGNATURE.length).arrayBuffer());
+  return PDF_SIGNATURE.every((byte, i) => head[i] === byte);
 }
 
 /** R2 key for a deck version. v1 keeps the historical `decks/<id>.pdf` path so
@@ -138,6 +207,23 @@ async function announceIfCreditsLow(env: Env, scope: TenantScope, spent: number)
   if (after >= LOW_CREDIT_THRESHOLD || after + spent < LOW_CREDIT_THRESHOLD) return;
   await emitNotification(env, {
     event: "credits_low",
+    // ── THE LEAK THIS CLOSES, AND WHY IT WAS INVISIBLE ────────────────────────
+    // This function already HELD the whole scope and passed only its edition half.
+    // `emitNotification` resolves the workspace through `resolveTenant`
+    // (`email/outbox.ts:216-231`), whose three arms are, in order: the caller's
+    // `scope`, the tenant of the named `deckId`, then `DEFAULT_TENANT_ID` with a
+    // warning. A low-credit alert names no deck, so this call site fell through to
+    // the third arm — and that is not a missing email, it is a misdirected one:
+    // a second customer's low-balance alert was written into and MAILED FROM the
+    // first customer's workspace, to the first customer's admins, while the
+    // customer whose balance had actually dropped was told nothing and found out
+    // when their next upload returned 402. The `t_default` fallback was observed
+    // firing in the dev log, which is the only trace it leaves.
+    //
+    // `edition` stays as well as `scope`: `NotificationInput` keeps both because
+    // `AUDIENCE` is dimensioned on the edition as a PRODUCT VARIANT, and the two
+    // must agree. They do here — `edition` is destructured from this same scope.
+    scope,
     edition,
     title: `Credit balance low — ${after} credit${after === 1 ? "" : "s"} left`,
     body:
@@ -230,10 +316,32 @@ export interface AddVersionArgs {
   uploadedBy: string | null;
 }
 
+/**
+ * `error` gained `"pdf_required"` beside `"no_credits"`, and the two existing
+ * callers need ONE LINE each to tell them apart.
+ *
+ * Both of them (`routes/decks.ts:2632`, `routes/resubmit.ts:228`) currently read
+ * `if (!added.ok) return c.json({ error: "no_credits" }, 402)` with the code
+ * hard-coded, so they still compile and a refused file reports "no credits" —
+ * wrong, and on the GCW pilot actively misleading, because "no credits" is the one
+ * thing that account is being set up not to say. Each already has a `pdf_required`
+ * 400 branch directly above for `isPdf`, so the change is to reuse that code:
+ *
+ *   if (!added.ok) {
+ *     return added.error === "pdf_required"
+ *       ? c.json({ error: "pdf_required" }, 400)
+ *       : c.json({ error: "no_credits" }, 402);
+ *   }
+ *
+ * The union is widened here rather than the check being left to the call sites
+ * because this function is where the credit is reserved. A validation that lives in
+ * the caller is a validation each new caller can forget, and the §9 queue consumer
+ * is a caller this file will gain.
+ */
 export type AddVersionResult =
   | { ok: true; version: number; evaluated: true; result: EvaluationResult }
   | { ok: true; version: number; evaluated: false }
-  | { ok: false; error: "no_credits" };
+  | { ok: false; error: "no_credits" | "pdf_required" };
 
 /**
  * Store `file` as the deck's next version and re-score it.
@@ -247,6 +355,15 @@ export type AddVersionResult =
  * the retrying queue consumer instead of being stranded unscored (§9).
  */
 export async function addDeckVersion(env: Env, args: AddVersionArgs): Promise<AddVersionResult> {
+  // ── FIRST, BEFORE ANYTHING IS SPENT OR WRITTEN ──────────────────────────────
+  // Four bytes read off the front of the file, ahead of the owner lookup, the credit
+  // reservation and the R2 put. The order is the point: `reserveCredits` below
+  // commits a `credit_ledger` debit, and a refund only ever reverses it — the ledger
+  // is append-only on purpose — so a deck refused AFTER the reservation leaves a
+  // matched debit/refund pair in the customer's usage history for a file that was
+  // never a deck. Refused here, nothing happened at all.
+  if (!(await isPdfContent(args.file))) return { ok: false, error: "pdf_required" };
+
   // ── THE TENANT COMES OFF THE DECK, NOT OFF THE CALLER ───────────────────────
   // `TENANT_OWNER`'s one-hop path, read directly because this is the owner table
   // itself. Unscoped on purpose: both callers have already resolved this deck — the

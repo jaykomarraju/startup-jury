@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv, Env, EvalMessage } from "./types";
 import auth from "./routes/auth";
+import registration from "./routes/registration"; // L2 · public sign-up + password reset
 import decks from "./routes/decks";
 import pipeline from "./routes/pipeline";
 import config from "./routes/config";
@@ -29,6 +30,7 @@ import { assignments } from "./routes/assignments"; // W7-E · Assign: board + c
 import { handleQueue } from "./queue";
 import { runMonthlyUsageSummary, runReminders, runStuckSweep } from "./scheduled";
 import { withSecurityHeaders } from "./security";
+import { rateLimit, AUTH_RATE_LIMITS } from "./middleware/rateLimit";
 
 export type { Env } from "./types";
 
@@ -50,7 +52,31 @@ app.get("/api/health", (c) =>
   }),
 );
 
+// ── THE FOUR PUBLIC AUTH ROUTES, AND THE LIMITER IN FRONT OF THEM ───────────
+//
+// §5.3 measured the hole: no rate limiting anywhere in the product, and 40
+// wrong-password logins answered 401 forty times in 292 ms. §6 then made a limiter a
+// hard prerequisite for the public sign-up — "a public POST with no limiter is a
+// free account-creation faucet from the conference wifi".
+//
+// Mounted path by path rather than as `/api/auth/*`, because the four limits are
+// different and because `/logout` and `/me` must stay unlimited: a limiter in front
+// of `/me` would throttle ordinary page loads, which is the quickest way to make
+// everyone turn it off. `src/server/middleware/rateLimit.ts` has the numbers and why
+// they are generous per IP and strict per address.
+app.use("/api/auth/login", rateLimit("login", AUTH_RATE_LIMITS.login));
+app.use("/api/auth/register", rateLimit("register", AUTH_RATE_LIMITS.register));
+app.use("/api/auth/forgot-password", rateLimit("forgot-password", AUTH_RATE_LIMITS["forgot-password"]));
+app.use("/api/auth/reset-password", rateLimit("reset-password", AUTH_RATE_LIMITS["reset-password"]));
+
 app.route("/api/auth", auth);
+// PUBLIC (no requireAuth): sign-up, forgot-password and reset-password. A SECOND
+// router on the same prefix, which Hono supports — `app.route` registers each
+// router's paths independently, so these three and `auth`'s three coexist and the
+// unmatched-path 404 below is unaffected. `test/worker/registration.test.ts` asserts
+// both halves still answer, because "Hono allows this" is the kind of claim that
+// should be measured rather than believed.
+app.route("/api/auth", registration);
 app.route("/api/config", config);
 app.route("/api/anchors", anchors);
 app.route("/api/ai-prompts", aiPrompts); // V3-AW · Area weights → AI prompt + Seat configurability

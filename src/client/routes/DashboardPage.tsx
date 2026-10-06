@@ -450,6 +450,63 @@ export const ALL_DECKS_COLUMNS = {
 
 type TableShape = keyof typeof ALL_DECKS_COLUMNS;
 
+/**
+ * ── The columns a PHONE keeps ────────────────────────────────────────────────
+ *
+ * MEASURED at 393x659, signed in as the incubator superuser, before this
+ * existed: the `v3Default` table lays out at **1045px** inside a 359px
+ * scroller, so 686px of it is off screen to the right. What a phone shows is
+ * `Startup name · Founder · Phone · Email(clipped)`; what it hides is
+ * **AI score (x=564), Status (x=622) and Actions (x=764)**. The first thing an
+ * audience sees is a column of founder phone numbers and half an email address,
+ * and the row's action menu — Send to Assign, Send to Query, Edit, Archive —
+ * cannot be reached at all without a 686px horizontal swipe. That is the
+ * client's "all the stat boxes, reports and actions on the dashboard must be
+ * working".
+ *
+ * ── Why a column SET and not the two alternatives ───────────────────────────
+ *
+ * · **A sticky first column** (the usual pattern) keeps the row's identity
+ *   while you swipe, and leaves every other complaint standing: the contact
+ *   details still lead the screen, and the Actions menu is still 686px away.
+ *   It makes the horizontal scroll survivable; it does not remove it. Here the
+ *   scroll goes away entirely — these tables fit 393px — so there is nothing
+ *   left to stick to.
+ * · **A card restack** (`display:block` rows with `::before` labels) needs a
+ *   label per cell, and the cells are built by `renderRow`'s twenty shapes as
+ *   bare `<td>`s. It is the bigger change, and it would be the right one if
+ *   the phone needed every column; it does not.
+ *
+ * ── The rules this map follows ──────────────────────────────────────────────
+ *
+ * · Every string here is **verbatim from the shape's desktop header list**
+ *   above. A phone must not invent a vocabulary — `ALL_DECKS_COLUMNS` is
+ *   asserted in `test/client/allDecks.test.tsx` and snapshotted by
+ *   `e2e/parity.spec.ts`, and both still see the full list: this is applied
+ *   only when `useIsPhone()` is true, which is `(max-width: 639px)`, and both
+ *   of those run wider.
+ * · A shape with no entry here renders all of its columns and scrolls
+ *   sideways exactly as it does today. The four below are the pilot's own
+ *   screens — the two incubator staff shapes and the two jury shapes — and
+ *   nothing in the VC edition is touched (it is out of scope, 2026-10-01).
+ * · Nothing becomes unreachable. The founder's name, phone, email and city
+ *   leave the v3 table and stay one tap away in the row menu's **Edit**, which
+ *   at this width opens them stacked and labelled in the row itself.
+ */
+export const PHONE_COLUMNS: Partial<Record<TableShape, readonly string[]>> = {
+  v3Default: ["Startup name", "AI score", "Status", "Actions"],
+  // Avg. score gives way to Sign-up status: this box exists to move a deck
+  // through sign-up, and the blended score is on the deck's own report, one tap
+  // away on the name. (The AI score stays because it is the column the client
+  // asks for by name on every screen.)
+  v3Shortlisted: ["Startup name", "AI score", "Signup status", "Actions"],
+  // The jury's two. Both drop only cells that are already a literal "—" on
+  // every row — "Assigned by", "Due date", "Submitted to", "By Due date" have
+  // no data model behind them yet (§9) — plus the assignment date.
+  juryOpen: ["Startup", "Status", "AI score"],
+  jurySubmitted: ["Startup", "AI Score", "My Score", "Av. Score"],
+};
+
 /** The VC staff table for each stat box. */
 const VC_SHAPES: Record<string, TableShape> = {
   uploaded: "vcUploaded",
@@ -1475,7 +1532,12 @@ export function DashboardPage() {
   const canTag = user.role !== "founder";
   const narrowed = debouncedSearch !== "" || tagFilter !== "" || !!ctx.programId || !!ctx.cohortId;
   const { best, mediocre } = thresholds;
-  const colSpan = ALL_DECKS_COLUMNS[shape].length;
+  // See `PHONE_COLUMNS`. `phoneCols` is the one flag the thead, the row
+  // renderer, the colSpan and the table's own min-width all read, so there is
+  // no second place that can decide this screen is narrow.
+  const phoneCols = isPhone ? PHONE_COLUMNS[shape] : undefined;
+  const columns = phoneCols ?? ALL_DECKS_COLUMNS[shape];
+  const colSpan = columns.length;
   // V3 integration — `navForUser` is THE SIDEBAR since V3-NAV, and V3 item 10
   // takes `evaluate` out of the incubator superuser's sidebar while leaving the
   // ROUTE live. Resolving this link through the sidebar therefore dropped the
@@ -1920,7 +1982,13 @@ export function DashboardPage() {
     return (
       <td className={td}>
         <select
-          className="sj-input h-[27px] w-auto py-0 text-[11px]"
+          /* `w-auto` means "as wide as the longest OPTION", and the longest is
+             "Send to Assign — as incomplete contact details": measured 298px of
+             a 393px screen for a control that reads "Actions ▾". Pinned to
+             96px below `sm` so the column it sits in cannot eat the table; the
+             options themselves are unaffected, because a phone renders them in
+             the system's own full-width picker. */
+          className="sj-input h-[27px] w-auto py-0 text-[11px] max-sm:w-[96px]"
           aria-label={`Actions for ${deck.name}`}
           value=""
           disabled={rowBusy !== null}
@@ -2244,16 +2312,19 @@ export function DashboardPage() {
         const status = v3Status(deck);
         const hint = V3_STATUS_HINTS[status];
         const isEditing = editing === deck.id;
+        const field = (f: (typeof V3_EDIT_FIELDS)[number]) => (
+          <input
+            className="sj-input h-[27px] w-full py-0 text-[11px]"
+            aria-label={`${f.label} — ${deck.name}`}
+            value={editDraft[f.name] ?? ""}
+            onChange={(e) => setEditDraft((dr) => ({ ...dr, [f.name]: e.target.value }))}
+          />
+        );
         const cell = (f: (typeof V3_EDIT_FIELDS)[number]) => {
           const value = f.read(deck);
           return isEditing ? (
             <td key={f.name} className={td}>
-              <input
-                className="sj-input h-[27px] w-full py-0 text-[11px]"
-                aria-label={`${f.label} — ${deck.name}`}
-                value={editDraft[f.name] ?? ""}
-                onChange={(e) => setEditDraft((dr) => ({ ...dr, [f.name]: e.target.value }))}
-              />
+              {field(f)}
             </td>
           ) : (
             <td key={f.name} className={td}>
@@ -2261,18 +2332,56 @@ export function DashboardPage() {
             </td>
           );
         };
+        const aiCell = (
+          <td className={td}>
+            <ScoreChip value={deck.aiScore} />
+          </td>
+        );
+        const statusCell = (
+          <td className={td} data-status={status}>
+            <span data-testid="v3-status" title={hint}>
+              <StatusPill tone={V3_STATUS_TONES[status]}>{SCREENING_STATUS_LABELS[status]}</StatusPill>
+            </span>
+          </td>
+        );
+        if (phoneCols) {
+          // The four contact columns are not on this row at phone width (see
+          // `PHONE_COLUMNS`) — so Edit, which turns exactly those four cells
+          // into inputs, needs somewhere to go. It takes the two middle columns
+          // and stacks the fields with their labels, which is a better form on
+          // a 393px screen than four 60px boxes would have been anyway. The
+          // `aria-label`s are the ones the wide row uses, so the same test and
+          // the same operator find the same four fields at either width.
+          return isEditing ? (
+            <>
+              {v3NameCell(deck)}
+              <td className={td} colSpan={2}>
+                <div className="flex flex-col gap-2">
+                  {V3_EDIT_FIELDS.map((f) => (
+                    <label key={f.name} className="flex flex-col gap-0.5">
+                      <span className="u-label">{f.label}</span>
+                      {field(f)}
+                    </label>
+                  ))}
+                </div>
+              </td>
+              {v3ActionCell(deck, true)}
+            </>
+          ) : (
+            <>
+              {v3NameCell(deck)}
+              {aiCell}
+              {statusCell}
+              {v3ActionCell(deck, true)}
+            </>
+          );
+        }
         return (
           <>
             {v3NameCell(deck)}
             {V3_EDIT_FIELDS.map(cell)}
-            <td className={td}>
-              <ScoreChip value={deck.aiScore} />
-            </td>
-            <td className={td} data-status={status}>
-              <span data-testid="v3-status" title={hint}>
-                <StatusPill tone={V3_STATUS_TONES[status]}>{SCREENING_STATUS_LABELS[status]}</StatusPill>
-              </span>
-            </td>
+            {aiCell}
+            {statusCell}
             {v3ActionCell(deck, true)}
           </>
         );
@@ -2284,9 +2393,14 @@ export function DashboardPage() {
             <td className={td}>
               <ScoreChip value={deck.aiScore} />
             </td>
-            <td className={td}>
-              <ScoreNumber value={deck.decisionScore} best={best} mediocre={mediocre} />
-            </td>
+            {/* Avg. score is the column a phone drops here — see
+                `PHONE_COLUMNS`. It is on the deck's own report, which the name
+                in the first cell opens. */}
+            {!phoneCols && (
+              <td className={td}>
+                <ScoreNumber value={deck.decisionScore} best={best} mediocre={mediocre} />
+              </td>
+            )}
             <td className={dim}>{signupCellLabel(deck, signups[deck.id])}</td>
             {/* The prototype's Shortlisted select omits `Edit`. */}
             {v3ActionCell(deck, false)}
@@ -2375,10 +2489,16 @@ export function DashboardPage() {
             <td className={td}>
               <ScoreNumber value={deck.aiScore} best={best} mediocre={mediocre} />
             </td>
-            {/* Who assigned it and by when are not on the deck view yet (§9). */}
-            <td className={dim}>—</td>
-            <td className={dim}>{shortDate(deck.assignedAt)}</td>
-            <td className={dim}>—</td>
+            {/* Who assigned it and by when are not on the deck view yet (§9) —
+                which is why a phone drops these three (see `PHONE_COLUMNS`):
+                two of them are a literal em dash on every row. */}
+            {!phoneCols && (
+              <>
+                <td className={dim}>—</td>
+                <td className={dim}>{shortDate(deck.assignedAt)}</td>
+                <td className={dim}>—</td>
+              </>
+            )}
           </>
         );
       }
@@ -2396,9 +2516,14 @@ export function DashboardPage() {
             <td className={td}>
               <ScoreNumber value={deck.decisionScore} best={best} mediocre={mediocre} />
             </td>
-            <td className={dim}>—</td>
-            <td className={dim}>{shortDate(my?.submittedAt)}</td>
-            <td className={dim}>—</td>
+            {/* Same three as `juryOpen` — see `PHONE_COLUMNS`. */}
+            {!phoneCols && (
+              <>
+                <td className={dim}>—</td>
+                <td className={dim}>{shortDate(my?.submittedAt)}</td>
+                <td className={dim}>—</td>
+              </>
+            )}
           </>
         );
       }
@@ -2743,10 +2868,18 @@ export function DashboardPage() {
             />
           </div>
         ) : (
-          <table className="w-full min-w-[48rem] text-left" data-shape={shape}>
+          /* `min-w-[48rem]` is what forces the sideways scroll — and with a
+             phone column set there is nothing left to scroll to, so the table
+             fits the pane instead. Dropped only when such a set exists: a shape
+             without one still needs its 768px, or seven columns would compress
+             into 359px. */
+          <table
+            className={`w-full text-left ${phoneCols ? "" : "min-w-[48rem]"}`}
+            data-shape={shape}
+          >
             <thead>
               <tr className="border-b border-line bg-offwhite">
-                {ALL_DECKS_COLUMNS[shape].map((h) => {
+                {columns.map((h) => {
                   // One sortable column on one shape. The Status header exists
                   // on five other shapes (`details`, `assigned`, `juryOpen`,
                   // `vcIncomplete`, `icPipeline`) and each of those cells holds

@@ -464,3 +464,57 @@
     display: none;
   }
 }
+
+/* ══ The phone tier — tap sizes ════════════════════════════════════════════
+   The prototype is a dense DESKTOP console: `.tbb` computes 26px tall and
+   `.sj-input` 27px, against the 44pt iOS minimum. Measured at 393x659 on the
+   Dashboard, the only controls a phone keeps are a 120x26 Program picker, a
+   120x26 Cohort picker, a 160x27 search box and a 96x27 tag filter — every
+   interactive thing on the screen below the stat boxes is under 28px tall.
+
+   Raised to 36px rather than 44: 36 is the largest value that leaves the
+   stacked toolbar (`.tb` wraps below 640px — see the block above) at two rows
+   on a 393px screen, and it is a floor, so anything already taller is
+   untouched. The tiles are 88px and the table rows 60-90px, so this is the
+   whole gap.
+
+   Deliberately OUTSIDE `@layer components`, like the 899px block above it: an
+   unlayered rule beats Tailwind's `@layer utilities`, and `.sj-input` call
+   sites carry explicit `h-[27px]` / `h-6` height utilities. `min-height` is a
+   different property from `height`, so the box grows and nothing is clipped —
+   which is the objection that kept this change out of the 4-Oct pass
+   (docs/plan_pilot_gcw.md §11, "the app-wide 16px input sweep").
+
+   FONT SIZE IS NOT TOUCHED HERE, and that is a deferral rather than a verdict.
+   11.5px is below the 16px threshold at which iOS Safari zooms a focused field
+   and does not zoom back, and the two login inputs were raised to 16px for
+   exactly that reason at defbc76. A blanket bump here cannot follow, because
+   `.sj-input` is also the Dashboard's row-action `<select>`, whose width is its
+   longest OPTION string ("Send to Assign — as incomplete contact details"):
+   measured, that control is 298px of a 393px screen at 11px, and raising the
+   text widens it further and pushes the phone table back off screen. The next
+   pass should raise the fields a person TYPES into and leave the selects —
+   which includes `routes/account/AccountScreens.tsx:91`, still `text-[14px]`,
+   and the registration form the live call runs on. */
+@media (max-width: 639px) {
+  .tbb {
+    min-height: 36px;
+  }
+  .sj-input {
+    min-height: 36px;
+  }
+
+  /* The Dashboard's Status cell, and only it: `td[data-status]` is written by
+     `DashboardPage.tsx`'s v3 row and occurs nowhere else.
+
+     `<StatusPill>` is `whitespace-nowrap` (components/DeckCard.tsx:98), which is
+     right everywhere it is used and costs 142px here — "Incomplete contact
+     details" on one line. With the phone column set applied the table measures
+     419px against a 359px pane, and this 60px is the whole of the remainder:
+     let the longest status break across lines and the four columns fit with
+     nothing hidden. The pill's own file belongs to another lane, so this is the
+     narrowest override that does not reach into it. */
+  td[data-status] span {
+    white-space: normal;
+  }
+}

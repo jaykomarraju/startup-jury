@@ -244,15 +244,31 @@ export async function recordSyncAttempt(
   // makes correct — neither alerts. Keyed on the log row, so every distinct
   // failure is heard once and a retry of the same call is a new attempt.
   if (status === "failed") {
-    // CROSS-SESSION: `emitNotification` lives in `src/server/email/**`, which is
-    // T1-PEOPLE's. Its recipient query is §2 B22 —
-    // `SELECT … FROM users WHERE edition = ?` — so until that session widens it,
-    // a CRM failure here still fans out to every customer's admins. The edition
-    // passed is this workspace's; the tenant it needs is `scope.tenantId`, and
-    // the signature has no parameter for one yet. Recorded in
-    // `docs/parity-requests/T1-ESIGN.md`.
+    // ── THE CROSS-SESSION NOTE THAT EXPIRED, AND WHAT REPLACED IT ─────────────
+    // This call site used to carry a note saying `emitNotification` "has no
+    // parameter for" a tenant and that until T1-PEOPLE widened its recipient query
+    // a CRM failure would fan out to every customer's admins. T1-PEOPLE landed:
+    // the recipient query is scoped, and `NotificationInput.scope` exists
+    // (`email/outbox.ts:800-808`). The note stopped being true at that merge and
+    // nothing re-read it, which is the shape `tenancy-config-scope-bridge` records
+    // — "cannot be fixed from here" is a claim about a BRANCH and expires at
+    // integration.
+    //
+    // What was left was the live half. With `scope` absent, `resolveTenant`
+    // (`email/outbox.ts:216-231`) tries the caller's scope, then the named deck,
+    // then `DEFAULT_TENANT_ID` with a warning. A CRM sync failure usually names no
+    // deck — `runPull` pulls deals and has none — so this fell through to the
+    // default: a second customer's integration breaking wrote its alert into the
+    // FIRST customer's workspace and mailed the first customer's admins about a
+    // connection they do not own, while the customer whose CRM had actually
+    // stopped syncing heard nothing.
+    //
+    // `deckId` stays below as well. It is not redundant: it is what the bell's
+    // deep link uses, and the scope is now what decides the workspace, so the
+    // second arm of `resolveTenant` is no longer load-bearing here.
     await emitNotification(env, {
       event: "crm_sync_failed",
+      scope,
       edition: scope.edition,
       title: `CRM sync failed — ${attempt.provider}`,
       body:

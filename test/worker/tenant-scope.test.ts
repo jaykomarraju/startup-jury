@@ -117,6 +117,13 @@ const MARKER = "ZZTENANTB";
 /** The second customer. Created by this file, never by a migration. */
 const TENANT_B = "t_zz_isolation";
 const TENANT_B_SLUG = "zz-isolation";
+/**
+ * Tenant A's login handle. `0083` seeded it as `default`; `0106` renames it when
+ * the pilot customer's workspace stops being a placeholder and becomes Global
+ * Carbon Warriors. Named here because the slug is what a caller supplies to
+ * disambiguate a login, so a rename is a behaviour change, not cosmetics.
+ */
+const TENANT_A_SLUG = "global-carbon-warriors";
 
 /** Tenant A is the backfilled organisation every seeded row belongs to. */
 const TENANT_A = "t_default";
@@ -363,6 +370,30 @@ const TENANT_B_FIXTURES: Readonly<Record<string, Fixture>> = {
       "INSERT INTO resubmit_tokens (id, tenant_id, deck_id, edition, token_hash, expires_at) " +
       "VALUES ('zz_tok', ?, 'zz_deck', 'incubator', ?, datetime('now', '+7 days'))",
     binds: [TENANT_B, `${MARKER}_hash`],
+  },
+  password_reset_tokens: {
+    // Added by `0106` for the forgot-password flow, and the FIRST table in this
+    // schema keyed on the tenant ALONE — it carries no `edition` column, which is
+    // the case `ScopeBuilder.onTenantOnly` was written for and which nothing had
+    // reached until now (see the note on that method in `src/shared/tenant.ts`).
+    //
+    // Hung off `zz_jury` because the row is only ever reached by user id, and the
+    // marker has to live in `token_hash`, the one free text column.
+    //
+    // THERE IS DELIBERATELY NO ROUTE PROBE, and the reason is a property of the
+    // design rather than a gap: `POST /api/auth/reset-password` takes the RAW
+    // token, which is never stored and never returned by anything, so no response
+    // in the product can carry this marker. The isolation that matters for this
+    // table is on the two statements in `src/server/routes/registration.ts` —
+    // the INSERT binds `scope.tenantId` against a column with no DEFAULT (`0106`),
+    // so a forgotten bind is loud; and the redemption at `:605` looks the token up
+    // by its globally-unique hash, which is correct because the token IS the
+    // credential, then loads the user WITHIN that token's workspace, so a row that
+    // somehow named the wrong tenant opens nothing.
+    sql:
+      "INSERT INTO password_reset_tokens (id, tenant_id, user_id, token_hash, expires_at) " +
+      "VALUES ('zz_prt', ?, 'zz_jury', ?, datetime('now', '+1 hour'))",
+    binds: [TENANT_B, `${MARKER}_reset_hash`],
   },
   email_outbox: {
     // T1-PEOPLE — `deck_id` added, and it is what makes this table PROBEABLE
@@ -1007,6 +1038,45 @@ describe("tenancy · the registry itself", () => {
       }
     }
   });
+
+  it("and the SIXTH table's two keys, which 0101's name-based assertion could not see", async () => {
+    // ── WHY THIS CASE IS SEPARATE FROM THE ONE ABOVE (L5 · 0105) ──────────────
+    // The loop above iterates five names, all `<table>__pre_tenant_key`, and that
+    // shared suffix is exactly why it is blind to this pair. `authorised_signatories`
+    // is the sixth table in `0101`'s transaction — its own header line 39 lists it
+    // among the nine upserts it widened — but its two pre-tenant uniques were created
+    // by `0035_agreements_and_signatures.sql:113-114` as `idx_auth_sig_role` and
+    // `idx_auth_sig_user`. Different names, so `0101`'s `IN (...)` list cannot
+    // mention them, and the drop reported `ok` with both still standing.
+    //
+    // `0099_tenant_index_pass.sql:116-128` added the scoped replacements beside them
+    // and said in as many words that integration would drop the old pair. `0105` is
+    // that drop; this is the structural half of its proof and the case below is the
+    // functional half.
+    for (const legacy of ["idx_auth_sig_role", "idx_auth_sig_user"]) {
+      const idx = await env.DB.prepare(
+        "SELECT count(*) n FROM sqlite_master WHERE type = 'index' AND name = ?",
+      )
+        .bind(legacy)
+        .first<{ n: number }>();
+      expect(idx!.n, `${legacy} is still there — 0105 did not apply`).toBe(0);
+    }
+
+    // And the replacements are present AND carry the tenant. Asserted here as well
+    // as in `0105` itself because this table's only uniqueness is these two indexes
+    // — `authorised_signatories` keys on `id` alone and no migration rebuilt its PK
+    // (`0086:35` added `tenant_id` as a plain column) — so a drop that outran `0099`
+    // would leave two grants where the console renders one checkbox, with no error.
+    for (const replacement of ["idx_auth_sig_role_tenant", "idx_auth_sig_user_tenant"]) {
+      const cols = (
+        await env.DB.prepare(`SELECT name FROM pragma_index_info('${replacement}')`).all<{
+          name: string;
+        }>()
+      ).results.map((r) => r.name);
+      expect(cols, `${replacement} is missing — 0099 did not apply`).not.toHaveLength(0);
+      expect(cols, `${replacement} does not carry tenant_id`).toContain("tenant_id");
+    }
+  });
 });
 
 describe("tenancy · layer 1 — the key and the scope helper", () => {
@@ -1175,7 +1245,10 @@ describe("tenancy · layer 2 — the routes", () => {
     expect(res.status).toBe(409);
     const json = await res.json<{ error: string; tenants: { slug: string }[] }>();
     expect(json.error).toBe("tenant_required");
-    expect(json.tenants.map((t) => t.slug).sort()).toEqual(["default", TENANT_B_SLUG]);
+    // `global-carbon-warriors`, not `default`: `0106` renames `t_default` when the
+    // pilot customer's workspace stops being a placeholder. The slug is the login
+    // handle, so this assertion is the one place in the suite that depends on it.
+    expect(json.tenants.map((t) => t.slug).sort()).toEqual([TENANT_A_SLUG, TENANT_B_SLUG].sort());
 
     // And naming the workspace resolves it — to THAT workspace, not the other one.
     const picked = await SELF.fetch(`${BASE}/api/auth/login`, {
@@ -1331,11 +1404,17 @@ describe("tenancy · layer 2c — the outbound fan-out, and a leak that is one b
   });
 
   it("a mail with no deck and no scope is still filed somewhere, and says so in the log", async () => {
-    // The third arm of `resolveTenant`, asserted rather than assumed: `crm_sync_failed`
-    // (`crm/provider.ts`) and `invite_accepted` (`routes/auth.ts`) have neither a
-    // scope nor a deck, so they land in `DEFAULT_TENANT_ID` with a `console.warn`.
-    // Identical to today's behaviour while one customer exists; both are named in
-    // `docs/parity-requests/T1-PEOPLE.md` as the two call sites still to thread.
+    // The third arm of `resolveTenant`, asserted rather than assumed: a caller with
+    // neither a scope nor a deck lands in `DEFAULT_TENANT_ID` with a `console.warn`.
+    //
+    // L5: the two PRODUCERS this comment used to name as living on that arm no longer
+    // do. `crm_sync_failed` (`crm/provider.ts`) now passes `scope`, and so does
+    // `credits_low` (`decks/versions.ts`) — both were holding a whole `TenantScope`
+    // and passing only its `edition`, and `test/worker/l5-hardening.test.ts` §C is the
+    // measurement. `invite_accepted` (`routes/auth.ts:192`) is the one that remains,
+    // and it belongs to the registration lane. The arm itself stays, and stays tested:
+    // `sendEmail` is a public helper and the fallback is what keeps a forgotten scope
+    // auditable rather than lost.
     const sent = await sendEmail(env as unknown as Env, {
       kind: "founder_query",
       toEmail: "no.deck.no.scope@example.test",
@@ -2027,6 +2106,88 @@ describe("tenancy · layer 3 — the writes, where the failure is silent", () =>
     }
   });
 
+  it("tenant B grants signing authority to a role tenant A already granted (authorised_signatories · L5 · 0105)", async () => {
+    // ── THE ARM THE SUITE HAS BEEN BLIND TO SINCE T0 ──────────────────────────
+    // `TENANT_B_FIXTURES.authorised_signatories` above seeds the USER arm
+    // (`user_id = 'zz_admin'`, `role` NULL), and `idx_auth_sig_user ON (edition,
+    // user_id)` collides only when two customers name the same `users.id`. Ids are
+    // UUIDs, so it never collides, so the fixture inserted cleanly and the whole
+    // table read as isolated. Meanwhile `idx_auth_sig_role ON (edition, role)` — the
+    // SAME omission, on the other arm — collides by definition, because role names
+    // are a closed vocabulary: `0035:211-216` seeds every incubator role for
+    // `t_default`, so the second customer to grant one hits a tuple tenant A holds.
+    //
+    // Measured before `0105`: `PUT /api/esign/signatories` as tenant B's admin →
+    // **HTTP 500**, `UNIQUE constraint failed: authorised_signatories.edition,
+    // authorised_signatories.role`, from `esign/store.ts:503`'s upsert. Not a leak —
+    // the upsert names the WIDENED key, which the legacy index does not match, so it
+    // refuses rather than resolving to tenant A's row. The admin console's Sign-up
+    // section simply does not work for a second customer, and a founder's agreement
+    // cannot be counter-signed without a signatory pool.
+    //
+    // `superuser` is the role chosen deliberately: `0035:211` holds
+    // `('as_inc_role_superuser', 'incubator', 'superuser', NULL, 1)` for tenant A
+    // with `enabled = 1`, and this writes `false`. So if the upsert ever DID resolve
+    // across the tenant boundary — the silent shape `0101`'s header warns about —
+    // tenant A's superuser would lose signing authority and nothing would say so.
+    // That is the assertion this case leads with.
+    const roleGrantOf = async (tenant: string) =>
+      (
+        await env.DB.prepare(
+          "SELECT enabled FROM authorised_signatories WHERE tenant_id = ? AND edition = 'incubator' " +
+            "AND role = 'superuser'",
+        )
+          .bind(tenant)
+          .first<{ enabled: number }>()
+      )?.enabled ?? null;
+
+    const before = await roleGrantOf(TENANT_A);
+    expect(
+      before,
+      "tenant A has no incubator superuser role grant, so this case proves nothing — " +
+        "0035:211-216 should have seeded one",
+    ).toBe(1);
+
+    const cookie = await login(`zz.admin@${MARKER.toLowerCase()}.test`);
+    expect(cookie).toBeTruthy();
+    const res = await SELF.fetch(`${BASE}/api/esign/signatories`, {
+      method: "PUT",
+      headers: { cookie: cookie!, "content-type": "application/json" },
+      body: JSON.stringify({ roles: { superuser: false } }),
+    });
+
+    expect(
+      await roleGrantOf(TENANT_A),
+      "tenant B's PUT /api/esign/signatories revoked tenant A's superuser signing authority — " +
+        "the upsert resolved on an index without tenant_id",
+    ).toBe(before);
+
+    // And the write SUCCEEDED, which is the half `0105` is for. A 500 here is the
+    // legacy index refusing: the migration did not apply.
+    expect(
+      res.status,
+      "PUT /api/esign/signatories 500s for a second customer — 0105 did not drop " +
+        "idx_auth_sig_role, so the (edition, role) tuple is still global",
+    ).toBe(200);
+    expect(
+      await roleGrantOf(TENANT_B),
+      "the request succeeded but tenant B has no superuser grant of their own",
+    ).toBe(0);
+
+    // The ids are distinct too, and that matters independently of the index: `id` is
+    // this table's PRIMARY KEY and `esign/store.ts:507` builds it as
+    // `as_<tenant>_<edition>_role_<role>`. Rows seeded before tenancy keep their
+    // shorter ids, so tenant A's is still `as_inc_role_superuser`.
+    const ids = (
+      await env.DB.prepare(
+        "SELECT tenant_id, id FROM authorised_signatories WHERE edition = 'incubator' " +
+          "AND role = 'superuser' ORDER BY tenant_id",
+      ).all<{ tenant_id: string; id: string }>()
+    ).results;
+    expect(ids.map((r) => r.tenant_id).sort()).toEqual([TENANT_B, TENANT_A].sort());
+    expect(new Set(ids.map((r) => r.id)).size, "two workspaces, one primary key").toBe(2);
+  });
+
   it("an audit row written as tenant B is filed against tenant B (T1-REPORTS)", async () => {
     // `recordAudit` named no `tenant_id`, so the column's `DEFAULT 't_default'`
     // filed EVERY audit row in the product against the first customer. On a trail
@@ -2076,13 +2237,31 @@ describe("tenancy · layer 3 — the writes, where the failure is silent", () =>
   });
 
   it("the migration chain's own integrity assertions all passed", async () => {
-    // `0088` and `0100` write their verdicts here; the CHECK on the column means a
-    // failing one could never have been committed. Reading them back proves the
-    // chain actually ran the assertions rather than skipping them.
+    // `0088`, `0100`, `0101` and `0105` write their verdicts here; the CHECK on the
+    // column means a failing one could never have been committed. Reading them back
+    // proves the chain actually ran the assertions rather than skipping them.
     const { results } = await env.DB.prepare(
       "SELECT id, verdict FROM _tenancy_assert ORDER BY id",
     ).all<{ id: string; verdict: string }>();
     expect(results.length).toBeGreaterThanOrEqual(12);
     for (const row of results) expect(row.verdict, row.id).toBe("ok");
+
+    // ── AND NAMED, NOT JUST COUNTED (L5) ──────────────────────────────────────
+    // A `>= 12` over "all rows are ok" is satisfied by a migration that never ran:
+    // an assertion that writes nothing is indistinguishable from one that passed.
+    // `0105`'s four are therefore pinned by id. The loop above already proves the
+    // verdicts; this proves the statements EXECUTED, which is the half that matters
+    // on an instance where a file was skipped — the drift this deployment has hit
+    // every wave. Earlier assertions are left counted rather than listed because
+    // their files predate this case; a new one should be added here.
+    const ids = new Set(results.map((r) => r.id));
+    for (const id of [
+      "0105.tenant_scoped_signatory_keys_present_before_drop",
+      "0105.replacement_keys_are_tenant_scoped",
+      "0105.legacy_signatory_keys_dropped",
+      "0105.no_duplicate_signatory_grants_within_a_workspace",
+    ]) {
+      expect(ids.has(id), `${id} never ran — 0105 is not in the applied chain`).toBe(true);
+    }
   });
 });

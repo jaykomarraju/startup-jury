@@ -6,17 +6,24 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
-import { Building2, CheckCircle2, Crown, Plus, ShieldAlert, TrendingUp } from "lucide-react";
+import {
+  Building2,
+  CalendarClock,
+  CheckCircle2,
+  Crown,
+  Plus,
+  ShieldAlert,
+  TrendingUp,
+  UserPlus,
+} from "lucide-react";
 import { Card, Button, Badge, EmptyState } from "../../components";
 import { useAuth } from "../../auth/useAuth";
 import {
-  listUsers,
   createUser,
   updateUser,
   getConfigSummary,
   ApiError,
   type InviteResult,
-  type UserView,
 } from "../../api";
 import {
   getPermissionGrid,
@@ -24,7 +31,12 @@ import {
   deleteUser,
   resendInvite,
   transferOwnership,
+  listRoster,
+  listPendingRegistrations,
+  approveRegistration,
+  declineRegistration,
   type PermissionGrid,
+  type RosterUser,
 } from "./teamApi";
 import { creatableStaffRoles, roleLabel, type Edition, type Role } from "../../../shared/roles";
 import { PERMISSION_TASKS, PERMISSION_TASK_GROUPS } from "../../../shared/types";
@@ -170,12 +182,16 @@ export function TeamRolesSection() {
   const edition = (user?.edition ?? "incubator") as Edition;
   const workspace = WORKSPACE_LABEL[edition];
 
-  const [rows, setRows] = useState<UserView[] | null>(null);
+  const [rows, setRows] = useState<RosterUser[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [plan, setPlan] = useState<Plan | null>(null);
+  /** Bumped whenever a decision is taken, so the queue re-reads itself without
+   *  the roster and the queue having to share one fetch (they have different
+   *  predicates server-side and must not be derived from each other). */
+  const [queueNonce, setQueueNonce] = useState(0);
 
   const load = useCallback(() => {
-    return listUsers()
+    return listRoster()
       .then((r) => setRows(r.users))
       .catch(() => setLoadError(true));
   }, []);
@@ -206,6 +222,18 @@ export function TeamRolesSection() {
         </p>
       </div>
 
+      {/* L4 — first on the screen, because somebody is waiting. It renders
+          nothing at all when the queue is empty, so the screen an administrator
+          already knows is unchanged until there is a decision to take. */}
+      <PendingRegistrationsCard
+        edition={edition}
+        nonce={queueNonce}
+        onDecided={async () => {
+          setQueueNonce((n) => n + 1);
+          await load();
+        }}
+      />
+
       <WorkspaceTypeCard edition={edition} />
 
       <AccountOwnerCard rows={rows} selfId={user?.id} selfRole={user?.role} />
@@ -223,6 +251,228 @@ export function TeamRolesSection() {
 
       <PermissionCards workspace={workspace} selfRole={user?.role} />
     </div>
+  );
+}
+
+// ── 0. Pending registrations — the approval queue (L4) ───────────────────────
+
+/**
+ * Self-registrations waiting for a decision.
+ *
+ * Lane L2's registration resolves the workspace from the email DOMAIN and lands
+ * the person `active = 0, approval_state = 'pending', role = 'jury'` — never the
+ * role they asked for. This card is the other half: an administrator sees who is
+ * waiting, chooses the role they will actually hold, and admits or refuses them.
+ * With no email verification anywhere in the product, the approval is the
+ * load-bearing half of the gate (pilot plan §6), which is why it is the first
+ * thing on this screen rather than a tab.
+ *
+ * ── BUILT AS CARDS, NOT A TABLE, AND THAT IS NOT A STYLE CHOICE ─────────────
+ *
+ * Every row carries a decision with a role attached, so the smallest unit is
+ * "person + role select + two buttons" — four controls. In a table those become
+ * four things crushed into one 320px-wide cell on a phone; stacked blocks reflow.
+ * The administrator who will drive this is non-technical and may well be on a
+ * phone, so each control is its own full-width line below `sm:` with a 40px
+ * minimum tap height, and nothing here is revealed by hover.
+ *
+ * ── WHY IT FETCHES SEPARATELY FROM THE ROSTER ───────────────────────────────
+ *
+ * `GET /api/users` and `GET /api/users?approval=pending` are two different
+ * predicates on the server, and the roster deliberately no longer contains
+ * pending rows (see the route). Deriving this list by filtering the roster would
+ * therefore always be empty, which is the kind of mistake that looks like
+ * "nobody has registered yet".
+ *
+ * A payload with no `users` array is treated as an empty queue rather than an
+ * error: this card is an addition to a screen whose other five sections must
+ * keep rendering, exactly as `SeatsCard` treats an unrecognised `/api/seats`.
+ */
+function PendingRegistrationsCard({
+  edition,
+  nonce,
+  onDecided,
+}: {
+  edition: Edition;
+  nonce: number;
+  onDecided: () => Promise<void>;
+}) {
+  const [queue, setQueue] = useState<RosterUser[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    listPendingRegistrations()
+      .then((r) => {
+        if (live) setQueue(Array.isArray(r?.users) ? r.users : []);
+      })
+      .catch(() => {
+        /* An administrator whose queue could not be read still needs the roster,
+           the owner card and the permission grid below. */
+      });
+    return () => {
+      live = false;
+    };
+  }, [nonce]);
+
+  if (queue.length === 0) return null;
+
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center gap-2">
+        <UserPlus className="h-4 w-4 shrink-0 text-olive" />
+        <div className="u-label">Waiting for approval</div>
+        <Badge tone="danger">{queue.length}</Badge>
+      </div>
+      <p className="mt-1 max-w-3xl text-[13px] text-fg-muted">
+        These people registered with an email address at your organisation's domain. They cannot
+        sign in until you approve them, and the role you choose here is the one they get — they never
+        ask for it.
+      </p>
+
+      {error && (
+        <div
+          className="mt-3 rounded-lg border border-red/40 bg-red-lt px-3 py-2 text-item text-red"
+          role="alert"
+        >
+          {error}
+        </div>
+      )}
+
+      <ul className="mt-3 flex flex-col gap-2.5" data-testid="pending-registrations">
+        {queue.map((u) => (
+          <PendingRegistrationRow
+            key={u.id}
+            edition={edition}
+            registrant={u}
+            onError={setError}
+            onDecided={onDecided}
+          />
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+/** One applicant: who they are, when they asked, the role they will hold, and the
+ *  two decisions. The role select defaults to the LEAST privileged creatable role
+ *  for the edition, so a mis-tap admits a jury member and not an administrator. */
+function PendingRegistrationRow({
+  edition,
+  registrant,
+  onError,
+  onDecided,
+}: {
+  edition: Edition;
+  registrant: RosterUser;
+  onError: (message: string | null) => void;
+  onDecided: () => Promise<void>;
+}) {
+  const roleOptions = useMemo(() => creatableStaffRoles(edition), [edition]);
+  const [role, setRole] = useState<Role>(roleOptions[roleOptions.length - 1]);
+  const [title, setTitle] = useState(registrant.title ?? "");
+  const [busy, setBusy] = useState<"approve" | "decline" | null>(null);
+  const [confirmingDecline, setConfirmingDecline] = useState(false);
+
+  async function run(kind: "approve" | "decline", call: () => Promise<unknown>) {
+    setBusy(kind);
+    onError(null);
+    try {
+      await call();
+      await onDecided();
+    } catch (err) {
+      onError(refusalMessage(err));
+      setBusy(null);
+      setConfirmingDecline(false);
+    }
+  }
+
+  return (
+    <li className="rounded-[10px] border border-line bg-surface-2 p-3">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span className="font-medium text-fg">{registrant.name}</span>
+        <span className="truncate text-xs text-fg-muted">{registrant.email}</span>
+      </div>
+
+      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end">
+        <label className="flex min-w-[11rem] flex-col gap-1 sm:flex-1">
+          <span className="text-meta font-medium text-fg-muted">Role to grant</span>
+          <select
+            className="sj-input h-10"
+            value={role}
+            onChange={(e) => setRole(e.target.value as Role)}
+            aria-label={`Role to grant ${registrant.name}`}
+          >
+            {roleOptions.map((r) => (
+              <option key={r} value={r}>
+                {roleLabel(edition, r)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex min-w-[11rem] flex-col gap-1 sm:flex-1">
+          <span className="text-meta font-medium text-fg-muted">
+            {designationLabel(edition)} <span className="font-normal">(optional)</span>
+          </span>
+          <input
+            className="sj-input h-10"
+            maxLength={60}
+            value={title}
+            placeholder={designationPlaceholder(edition)}
+            onChange={(e) => setTitle(e.target.value)}
+            aria-label={`${designationLabel(edition)} for ${registrant.name}`}
+          />
+        </label>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="primary"
+            className="min-h-10 flex-1 px-4"
+            disabled={busy !== null}
+            onClick={() =>
+              run("approve", () => approveRegistration(registrant.id, role, title.trim() || undefined))
+            }
+          >
+            {busy === "approve" ? "Approving…" : `Approve as ${roleLabel(edition, role)}`}
+          </Button>
+          {confirmingDecline ? (
+            <>
+              <Button
+                variant="secondary"
+                className="min-h-10 px-4"
+                disabled={busy !== null}
+                onClick={() => run("decline", () => declineRegistration(registrant.id))}
+              >
+                {busy === "decline" ? "Declining…" : "Yes, decline"}
+              </Button>
+              <Button
+                variant="ghost"
+                className="min-h-10 px-4"
+                disabled={busy !== null}
+                onClick={() => setConfirmingDecline(false)}
+              >
+                Keep waiting
+              </Button>
+            </>
+          ) : (
+            <Button
+              variant="ghost"
+              className="min-h-10 px-4"
+              disabled={busy !== null}
+              onClick={() => setConfirmingDecline(true)}
+            >
+              Decline
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {confirmingDecline && (
+        <p className="mt-2 text-xs text-fg-muted">
+          Declining keeps the record and keeps {registrant.email} reserved, so they cannot register
+          again with it. Remove them from Active members to free the address.
+        </p>
+      )}
+    </li>
   );
 }
 
@@ -417,7 +667,7 @@ function AccountOwnerCard({
   selfId,
   selfRole,
 }: {
-  rows: UserView[] | null;
+  rows: RosterUser[] | null;
   selfId: string | undefined;
   selfRole: string | undefined;
 }) {
@@ -533,7 +783,7 @@ function AccountOwnerCard({
 
 interface MembersCardProps {
   edition: Edition;
-  rows: UserView[] | null;
+  rows: RosterUser[] | null;
   loadError: boolean;
   plan: Plan | null;
   reload: () => Promise<unknown>;
@@ -578,6 +828,15 @@ function MembersCard({ edition, rows, loadError, plan, reload, selfId }: Members
   const activeCount = rows
     ? rows.filter((u) => u.active && u.invitePending !== true).length
     : null;
+
+  /** id → display name, so a row carrying only `outOfOffice.delegateId` can name
+   *  the person covering without a second request. A delegate is always an active
+   *  member of the same workspace (the API refuses anything else), so the name is
+   *  always in this same list. */
+  const nameById = useMemo(
+    () => new Map((rows ?? []).map((u) => [u.id, u.name])),
+    [rows],
+  );
 
   async function act(id: string, run: () => Promise<unknown>) {
     setRowBusy(id);
@@ -679,6 +938,11 @@ function MembersCard({ edition, rows, loadError, plan, reload, selfId }: Members
                     plan={plan}
                     busy={rowBusy !== null}
                     manageable={u.id !== selfId && u.role !== "superuser"}
+                    delegateName={
+                      u.outOfOffice?.delegateId
+                        ? nameById.get(u.outOfOffice.delegateId) ?? null
+                        : null
+                    }
                     onEdit={() => {
                       setEditing(u.id);
                       setInviting(false);
@@ -713,13 +977,18 @@ function MemberRow({
   plan,
   busy,
   manageable,
+  delegateName,
   onEdit,
   onToggleActive,
   onRemove,
   onResend,
 }: {
-  member: UserView;
+  member: RosterUser;
   plan: Plan | null;
+  /** The display name of whoever is covering for this member, resolved from the
+   *  roster itself — the row carries only the delegate's id, and every candidate
+   *  is by definition another row in the same list, so this costs no request. */
+  delegateName: string | null;
   busy: boolean;
   manageable: boolean;
   onEdit: () => void;
@@ -728,6 +997,21 @@ function MemberRow({
   onResend: () => void;
 }) {
   const pending = member.invitePending === true;
+  /**
+   * L4 — an approved SELF-REGISTRANT has `invitePending` true (they have never
+   * signed in, which is all `invite_accepted_at IS NULL` means) and yet no invite
+   * was ever sent to them: they chose their own password at registration.
+   * Offering **Resend** on that row would overwrite that password with a generated
+   * one, which is the opposite of what the button reads as — so they get the
+   * honest label and Edit / Remove instead.
+   *
+   * `selfRegistered` is the SERVER's answer and is read as a strict `true`, never
+   * inferred from `inviteSentAt` being absent: an optional field is also absent on
+   * a payload that predates it, and "absent" has to mean the behaviour that
+   * already shipped.
+   */
+  const neverInvited = pending && member.selfRegistered === true;
+  const out = member.outOfOffice ?? null;
   return (
     <tr
       className={`border-t border-line ${pending ? "bg-red-lt" : ""}`}
@@ -761,13 +1045,31 @@ function MemberRow({
         )}
       </td>
       <td className="px-4 py-3">
-        {pending ? (
-          <Badge tone="danger">Invite pending</Badge>
-        ) : member.active ? (
-          <Badge tone="positive">Active</Badge>
-        ) : (
-          <Badge tone="neutral">Inactive</Badge>
-        )}
+        <div className="flex flex-col items-start gap-1">
+          {neverInvited ? (
+            <Badge tone="amber">Awaiting first sign-in</Badge>
+          ) : pending ? (
+            <Badge tone="danger">Invite pending</Badge>
+          ) : member.active ? (
+            <Badge tone="positive">Active</Badge>
+          ) : (
+            <Badge tone="neutral">Inactive</Badge>
+          )}
+          {/* L4 — "someone is out, and until when", on the row that already says
+              who they are. `active` is resolved by the server against today, so a
+              window set for next month shows as scheduled rather than as cover
+              that is already running. */}
+          {out && (
+            <span
+              className="inline-flex items-center gap-1 text-meta text-fg-muted"
+              data-testid={`out-of-office-${member.id}`}
+            >
+              <CalendarClock className="h-3 w-3 shrink-0 text-gold-dk" />
+              {out.active ? `Out until ${out.to}` : `Out ${out.from} → ${out.to}`}
+              {delegateName && ` · ${delegateName} covering`}
+            </span>
+          )}
+        </div>
       </td>
       <td className="px-4 py-3">
         <div className="flex flex-wrap justify-end gap-1.5">
@@ -775,6 +1077,21 @@ function MemberRow({
             <span className="text-xs text-fg-muted">
               {member.role === "superuser" ? "Account owner" : "You"}
             </span>
+          ) : neverInvited ? (
+            <>
+              <Button size="sm" variant="secondary" disabled={busy} onClick={onEdit}>
+                Edit
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={busy}
+                onClick={onRemove}
+                aria-label={`Remove ${member.name}`}
+              >
+                Remove
+              </Button>
+            </>
           ) : pending ? (
             <>
               <Button size="sm" variant="secondary" disabled={busy} onClick={onResend}>
@@ -818,7 +1135,7 @@ function EditRow({
   onSaved,
 }: {
   edition: Edition;
-  member: UserView;
+  member: RosterUser;
   onCancel: () => void;
   onSaved: () => Promise<void>;
 }) {
@@ -1572,10 +1889,19 @@ function refusalMessage(err: unknown): string {
       return "This is the last person who can open the admin console — give someone else access first.";
     case "invite_already_accepted":
       return "That member has already signed in, so there's no invite to resend.";
+    case "no_invite_to_resend":
+      return "That person registered themselves and already has a password of their own — there is no invite to resend. Reset it from User access if they have lost it.";
     case "email_taken":
       return "That email already has an account.";
     case "forbidden":
       return "Your role doesn't have permission to do that.";
+    // ── L4: the approval queue's own refusals ──────────────────────────────
+    case "not_pending":
+      return "That registration has already been decided — someone else may have just approved or declined it.";
+    case "invalid_role":
+      return "That isn't a role you can grant here.";
+    case "invalid_approval_state":
+      return "Couldn't read the approval queue. Reload the page.";
     default:
       return "That didn't go through. Try again.";
   }

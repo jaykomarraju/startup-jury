@@ -29,13 +29,34 @@
 // credential would silently strand the new account, so the response still
 // carries the password and the console tells the admin to relay it. Setting
 // `vars.EMAIL_FROM` flips the whole thing over with no further code change.
+//
+// ── L4, GCW pilot wave ──────────────────────────────────────────────────────
+// Three things join this file, all of them for the live call on which GCW's own
+// administrator configures their workspace:
+//
+//   · **the approval queue.** Lane L2's registration lands a stranger as
+//     `active = 0, approval_state = 'pending', role = 'jury'`. `?approval=pending`
+//     lists them, `POST /:id/approve` admits one with the role the ADMINISTRATOR
+//     chooses, `POST /:id/decline` refuses one and keeps the row. The default
+//     roster EXCLUDES pending rows — see `GET /` for why that is a correctness
+//     matter and not tidiness.
+//   · **`GET /me/account`**, the one read the account surface needs about the
+//     caller's own row: the credential state the client's cached principal
+//     cannot carry, and the out-of-office window.
+//   · **out of office with delegation** (`migrations/0107`), whose whole
+//     authorisation story is one UNION arm in `src/shared/outOfOffice.ts`.
+//
+// **`approval_state` is lane L2's column** (`migrations/0106`). It is read by
+// `ROSTER_COLUMNS` below, so this file does not work without it: applying L4
+// without L2 makes every admin-console roster read a 500. Said again at the
+// column list, because that is where someone will be looking.
 
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { getCookie, deleteCookie } from "hono/cookie";
 import type { AppEnv, Env } from "../types";
 import type { Edition, Role } from "../../shared/roles";
-import { creatableStaffRoles, roleLabel } from "../../shared/roles";
+import { creatableStaffRoles, isMentor, roleLabel } from "../../shared/roles";
 import { PERMISSION_ROLES } from "../../shared/types";
 import { can } from "../../shared/permissions";
 import { loadWorkspaceOverrides } from "../auth/permissions";
@@ -67,6 +88,21 @@ import {
   type SentEmail,
 } from "../email/outbox";
 import { orgNameInScope } from "../resubmit";
+// L4 — out of office. The validators and the "is this person out today?"
+// comparison are shared with the client so the badge the console draws and the
+// rows a delegate receives agree on the same day.
+import {
+  isOutOn,
+  todayIso,
+  validateWindow,
+  MAX_OOO_DAYS,
+  type OutOfOfficeWindow,
+} from "../../shared/outOfOffice";
+// The one definition of "who may score this deck" — `decks.assigned_to` UNION
+// `deck_assignments`, and (once integration lands the arm `outOfOffice.ts`
+// supplies) a live delegate. IMPORTED, never restated: the coverage read below
+// must mean exactly what the scoring gate means.
+import { ASSIGNEE_PAIRS_SQL } from "../decks/assignments";
 
 const users = new Hono<AppEnv>();
 users.use("*", requireAuth);
@@ -86,13 +122,25 @@ interface UserRosterRow {
   invite_sent_at?: string | null;
   invite_accepted_at?: string | null;
   must_change_password?: number | null;
+  // L4 — the registration gate (0106, lane L2) and the absence (0107, here).
+  approval_state?: string | null;
+  out_of_office_from?: string | null;
+  out_of_office_to?: string | null;
+  out_of_office_delegate?: string | null;
 }
 
 /** Every column the roster and the two console sections read. One place, so a
- *  new column cannot be added to one query and forgotten in the other three. */
+ *  new column cannot be added to one query and forgotten in the other three.
+ *
+ *  `approval_state` is **lane L2's column** (`migrations/0106`). This list is
+ *  the hard dependency between the two lanes: without that migration every
+ *  statement below is `no such column: approval_state` and the whole admin
+ *  console 500s. The three `out_of_office_*` columns are `migrations/0107`,
+ *  which ships in this patch. */
 const ROSTER_COLUMNS =
   "id, name, email, role, initials, active, user_type, created_at, title, " +
-  "invite_sent_at, invite_accepted_at, must_change_password";
+  "invite_sent_at, invite_accepted_at, must_change_password, approval_state, " +
+  "out_of_office_from, out_of_office_to, out_of_office_delegate";
 
 async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
   return (await c.req.json().catch(() => ({}))) as Partial<T>;
@@ -193,6 +241,23 @@ function displayRole(edition: Edition, role: string, userType: string): string {
   return roleLabel(edition, role as Role);
 }
 
+/** The three columns as the one object every reader of an absence takes, or null
+ *  when the person is not out. A half-set window (a `from` with no `to`) is NOT
+ *  an absence: `0107` leaves all three nullable, so "partly filled in" has to
+ *  resolve to something, and the only safe answer is "not out" — the other one
+ *  would hand somebody's decks away on the strength of half a form. */
+function toOutOfOffice(r: UserRosterRow): (OutOfOfficeWindow & { active: boolean }) | null {
+  const from = r.out_of_office_from ?? null;
+  const to = r.out_of_office_to ?? null;
+  if (!from || !to) return null;
+  return {
+    from,
+    to,
+    delegateId: r.out_of_office_delegate ?? null,
+    active: isOutOn({ from, to }, todayIso()),
+  };
+}
+
 function toUserView(edition: Edition, r: UserRosterRow) {
   return {
     id: r.id,
@@ -215,6 +280,24 @@ function toUserView(edition: Edition, r: UserRosterRow) {
     // W4-A — F0075. True while the credential in play is one the SYSTEM issued
     // (create / resend / admin reset) and the user has not replaced it.
     mustChangePassword: (r.must_change_password ?? 0) === 1,
+    // L4 — 'pending' | 'approved' | 'declined' (0106). Surfaced on every roster
+    // row and not only on the queue, so a screen can tell an applicant from a
+    // deactivated colleague without a second request.
+    approvalState: r.approval_state ?? "approved",
+    // L4 — this person was never invited: no credential was ever issued TO them
+    // and they have never signed in, which is the shape of an approved
+    // SELF-REGISTRANT. They already hold a password of their own, chosen on the
+    // registration form, so `invitePending` is true of them and means something
+    // completely different — "has not signed in yet" rather than "has not
+    // collected a credential we issued". Every screen that offers **Resend** on a
+    // pending row has to tell the two apart, because a resend would REPLACE the
+    // password they chose. Derived here rather than asked of two fields at each
+    // call site; `POST /:id/resend-invite` refuses the same case server-side,
+    // because a screen is a gate and never the enforcement.
+    selfRegistered: (r.invite_sent_at ?? null) === null && (r.invite_accepted_at ?? null) === null,
+    // L4 — the absence, with `active` already resolved against today so no
+    // reader has to re-derive it from two date strings.
+    outOfOffice: toOutOfOffice(r),
   };
 }
 
@@ -231,23 +314,63 @@ function normaliseTitle(value: unknown): string | null | undefined {
 
 /**
  * GET /api/users — the edition's LIVE roster (Super User / Admin).
+ * GET /api/users?approval=pending — the registrations waiting for a decision.
  *
  * `deleted_at IS NULL` is the whole of what "removed" means here: the row stays
  * for the decks, evaluations and audit rows that reference it (0044), and every
  * read of the roster, the User access section and the rail's pending badge goes
  * through this one route, so there is a single place that decides it.
+ *
+ * ── L4: WHY THE QUEUE IS A FILTER ON THIS ROUTE AND NOT ITS OWN ─────────────
+ *
+ * The brief leaves the choice open. A `GET /api/users/pending` would have had to
+ * restate the workspace predicate, the `deleted_at` rule and the whole of
+ * `toUserView` — four copies of the sentence "what a user looks like to a
+ * screen", which `ROSTER_COLUMNS`'s own comment exists to prevent. One route, one
+ * predicate, one view mapper; the parameter chooses which side of the approval
+ * gate is being read.
+ *
+ * ── AND WHY THE DEFAULT ROSTER NOW EXCLUDES PENDING ROWS ────────────────────
+ *
+ * This is a correctness matter, not presentation. A registrant lands
+ * `active = 0, approval_state = 'pending'` with `invite_accepted_at` NULL, so
+ * before this filter they appeared in Team & roles as an ordinary pending-invite
+ * row — carrying **Resend** (which would overwrite the password they chose at
+ * registration) and **Activate** (which would switch them on while leaving
+ * `approval_state = 'pending'`, the exact half-approved state `POST /:id/approve`
+ * exists to make impossible). An applicant is not a member yet, and the roster is
+ * the list of members. `declined` rows stay out of the default roster for the
+ * same reason and remain readable with `?approval=declined`, which is what "left
+ * for the record" has to mean to be worth anything.
+ *
+ * An unrecognised `approval` value is a 400 rather than a silent full roster: a
+ * typo in a query string must not quietly return a superset of what was asked
+ * for.
  */
+const APPROVAL_STATES = ["pending", "approved", "declined"] as const;
+
 users.get("/", requireTask("adminconsole", "admin"), async (c) => {
   const edition = c.var.user.edition;
+  const approval = c.req.query("approval");
+  if (approval !== undefined && !(APPROVAL_STATES as readonly string[]).includes(approval)) {
+    return c.json({ error: "invalid_approval_state" }, 400);
+  }
+
   // §2 B6, and the measurement the whole wave exists for: a second accelerator
   // added to a local copy — brand-new account, zero decks — signed in and read 8
   // staff rows belonging to the first, with names, addresses, roles and invite
   // state, because `edition` has two values and every customer shares one of them.
   const q = scoped(scopeOf(c.var.user)).on("u").andRaw("u.deleted_at IS NULL");
+  if (approval === undefined) q.and("u.approval_state = ?", "approved");
+  else q.and("u.approval_state = ?", approval);
+
+  // A queue is read oldest-first — the person who has been waiting longest is the
+  // one the administrator should act on — while the roster keeps the ordering
+  // every existing screen was built against.
+  const order =
+    approval === undefined ? "ORDER BY u.active DESC, u.name" : "ORDER BY u.created_at, u.name";
   const rows = (
-    await c.env.DB.prepare(
-      `SELECT ${ROSTER_COLUMNS} FROM users u ${q.whereClause()} ORDER BY u.active DESC, u.name`,
-    )
+    await c.env.DB.prepare(`SELECT ${ROSTER_COLUMNS} FROM users u ${q.whereClause()} ${order}`)
       .bind(...q.binds)
       .all<UserRosterRow>()
   ).results;
@@ -403,6 +526,11 @@ users.post("/", requireTask("addmembers", "admin"), async (c) => {
       invite_sent_at: new Date().toISOString(),
       invite_accepted_at: null,
       must_change_password: 1,
+      // L4 — an administrator typing somebody's address into Invite member IS the
+      // approval; there is nothing left to decide. The column's own default says
+      // the same thing, and this literal has to agree with the row that was just
+      // written or the response would show a member the roster then hides.
+      approval_state: "approved",
     }),
   });
 });
@@ -492,6 +620,163 @@ users.patch("/:id", requireTask("adminconsole", "admin"), async (c) => {
   });
 });
 
+// ── The approval queue (L4, GCW pilot) ───────────────────────────────────────
+
+/**
+ * The registration this administrator is deciding on, or the refusal.
+ *
+ * Both verbs need the same four checks and getting one of them wrong on one of
+ * the two routes is the whole risk, so they are written once. `loadTarget` is not
+ * reused: it refuses nothing about approval state, and both verbs must refuse a
+ * row that is not actually waiting — otherwise `approve` becomes an unaudited
+ * second way to re-role a serving colleague, which is what `PATCH /:id`'s
+ * `immutable_superuser` / `cannot_edit_self` guards exist to prevent.
+ */
+async function loadPendingRegistration(
+  c: Context<AppEnv>,
+  id: string,
+): Promise<{ row: UserRosterRow } | { error: string; status: 404 | 409 }> {
+  // Scoped, so another customer's applicant is a 404 and the route never confirms
+  // that the id names anybody. The lane brief calls an approval that matched
+  // another customer's row the worst bug in this wave, and this is the one place
+  // either verb reaches a row.
+  const q = scoped(scopeOf(c.var.user)).on("u").and("u.id = ?", id).andRaw("u.deleted_at IS NULL");
+  const row = await c.env.DB.prepare(`SELECT ${ROSTER_COLUMNS} FROM users u ${q.whereClause()}`)
+    .bind(...q.binds)
+    .first<UserRosterRow>();
+  if (!row) return { error: "not_found", status: 404 };
+  if ((row.approval_state ?? "approved") !== "pending") {
+    // 409, not 403: the request is permitted, the row is simply in the wrong
+    // state — most often because a colleague decided it first on a shared screen.
+    return { error: "not_pending", status: 409 };
+  }
+  return { row };
+}
+
+/**
+ * POST /api/users/:id/approve — admit a self-registered person, with the role the
+ * ADMINISTRATOR chooses.
+ *
+ * Body: `{ role, title? }`. Lane L2 lands every registrant as `jury` — the lowest
+ * role that can sign in and still see a sensible screen — and never takes the role
+ * from the request body. This is where the real role is decided, by a person, and
+ * `isCreatableStaffRole` is the same validator `POST /api/users` uses, so
+ * `superuser` and `founder` are refused here exactly as they are there. §7 Q4 of
+ * the pilot plan is the reason that matters: a self-registered **program
+ * associate** reads every startup's name, sector, city, founder name, founder
+ * email and AI score, because `decks.ts:558` scopes to own-decks for `jury` alone.
+ *
+ * Gated on `addmembers`, not `adminconsole`: approving a registration admits a
+ * person to the workspace and picks their authority, which is the same act as
+ * `POST /api/users` and `POST /:id/resend-invite`, both of which are on that cell.
+ * An organisation that closes `addmembers` for `admin` closes this with it, which
+ * is the answer it asked for.
+ *
+ * `must_change_password` is deliberately NOT set. A registrant chose their own
+ * password at registration; marking it "temporary — not yet changed" would be
+ * false, and would make User access tell the administrator to reset a credential
+ * that is already the user's own.
+ */
+users.post("/:id/approve", requireTask("addmembers", "admin"), async (c) => {
+  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
+  const id = c.req.param("id");
+  const loaded = await loadPendingRegistration(c, id);
+  if ("error" in loaded) return c.json({ error: loaded.error }, loaded.status);
+  const target = loaded.row;
+
+  const body = await readBody<{ role: string; title: string }>(c);
+  const submitted = typeof body.role === "string" ? body.role : "";
+  if (!isCreatableStaffRole(edition, submitted)) return c.json({ error: "invalid_role" }, 400);
+  const title = normaliseTitle(body.title) ?? target.title ?? null;
+
+  // `user_type = 'staff'` is written although L2 already lands it: a mentor is a
+  // directory record with no pipeline authority, so "approved into a real role"
+  // and "mentor" are states that must never coexist, and the one statement that
+  // grants the role is the right place to say so. `must_change_password` is
+  // untouched for the reason in this route's header.
+  const q = scoped(scope).on("users").and("users.id = ?", id);
+  await c.env.DB.prepare(
+    "UPDATE users SET approval_state = 'approved', active = 1, role = ?, user_type = 'staff', " +
+      `title = ? ${q.whereClause()}`,
+  )
+    .bind(submitted, title, ...q.binds)
+    .run();
+
+  // `security`, not `team`: this row is the record of who let a stranger into the
+  // workspace and with what authority. It belongs beside `password_reset` and
+  // `ownership_transferred`, which is where someone reviewing an incident looks.
+  await recordAudit(c, {
+    category: "security",
+    action: "registration_approved",
+    // `submitted` is a `Role` here, narrowed by `isCreatableStaffRole`'s type
+    // guard above — no cast, which is also what makes the refusal load-bearing.
+    summary: `Approved ${target.name}'s registration (${target.email}) as ${roleLabel(edition, submitted)}`,
+    detail: { email: target.email, role: submitted, title },
+    targetType: "user",
+    targetId: id,
+  });
+
+  return c.json({
+    ok: true,
+    user: toUserView(edition, {
+      ...target,
+      role: submitted,
+      user_type: "staff",
+      active: 1,
+      title,
+      approval_state: "approved",
+    }),
+  });
+});
+
+/**
+ * POST /api/users/:id/decline — refuse a registration, and KEEP THE ROW.
+ *
+ * The brief is explicit that the row stays "for the record rather than deleting
+ * it", and the consequence has to be stated rather than discovered on a call:
+ * `users.email` is `UNIQUE (tenant_id, email)` since `0087`, so a declined row
+ * **holds that address** and the same person cannot register again. That is the
+ * right default — a declined applicant retrying the same form is exactly what the
+ * decline was for — and the release valve already exists and is audited:
+ * `DELETE /api/users/:id` renames the address to `deleted:<id>` and frees the
+ * seat, which is how a decline made in error is undone.
+ *
+ * `active = 0` is written alongside the state even though a pending row is already
+ * inactive, because a declined row must be inactive whatever route or script set
+ * the state before it, and `POST /api/auth/login` refuses an inactive user today
+ * without needing to know this column exists.
+ */
+users.post("/:id/decline", requireTask("addmembers", "admin"), async (c) => {
+  const edition = c.var.user.edition;
+  const scope = scopeOf(c.var.user);
+  const id = c.req.param("id");
+  const loaded = await loadPendingRegistration(c, id);
+  if ("error" in loaded) return c.json({ error: loaded.error }, loaded.status);
+  const target = loaded.row;
+
+  const q = scoped(scope).on("users").and("users.id = ?", id);
+  await c.env.DB.prepare(
+    `UPDATE users SET approval_state = 'declined', active = 0 ${q.whereClause()}`,
+  )
+    .bind(...q.binds)
+    .run();
+
+  await recordAudit(c, {
+    category: "security",
+    action: "registration_declined",
+    summary: `Declined ${target.name}'s registration (${target.email})`,
+    detail: { email: target.email, requestedAt: target.created_at },
+    targetType: "user",
+    targetId: id,
+  });
+
+  return c.json({
+    ok: true,
+    user: toUserView(edition, { ...target, active: 0, approval_state: "declined" }),
+  });
+});
+
 // ── Self-service password change (F0075) ─────────────────────────────────────
 
 /**
@@ -553,6 +838,298 @@ users.put("/me/password", async (c) => {
   });
 
   return c.json({ ok: true });
+});
+
+// ── My account: the credential state, the absence, and the cover (L4) ────────
+
+/** One pending evaluation a delegate is holding for somebody. */
+interface CoveredAssignment {
+  deckId: string;
+  deckName: string;
+  dueAt: string | null;
+}
+
+/** One person whose work this caller is covering, and what is left of it. */
+interface CoveredFor {
+  userId: string;
+  name: string;
+  until: string;
+  assignments: CoveredAssignment[];
+}
+
+/**
+ * Who is currently delegating to `delegateId`, and which of their evaluation
+ * assignments are still outstanding.
+ *
+ * ── WHAT "PENDING" MEANS, AND THE BUG THE SECOND HALF FIXES ─────────────────
+ *
+ * An assignment is pending when no evaluation exists for that (deck, evaluator)
+ * pair — the same `EXISTS (SELECT 1 FROM evaluations …)` test
+ * `GET /api/assignments/board` uses for its `submitted` flag (`assignments.ts:111`).
+ * But the pair that disappears when the DELEGATE does the work is
+ * `(deck, delegate)`, not `(deck, absentee)`: an evaluation is stored against
+ * whoever submitted it. Testing only the absentee would leave every covered deck
+ * on the delegate's list forever, including the ones they had just finished. So
+ * the `NOT EXISTS` covers BOTH ids.
+ *
+ * ── SCOPE ───────────────────────────────────────────────────────────────────
+ *
+ * Three predicates, all of them necessary and each for a different reason: the
+ * absentee's row and the deck are both scoped with `.on(...)`, and `deleg`'s join
+ * carries the absentee's own `(tenant_id, edition)` so a delegate id that somehow
+ * names another customer's user resolves to nothing. `ASSIGNEE_PAIRS_SQL` is a
+ * UNION over two tables with no workspace key of their own, which is exactly the
+ * shape §11 of the tenancy plan says the silent failures live in.
+ */
+async function coverageFor(
+  c: Context<AppEnv>,
+  delegateId: string,
+): Promise<CoveredFor[]> {
+  // `away` and `pair`, not `absent` and `ap`: the delegation arm this reads
+  // through once integration lands it uses `absent`/`deleg`/`ap` INSIDE its own
+  // subquery, and two levels of the same alias is a thing a reader should not have
+  // to resolve to be sure which row a predicate names.
+  const q = scoped(scopeOf(c.var.user))
+    .on("away")
+    .on("d")
+    .and("away.out_of_office_delegate = ?", delegateId)
+    .andRaw("away.deleted_at IS NULL")
+    // `isOutOn`'s SQL twin. `date('now')` rather than a bound value so this reads
+    // the same clock the delegation UNION arm in `shared/outOfOffice.ts` reads —
+    // two answers to "is Priya out today?" is the one thing worth avoiding here.
+    .andRaw("away.out_of_office_from IS NOT NULL AND away.out_of_office_to IS NOT NULL")
+    .andRaw("date('now') BETWEEN away.out_of_office_from AND away.out_of_office_to")
+    .and(
+      "NOT EXISTS (SELECT 1 FROM evaluations e WHERE e.deck_id = pair.deck_id " +
+        "AND e.evaluator_id IN (away.id, ?))",
+      delegateId,
+    );
+
+  const rows = (
+    await c.env.DB.prepare(
+      "SELECT away.id AS absent_id, away.name AS absent_name, " +
+        "away.out_of_office_to AS until, pair.deck_id, d.name AS deck_name, da.due_at " +
+        `FROM (${ASSIGNEE_PAIRS_SQL}) pair ` +
+        "JOIN users away ON away.id = pair.evaluator_id " +
+        "JOIN decks d ON d.id = pair.deck_id " +
+        "LEFT JOIN deck_assignments da ON da.deck_id = pair.deck_id AND da.evaluator_id = away.id " +
+        `${q.whereClause()} ORDER BY away.name, da.due_at IS NULL, da.due_at, d.name`,
+    )
+      .bind(...q.binds)
+      .all<{
+        absent_id: string;
+        absent_name: string;
+        until: string;
+        deck_id: string;
+        deck_name: string;
+        due_at: string | null;
+      }>()
+  ).results;
+
+  const byPerson = new Map<string, CoveredFor>();
+  for (const r of rows) {
+    const entry = byPerson.get(r.absent_id) ?? {
+      userId: r.absent_id,
+      name: r.absent_name,
+      until: r.until,
+      assignments: [],
+    };
+    entry.assignments.push({ deckId: r.deck_id, deckName: r.deck_name, dueAt: r.due_at });
+    byPerson.set(r.absent_id, entry);
+  }
+  return [...byPerson.values()];
+}
+
+/**
+ * GET /api/users/me/account — everything the account surface needs about the
+ * caller's OWN row, in one request.
+ *
+ * ── WHY A ROUTE AND NOT `/api/auth/me` ──────────────────────────────────────
+ *
+ * The client caches the principal in `AuthProvider`'s `AuthUser`, which carries
+ * id, name, initials, role, edition, title and permissions — and is written once
+ * per page load. Neither the credential state nor an absence belongs on a cached
+ * principal: both change from this screen, and a cached copy would still say
+ * "temporary password" after the user had just replaced it. `auth.ts` is lane
+ * L1/L2's file in any case, so the account surface reads its own facts here.
+ *
+ * `mustChangePassword` is the same column `/api/auth/me` will carry once lane L2
+ * lands it (`must_change_password`, 0044) — one source of truth, two readers, not
+ * two answers. `minPasswordLength` is served rather than restated in the client so
+ * `MIN_PASSWORD` stays the only place the number 8 appears.
+ *
+ * Open to every authenticated principal, mentors and founders included: it is
+ * your own row and nothing else, exactly like `PATCH /me` and
+ * `PUT /me/password`.
+ */
+users.get("/me/account", async (c) => {
+  const self = scoped(scopeOf(c.var.user)).on("u").and("u.id = ?", c.var.user.id);
+  const row = await c.env.DB.prepare(`SELECT ${ROSTER_COLUMNS} FROM users u ${self.whereClause()}`)
+    .bind(...self.binds)
+    .first<UserRosterRow>();
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  const outOfOffice = toOutOfOffice(row);
+
+  // Who this person may hand their work to. Four exclusions, each measurable:
+  // themselves (the schema refuses it too — `0107`'s CHECK), anyone not
+  // `approved` (an applicant is not a colleague), the inactive, and MENTORS —
+  // a mentor is a directory record whose `/api/decks` is 403 (`denyMentor`), so
+  // delegating evaluations to one would surface decks to a user-type that cannot
+  // open them. Founders are external and never hold assignments; they are refused
+  // by the same `user_type <> 'mentor'` plus the role list below.
+  //
+  // AND WHO MAY READ THE LIST, which is a different question from who may be on
+  // it. The four exclusions below shape the CANDIDATES; this one gates the
+  // CALLER. `/api/users/me/account` is mounted under the router's bare
+  // `requireAuth` (`:108`) with no `requireTask` — correct, because every
+  // principal needs their own `mustChangePassword` for the change-password
+  // screen — but `delegates` is a roster of the workspace's staff with names and
+  // role labels, and a FOUNDER is an external party with an account. Handing one
+  // an enumerable list of the accelerator's team is the same class of leak as the
+  // team channel (`routes/support.ts`), arriving through a route that exists for
+  // an unrelated reason. A founder or a mentor never holds an assignment and so
+  // never delegates one: they get their own account record and an empty list.
+  const mayDelegate = !isMentor(c.var.user.role) && c.var.user.role !== "founder";
+  const dq = scoped(scopeOf(c.var.user))
+    .on("u")
+    .andRaw("u.deleted_at IS NULL")
+    .andRaw("u.active = 1")
+    .and("u.approval_state = ?", "approved")
+    .and("u.user_type <> ?", "mentor")
+    .and("u.role NOT IN (?, ?)", "mentor", "founder")
+    .and("u.id <> ?", c.var.user.id);
+  const delegates = mayDelegate
+    ? (
+        await c.env.DB.prepare(
+          `SELECT u.id, u.name, u.role, u.user_type FROM users u ${dq.whereClause()} ORDER BY u.name`,
+        )
+          .bind(...dq.binds)
+          .all<{ id: string; name: string; role: string; user_type: string }>()
+      ).results
+    : [];
+
+  return c.json({
+    mustChangePassword: (row.must_change_password ?? 0) === 1,
+    minPasswordLength: MIN_PASSWORD,
+    outOfOffice,
+    maxOutOfOfficeDays: MAX_OOO_DAYS,
+    delegates: delegates.map((d) => ({
+      id: d.id,
+      name: d.name,
+      roleLabel: displayRole(c.var.user.edition, d.role, d.user_type),
+    })),
+    coveringFor: await coverageFor(c, c.var.user.id),
+  });
+});
+
+/**
+ * PUT /api/users/me/out-of-office — set your own absence and name a delegate.
+ *
+ * Body: `{ from, to, delegateId? }`, dates `YYYY-MM-DD`, inclusive. `delegateId`
+ * absent or null means "out, with nobody covering", which is a real thing a person
+ * wants to record and is the state the console's indicator reads on its own.
+ *
+ * ── WHY THIS IS NOT GATED ON THE `outofofficedelegation` PERMISSION CELL ────
+ *
+ * The prototype's Task permissions grid has an **Out of office delegation** row
+ * and `src/shared/types.ts` marks it `source: "none"` — "no verb in the product
+ * yet". This is the verb, so the obvious move is to gate it on that cell and
+ * delete the marker. Measured first, and it is the wrong move:
+ * `0029_role_permissions.sql:150-151` seeds the cell **0 for `jury` and for
+ * `program_associate`** in every workspace that has ever run that migration,
+ * production included. Those are the roles that hold evaluation assignments —
+ * `ASSIGNABLE_EVALUATOR_ROLES.incubator` is `["jury", "program_manager",
+ * "program_associate"]` — so gating here would refuse the feature to precisely the
+ * people it exists for, on a live call, with "forbidden" as the only explanation.
+ *
+ * So the verb is open to the caller's own row, like `PATCH /me` and
+ * `PUT /me/password`, and the grid row stays marked "not enforced yet", which
+ * remains true. Making the cell real is a one-line migration (grant it to `jury`
+ * and `program_associate`) plus a `requireTask` here, in that order, and it is in
+ * the lane report rather than half-done.
+ */
+users.put("/me/out-of-office", async (c) => {
+  const body = await readBody<{ from: string; to: string; delegateId: string | null }>(c);
+  const from = typeof body.from === "string" ? body.from.trim() : "";
+  const to = typeof body.to === "string" ? body.to.trim() : "";
+  // One validator, shared with the client (`shared/outOfOffice.ts`), so the form
+  // and the route refuse the same windows for the same reasons — including
+  // `2026-02-30`, which a regex alone accepts.
+  const refusal = validateWindow(from, to);
+  if (refusal) return c.json({ error: refusal, maxDays: MAX_OOO_DAYS }, 400);
+
+  const submittedDelegate = typeof body.delegateId === "string" ? body.delegateId.trim() : "";
+  let delegateId: string | null = null;
+  if (submittedDelegate) {
+    if (submittedDelegate === c.var.user.id) return c.json({ error: "invalid_delegate" }, 400);
+    // The authorisation check of this whole feature, and it is expressed as a
+    // SELECT: whatever id the browser sends, it only becomes a delegate if it
+    // names an active, approved, non-mentor member of the CALLER'S OWN workspace.
+    // `scoped(scopeOf(...))` is what makes "same workspace" unforgeable — the key
+    // comes from the session and never from the body.
+    const vq = scoped(scopeOf(c.var.user))
+      .on("u")
+      .and("u.id = ?", submittedDelegate)
+      .andRaw("u.deleted_at IS NULL")
+      .andRaw("u.active = 1")
+      .and("u.approval_state = ?", "approved")
+      .and("u.user_type <> ?", "mentor")
+      .and("u.role NOT IN (?, ?)", "mentor", "founder");
+    const ok = await c.env.DB.prepare(`SELECT u.id FROM users u ${vq.whereClause()}`)
+      .bind(...vq.binds)
+      .first<{ id: string }>();
+    if (!ok) return c.json({ error: "invalid_delegate" }, 400);
+    delegateId = ok.id;
+  }
+
+  const q = scoped(scopeOf(c.var.user)).on("users").and("users.id = ?", c.var.user.id);
+  await c.env.DB.prepare(
+    "UPDATE users SET out_of_office_from = ?, out_of_office_to = ?, out_of_office_delegate = ? " +
+      q.whereClause(),
+  )
+    .bind(from, to, delegateId, ...q.binds)
+    .run();
+
+  await recordAudit(c, {
+    category: "team",
+    action: "out_of_office_set",
+    summary: delegateId
+      ? `${c.var.user.name} is out of office ${from} to ${to}, delegating to another member`
+      : `${c.var.user.name} is out of office ${from} to ${to}`,
+    detail: { from, to, delegateId },
+    targetType: "user",
+    targetId: c.var.user.id,
+  });
+
+  return c.json({
+    ok: true,
+    outOfOffice: { from, to, delegateId, active: isOutOn({ from, to }, todayIso()) },
+  });
+});
+
+/** DELETE /api/users/me/out-of-office — you are back. Clears all three columns
+ *  together: a window with no delegate and a delegate with no window are both
+ *  states `toOutOfOffice` would have to interpret, and the fewer of those exist
+ *  the better. */
+users.delete("/me/out-of-office", async (c) => {
+  const q = scoped(scopeOf(c.var.user)).on("users").and("users.id = ?", c.var.user.id);
+  await c.env.DB.prepare(
+    "UPDATE users SET out_of_office_from = NULL, out_of_office_to = NULL, " +
+      `out_of_office_delegate = NULL ${q.whereClause()}`,
+  )
+    .bind(...q.binds)
+    .run();
+
+  await recordAudit(c, {
+    category: "team",
+    action: "out_of_office_cleared",
+    summary: `${c.var.user.name} is no longer out of office`,
+    targetType: "user",
+    targetId: c.var.user.id,
+  });
+
+  return c.json({ ok: true, outOfOffice: null });
 });
 
 // ── Delete, reset and resend (F0064 / F0065 / F0124) ─────────────────────────
@@ -774,6 +1351,14 @@ users.post("/:id/resend-invite", requireTask("addmembers", "admin"), async (c) =
   const target = await loadTarget(c, id);
   if (!target) return c.json({ error: "not_found" }, 404);
   if (target.invite_accepted_at) return c.json({ error: "invite_already_accepted" }, 409);
+  // L4 — there was no invite. An approved SELF-REGISTRANT has both invite columns
+  // NULL: nothing was ever sent to them, because they chose their own password on
+  // the registration form. Resending would quietly replace that password with a
+  // generated one and lock them out of an account they can already use — the
+  // opposite of what the button reads as. The screen hides the control
+  // (`selfRegistered` on the roster row), and this is the enforcement, because
+  // this repo's recurring bug class is a verb gated client-side only.
+  if (!target.invite_sent_at) return c.json({ error: "no_invite_to_resend" }, 409);
 
   const password = tempPassword();
   const q = scoped(scope).on("users").and("users.id = ?", id);

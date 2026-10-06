@@ -28,10 +28,18 @@
 // customer-facing support queue from the internal issue log, and that predicate is
 // orthogonal to the tenant one: a scope says WHOSE rows, a category says WHICH
 // queue, and both still apply to every statement.
+
+// ── L5 · AND THE OTHER BOUNDARY, WHICH THE TENANCY PASS DID NOT TOUCH ────────
+// A scope says whose rows; it does not say WHICH OF THAT CUSTOMER'S OWN PEOPLE may
+// read them. `GET /api/messages?scope=team` was scoped correctly and still returned
+// the staff channel to every session in the workspace, founders and mentors
+// included. `canUseTeamChannel` below is that second predicate, and it is taken from
+// the nav manifest rather than restated here. Nothing about the tenant arm changed.
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { AppEnv } from "../types";
+import type { AppEnv, SessionUser } from "../types";
 import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
+import { canAccessNav } from "../../shared/nav";
 import { scopeOf, scoped, insertScope } from "../../shared/tenant";
 
 /** Issue workflow states. `in_progress` is the "someone is on it" middle step. */
@@ -328,12 +336,72 @@ issues.patch("/:id", requireRole("admin"), async (c) => {
 // ── Contact messages ─────────────────────────────────────────────────────────
 
 const messages = new Hono<AppEnv>();
-messages.use("*", requireAuth);
+// `denyMentor` added alongside `requireAuth`, exactly as the issue log above does
+// (`:151`). A mentor is a DIRECTORY record, not a pipeline actor
+// (`shared/roles.ts:38-45`): it holds no nav item at all, so neither channel has a
+// screen that reaches it. `/api/decks` and `/api/notifications` already refuse it
+// the same way; this router was one of the surfaces that asked only for *some*
+// authenticated session, which is the exact gap `denyMentor`'s own header describes.
+messages.use("*", requireAuth, denyMentor);
+
+/**
+ * May this principal see the SHARED team channel?
+ *
+ * ── THE DEFECT THIS CLOSES ──────────────────────────────────────────────────
+ * `messages.use("*", requireAuth)` was the whole of the authorisation on this
+ * router, and `sharedView = channel === "team" || isAdmin` below then SKIPS the
+ * per-user predicate for the team channel. So `?scope=team` returned every team
+ * message in the workspace to every session that held a cookie. Measured
+ * 2026-10-01: a **mentor** — whose `/api/decks` and `/api/notifications` are both
+ * 403 — read the seeded team message verbatim.
+ *
+ * ── WHY THE FOUNDER IS THE CASE THAT MATTERS ────────────────────────────────
+ * The mentor is the easier half and the smaller one. `founder` is the role the
+ * pilot actually hands out to people outside the organisation — they upload a deck,
+ * answer clarification queries and resubmit — and the team channel is where staff
+ * discuss those same startups with each other. A founder reading it is a customer
+ * reading the internal notes about their own application, which is not a
+ * permissions bug the customer would report; it is one they would quote.
+ *
+ * ── WHY THE NAV MANIFEST IS THE RULE, NOT A LIST WRITTEN HERE ───────────────
+ * `shared/nav.ts:229` and `:318` already state who has a "Contact team" screen:
+ * every internal role in each edition, superuser by bypass, and NOT `founder` in
+ * either. `routes/analytics.ts:89` is this codebase's own precedent for gating a
+ * server route on the manifest rather than on a second hand-maintained role list
+ * that can drift away from the first.
+ *
+ * And the client has not merely been drawing the sidebar from that line — it has
+ * been GATING the route on it. `src/client/routes/guards.tsx:37` is
+ * `canAccessNav(user.edition, user.role, navId, can)`, the identical call for the
+ * identical slug, and its own doc comment says the quiet part: "(client-side — the
+ * API enforces authZ independently)". For this one slug the API did not. A founder
+ * who typed `/app/contactteam` already got "Not available for your role"; a founder
+ * who typed `curl /api/messages?scope=team` got the channel. This line is the
+ * independent enforcement that comment promises, written as the same expression so
+ * the two cannot disagree later.
+ *
+ * `canAccessNav`'s optional permission lookup is deliberately NOT passed:
+ * `contactteam` carries no `task` cell, so the lookup cannot change the answer, and
+ * passing `c.var.perms.can` would add a `role_permissions` read to every message
+ * fetch for a value that is always true. A `task` added to that nav item later is
+ * the moment to pass it, and `canAccessNav` is where a reader will look.
+ *
+ * It also answers correctly for `mentor`, which is a `users.role` value outside
+ * `Role` and therefore in no item's `roles` array — but `denyMentor` above is what
+ * this router relies on for that, because "absent from every list" is a property of
+ * the manifest and not a decision anybody wrote down.
+ */
+function canUseTeamChannel(user: SessionUser): boolean {
+  return canAccessNav(user.edition, user.role, "contactteam");
+}
 
 /** GET /api/messages?scope=admin|team.
- *  - `team`: a shared team channel — everyone in the edition sees every message.
+ *  - `team`: a shared channel for the WORKSPACE'S STAFF — every internal role sees
+ *    every message. Founders and mentors are refused outright (see above).
  *  - `admin`: private to the admins — an admin/superuser sees the whole inbox,
- *    while other roles see only the messages they themselves sent to admin. */
+ *    while other roles see only the messages they themselves sent to admin. This
+ *    arm stays open to a founder: it is their support channel, and they see only
+ *    what they sent. */
 const MESSAGE_SELECT =
   "SELECT m.id, m.body, m.to_scope, m.created_at, u.name AS sender FROM messages m " +
   "LEFT JOIN users u ON u.id = m.from_id AND u.tenant_id = m.tenant_id AND u.edition = m.edition ";
@@ -345,6 +413,10 @@ messages.get("/", async (c) => {
   // which has nothing to do with a tenant scope. The channel keeps the name it has
   // in the API and the client; the workspace is `workspace` here.
   const channel = c.req.query("scope") === "team" ? "team" : "admin";
+  // Before `sharedView`, not after: the whole defect was that the broadcast arm
+  // skipped the per-user predicate, so an unauthorised caller did not get a narrower
+  // list — they got the widest one in the workspace.
+  if (channel === "team" && !canUseTeamChannel(user)) return c.json({ error: "forbidden" }, 403);
   const workspace = scopeOf(user);
   const isAdmin = user.role === "admin" || user.role === "superuser";
   // `team` is a broadcast (all rows); `admin` is an inbox admins see in full but
@@ -377,6 +449,13 @@ messages.get("/", async (c) => {
 messages.post("/", async (c) => {
   const body = await readBody<{ toScope: string; body: string }>(c);
   const toScope = body.toScope === "team" ? "team" : "admin";
+  // The WRITE half of the same gate. Refused rather than silently re-addressed to
+  // `admin`: a founder whose note lands somewhere other than where they aimed it has
+  // been lied to, and the row would then sit in a channel they cannot read back.
+  // `admin` stays open to every role — that is the founder's support channel.
+  if (toScope === "team" && !canUseTeamChannel(c.var.user)) {
+    return c.json({ error: "forbidden" }, 403);
+  }
   const text = typeof body.body === "string" ? body.body.trim() : "";
   if (!text) return c.json({ error: "body_required" }, 400);
   const id = `msg_${crypto.randomUUID()}`;

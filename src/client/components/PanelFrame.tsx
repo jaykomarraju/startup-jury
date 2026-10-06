@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, type LinkProps } from "react-router-dom";
 
 /**
@@ -16,6 +16,37 @@ import { Link, type LinkProps } from "react-router-dom";
  * `<PageToolbar>` is the strip on its own — usable by a screen that is not
  * ready to adopt the whole frame. `<PanelFrame>` is the frame.
  */
+
+/**
+ * Is the pointer driving this session a FINGER?
+ *
+ * Two chrome behaviours fork on this — the deck lightbox's tap-to-dismiss
+ * (`DeckPdfViewer.tsx`) and the ribbon's two-tap Log out (`Topbar.tsx`) — and
+ * both fork on the POINTER, not on a width, because what they are about is
+ * stray clicks. A mouse produces them (a slipped drag, a double-click's second
+ * half); a finger does not — there is no pointer travelling between targets, so
+ * every tap is aimed. `(pointer: coarse)` is the same capability gate
+ * `@media (hover: hover)` uses for the two `.tbb` hover rules in index.css.
+ *
+ * It lives in this file because this is the module the chrome primitives
+ * already share (`<PageToolbar>`, `<ToolbarButton>`, `<ToolbarLink>`), and a
+ * new file for ten lines would be a file no other lane in this wave could see.
+ * `matchMedia?.` is optional because jsdom test trees stub it per suite and
+ * some do not define it at all; the hook then answers `false`, which is the
+ * desktop behaviour and the right default.
+ */
+export function useCoarsePointer(): boolean {
+  const [coarse, setCoarse] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia?.("(pointer: coarse)");
+    if (!mq) return;
+    const sync = () => setCoarse(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+  return coarse;
+}
 
 interface PageToolbarProps {
   /** `.tbt` — 13.5px/600. */
@@ -104,10 +135,30 @@ export function PanelFrame({
   return (
     <section className="sj-frame">
       <PageToolbar title={title} subtitle={subtitle} actions={actions} />
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className={`min-w-0 flex-1 overflow-y-auto ${flush ? "" : "p-4"}`}>{children}</div>
+      {/* ── Where the rail goes on a phone ────────────────────────────────────
+          Under `lg` this row was a two-column flex whose second column was
+          `hidden`, so the rail's content did not exist on screen at all below
+          1024px. MEASURED on the Dashboard at 393x659: Pipeline progress, the
+          Cohort rating thresholds (including the two editable threshold inputs
+          and "Save & apply to all evaluators") and the Activity log were all in
+          the DOM with `display: none` — three panels and an editing surface,
+          silently unreachable on the demo device.
+
+          So the row becomes a COLUMN below `lg` and the rail falls to the end
+          of it, under the body. One instance, moved by CSS, not a second copy:
+          rendering `{rail}` twice behind breakpoint classes would put two
+          "Best threshold" inputs in the accessibility tree at every width, and
+          every `getByLabel` in the suite would go ambiguous.
+
+          The scroll container moves with it. At `lg` the row is
+          `overflow-hidden` and the body and rail each scroll on their own axis,
+          which is the prototype's frame and is unchanged. Below `lg` the row
+          itself scrolls, because a body with its own `overflow-y` would scroll
+          the rail off the bottom of a region that never reaches it. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
+        <div className={`min-w-0 flex-1 lg:overflow-y-auto ${flush ? "" : "p-4"}`}>{children}</div>
         {rail && (
-          <aside className="hidden w-[278px] min-w-[278px] shrink-0 overflow-y-auto border-l border-line bg-surface lg:block">
+          <aside className="shrink-0 border-t border-line bg-surface lg:w-[278px] lg:min-w-[278px] lg:overflow-y-auto lg:border-l lg:border-t-0">
             {rail}
           </aside>
         )}

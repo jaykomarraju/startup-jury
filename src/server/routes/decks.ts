@@ -58,6 +58,7 @@ import {
 import {
   addDeckVersion,
   isPdf,
+  isPdfContent,
   versionKey,
   versionStatement,
   MAX_PDF_BYTES,
@@ -2388,6 +2389,11 @@ decks.post("/upload", async (c) => {
   const file = form?.get("file");
   if (!isPdf(file)) return c.json({ error: "pdf_required" }, 400);
   if (file.size > MAX_PDF_BYTES) return c.json({ error: "pdf_too_large" }, 413);
+  // `isPdf` is the NAME and the size; this is the CONTENT. It has to run here and
+  // not only inside `addDeckVersion`, because the credit is reserved two lines
+  // down — a file called `deck.pdf` that is not one would otherwise spend a
+  // credit, store an object nothing can delete, and fail four model calls later.
+  if (!(await isPdfContent(file))) return c.json({ error: "pdf_required" }, 400);
 
   // One upload = one credit; reserve before storing so an empty balance blocks.
   if (!(await reserveCredits(c, 1))) return c.json({ error: "no_credits" }, 402);
@@ -2530,6 +2536,10 @@ decks.post("/bulk", async (c) => {
       rows.push({ file: label, ok: false, error: "pdf_required" });
     } else if (entry.size > MAX_PDF_BYTES) {
       rows.push({ file: label, ok: false, error: "pdf_too_large" });
+    } else if (!(await isPdfContent(entry))) {
+      // Content, not just the name — and per entry, so one bad file in a batch is
+      // reported against that file and the rest of the batch still goes through.
+      rows.push({ file: label, ok: false, error: "pdf_required" });
     } else {
       accepted.push(entry);
     }
@@ -2629,7 +2639,15 @@ decks.post("/:id/version", requireTask("upload", ...REUPLOAD_ROLES), async (c) =
     note,
     uploadedBy: userId,
   });
-  if (!added.ok) return c.json({ error: "no_credits" }, 402);
+  if (!added.ok) {
+    // `addDeckVersion` has two failure arms and they are not the same answer.
+    // Collapsing both to `no_credits` told a founder who picked the wrong file
+    // that the workspace was out of credits, which is both untrue and
+    // unactionable.
+    return added.error === "pdf_required"
+      ? c.json({ error: "pdf_required" }, 400)
+      : c.json({ error: "no_credits" }, 402);
+  }
   if (!added.evaluated) {
     return c.json(
       { ok: true, deckId: id, version: added.version, evaluated: false, error: "evaluation_pending" },

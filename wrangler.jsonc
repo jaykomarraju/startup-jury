@@ -2,6 +2,42 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "startup-jury",
   "main": "src/server/index.ts",
+
+  // SHIPPED LIVE AND UNCOMMENTED, and it is a no-op today — which is exactly why
+  // it is here rather than in the runbook as a third thing to remember.
+  // `workers_dev` "defaults to `true` when the configuration has no `route` or
+  // `routes`, and `false` otherwise", so the moment anybody uncomments the route
+  // below, the next deploy would SILENTLY RETIRE
+  // `startup-jury.jay-komarraju.workers.dev` — the fallback URL the demo runbook
+  // tells a presenter to use, and the only hostname that works until the zone
+  // move completes. Stating it explicitly keeps both alive through the cut-over.
+  "workers_dev": true,
+
+  // ── The custom domain, SHIPPED INERT ────────────────────────────────────────
+  //
+  // `app.startupjury.ai` is where the client wants the app. The line below is the
+  // whole repo-side change, and it is commented out on purpose: a deploy that
+  // carries this route against a zone this Cloudflare account does not hold FAILS
+  // THE DEPLOY. Measured 2026-10-05 — `startupjury.ai` is registered at GoDaddy
+  // but its authoritative DNS is Hostinger (`nova`/`cosmos.dns-parking.com`, SOA
+  // contact `dns.hostinger.com`), so there is no Cloudflare zone yet and
+  // `app.startupjury.ai` does not resolve at all.
+  //
+  // A Workers Custom Domain requires an active Cloudflare zone the account owns,
+  // and the two ways to get one WITHOUT moving nameservers are both closed to us:
+  // partial (CNAME) setup is Business+, subdomain setup is Enterprise. So the
+  // prerequisite is a nameserver change at GoDaddy, with every record in the live
+  // zone recreated first — the apex is a live Hostinger marketing site and the MX
+  // is Google Workspace. `docs/DEPLOY.md` §2–§3 is the ordered procedure, the
+  // record table and the rollback; §3.6 records the measured 6-hour registry NS
+  // TTL that makes this a scheduled change, not a same-day one.
+  //
+  // TO GO LIVE: after the zone is on Cloudflare and verified, uncomment the ONE
+  // line below *and* swap `vars.APP_BASE_URL` (see its own note), then deploy.
+  // Uncommenting only one of the two mints founder links on the retired host.
+  //
+  // "routes": [{ "pattern": "app.startupjury.ai", "custom_domain": true }],
+
   "compatibility_date": "2026-07-09",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
@@ -92,16 +128,45 @@
   //
   // TO GO LIVE (one config change + a redeploy, no code change):
   //   1. Onboard the sending domain — Dashboard → Compute & AI → Email Service →
-  //      Email Sending → Onboard Domain (adds the SPF/DKIM records), or
-  //      `npx wrangler email sending enable <domain>`.
+  //      Email Sending → Onboard Domain. Pick the SUBDOMAIN `mail.startupjury.ai`,
+  //      not the apex: onboarding writes `cf-bounce` MX, SPF, DKIM and a `_dmarc`
+  //      TXT, and the apex already carries a Google Workspace MX, a Google SPF
+  //      include, a Google DKIM key and its own `_dmarc` record (measured — see
+  //      `docs/DEPLOY.md` §2.2). A subdomain is a separate sending domain to
+  //      Cloudflare, so none of that is touched.
   //   2. Set "EMAIL_FROM" below to a verified address on that domain
-  //      (e.g. "no-reply@<domain>"), optionally EMAIL_REPLY_TO.
-  //   3. `npx wrangler deploy`.
+  //      (e.g. "no-reply@mail.startupjury.ai"), optionally EMAIL_REPLY_TO.
+  //   3. `npm run deploy`, then read one row back out of `email_outbox` and check
+  //      `status` is no longer 'recorded' (`docs/DEPLOY.md` §5.2 step 5).
+  //
+  // PREREQUISITE, and it is not small: Email Sending onboards a domain that is
+  // already a zone in this Cloudflare account. DNS is at Hostinger today, so §3.3
+  // of `docs/DEPLOY.md` — the nameserver cut-over — has to happen first. The
+  // wrangler CLI can also do step 1 (`email sending enable`), but the OAuth token
+  // on this machine lacks the email scope: `wrangler email sending list` returns
+  // `Unauthorized [code: 2036]`.
   "send_email": [{ "name": "EMAIL" }],
   "vars": {
     // Public origin used to build the tokenized founder resubmit links.
+    //
+    // CUT-OVER: swap this for the line below in the same commit that uncomments
+    // the `routes` entry at the top of this file. The two are one change — a route
+    // without this var keeps minting founder links and invite sign-in URLs on the
+    // workers.dev host, which still answers, so nothing visibly breaks and every
+    // link we email a founder points at the hostname we just retired.
+    //   "APP_BASE_URL": "https://app.startupjury.ai",
+    //
+    // NB this var is also hardcoded as a FALLBACK in two places that are not
+    // config — `src/server/resubmit.ts:93-96` and `src/server/routes/users.ts:119-122`
+    // both default to the literal below when it is unset. Setting it here wins, so
+    // the cut-over is correct; but the fallbacks go stale and should become one
+    // shared constant (`docs/DEPLOY.md` §3.7.2).
     "APP_BASE_URL": "https://startup-jury.jay-komarraju.workers.dev",
     // Verified From address. EMPTY = no delivery attempted (audit-only outbox).
+    // Once a sending domain is onboarded this becomes
+    // "no-reply@mail.startupjury.ai" — a SUBDOMAIN, so onboarding never touches
+    // the apex's live Google Workspace MX / SPF / DKIM / `_dmarc` records.
+    // `docs/DEPLOY.md` §5 has the dashboard path and the verification query.
     "EMAIL_FROM": "",
     "EMAIL_FROM_NAME": "ai.STARTUPJURY",
     "EMAIL_REPLY_TO": "",

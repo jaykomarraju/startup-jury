@@ -77,7 +77,30 @@ describe("PanelFrame", () => {
         <p>body</p>
       </PanelFrame>,
     );
-    expect(container.querySelector("aside")).toHaveClass("w-[278px]");
+    // `lg:w-[278px]`, not `w-[278px]`: the rail is 278px wide BESIDE the body
+    // from 1024px up, and below that it is a full-width band at the end of the
+    // scrolling column instead of `display:none`. L7 (mobile) changed this —
+    // on a phone the Dashboard's Pipeline progress, Cohort rating thresholds
+    // and Activity log were in the DOM and hidden, which is three panels and an
+    // editing surface unreachable on the demo device.
+    expect(container.querySelector("aside")).toHaveClass("lg:w-[278px]");
+  });
+
+  it("keeps the rail to ONE instance, which is what moves between the two layouts", () => {
+    const { container } = render(
+      <PanelFrame title="Dashboard" rail={<p>Activity</p>}>
+        <p>body</p>
+      </PanelFrame>,
+    );
+    // A breakpoint-gated pair of copies would read as two "Activity" panels to
+    // a screen reader at every width, and would make every `getByLabel` inside
+    // a rail ambiguous.
+    expect(container.querySelectorAll("aside")).toHaveLength(1);
+    expect(screen.getAllByText("Activity")).toHaveLength(1);
+    // The body column never scrolls on its own below `lg` — the row does, or
+    // the rail would sit past the end of a region that never reaches it.
+    const row = container.querySelector(".sj-frame > div:not(.tb):not(.tb-foot)")!;
+    expect(row).toHaveClass("overflow-y-auto", "lg:overflow-hidden");
   });
 });
 

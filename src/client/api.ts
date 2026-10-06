@@ -1311,3 +1311,122 @@ export const postResubmit = (token: string, form: FormData) =>
   fetch(`/api/resubmit/${encodeURIComponent(token)}`, { method: "POST", body: form }).then((r) =>
     json<ResubmitResult>(r),
   );
+
+// ── Credentials: register, reset, change (L3 · plan_pilot_gcw §5.2, §6) ──────
+//
+// The four calls that finish the credential lifecycle this product has promised
+// since Phase 1 and never had. Three of them are UNAUTHENTICATED — with the
+// founder resubmit pair above, the only such fetchers in this module — and the
+// fourth, `PUT /api/users/me/password`, has been real, scoped and tested since
+// F0075 with **zero callers**: `routes/admin/teamApi.ts:117` defines a wrapper
+// nobody ever called, which is why the console's promise that "they can change
+// it from their account once they're in" has been false the whole time.
+
+/**
+ * The shortest password the server accepts.
+ *
+ * The authority is `MIN_PASSWORD` at `src/server/routes/users.ts:518`, and the
+ * client's own spec says the same ("password (min. 8 characters)",
+ * `docs/PARITY-BUILD-SPEC.md:155`). It is restated here rather than imported
+ * because that constant is module-private on the server and `src/shared/` is
+ * not this lane's to edit — the right home is `src/shared/`, imported by both
+ * sides. Kept as ONE name on this side so the client has a single place to
+ * change rather than a literal `8` on four screens.
+ */
+export const MIN_PASSWORD_LENGTH = 8;
+
+/** What `/signup` submits. `registerAccount` normalises; callers need not. */
+export interface RegisterInput {
+  email: string;
+  password: string;
+  firstName: string;
+  lastName: string;
+  /** Job title. Optional, and an ALIAS title only — it grants nothing. */
+  designation?: string;
+}
+
+/**
+ * The register reply.
+ *
+ * Both fields are informational. A registrant ALWAYS lands
+ * `active = 0, approval_state = 'pending'`, so the success screen does not
+ * branch on `pendingApproval`; `organization.name` is read only to tell the
+ * registrant which workspace their email domain resolved to, which is the one
+ * thing they cannot otherwise see and the one thing that could be wrong.
+ */
+export interface RegisterResult {
+  ok: true;
+  pendingApproval?: boolean;
+  organization?: { name: string } | null;
+}
+
+/**
+ * `POST /api/auth/register` — join the workspace that claims your email domain.
+ *
+ * The address is lower-cased **before it leaves the browser**. After `0087`
+ * `users.email` is UNIQUE per tenant with no `COLLATE NOCASE`, and
+ * `POST /api/auth/login` compares with a plain `=` on the raw body value —
+ * measured case-sensitive — so an address registered with any capital letter
+ * creates an account that can never sign in. The server normalises too; this is
+ * the half a human actually types, and a phone keyboard capitalises the first
+ * letter of a field by default.
+ *
+ * The role is deliberately absent from this body. It is set by an administrator
+ * at approval and never comes from the registrant (`plan_pilot_gcw.md` §7.4).
+ */
+export function registerAccount(input: RegisterInput) {
+  const firstName = input.firstName.trim();
+  const lastName = input.lastName.trim();
+  const designation = input.designation?.trim();
+  return postJson<RegisterResult>("/api/auth/register", {
+    email: input.email.trim().toLowerCase(),
+    password: input.password,
+    firstName,
+    lastName,
+    // `name` as well as the two parts: `users.name` is one display string and
+    // joining it here preserves what the registrant typed instead of leaving
+    // the server to guess at the order.
+    name: `${firstName} ${lastName}`.trim(),
+    ...(designation ? { designation } : {}),
+  });
+}
+
+/**
+ * `POST /api/auth/forgot-password` — ask for a reset link.
+ *
+ * Resolves on any 2xx whether or not the address exists, by design: the reply
+ * body carries nothing to inspect, and the screen says so in plain words rather
+ * than leaving the user to wonder. Never add an existence check here.
+ */
+export function requestPasswordReset(email: string) {
+  return postJson<{ ok: true }>("/api/auth/forgot-password", {
+    email: email.trim().toLowerCase(),
+  });
+}
+
+/** `POST /api/auth/reset-password` — spend a single-use token on a new password. */
+export function resetPassword(token: string, password: string) {
+  return postJson<{ ok: true }>("/api/auth/reset-password", { token, password });
+}
+
+/**
+ * `PUT /api/users/me/password` — change your own credential (F0075).
+ *
+ * Open to every authenticated principal, founders and mentors included: it
+ * changes your own password and nothing else, and the current one is verified
+ * server-side so a stolen session cannot silently take the account over.
+ *
+ * `routes/admin/teamApi.ts:117 changeOwnPassword` is the same call. That module
+ * exists for the Admin console's own sections, and the screen that calls this
+ * one is `/change-password`, a sibling of `/login` outside the console — so it
+ * reads from `api.ts`, the module every screen already imports, rather than an
+ * auth screen reaching into `routes/admin/`. The console copy has no callers and
+ * is the one to fold away.
+ */
+export function changeMyPassword(currentPassword: string, newPassword: string) {
+  return fetch("/api/users/me/password", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ currentPassword, newPassword }),
+  }).then((r) => json<{ ok: true }>(r));
+}

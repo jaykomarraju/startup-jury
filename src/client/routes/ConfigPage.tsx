@@ -30,6 +30,7 @@ import { useAuth } from "../auth/useAuth";
 import { usePermissions } from "../auth/usePermissions";
 import { useActiveContext } from "../activeContext";
 import { editionLabel, type Edition } from "../../shared/roles";
+import { MAX_CREDIT_BALANCE } from "../../shared/plans";
 import { scoringSettings } from "./admin/scoringApi";
 import {
   getParameterConfig,
@@ -888,12 +889,22 @@ function PlanCreditsSection({ cfg, onChange }: { cfg: FullConfig; onChange: (c: 
           <input
             type="number"
             min={0}
+            // `POST /api/config/credits` refuses above MAX_CREDIT_BALANCE with
+            // `400 credits_above_max` (`routes/config.ts:1585`). Without this the
+            // ceiling existed only on the server, so the one way to meet it was to
+            // type a larger number and have Save fail — a refusal the field itself
+            // can prevent. Kept in step with the server constant deliberately: the
+            // server stays the authority and still refuses, this only stops the
+            // control offering a value it knows will be rejected.
+            max={MAX_CREDIT_BALANCE}
             className="sj-input h-9 w-32"
             aria-label="Credits balance"
             value={credits}
             onChange={(e) => setCredits(Number(e.target.value))}
           />
-          <span className="text-xs text-fg-muted">Admin-granted upload credits.</span>
+          <span className="text-xs text-fg-muted">
+            Admin-granted upload credits. Up to {MAX_CREDIT_BALANCE.toLocaleString()}.
+          </span>
         </label>
       </div>
     </Card>

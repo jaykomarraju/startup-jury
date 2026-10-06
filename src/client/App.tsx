@@ -4,6 +4,9 @@ import { usePermissions } from "./auth/usePermissions";
 import { AppShell } from "./components";
 import { RequireAuth, RequireNav } from "./routes/guards";
 import { LoginPage } from "./routes/LoginPage";
+import { SignupPage } from "./routes/SignupPage";
+import { ForgotPasswordPage } from "./routes/ForgotPasswordPage";
+import { ResetPasswordPage, ChangePasswordPage } from "./routes/ResetPasswordPage";
 import ResubmitPage from "./routes/ResubmitPage";
 import { DashboardPage } from "./routes/DashboardPage";
 import { UploadPage } from "./routes/UploadPage";
@@ -47,6 +50,17 @@ function LoginRoute() {
   if (loading) return null;
   if (user) return <Navigate to="/app" replace />;
   return <LoginPage />;
+}
+
+/**
+ * /signup — same gate as /login. Somebody already signed in has no account to
+ * create, and showing them the form would end in a duplicate-address refusal.
+ */
+function SignupRoute() {
+  const { user, loading } = useAuth();
+  if (loading) return null;
+  if (user) return <Navigate to="/app" replace />;
+  return <SignupPage />;
 }
 
 /** /app index — send the user to their role's landing nav item. */
@@ -145,6 +159,29 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginRoute />} />
+      {/* PUBLIC (L3): the credential screens. Siblings of /login and deliberately
+          outside the /app subtree for the same reason /resubmit is — the people
+          who need them have no session, and the catch-all below would bounce
+          them straight back to the sign-in screen they are trying to get past.
+
+          /change-password is the one of the four that DOES need a session, and it
+          is here rather than under /app/:navId because it has no nav slug and
+          needs none: `RequireNav` gates on `canAccessNav`, and changing your own
+          password is not a role-gated task — every principal may do it, founders
+          and mentors included. L4 links it from the account menu; it is also a
+          URL that can be read out over the phone to somebody holding a temporary
+          password, which is exactly the situation it exists for. */}
+      <Route path="/signup" element={<SignupRoute />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route
+        path="/change-password"
+        element={
+          <RequireAuth>
+            <ChangePasswordPage />
+          </RequireAuth>
+        }
+      />
       {/* PUBLIC (Session 6): the tokenized founder resubmit link from the
           Incomplete-deck email. A sibling of /login, deliberately outside the
           /app subtree — founders have no account to sign in with, and the

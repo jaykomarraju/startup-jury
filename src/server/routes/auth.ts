@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { setCookie, deleteCookie, getCookie } from "hono/cookie";
 import type { AppEnv, Env, SessionUser } from "../types";
 import { getUsersByEmail, getOrganizationById, getOrganizationBySlug, type UserRow } from "../db";
-import { verifyPassword } from "../auth/password";
+import { hashPassword, verifyPassword } from "../auth/password";
 import {
   createSession,
   deleteSession,
@@ -12,6 +12,11 @@ import { requireAuth } from "../auth/middleware";
 import { loadPermissionOverrides } from "../auth/permissions";
 import { scopeOf } from "../../shared/tenant";
 import { emitNotification } from "../email/outbox";
+import {
+  clearLoginFailures,
+  loginLockedOut,
+  recordLoginFailure,
+} from "../middleware/rateLimit";
 import { grantedTasks } from "../../shared/permissions";
 import { roleLabel } from "../../shared/roles";
 
@@ -61,21 +66,111 @@ async function permissionsFor(db: D1Database, user: SessionUser): Promise<string
  *
  * It is returned only AFTER a password has verified, and it lists only the
  * workspaces that THAT password opened. An attacker who can trigger it already
- * holds the credential. Every other failure — unknown address, wrong password,
- * suspended organisation, inactive account, no password set — returns the same
- * `401 invalid_credentials` the route has always returned, and the password is
- * verified against every candidate before any of them is rejected, so the response
- * does not vary with how many accounts an address has.
+ * holds the credential.
  *
  * A host-derived tenant (`acme.startupjury.ai`) is the shape a real deployment
  * wants and is deliberately NOT built here: §3 notes `billing/provider.ts:162`
  * hardcodes `returnUrl: "/app/admin?section=bl"` and is already wrong for a
  * customer-specific host, so hostnames are their own piece of work. When they
  * arrive they resolve a slug and feed step 2; nothing below changes.
+ *
+ * ── THE FOUR FAILURE MODES, AND WHY ONE 401 WAS NOT ENOUGH ──────────────────
+ *
+ * This route used to answer every refusal with `401 invalid_credentials` — unknown
+ * address, wrong password, suspended organisation, inactive account, no password
+ * set, all one code. That is correct for the first two and actively harmful for the
+ * rest, because the pilot customer's workspace now creates accounts that are
+ * deliberately not yet allowed in: a self-registered colleague lands
+ * `active = 0, approval_state = 'pending'` (`routes/registration.ts`). Told "your
+ * password is wrong" on a conference call, that person retypes their password
+ * instead of ringing their administrator, and the demo stalls on a screen that is
+ * working exactly as designed.
+ *
+ * So there are four, and the split is drawn at the password check:
+ *
+ *   · `401 invalid_credentials` — unknown address OR wrong password. These two stay
+ *     INDISTINGUISHABLE from each other, deliberately and permanently: anything that
+ *     separates them is an account-enumeration oracle. Also every case where no
+ *     candidate verified at all.
+ *   · `403 pending_approval` — the password was RIGHT and the account has never been
+ *     approved. Only reachable with a correct credential, so it discloses nothing an
+ *     attacker did not already have.
+ *   · `403 account_disabled` — the password was RIGHT and the account is deactivated,
+ *     declined, or belongs to a suspended organisation. `0083:109` defines suspended
+ *     as "rows retained, sign-in refused", which is this, not a bad credential.
+ *   · `409 tenant_required` — unchanged. See above.
+ *
+ * A 500 stays a 500. Nothing below catches a database error and reports it as a
+ * credential failure, which is the other half of the same rule: a user told their
+ * password is wrong when the database is down will change their password.
+ *
+ * ── THE TIMING ORACLE, MEASURED AT 1 ms VERSUS 8 ms ─────────────────────────
+ *
+ * §5.3: "login also leaks address existence by timing (1 ms unknown vs 8 ms known,
+ * because `verifyPassword` is never called for an unknown address)". An 8x
+ * difference is trivially measurable over a network and it turns the carefully
+ * identical 401 above into an oracle anyway. `equaliseVerifyCost` below runs one
+ * real PBKDF2 against a throwaway hash when the candidate list is empty, so the
+ * unknown-address path pays the same cost as the known one.
+ *
+ * ── AND WHY THERE IS A FAILURE COUNTER HERE AND NOT JUST A MIDDLEWARE ───────
+ *
+ * `src/server/middleware/rateLimit.ts` limits this route by IP, generously, because
+ * a conference room is one NAT address. The per-ADDRESS limit has to live inside the
+ * handler because it counts FAILURES and a success clears it — a middleware cannot
+ * know the outcome, and counting successful logins per address would redden the e2e
+ * suite and the 526-case roles harness, both of which sign in as the same seeded
+ * accounts over and over. That module's header has the numbers.
  */
 interface LoginCandidate {
   row: UserRow;
   org: { id: string; name: string; slug: string; status: string };
+}
+
+/** Why a correct password still did not open an account. */
+type LoginRefusal = "pending_approval" | "account_disabled";
+
+/**
+ * The two `users` columns login now needs that `UserRow` does not carry.
+ *
+ * `getUsersByEmail` does `SELECT *` so the values are already in flight, but its
+ * declared row type (`db.ts:4-23`) has neither `approval_state` (new in `0106`) nor
+ * `must_change_password`, and `src/server/db.ts` belongs to another lane. Widening
+ * the shared type is the right fix and is in this lane's report; until then this is
+ * one extra scoped read per OPENED candidate — which is one read on a successful
+ * login and zero on a failed one, because it runs only after a password verified.
+ */
+interface AccountFlags {
+  approval_state: string;
+  must_change_password: number;
+}
+
+async function accountFlags(db: D1Database, user: UserRow): Promise<AccountFlags | null> {
+  return db
+    .prepare(
+      "SELECT approval_state, must_change_password FROM users WHERE id = ? AND tenant_id = ?",
+    )
+    .bind(user.id, user.tenant_id)
+    .first<AccountFlags>();
+}
+
+/**
+ * A throwaway PBKDF2 hash, built once per isolate, used only to spend the same CPU
+ * on an unknown address that a known one costs.
+ *
+ * It is a hash of a random UUID that is discarded immediately, so there is no
+ * plaintext for it anywhere and it can never open an account — it is not a
+ * credential, it is a workload. A hardcoded constant would have been one PBKDF2
+ * cheaper on the first call; generating it means no hash literal sits in the source
+ * looking like a secret. The first unknown-address request in a fresh isolate
+ * therefore costs two derivations instead of one, which makes that path SLOWER than
+ * the known path rather than faster — the harmless direction.
+ */
+let decoyHash: string | null = null;
+
+async function equaliseVerifyCost(password: string): Promise<void> {
+  decoyHash ??= await hashPassword(crypto.randomUUID());
+  await verifyPassword(password, decoyHash);
 }
 
 function toSessionUser(row: {
@@ -106,49 +201,134 @@ auth.post("/login", async (c) => {
     return c.json({ error: "email and password required" }, 400);
   }
 
+  // Normalised the same way every WRITE of an address is normalised. `users.email`
+  // is UNIQUE per tenant after `0087` with no `COLLATE NOCASE`, and this lookup is a
+  // plain `=` — measured case-sensitive. Before this, an account whose address was
+  // stored lower-case (which is all of them: `POST /api/users` lower-cases at
+  // `users.ts:308`, and so does `routes/registration.ts`) could not be signed into by
+  // someone who typed their own address with a capital letter. Verified against the
+  // seed first: no migration writes a mixed-case address, so nothing regresses.
+  const email = body.email.trim().toLowerCase();
+
+  // The per-address brake. Checked BEFORE any password is verified, so a
+  // locked-out address does not even spend the PBKDF2 — see the module header on
+  // why this lives here and not in the middleware.
+  const lock = await loginLockedOut(c.env, email);
+  if (lock.locked) {
+    return c.json({ error: "rate_limited", retryAfter: lock.retryAfter }, 429, {
+      "Retry-After": String(lock.retryAfter),
+    });
+  }
+
   // Step 2 of the resolution order: a supplied slug NARROWS, so it is resolved
   // first and an unknown one fails as an ordinary bad credential rather than
   // telling the caller which customers exist.
   let wanted: string | null = null;
   if (body.tenant) {
     const org = await getOrganizationBySlug(c.env.DB, body.tenant);
-    if (!org) return c.json({ error: "invalid_credentials" }, 401);
+    if (!org) {
+      await recordLoginFailure(c.env, email);
+      return c.json({ error: "invalid_credentials" }, 401);
+    }
     wanted = org.id;
   }
 
-  const rows = await getUsersByEmail(c.env.DB, body.email);
+  const rows = await getUsersByEmail(c.env.DB, email);
   const candidates: LoginCandidate[] = [];
   for (const row of rows) {
     if (wanted && row.tenant_id !== wanted) continue;
-    if (!row.active || !row.password_hash) continue;
+    // `active` and the organisation's status are NO LONGER filters here. They were,
+    // and that is what made a deactivated account and a suspended customer
+    // indistinguishable from a typo. They are now decided AFTER the password check
+    // below, which is the only place a specific refusal can be given without
+    // becoming an oracle. A row with no password hash stays out: nothing can verify
+    // against it, and leaving it in would only make the loop below do less work for
+    // some addresses than others.
+    if (!row.password_hash) continue;
     const org = await getOrganizationById(c.env.DB, row.tenant_id);
     // A row whose tenant has no organisation cannot be signed in. `0100` asserts
     // this never happens, and if the assertion is ever wrong the answer is to
     // refuse the login, not to guess the customer.
-    if (!org || org.status === "suspended") continue;
+    if (!org) continue;
     candidates.push({ row, org });
   }
 
   // The password is checked against EVERY candidate before any decision, so the
   // response time and the response body do not vary with how many accounts the
-  // address has.
+  // address has — and when there are NO candidates it is checked against a decoy,
+  // so an unknown address costs what a known one costs. See `equaliseVerifyCost`.
+  if (candidates.length === 0) await equaliseVerifyCost(body.password);
   const opened: LoginCandidate[] = [];
   for (const candidate of candidates) {
     if (await verifyPassword(body.password, candidate.row.password_hash!)) opened.push(candidate);
   }
-  if (opened.length === 0) return c.json({ error: "invalid_credentials" }, 401);
-  if (opened.length > 1) {
+  if (opened.length === 0) {
+    await recordLoginFailure(c.env, email);
+    return c.json({ error: "invalid_credentials" }, 401);
+  }
+
+  // The password is right. From here the refusals may be specific.
+  //
+  // The two reads below happen only on this path, so a failed login does no extra
+  // work. The loop is bounded by the number of workspaces ONE address holds — one
+  // today, and the `409` below is the case where it is two.
+  const eligible: LoginCandidate[] = [];
+  const refusals: LoginRefusal[] = [];
+  let mustChangePassword = false;
+  for (const candidate of opened) {
+    const flags = await accountFlags(c.env.DB, candidate.row);
+    // The row verified a password a moment ago, so a missing flags row means the
+    // account disappeared mid-request. Refuse rather than assume.
+    if (!flags) {
+      refusals.push("account_disabled");
+      continue;
+    }
+    if (flags.approval_state === "pending") {
+      refusals.push("pending_approval");
+      continue;
+    }
+    if (candidate.org.status === "suspended" || !candidate.row.active || flags.approval_state === "declined") {
+      refusals.push("account_disabled");
+      continue;
+    }
+    eligible.push(candidate);
+    if (flags.must_change_password === 1) mustChangePassword = true;
+  }
+
+  if (eligible.length === 0) {
+    // `pending_approval` wins when both appear, because it is the one the caller can
+    // do something about: it names the person they need to ask. A 403 is NOT counted
+    // as a login failure — the credential was correct, and the failure counter exists
+    // to stop password guessing, not to lock out a colleague waiting for approval.
+    const refusal = refusals.includes("pending_approval") ? "pending_approval" : "account_disabled";
+    return c.json(
+      {
+        error: refusal,
+        message:
+          refusal === "pending_approval"
+            ? "Your account is waiting for an administrator to approve it."
+            : "This account is not active. Ask your administrator to re-enable it.",
+      },
+      403,
+    );
+  }
+  if (eligible.length > 1) {
     // One human, two customers, one password. Only reachable with a correct
-    // credential, and it lists only what that credential opened.
+    // credential, and it lists only the workspaces that credential can actually
+    // open — a pending or suspended one is excluded above, so naming it here would
+    // offer a workspace the next request would refuse.
     return c.json(
       {
         error: "tenant_required",
-        tenants: opened.map(({ org }) => ({ slug: org.slug, name: org.name })),
+        tenants: eligible.map(({ org }) => ({ slug: org.slug, name: org.name })),
       },
       409,
     );
   }
-  const user = opened[0].row;
+  const user = eligible[0].row;
+
+  // A correct password opened an account, so this address is not under attack.
+  await clearLoginFailures(c.env, email);
 
   // W3-B producer — "New team member accepted invite". An invite is *accepted*
   // the first time its credential is actually used, which is here and nowhere
@@ -168,7 +348,22 @@ auth.post("/login", async (c) => {
     path: "/",
     maxAge: 60 * 60 * 24 * 7,
   });
-  return c.json({ user: { ...sessionUser, permissions: await permissionsFor(c.env.DB, sessionUser) } });
+  return c.json({
+    user: {
+      ...sessionUser,
+      permissions: await permissionsFor(c.env.DB, sessionUser),
+      // §5.2: `must_change_password` is written by three routes and enforced by
+      // none, so the console's User access column reads "Temporary — not yet
+      // changed" for every row forever. This is the half of that fix the server
+      // owes the client — the flag reaches the browser, which can now send a
+      // first-login password change to `PUT /api/users/me/password` (a route that
+      // is real, scoped, tested and had ZERO callers). Carried on the RESPONSE and
+      // not in the KV session value, for the same reason `permissions` is: the
+      // session is written once and lives seven days, so a flag snapshotted into it
+      // would stay true after the user changed their password.
+      mustChangePassword,
+    },
+  });
 });
 
 /**
@@ -191,6 +386,22 @@ async function recordInviteAccepted(env: Env, user: UserRow): Promise<void> {
 
   await emitNotification(env, {
     event: "invite_accepted",
+    // ── §5.7, ONE OF TWO LEAKS THAT LEAVE THE BUILDING ──────────────────────
+    // This emitter passed `edition` and no `scope`, and it names no `deckId`, so it
+    // was one of exactly two of the ten producers that fall all the way through
+    // `outbox.ts:216-231`'s resolution order to `DEFAULT_TENANT_ID`. The effect,
+    // observed firing live in the dev log: a second customer's new employee — name
+    // and email address, both in the body below — written into and mailed FROM the
+    // FIRST customer's workspace. Not a screen somebody has to open; mail, already
+    // sent, to the wrong company's administrators.
+    //
+    // The account that just signed in is the only correct answer. Built from the
+    // ROW's two columns rather than from a `SessionUser`, which is what
+    // `TenantPrincipal` exists for — `src/shared/tenant.ts`: "any row carrying the
+    // two columns ... lets a cron job or a queue consumer build a scope from the row
+    // it is processing". `edition` stays as its own field because
+    // `NotificationInput` still takes it.
+    scope: scopeOf({ tenantId: user.tenant_id, edition: user.edition }),
     edition: user.edition,
     title: `${user.name} accepted their invite`,
     body:
@@ -220,15 +431,34 @@ auth.get("/me", requireAuth, async (c) => {
   // administrator's edit to the Task permissions grid therefore takes effect on
   // this user's next page load, not on their next sign-in.
   const permissions = await c.var.perms.granted();
+  // `must_change_password` rides along on this read, which already existed — §5.2
+  // calls the whole fix "nearly free, because `auth.ts` already does a per-request
+  // read of that row", and this is that. The client needs it on every load and not
+  // only at login: the sign-in response is gone by the time a reload happens, and
+  // the KV session value is a seven-day snapshot that would still say `true` after
+  // the password had been changed.
   const row = await c.env.DB
-    .prepare("SELECT title, name, initials, tenant_id FROM users WHERE id = ? AND tenant_id = ?")
+    .prepare(
+      "SELECT title, name, initials, tenant_id, must_change_password FROM users WHERE id = ? AND tenant_id = ?",
+    )
     .bind(session.id, session.tenantId)
-    .first<{ title: string | null; name: string; initials: string; tenant_id: string }>();
+    .first<{
+      title: string | null;
+      name: string;
+      initials: string;
+      tenant_id: string;
+      must_change_password: number;
+    }>();
   // Scoped by `tenant_id` as well as `id` even though `id` is globally unique: it
   // costs nothing and it means a session whose tenant has drifted from the row —
   // the seven-day KV snapshot §6 notes has no invalidation path — reads nothing
   // rather than refreshing itself from another customer's row.
-  if (!row) return c.json({ user: { ...session, permissions } });
+  //
+  // When the row is unreadable `mustChangePassword` is reported FALSE rather than
+  // omitted: a client that forces a password change on a truthy flag must not be put
+  // into that loop by a failed read, and the session is about to be refused by
+  // something else anyway.
+  if (!row) return c.json({ user: { ...session, permissions, mustChangePassword: false } });
   return c.json({
     user: {
       ...session,
@@ -236,6 +466,7 @@ auth.get("/me", requireAuth, async (c) => {
       initials: row.initials,
       ...(row.title ? { title: row.title } : { title: undefined }),
       permissions,
+      mustChangePassword: row.must_change_password === 1,
     },
   });
 });

@@ -215,25 +215,84 @@ describe("DELETE /api/users/:id (F0065)", () => {
   });
 
   it("refuses to remove the last person who can open the console", async () => {
-    // Sign in FIRST: the session survives the row being switched off below, and
-    // it is the only principal left that could make this call.
+    // ── REWRITTEN BY `L1-SESSION`, AND THE REASON IS THE POINT OF IT ──────────
+    //
+    // This fixture used to sign the superuser in, switch their ROW off, and keep
+    // using the session: "the session survives the row being switched off below,
+    // and it is the only principal left that could make this call." That was
+    // true, and it was the backdoor `requireAuth` has now closed — a deactivated
+    // principal's session is refused on its next request
+    // (`test/worker/session-revocation.test.ts`). The old version failed with 401
+    // instead of 409, which is the fix working.
+    //
+    // It cannot simply stop deactivating, either. `wouldStrandTheConsole`
+    // (users.ts:645) excludes only the TARGET from its count, so a caller who is
+    // themselves a keyholder IS the second keyholder and nothing is ever
+    // stranded. `superuser` is a keyholder permanently (`PUT /api/permissions`
+    // refuses `immutable_superuser`), and `DELETE` admits only `admin` and
+    // `superuser`. So the refusal is reachable only with a caller who holds
+    // `deleteuser` and NOT `adminconsole` — which is exactly the grid-driven
+    // keyholder set that function's own comment claims to honour ("close the
+    // `admin` cell and `admin` stops counting here too") and which nothing
+    // tested. The rewrite is stronger than what it replaces.
     const su = await login(INC_SUPER);
-    await env.DB.prepare("UPDATE users SET active = 0 WHERE id = 'inc_superuser'").run();
+    const setCells = (cells: { role: string; taskId: string; granted: boolean }[], cookie: string) =>
+      req("PUT", "/api/permissions", cookie, { cells });
+
+    // Move the console cell OFF `admin` and ONTO `program_manager`: the admin
+    // below can then delete without counting, and `inc_pm` becomes a keyholder.
+    // Done as the superuser — `cannot_lock_yourself_out` would refuse an admin
+    // closing their own `adminconsole` cell, which is its own guard.
+    expect(
+      (
+        await setCells(
+          [
+            { role: "program_manager", taskId: "adminconsole", granted: true },
+            { role: "admin", taskId: "adminconsole", granted: false },
+          ],
+          su,
+        )
+      ).status,
+    ).toBe(200);
+    // Switch off every OTHER holder of a keyholder role, the owner included, so
+    // the count excluding the target is genuinely zero.
+    await env.DB.prepare(
+      "UPDATE users SET active = 0 WHERE edition = 'incubator' AND id <> 'inc_pm' " +
+        "AND role IN ('superuser', 'program_manager')",
+    ).run();
     try {
-      const res = await req("DELETE", "/api/users/inc_admin", su);
+      // The admin's own row is untouched, so this session is live and stays live.
+      const admin = await login(INC_ADMIN);
+      const res = await req("DELETE", "/api/users/inc_pm", admin);
       expect(res.status).toBe(409);
       expect((await res.json()) as { error: string }).toEqual({ error: "last_admin" });
     } finally {
-      await env.DB.prepare("UPDATE users SET active = 1 WHERE id = 'inc_superuser'").run();
+      // Rows BEFORE the grid: the superuser has to be active again before a
+      // superuser session exists to restore the grid with.
+      await env.DB.prepare(
+        "UPDATE users SET active = 1 WHERE edition = 'incubator' " +
+          "AND role IN ('superuser', 'program_manager')",
+      ).run();
+      expect(
+        (
+          await setCells(
+            [
+              { role: "program_manager", taskId: "adminconsole", granted: false },
+              { role: "admin", taskId: "adminconsole", granted: true },
+            ],
+            await login(INC_SUPER),
+          )
+        ).status,
+      ).toBe(200);
     }
 
-    // With the owner active again there is a second keyholder, so the same call
-    // is allowed — the guard is about the count, not about the admin role.
-    const after = await req("DELETE", "/api/users/inc_admin", await login(INC_SUPER));
+    // With the grid back, `program_manager` is not a keyholder at all, so the
+    // same call is allowed — the guard is about the count, not about the role.
+    const after = await req("DELETE", "/api/users/inc_pm", await login(INC_SUPER));
     expect(after.status).toBe(200);
-    // Put the seeded admin back for the rest of the file.
+    // Put the seeded PM back for the rest of the file.
     await env.DB.prepare(
-      "UPDATE users SET deleted_at = NULL, active = 1, email = deleted_email, deleted_email = NULL WHERE id = 'inc_admin'",
+      "UPDATE users SET deleted_at = NULL, active = 1, email = deleted_email, deleted_email = NULL WHERE id = 'inc_pm'",
     ).run();
   });
 

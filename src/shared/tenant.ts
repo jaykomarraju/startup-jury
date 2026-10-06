@@ -176,14 +176,27 @@ export function scopeOf(principal: TenantPrincipal): TenantScope {
 }
 
 /**
- * The 30 tables that carry `tenant_id` as a column of their own: §5b's 28
+ * The 31 tables that carry `tenant_id` as a column of their own: §5b's 28
  * tenant-owned tables, plus `email_outbox` and `esign_outbox`, which §5b counts
  * as scoped-by-proxy and which hold only NULLABLE foreign keys, so no join can
- * scope them (`migrations/0086_tenant_id_commerce.sql`).
+ * scope them (`migrations/0086_tenant_id_commerce.sql`), plus
+ * `password_reset_tokens` (`0106`).
  *
  * Exported as data because `test/worker/tenant-scope.test.ts` iterates it: a
  * table added here without an isolation case fails that test, and a table given
  * a column without being added here fails it too.
+ *
+ * ── THE ONE ENTRY KEYED ON THE TENANT ALONE ─────────────────────────────────
+ *
+ * Thirty of these carry `edition` as well, so `scoped(scope).on(alias)` is the
+ * right call for them. `password_reset_tokens` does NOT: the token authorises a
+ * PERSON, and `user_id` is a NOT NULL reference to the row that already carries the
+ * edition, so a second copy of it here could only agree or contradict — and a
+ * credential table is the worst place in the schema to keep a second answer
+ * (`migrations/0106_registration.sql` §5). Use `onTenantOnly()` for it;
+ * `ScopeBuilder` has had that method since T0 for exactly this case, and
+ * `tenant-scope.test.ts`'s layer-1 loop already branches on whether the table has
+ * the column, so nothing there needs to learn about the exception.
  */
 export const TENANT_KEYED_TABLES = [
   "account_orders",
@@ -206,6 +219,8 @@ export const TENANT_KEYED_TABLES = [
   "org_scoring_settings",
   "org_settings",
   "parameters",
+  // `0106`. Tenant-only — see the note above the list.
+  "password_reset_tokens",
   "programs",
   "required_documents",
   "resubmit_tokens",
@@ -367,11 +382,17 @@ export class ScopeBuilder {
   }
 
   /**
-   * Scope a table keyed by tenant ALONE — no `edition` column. Nothing in the
-   * schema is in this position today (every one of the 30 keeps `edition`; see
-   * §5c and `migrations/0094`, which measured that the deployed `account_profiles`
-   * holds one row per edition and therefore cannot be keyed on the tenant alone).
-   * It exists for `organizations` itself and for whatever the platform tier adds.
+   * Scope a table keyed by tenant ALONE — no `edition` column.
+   *
+   * Written speculatively by T0, when nothing in the schema was in this position:
+   * every one of the then-30 keyed tables kept `edition` (see §5c and
+   * `migrations/0094`, which measured that the deployed `account_profiles` holds one
+   * row per edition and therefore cannot be keyed on the tenant alone), and this
+   * existed for `organizations` itself and for whatever the platform tier adds.
+   *
+   * It has a real caller now: `password_reset_tokens` (`0106`) is the one entry in
+   * `TENANT_KEYED_TABLES` with no `edition` column, for the reason the note above
+   * that list gives.
    */
   onTenantOnly(alias: string): this {
     assertIdentifier(alias, "alias");

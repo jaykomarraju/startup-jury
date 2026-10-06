@@ -205,8 +205,19 @@ export function EvaluationDrawer({
   const meta = deckMeta(deck);
 
   return (
+    /* `z-[1100]`, raised from 50 — and the reason is the JURYbuddy launcher,
+       which is `position: fixed` at `z-[1000]` (JuryBuddyLauncher.tsx:106).
+
+       MEASURED at 393x659: this overlay is full-bleed on a phone (`inset-0`
+       until `sm`), so the launcher's 44px bubble sits ON the report's own
+       bottom-right corner — over the tag editor — and the help panel it opens
+       covers the lower half of the deck. Raising the lightbox inside this
+       subtree alone could not fix it: `z-50` on THIS element creates a stacking
+       context, so every descendant, whatever its own z-index, is confined below
+       1000 with it. 1100 keeps it under the toast layer (Toast.tsx `z-[3000]`),
+       so a toast raised while the report is open is still seen. */
     <div
-      className="fixed inset-0 z-50"
+      className="fixed inset-0 z-[1100]"
       role="dialog"
       aria-modal="true"
       aria-label={`Evaluation report — ${deck.name}`}

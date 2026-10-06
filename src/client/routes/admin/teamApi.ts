@@ -8,8 +8,17 @@
  * parallel and `api.ts` is the file all four would otherwise touch. `ApiError`
  * and `UserView` still come from `api.ts`; only the routes this session added
  * live here. Folding it back is a later tidy-up, not a behaviour change (§9).
+ *
+ * ── L4, GCW pilot wave ──────────────────────────────────────────────────────
+ * The same reason holds a second time, so three more groups land here rather
+ * than in `api.ts`: the **approval queue** (`?approval=pending`, approve,
+ * decline), the roster read that carries the two fields `UserView` cannot gain
+ * in a file this lane does not own, and the **account surface**'s own calls.
+ * The last of those sits in a module named `teamApi` on purpose: its sibling
+ * `changeOwnPassword` has been here since W4-A with no caller at all, and the
+ * screen that finally calls it is My account.
  */
-import { ApiError, type InviteResult } from "../../api";
+import { ApiError, listUsers, type InviteResult, type UserView } from "../../api";
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -116,4 +125,133 @@ export function transferOwnership(id: string) {
 /** `PUT /api/users/me/password` — change your own password (F0075). */
 export function changeOwnPassword(currentPassword: string, newPassword: string) {
   return send<{ ok: true }>("PUT", "/api/users/me/password", { currentPassword, newPassword });
+}
+
+// ── The roster, with the two fields `UserView` cannot carry (L4) ─────────────
+
+export type ApprovalState = "pending" | "approved" | "declined";
+
+/** An absence, with `active` already resolved against today by the server so no
+ *  screen re-derives it from two date strings. */
+export interface OutOfOfficeState {
+  from: string;
+  to: string;
+  delegateId: string | null;
+  active: boolean;
+}
+
+/**
+ * A roster row as `GET /api/users` now sends it.
+ *
+ * Both additions are OPTIONAL, following the precedent `UserView.invitePending`
+ * set for exactly this reason ("Optional so a reader on an older payload still
+ * type-checks") — and here it also keeps every existing test fixture that builds a
+ * `UserView` by hand valid without touching it.
+ *
+ * `UserView` itself lives in `src/client/api.ts`, which this lane does not own, so
+ * the extension is declared here rather than added there.
+ */
+export interface RosterUser extends UserView {
+  approvalState?: ApprovalState;
+  outOfOffice?: OutOfOfficeState | null;
+  /**
+   * This person was never sent a credential and has never signed in — an approved
+   * SELF-REGISTRANT, who already holds the password they chose on the registration
+   * form. `invitePending` is also true of them and means something else entirely,
+   * so **Resend** must not be offered on their row: it would replace that password.
+   *
+   * Server-derived rather than inferred here from `inviteSentAt` being absent,
+   * which matters: optional fields are absent on a payload that predates them, and
+   * "absent" must mean today's behaviour (an ordinary invitee), never the new
+   * branch. `POST /api/users/:id/resend-invite` refuses the same case with
+   * `no_invite_to_resend`, so this only decides what is DRAWN.
+   */
+  selfRegistered?: boolean;
+}
+
+/**
+ * `GET /api/users` — the roster, typed for the three L4 fields. The default
+ * response now excludes registrations that are still pending or declined (see the
+ * route).
+ *
+ * **It DELEGATES to `api.ts`'s `listUsers` rather than issuing its own fetch**, and
+ * that is not tidiness: `test/client/adminConsole.test.tsx` drives this screen by
+ * mocking the `api` MODULE (`vi.mocked(listUsers).mockResolvedValue(...)`), not by
+ * mocking `fetch`. A second fetch here would walk straight past that mock and the
+ * console's roster would render empty in a test file this lane does not own.
+ *
+ * No cast is needed and none is used: every field `RosterUser` adds to `UserView`
+ * is optional, so `UserView` is assignable to it — which is also the exact reason
+ * they are optional (a payload that predates a field must still type-check).
+ */
+export function listRoster(): Promise<{ users: RosterUser[] }> {
+  return listUsers();
+}
+
+/** `GET /api/users?approval=pending` — self-registrations awaiting a decision,
+ *  oldest first. */
+export function listPendingRegistrations(): Promise<{ users: RosterUser[] }> {
+  return fetch("/api/users?approval=pending").then((r) => json<{ users: RosterUser[] }>(r));
+}
+
+/** `POST /api/users/:id/approve` — admit a registrant with the role the
+ *  administrator chose. The role is validated server-side against
+ *  `creatableStaffRoles`; the screen offers exactly that list. */
+export function approveRegistration(id: string, role: string, title?: string) {
+  return send<{ ok: true; user: RosterUser }>("POST", `/api/users/${id}/approve`, {
+    role,
+    ...(title ? { title } : {}),
+  });
+}
+
+/** `POST /api/users/:id/decline` — refuse a registration. The row is kept, which
+ *  also keeps the address taken (see the route); `deleteUser` is the release. */
+export function declineRegistration(id: string) {
+  return send<{ ok: true; user: RosterUser }>("POST", `/api/users/${id}/decline`);
+}
+
+// ── My account: credential state and out of office (L4) ──────────────────────
+
+export interface CoveredAssignment {
+  deckId: string;
+  deckName: string;
+  dueAt: string | null;
+}
+
+export interface CoveredFor {
+  userId: string;
+  name: string;
+  until: string;
+  assignments: CoveredAssignment[];
+}
+
+/** `GET /api/users/me/account` — the facts about your own row that the cached
+ *  principal in `AuthProvider` cannot carry, in one request. `minPasswordLength`
+ *  comes from the server so the client never restates the number. */
+export interface MyAccountView {
+  mustChangePassword: boolean;
+  minPasswordLength: number;
+  outOfOffice: OutOfOfficeState | null;
+  maxOutOfOfficeDays: number;
+  delegates: { id: string; name: string; roleLabel: string }[];
+  coveringFor: CoveredFor[];
+}
+
+export function getMyAccount(): Promise<MyAccountView> {
+  return fetch("/api/users/me/account").then((r) => json<MyAccountView>(r));
+}
+
+/** `PUT /api/users/me/out-of-office`. `delegateId` null means "out, with nobody
+ *  covering" — a state a person genuinely wants to record. */
+export function setOutOfOffice(from: string, to: string, delegateId: string | null) {
+  return send<{ ok: true; outOfOffice: OutOfOfficeState }>("PUT", "/api/users/me/out-of-office", {
+    from,
+    to,
+    delegateId,
+  });
+}
+
+/** `DELETE /api/users/me/out-of-office` — you are back. */
+export function clearOutOfOffice() {
+  return send<{ ok: true; outOfOffice: null }>("DELETE", "/api/users/me/out-of-office");
 }

@@ -1,6 +1,8 @@
+import { useEffect, useState } from "react";
 import { Menu, Moon, Sun, LogOut } from "lucide-react";
 import { Logo } from "./Logo";
 import { NotificationBell } from "./NotificationBell";
+import { useCoarsePointer } from "./PanelFrame";
 import type { Theme } from "../theme/ThemeProvider";
 
 interface TopbarProps {
@@ -47,7 +49,10 @@ export function Topbar({
             type="button"
             onClick={onMenu}
             aria-label="Open menu"
-            className="rounded-lg p-1.5 hover:bg-white/10 sm:hidden"
+            /* `p-2.5` under `sm` — 18px glyph in a 38px box. The drawer is the
+               ONLY navigation a phone has (`.sj-rail` is `hidden sm:block`), so
+               this is the first tap of every screen change on the call. */
+            className="rounded-lg p-2.5 hover:bg-white/10 sm:hidden"
           >
             <Menu className="h-4.5 w-4.5" />
           </button>
@@ -60,7 +65,7 @@ export function Topbar({
           type="button"
           onClick={onToggleTheme}
           aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-          className="rounded-md p-1.5 text-topbar-fg/65 hover:bg-white/10 hover:text-topbar-fg"
+          className="rounded-md p-1.5 text-topbar-fg/65 hover:bg-white/10 hover:text-topbar-fg max-sm:p-2.5"
         >
           {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </button>
@@ -97,16 +102,68 @@ export function Topbar({
           {initials}
         </span>
 
-        <button
-          type="button"
-          onClick={onLogout}
-          aria-label="Log out"
-          className="rounded-md p-1.5 text-topbar-fg/65 hover:bg-white/10 hover:text-topbar-fg"
-        >
-          <LogOut className="h-4 w-4" />
-        </button>
+        <LogoutButton onLogout={onLogout} />
       </div>
     </header>
+  );
+}
+
+/**
+ * Log out — one click with a mouse, two taps with a thumb.
+ *
+ * MEASURED at 393x659: a 28x28 button whose left edge is 6px from the 27px
+ * avatar, with no confirmation behind it. A mis-aimed thumb on stage ends the
+ * session and the presenter signs in again in front of the room — the single
+ * most expensive accidental tap in the product, which is why this one control
+ * was called out (docs/plan_pilot_gcw.md §11, "tell the presenter").
+ *
+ * Under a finger the first tap ARMS and shows the word, and the second tap in
+ * the next four seconds goes through; `(pointer: coarse)` is the gate, so a
+ * laptop is byte-for-byte the behaviour it has today — one click, no arming,
+ * no extra DOM. The 44px tap target, however, applies at both: it is
+ * `max-sm:` padding, so the ribbon is unchanged at 640px and above, which the
+ * geometry run at 1280/1440/1920 confirms.
+ *
+ * The armed state is carried by the `aria-label` and not by `aria-pressed`,
+ * for two reasons. This is not a toggle — `aria-pressed` would announce it as
+ * one, and it put a second `aria-pressed` button in the ribbon, which collided
+ * with the stat tiles in this lane's own measurement harness on the first run.
+ * And the visible "Sure?" is not announced at all while `aria-label` overrides
+ * the content, so the label is the only place the state can be said out loud.
+ * "Log out" stays the prefix, so a name match of either kind still finds it.
+ */
+function LogoutButton({ onLogout }: { onLogout: () => void }) {
+  const coarse = useCoarsePointer();
+  const [armed, setArmed] = useState(false);
+
+  // Disarm on its own. An armed button left armed is a trap of its own kind:
+  // the presenter taps something else, comes back minutes later, and one tap
+  // signs them out.
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), 4000);
+    return () => clearTimeout(t);
+  }, [armed]);
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        if (coarse && !armed) {
+          setArmed(true);
+          return;
+        }
+        onLogout();
+      }}
+      aria-label={armed ? "Log out — tap again to confirm" : "Log out"}
+      title={armed ? "Tap again to log out" : "Log out"}
+      className={`flex items-center gap-1 rounded-md p-1.5 hover:bg-white/10 hover:text-topbar-fg max-sm:p-2.5 ${
+        armed ? "bg-white/20 text-topbar-fg" : "text-topbar-fg/65"
+      }`}
+    >
+      <LogOut className="h-4 w-4" />
+      {armed && <span className="text-meta font-semibold">Sure?</span>}
+    </button>
   );
 }
 
