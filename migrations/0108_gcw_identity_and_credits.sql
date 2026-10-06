@@ -97,12 +97,28 @@ INSERT INTO credit_ledger (id, tenant_id, edition, delta, reason, amount_minor, 
 SELECT 'cl_0108_' || o.edition,
        o.tenant_id,
        o.edition,
-       2500 - o.credits_balance,
+       -- MEASURED FROM THE LEDGER, NOT THE BALANCE. Written the obvious way
+       -- (`2500 - o.credits_balance`) this passed every local check and then FAILED
+       -- on production, because there the two disagree and always have — read
+       -- 2026-10-05 against the live database:
+       --     t_default/incubator   balance = 0    ledger sum = 12
+       --     t_default/vc          balance = 66   ledger sum = 70
+       -- So `billing/ledger.ts:7`'s invariant ("the balance is the authority; the
+       -- ledger explains it") is already broken in production.
+       -- `0007_config_plans_credits.sql:12` is an unscoped
+       -- `UPDATE org_settings SET credits_balance = 50` with no movement behind it,
+       -- which is exactly the shape; a local database looks consistent only because
+       -- it replays that statement from empty.
+       -- Taking the delta from the LEDGER makes this row do both jobs: it grants the
+       -- pilot its credits AND absorbs the drift, so when the balance lands on 2500
+       -- the ledger sums to 2500 and the books finally explain the gate.
+       2500 - (SELECT COALESCE(SUM(l.delta), 0) FROM credit_ledger l
+                WHERE l.tenant_id = o.tenant_id AND l.edition = o.edition),
        'adjustment',
        NULL,
        NULL,
        'migration:0108',
-       'Pilot grant — Global Carbon Warriors',
+       'Pilot grant for Global Carbon Warriors, and reconciliation of the pre-0108 drift between credits_balance and credit_ledger',
        NULL
   FROM org_settings o
  WHERE o.tenant_id = 't_default'
