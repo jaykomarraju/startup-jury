@@ -17,14 +17,27 @@ yet it says so._
 | Open `/login` | **No** "Demo logins" card. If you see one, the deploy did not land. |
 | Open `/signup` | The three-field form renders. |
 
-**Have the bootstrap credential to hand: `raj.kumar@demo.startupjury.ai` / `demo1234`.**
-It is the **only superuser in production**, and it is what approves GCW's first real
-administrator. It is no longer printed on the login page but the account still
-works. **Do not deactivate the demo accounts until GCW has their own superuser.**
+**Global Carbon Warriors now have their own organisation, `t_gcw`, and it shares
+nothing with the demo workspace.** Separate decks, roster, rubric, dashboard, audit
+trail and credits. A `@globalcarbonwarriors.com` registration resolves to their
+workspace automatically — verified live.
 
-There is **one pending registration already waiting** — `Deploy Check
-<deploy.check@globalcarbonwarriors.com>` — created to verify the path end to end on
-production. Use it to demonstrate Decline, or decline it quietly before the call.
+**Viiveck is already their Super User**, so you do not need our demo account on this
+call at all. He approves his own team.
+
+| | |
+|---|---|
+| Workspace | Global Carbon Warriors (`t_gcw`), slug `global-carbon-warriors` |
+| Opens with | **0 decks** — theirs to populate |
+| Rubric | the 23 parameters, 110 band anchors and 68 clarification questions, cloned |
+| Sector | one, `Climatetech` — a single sector makes every upload auto-resolve |
+| Programme | `Carbon Accelerator` / `Cohort 1`, theirs to rename |
+| Credits | 2500, on a ledger that balances |
+| Seats | 25 |
+
+The demo workspace (`ai.STARTUPJURY Demo Workspace`, slug `default`) keeps its 23 QA
+decks and the seven `@demo.startupjury.ai` logins. GCW cannot see any of it: measured,
+a deck that exists there returns 404 to a GCW principal, including its PDF and report.
 
 ---
 
@@ -45,14 +58,17 @@ Three things they may hit, all deliberate:
 - a different domain is refused with "ask your administrator for an invite";
 - signing in before approval says so plainly rather than "wrong password".
 
-### 2. You approve them (you drive)
+### 2. Viiveck approves them
 
-Sign in as the bootstrap superuser → **Admin console → Team & roles**. The
-**"Waiting for approval"** card is at the top with a count.
+Viiveck signs in as **Super User** of their own workspace -> **Admin console ->
+Team & roles**. The **"Waiting for approval"** card is at the top with a count.
 
-Approve, and **choose their role**. For GCW's administrator that is `admin` — or
-`superuser` if they are to own the account, which you can also hand over later with
-**transfer ownership**. The role is yours to pick here and never came from them.
+He approves and **chooses the role**. The role is the administrator's to pick and
+never came from the registrant — which matters, because only `jury` is scoped to its
+own decks; every other staff role reads the whole workspace.
+
+Our demo account plays no part in this. It is in a different organisation and cannot
+see or touch theirs.
 
 ### 3. They sign in and take over
 

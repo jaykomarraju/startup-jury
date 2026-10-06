@@ -145,10 +145,18 @@ SELECT 'gcw_' || f.id, 'gcw_' || f.template_id, f.key, f.label, f.sample, f.sort
 -- superuser at all there is nobody to transfer FROM, so this is the first owner
 -- being seated, not an ownership change. The invariant — exactly one `superuser`
 -- per (tenant, edition) — holds: he is the only one in `t_gcw`.
+-- Matched on the DOMAIN, not on an allowlist of two addresses. The first version
+-- named `ceo@` and `viiveck@` explicitly and the assertion below caught what that
+-- misses: production also held `deploy.check@globalcarbonwarriors.com`, a registration
+-- made while verifying the deploy and then declined. A declined registration is still
+-- a record ABOUT this customer's domain and belongs in their workspace, not stranded
+-- in the demo one — and the same is true of anyone else who self-registers between
+-- this script being written and being run. The domain is the rule; the two names were
+-- only the two we happened to know about.
 UPDATE users
    SET tenant_id = 't_gcw',
        role      = CASE WHEN email = 'viiveck@globalcarbonwarriors.com' THEN 'superuser' ELSE role END
- WHERE email IN ('ceo@globalcarbonwarriors.com', 'viiveck@globalcarbonwarriors.com')
+ WHERE email LIKE '%@globalcarbonwarriors.com'
    AND tenant_id = 't_default';
 
 -- ── 9. NO `account_profiles` ROW, deliberately ─────────────────────────────
