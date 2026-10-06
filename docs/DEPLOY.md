@@ -534,6 +534,39 @@ combined, apex included — not a constraint here, recorded so nobody rediscover
 
 ---
 
+## 5b. Restore points — the D1 bookmarks, kept HERE and not in anyone's notes
+
+D1 time-travel is the only rollback the database has, and a bookmark is useless if
+nobody can find it. Until 2026-10-05 every bookmark this project ever took lived in
+a Claude memory file outside the repo, and all three predated the state they would
+have restored — using one would have undone migration `0104`, the 3-Oct fixes and
+the pilot customer's 23 decks.
+
+**Two things to know before using any of these.** A restore is WHOLE-DATABASE and
+point-in-time: it takes every tenant back with it, and it cannot restore one
+workspace. And R2 is not covered at all — the deck PDFs are not versioned, so a
+restore recovers the rows and relies on the objects still being there, which holds
+only because nothing in the product deletes an R2 object.
+
+| Taken | State it returns to | Bookmark |
+|---|---|---|
+| 2026-10-05, immediately before `0105`–`0108` | D1 at `0104`; GCW's 23 decks present; workspace still named "Anthill Ventures Incubator"; credits 0; no registration schema | `00001e4b-00000000-000050fb-3c5f25423dc6ed1613d839a58250a10e` |
+
+```bash
+npx wrangler d1 time-travel restore startup-jury-db --bookmark=<bookmark>
+```
+
+Take a fresh one before every migration that touches production, and add the row
+here in the same change:
+
+```bash
+npx wrangler d1 time-travel info startup-jury-db
+```
+
+The Worker itself rolls back separately and in seconds — `npx wrangler rollback` —
+and that is almost always the right first move, because a bad deploy is far more
+likely than a bad migration and reverting code does not touch data.
+
 ## 6. Open items this document does not close
 
 - **W13-A security**, untouched: no rate limiting anywhere (40 wrong-password
