@@ -237,7 +237,7 @@ export function EvaluationDrawer({
 
         <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:overflow-hidden">
           {/* .jr-deck — the pitch deck and the Research menu */}
-          <section className="flex min-h-0 flex-col gap-4 border-line bg-surface-2/40 p-4 lg:overflow-y-auto lg:border-r">
+          <section className="flex lg:min-h-0 flex-col gap-4 border-line bg-surface-2/40 p-4 lg:overflow-y-auto lg:border-r">
             {/* .jr-deck-h — `DeckPdfViewer` already draws the prototype's
                 "Pitch deck · N slides" title with its icon, so this row carries
                 only the Research menu. Adding a second title here broke
@@ -299,7 +299,7 @@ export function EvaluationDrawer({
           </section>
 
           {/* .jr-eval — the evaluation report */}
-          <section className="min-h-0 p-5 lg:overflow-y-auto">
+          <section className="lg:min-h-0 p-5 lg:overflow-y-auto">
             <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-olive">
               ai·STARTUPJURY · Evaluation report
             </div>

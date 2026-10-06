@@ -79,7 +79,7 @@ export function LoginPage() {
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="h-10 rounded-lg border border-line bg-surface px-3 text-sm text-fg outline-none focus:border-amber focus:ring-1 focus:ring-amber/40"
+              className="h-10 rounded-lg border border-line bg-surface px-3 text-base text-fg outline-none focus:border-amber focus:ring-1 focus:ring-amber/40"
               placeholder="you@firm.com"
             />
           </label>
@@ -91,7 +91,7 @@ export function LoginPage() {
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="h-10 rounded-lg border border-line bg-surface px-3 text-sm text-fg outline-none focus:border-amber focus:ring-1 focus:ring-amber/40"
+              className="h-10 rounded-lg border border-line bg-surface px-3 text-base text-fg outline-none focus:border-amber focus:ring-1 focus:ring-amber/40"
               placeholder="••••••••"
             />
           </label>
@@ -106,6 +106,24 @@ export function LoginPage() {
         </form>
       </Card>
 
+      {/* DEV ONLY — until 2026-10-05 this card shipped to production unguarded,
+          and the deployed bundle was verified to contain every
+          `@demo.startupjury.ai` address and the literal `demo1234`. The pilot
+          customer presents this product on a conference projector, so the first
+          screen of the demo was handing the room a working superuser credential
+          for the workspace holding their own startups' decks.
+
+          `import.meta.env.DEV` rather than deleting the card: Vite strips the
+          branch from the production bundle, while `npm run dev`,
+          `npm run e2e:serve` and vitest all run with DEV true — measured — so
+          `test/client/loginDemoLogins.test.tsx`, which parses `0002_seed.sql`
+          and asserts this list matches the seed, keeps its value unchanged.
+
+          This does NOT revoke the credential: those twelve rows are live in
+          production D1 and the addresses are guessable, so they still need
+          deactivating. Rotating the password instead breaks `scripts/smoke.mjs`
+          and `scripts/role-matrix.ts`, which both hardcode it. `docs/plan_pilot_gcw.md` §7. */}
+      {import.meta.env.DEV && (
       <Card className="w-full max-w-sm p-4">
         <div className="u-label mb-2">Demo logins · password demo1234</div>
         <ul className="flex flex-col gap-1">
@@ -123,6 +141,7 @@ export function LoginPage() {
           ))}
         </ul>
       </Card>
+      )}
     </div>
   );
 }

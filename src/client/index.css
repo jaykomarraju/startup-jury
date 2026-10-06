@@ -333,8 +333,10 @@
     cursor: pointer;
     white-space: nowrap;
   }
-  .tbb:hover:not(:disabled) {
-    background: var(--offwht);
+  @media (hover: hover) {
+    .tbb:hover:not(:disabled) {
+      background: var(--offwht);
+    }
   }
   .tbb:disabled {
     opacity: 0.5;
@@ -345,8 +347,10 @@
     border-color: var(--olive);
     color: #fff;
   }
-  .tbb.pr:hover:not(:disabled) {
-    background: var(--olive-dk);
+  @media (hover: hover) {
+    .tbb.pr:hover:not(:disabled) {
+      background: var(--olive-dk);
+    }
   }
   /* The pinned footer under the scrolling body: count on the left, legend right. */
   .tb-foot {
@@ -445,8 +449,18 @@
     opacity: 1;
   }
   /* `.tbr .tbb:not(.pr){display:none}` — a narrow toolbar keeps only the
-     primary action. */
-  .tbr .tbb:not(.pr) {
+     primary action.
+
+     EXCEPT a listbox trigger. `aria-haspopup="listbox"` occurs exactly ONCE in
+     the client — `DashboardPage.tsx:761`, the shared `FilterMenu` trigger
+     rendered twice as the Programme and Cohort pickers — so this exception
+     un-hides those two controls and nothing else, anywhere. They are the only
+     `.tbb`s that are not a repeat of an action available elsewhere: with them
+     hidden, a phone or tablet Dashboard has no way to change cohort at all, and
+     cohort-based intake is the pilot's whole story. Export and the Filter
+     toggles stay hidden deliberately — they are the widest to re-admit and the
+     least likely to be needed on a narrow screen. */
+  .tbr .tbb:not(.pr):not([aria-haspopup="listbox"]) {
     display: none;
   }
 }

@@ -373,7 +373,7 @@ export function EvalScorecard({
             {deck.status && <Badge tone="info">{deck.status}</Badge>}
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {nav && nav.total > 1 && (
             <div className="flex items-center gap-1">
               <button
