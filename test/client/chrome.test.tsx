@@ -232,14 +232,19 @@ describe("Sidebar chrome", () => {
 
   it("force-expands the section holding the active item, as the prototype does", () => {
     // The user collapsed Evaluation, then navigated into it.
+    //
+    // Driven at `/app/assign` rather than `/app/evaluate`: the client had Evaluate
+    // removed from every sidebar on 2026-10-07 as redundant with "Upload &
+    // Evaluate", so that route no longer HAS a sidebar row and cannot stand for
+    // "the active item" here. Assign sits in the same Evaluation section and is a
+    // real row, which is what this case is actually about — the section
+    // force-expanding around wherever the user is. The route itself still
+    // resolves; that is asserted in `test/unit/nav.test.ts`.
     localStorage.setItem("sj.sidebar.collapsed", JSON.stringify(["Evaluation", "Reports"]));
-    renderSidebar("/app/evaluate");
+    renderSidebar("/app/assign");
 
     // Evaluation is expanded again because that is where the user now is…
-    // Exact, not /Evaluate/: since R1-DASH the admin's Upload item is labelled
-    // "Upload & Evaluate" (nav item 8), and it sits in this same section — so a
-    // substring match finds two links and this stops being about the active one.
-    expect(screen.getByRole("link", { name: "Evaluate" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Assign" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Evaluation/ })).toHaveAttribute(
       "aria-expanded",
       "true",

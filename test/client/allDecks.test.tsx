@@ -2094,8 +2094,14 @@ describe("V3 integration — the report's Score-in-Evaluate link resolves by REA
     );
   });
 
-  it("the admin, whose sidebar still has it, keeps it too", async () => {
-    expect(isInSidebar("admin", navItemById("incubator", "evaluate")!)).toBe(true);
+  it("…and the admin, who LOST the sidebar row on 2026-10-07, keeps the link", async () => {
+    // This used to read "whose sidebar still has it". The client then asked for
+    // Evaluate to be dropped from every sidebar, which makes the admin the same
+    // case as the superuser above — and makes this assertion stronger than it was:
+    // the row is gone and the report's link still resolves, which is the whole
+    // claim of "resolves by REACHABILITY, not by sidebar visibility".
+    expect(isInSidebar("admin", navItemById("incubator", "evaluate")!)).toBe(false);
+    expect(canAccessNav("incubator", "admin", "evaluate")).toBe(true);
 
     vi.mocked(api.listDecks).mockResolvedValue({ decks: assigned });
     mount("admin", "u_admin");

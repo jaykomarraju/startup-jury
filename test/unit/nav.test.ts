@@ -284,20 +284,33 @@ describe("nav manifest", () => {
     }
   });
 
-  it("hides Evaluate from the superuser sidebar but KEEPS the route (item 10)", () => {
-    expect(ids(navForUser("incubator", "superuser"))).not.toContain("evaluate");
-    // The screen is still reachable — V3-UP reaches it from Upload (§4 Q6).
-    expect(canAccessNav("incubator", "superuser", "evaluate")).toBe(true);
-    expect(ids(reachableNav("incubator", "superuser"))).toContain("evaluate");
-
+  it("hides Evaluate from EVERY incubator sidebar but KEEPS the route", () => {
+    // V3 item 10 hid it from the superuser only. The client extended that to every
+    // role on 2026-10-07: "Evaluate item needs to be deleted from the side bar for
+    // any role. It is redundant because we now have Upload/Evaluate." The
+    // redundancy is in this manifest — `upload` renders as "Upload & Evaluate" for
+    // superuser, admin and program_associate.
     const evaluate = navItemById("incubator", "evaluate")!;
-    expect(isInSidebar("superuser", evaluate)).toBe(false);
-    // Nobody else is affected, in either edition.
-    for (const role of ["admin", "program_manager", "program_associate"] as Role[]) {
-      expect(isInSidebar(role, evaluate)).toBe(true);
-      expect(ids(navForUser("incubator", role))).toContain("evaluate");
+    for (const role of ["superuser", "admin", "program_manager", "program_associate"] as Role[]) {
+      expect(isInSidebar(role, evaluate), role).toBe(false);
+      expect(ids(navForUser("incubator", role)), role).not.toContain("evaluate");
+
+      // …and the ROUTE is untouched for every one of them. This is the half that
+      // matters: V3-UP reaches the screen from Upload (§4 Q6) and
+      // `DashboardPage.tsx:2969` links straight to it, so hiding the sidebar row
+      // must not close the door behind it.
+      expect(canAccessNav("incubator", role, "evaluate"), role).toBe(true);
+      expect(ids(reachableNav("incubator", role)), role).toContain("evaluate");
     }
+
+    // The VC edition is out of scope (client, 2026-10-01) and keeps its item.
     expect(ids(navForUser("vc", "superuser"))).toContain("evaluate");
+
+    // Nobody's landing screen moves, because `landingNavId` is the first VISIBLE
+    // item and Evaluate was never first for anyone.
+    for (const role of ["superuser", "admin", "program_manager", "program_associate"] as Role[]) {
+      expect(landingNavId("incubator", role), role).toBe("alldecks");
+    }
   });
 
   it("moves Intro calls above Prog manager pipeline for the superuser ONLY (§4 Q11)", () => {
@@ -329,9 +342,21 @@ describe("nav manifest", () => {
     // Every other entry, and every role's item COUNT, is `main`'s. That is the
     // guarantee the wave runs under: a widening must not quietly re-scope a
     // sidebar, and a diff on this table is the whole statement of what moved.
+    //
+    // ONE DELIBERATE EDIT SINCE, 2026-10-07: `evaluate:Evaluate` is gone from
+    // admin, program_manager and program_associate. The client: "Evaluate item
+    // needs to be deleted from the side bar for any role. It is redundant because
+    // we now have Upload/Evaluate." The redundancy is visible two columns to the
+    // left — `upload` already reads "Upload & Evaluate" for two of the three.
+    // The superuser lost it at V3 item 10 and the jury never had it, so this
+    // table is now consistent across every incubator role.
+    //
+    // The ROUTE is untouched for all of them; that is asserted separately, and it
+    // is the half that keeps `DashboardPage.tsx:2969`'s link and the prototype's
+    // `upSendToEvaluate()` working.
     const PINNED: Record<string, string[]> = {
       admin: [
-        "alldecks:Dashboard", "upload:Upload & Evaluate", "query:Query", "evaluate:Evaluate",
+        "alldecks:Dashboard", "upload:Upload & Evaluate", "query:Query",
         "assign:Assign", "jurypipeline:Jury Pipeline", "pmpipeline:Prog manager pipeline",
         "introcalls:Intro calls", "incuration:Sign up Pipeline", "curation:Onboard ready",
         "archive:Archive", "cohortsummary:Cohort summary", "evaluatorscores:Evaluator scores",
@@ -341,7 +366,7 @@ describe("nav manifest", () => {
         "help:Help", "support:Tickets", "issues:Issue log",
       ],
       program_manager: [
-        "alldecks:Dashboard", "upload:Upload", "query:Query", "evaluate:Evaluate",
+        "alldecks:Dashboard", "upload:Upload", "query:Query",
         "assign:Assign", "jurypipeline:Jury Pipeline", "pmpipeline:Prog manager pipeline",
         "introcalls:Intro calls", "incuration:Sign up Pipeline", "curation:Onboard ready",
         "archive:Archive", "cohortsummary:Cohort summary", "evaluatorscores:Evaluator scores",
@@ -350,7 +375,7 @@ describe("nav manifest", () => {
         "contactteam:Contact team", "help:Help", "issues:Issue log",
       ],
       program_associate: [
-        "alldecks:Dashboard", "upload:Upload & Evaluate", "query:Query", "evaluate:Evaluate",
+        "alldecks:Dashboard", "upload:Upload & Evaluate", "query:Query",
         // `jurypipeline` GRANTED 2026-10-02 (Oct-2 issue 2) — read-only, between
         // Assign and Intro calls, which is where `INCUBATOR_NAV` declares it. The
         // associate's variant draws the staff columns with no Action cell; see

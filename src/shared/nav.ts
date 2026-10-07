@@ -128,10 +128,27 @@ const INCUBATOR_NAV: NavItem[] = [
   // by a move: with the standalone Evaluate item gone, Query already sits
   // directly after Upload & Evaluate.
   { id: "query", label: "Query", icon: "MessageSquare", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"], task: "query" },
-  // V3 item 10 — the superuser sidebar drops the standalone Evaluate item. The
-  // ROUTE stays reachable for them (see `hiddenFor`): the prototype reaches the
-  // screen from Upload via `upSendToEvaluate()`, which is V3-UP's Q6.
-  { id: "evaluate", label: "Evaluate", icon: "ClipboardCheck", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"], task: "evaluate", hiddenFor: ["superuser"] },
+  // V3 item 10 dropped the standalone Evaluate item from the SUPERUSER sidebar.
+  // The client extended that to every role on 2026-10-07: "Evaluate item needs to
+  // be deleted from the side bar for any role. It is redundant because we now have
+  // Upload/Evaluate, per the latest design." That is visible in this very file —
+  // `upload`'s `labelOverrides` already render it as **"Upload & Evaluate"** for
+  // superuser, admin and program_associate, so those roles were carrying two
+  // sidebar rows for one idea.
+  //
+  // `hiddenFor` is SIDEBAR VISIBILITY ONLY; `canAccessNav` is unchanged, so
+  // `/app/evaluate` stays reachable for every role that could reach it before.
+  // That matters more than it looks: the prototype arrives at the screen from
+  // Upload via `upSendToEvaluate()` (V3-UP Q6), and `DashboardPage.tsx:2969`
+  // renders a primary toolbar Link straight to it. Neither path goes through the
+  // sidebar, so nothing that works today stops working.
+  //
+  // Measured before shipping: every incubator role lands on `alldecks`
+  // (`landingNavId` is the first VISIBLE item), so hiding this one cannot move
+  // anybody's landing screen. The program_manager is the one role whose Upload
+  // item is NOT relabelled "Upload & Evaluate" — they reach the screen from the
+  // Dashboard button instead.
+  { id: "evaluate", label: "Evaluate", icon: "ClipboardCheck", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"], task: "evaluate", hiddenFor: ["superuser", "admin", "program_manager", "program_associate"] },
   { id: "assign", label: "Assign", icon: "UserPlus", section: "Evaluation", roles: ["admin", "program_manager", "program_associate"], task: "assign" },
   { id: "jassigned", label: "Assigned", icon: "UserCheck", section: "Evaluation", roles: ["jury"], task: "evaluate", exclusive: true },
   {
