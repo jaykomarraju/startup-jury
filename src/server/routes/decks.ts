@@ -6,8 +6,8 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv, SessionUser } from "../types";
 import type { Edition, Role } from "../../shared/roles";
-import { evaluationRank, isAssignableEvaluator, roleLabel } from "../../shared/roles";
-import { canSeeEvaluatorScoresIn } from "../../shared/scoreVisibility";
+import { evaluationRank, isAssignableEvaluator, roleLabel, ROLES_BY_EDITION } from "../../shared/roles";
+import { canSeeEvaluatorScoresIn, type VisibilityMatrix } from "../../shared/scoreVisibility";
 import { getStage, allowedTransitions } from "../../pipeline";
 import {
   aiWeightFor,
@@ -617,6 +617,192 @@ function oneDeck(user: SessionUser, deckId: string, alias = "d") {
   return scoped(scopeOf(user)).on(alias).and(`${alias}.id = ?`, deckId);
 }
 
+// ── Whose numbers a viewer may see — ONE rule, two readers ───────────────────
+//
+// Issue 21 (the hierarchy), V3 item 13 (the configurable matrix) and F0109 (the
+// "Jury can see each other's scores" toggle), exactly as `GET /:id/report` has
+// enforced them. Lifted out of that route, unchanged in order, when the Jury
+// Pipeline began printing each juror's score beside their name (23-Oct tracker,
+// P1): that report is one click from the same row, and a second copy of this
+// predicate is how a cell ends up showing a number the report it opens withholds.
+//
+// The order is the report's and it matters:
+//   1. your OWN evaluation is always yours — identity beats role;
+//   2. the peer toggle: OFF (the shipped default, `0026`), every ASSIGNABLE
+//      evaluator — jury, programme associate AND programme manager
+//      (`ASSIGNABLE_EVALUATOR_ROLES`) — sees no one else's, matrix unconsulted;
+//   3. the matrix, falling through to the rank ladder for pairs it does not draw
+//      (`admin`), which is what keeps admin and superuser seeing everything.
+//
+// The one behaviour that moved in the lift: an evaluator whose role cannot be
+// resolved (no `users` row behind the id, or a value outside this edition's
+// roles) is now WITHHELD. The report used to cast it to `"" as Role`, which the
+// ladder reads as rank 0 — visible to every viewer, a fail-open no write path
+// can reach. Resolving through `ROLES_BY_EDITION` closes it without a cast.
+function evaluatorScoreRule(
+  viewer: Pick<SessionUser, "id" | "edition" | "role">,
+  scoring: Pick<ScoringSettings, "jurySeesPeerScores">,
+  visibility: VisibilityMatrix,
+) {
+  const peerRestricted = !scoring.jurySeesPeerScores && isAssignableEvaluator(viewer.edition, viewer.role);
+  return {
+    peerRestricted,
+    canSee(evaluatorId: string, evaluatorRole: string | null): boolean {
+      if (evaluatorId === viewer.id) return true;
+      if (peerRestricted) return false;
+      const target = ROLES_BY_EDITION[viewer.edition].find((r) => r === evaluatorRole);
+      return target !== undefined && canSeeEvaluatorScoresIn(visibility, viewer.edition, viewer.role, target);
+    },
+  };
+}
+
+// ── Jury members and their scores (23-Oct tracker, P1) ───────────────────────
+//
+// The client, twice by email: "each startup may be assigned to multiple jurors.
+// Therefore it should show multiple juror names and their respective scores next
+// to each startup name." `assigneeIds` already carried every assignee; what no
+// payload carried was each one's name, whether they have submitted, and their
+// score. `jurors` is those three, per assignee, in the order the panel was built.
+
+/** One assigned evaluator on a deck, as the Jury Pipeline draws them. */
+export interface JurorView {
+  id: string;
+  name: string;
+  /** An `evaluations` row exists — the same test `assignee_submitted` makes for the first assignee. */
+  submitted: boolean;
+  /**
+   * Their weighted total. ABSENT — not null, not 0 — whenever `evaluatorScoreRule`
+   * says this viewer may not see it, so the number never reaches the browser.
+   */
+  score?: number;
+  /** They have submitted and this viewer may not see the number: the cell says so rather than "—". */
+  scoreWithheld?: true;
+}
+
+/**
+ * Editions whose listing carries `jurors`. VC is false and says so out loud: its
+ * `jurypipeline` deliberately has no juror column (StagePage, "no juror column"),
+ * the edition is out of scope by instruction, and an absent field keeps its
+ * payload byte-identical. Same shape as `ROW3_RECORDED_QUERY` above.
+ */
+const JURORS_ON_LIST: Record<Edition, boolean> = { incubator: true, vc: false };
+
+/**
+ * Who receives `jurors` at all — the NAMES, before any score is considered.
+ *
+ * Not founders: F0464 is the founder portal serving a founder their evaluator's
+ * name, and this would be a second, longer channel for it.
+ *
+ * Not the jury (`scopesToOwnDecks`). Their own screen draws no panel column
+ * (R7-JURY: "Jury members & status … not on the jury's table at all"), and the
+ * report they can open withholds every co-juror's column, NAME included, at the
+ * shipped settings. Sending co-jurors' names here would make this listing the one
+ * place a juror learns who else is on their panel.
+ */
+function receivesJurors(edition: Edition, role: Role): boolean {
+  return JURORS_ON_LIST[edition] && role !== "founder" && !scopesToOwnDecks(role);
+}
+
+/**
+ * The panel: `deck_assignments` UNION the legacy `decks.assigned_to`. This is
+ * `BASE_ASSIGNEE_PAIRS_SQL` from `decks/assignments.ts` verbatim — that file
+ * exports only the union WITH the out-of-office delegation arm, and is not this
+ * lane's to change, so it is copied rather than imported (raised for integration).
+ *
+ * **A delegate does NOT appear in the cell, and that is decided, not missed.**
+ *   • Delegation is AUTHORISATION — "may score this deck while X is away" — and
+ *     it is evaluated against `date('now')` (`currentlyOutSql`). In this cell it
+ *     would make a deck's panel change on a calendar date with nobody assigning
+ *     or removing anyone, and drop the delegate again when the window closes.
+ *   • `assigneeIds`, which the Dashboard and Evaluate already read as "this
+ *     deck's evaluators", has never included the arm (`assignee_ids` reads
+ *     `deck_assignments` directly). The cell lists exactly that set.
+ *   • The absent juror stays "Pending", which is what the server believes too:
+ *     `allEvaluatorsHaveScored` (`routes/pipeline.ts`) still waits on them.
+ * A delegate who does score is not lost — their column is on the report.
+ */
+const PANEL_PAIRS_SQL =
+  "SELECT deck_id, evaluator_id FROM deck_assignments " +
+  "UNION SELECT id AS deck_id, assigned_to AS evaluator_id FROM decks WHERE assigned_to IS NOT NULL";
+
+interface JurorRow {
+  deck_id: string;
+  evaluator_id: string;
+  name: string | null;
+  role: string | null;
+  submitted: number;
+  total: number | null;
+}
+
+/**
+ * Every listed deck's panel, keyed by deck id — a SECOND statement, never a join
+ * on the listing. A deck with three jurors joined into `GET /` would become three
+ * rows and corrupt every count drawn from that payload: the screen's own rows,
+ * its footer, the Dashboard's tiles. One row per (deck, evaluator) is harmless
+ * HERE because nothing counts this statement's rows.
+ *
+ * Keyed by the listing's ids through `json_each(?)`: ONE bind however many decks
+ * are listed. D1 caps a statement at 100 bound parameters, and a workspace's
+ * listing has no cap at all, so `IN (?, ?, …)` would start failing at deck 100.
+ * The ids came off a scoped read, and the workspace predicate goes on again
+ * anyway, so an id from another customer could not survive it.
+ *
+ * Each per-evaluator field is a correlated subquery, the shape `DECK_DERIVED`
+ * uses, so a second `evaluations` row for one pair (the table has no unique key
+ * on it) cannot double a juror either.
+ */
+async function loadJurors(
+  c: Context<AppEnv>,
+  deckIds: string[],
+  scoring: Pick<ScoringSettings, "jurySeesPeerScores">,
+): Promise<Map<string, JurorView[]>> {
+  const panels = new Map<string, JurorView[]>();
+  if (deckIds.length === 0) return panels;
+  const qj = scoped(scopeOf(c.var.user))
+    .on("d")
+    .and("d.id IN (SELECT value FROM json_each(?))", JSON.stringify(deckIds));
+  const rows = (
+    await c.env.DB.prepare(
+      "SELECT ap.deck_id AS deck_id, ap.evaluator_id AS evaluator_id, u.name AS name, u.role AS role, " +
+        "EXISTS (SELECT 1 FROM evaluations e WHERE e.deck_id = ap.deck_id AND e.evaluator_id = ap.evaluator_id) AS submitted, " +
+        "(SELECT e.weighted_total FROM evaluations e WHERE e.deck_id = ap.deck_id AND e.evaluator_id = ap.evaluator_id " +
+        "   ORDER BY e.submitted_at DESC LIMIT 1) AS total " +
+        `FROM decks d JOIN (${PANEL_PAIRS_SQL}) ap ON ap.deck_id = d.id ` +
+        // Same tenant condition as `DECK_JOINS`' assignee join: a drifted id
+        // renders as an unnamed evaluator, never as another customer's person.
+        "LEFT JOIN users u ON u.id = ap.evaluator_id AND u.tenant_id = d.tenant_id " +
+        // The first assignee first — the name this cell showed alone until now —
+        // then the rest in the order they were put on the panel.
+        `${qj.whereClause()} ORDER BY ap.deck_id, CASE WHEN ap.evaluator_id = d.assigned_to THEN 0 ELSE 1 END, ` +
+        "(SELECT da.assigned_at FROM deck_assignments da WHERE da.deck_id = ap.deck_id AND da.evaluator_id = ap.evaluator_id), u.name",
+    )
+      .bind(...qj.binds)
+      .all<JurorRow>()
+  ).results;
+
+  const rule = evaluatorScoreRule(
+    c.var.user,
+    scoring,
+    await loadScoreVisibility(c.env.DB, scopeOf(c.var.user)),
+  );
+  for (const r of rows) {
+    const submitted = r.submitted > 0;
+    const visible = rule.canSee(r.evaluator_id, r.role);
+    const juror: JurorView = {
+      id: r.evaluator_id,
+      // The report's own fallback for an evaluator with no name on file.
+      name: r.name ?? "Evaluator",
+      submitted,
+      ...(submitted && visible && typeof r.total === "number" ? { score: r.total } : {}),
+      ...(submitted && !visible ? { scoreWithheld: true as const } : {}),
+    };
+    const panel = panels.get(r.deck_id);
+    if (panel) panel.push(juror);
+    else panels.set(r.deck_id, [juror]);
+  }
+  return panels;
+}
+
 /** GET /api/decks — decks in the caller's edition (Review-decks table),
  *  optionally filtered by `programId` / `cohortId` (toolbar filter dropdowns).
  *  Founders are isolated to their own submissions (portal scope).
@@ -824,7 +1010,15 @@ decks.get("/", async (c) => {
   // `ratingAtOrAboveGate` reads an absent score as "not below the gate", so
   // filtering the already-blanked rows would have given a juror mid-blind-scoring
   // a different Assign roster from the PM's.
-  const views = rows.map((r) => toDeckView(edition, r, role, scoring));
+  //
+  // P1 — each listed deck's panel, from a second statement (`loadJurors`), so the
+  // row count above is the row count served. Attached before routing and before
+  // the blind-scoring pass below, so both branches carry it; neither reads it.
+  const panels = receivesJurors(edition, role) ? await loadJurors(c, rows.map((r) => r.id), scoring) : null;
+  const views = rows.map((r) => {
+    const view = toDeckView(edition, r, role, scoring);
+    return panels ? { ...view, jurors: panels.get(r.id) ?? [] } : view;
+  });
   if (!withholdsAiScore(scoring, { isEvaluator: isAssignableEvaluator(edition, role), hasSubmitted: false })) {
     return c.json({ decks: routed(views) });
   }
@@ -1872,7 +2066,6 @@ decks.get("/:id/report", async (c) => {
     deckRow.program_ai_weight_pct,
     scoring.aiWeightPct,
   );
-  const peerRestricted = !scoring.jurySeesPeerScores && isAssignableEvaluator(edition, role);
 
   // ── The role rule (V3 item 13) ────────────────────────────────────────────
   // What used to be the fixed `EVALUATION_RANK` ladder is now the admin
@@ -1882,7 +2075,12 @@ decks.get("/:id/report", async (c) => {
   // CELLS either (see the `visibleEvaluators` pass below). Pairs the matrix
   // does not draw — `admin` is in neither edition's — fall through to the
   // ladder, so nothing outside the 4×4 / 5×5 changed.
-  const visibility = await loadScoreVisibility(c.env.DB, scope);
+  //
+  // P1 — the toggle above and this matrix are now ONE function,
+  // `evaluatorScoreRule`, because the Jury Pipeline's per-juror scores must be
+  // decided by exactly what decides this report's columns.
+  const rule = evaluatorScoreRule(c.var.user, scoring, await loadScoreVisibility(c.env.DB, scope));
+  const peerRestricted = rule.peerRestricted;
 
   // ── Blind scoring (F0106) — the third route that has to hold it ───────────
   // "Show AI score to jury before they score" · off for blind independent jury
@@ -1916,9 +2114,7 @@ decks.get("/:id/report", async (c) => {
     const evaluatorRole = (person.evaluator_role ?? "") as Role;
     // Issue 21 / item 13 — your own column is always visible whatever the
     // matrix says: identity beats role. The matrix decides everyone else.
-    const visible =
-      person.evaluator_id === viewerId ||
-      (!peerRestricted && canSeeEvaluatorScoresIn(visibility, edition, role, evaluatorRole));
+    const visible = rule.canSee(person.evaluator_id, person.evaluator_role);
     if (!visible) {
       hidden += 1;
       seenEvaluators.set(person.evaluator_id, {
