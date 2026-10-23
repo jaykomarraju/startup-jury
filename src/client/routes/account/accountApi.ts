@@ -142,5 +142,26 @@ export const placeOrder = (input: {
 }) =>
   call<OrderResult>("/api/account/orders", { method: "POST", body: JSON.stringify(input) });
 
+/**
+ * P2 — one order, as the receipt shows it. The provider's return lands on
+ * `/app/account?order=<id>`; the server applies a payment nobody has reported
+ * yet before answering (`reconcileIntent`), so this is the paid state when the
+ * customer has paid.
+ */
+export const getOrder = (id: string) =>
+  call<AccountOrderView>(`/api/account/orders/${encodeURIComponent(id)}`);
+
+/**
+ * P2 — send the customer to the provider's hosted page. Only an `https:` URL
+ * the SERVER returned is followed; anything else is left to the receipt's own
+ * "Continue to secure payment" link, which shows the URL it would open.
+ * A function of its own so a test can observe the navigation jsdom cannot make.
+ */
+export function openCheckout(url: string): boolean {
+  if (!/^https:\/\//i.test(url)) return false;
+  window.location.assign(url);
+  return true;
+}
+
 export const orderDocumentUrl = (id: string) =>
   `/api/account/orders/${encodeURIComponent(id)}/document`;

@@ -86,6 +86,8 @@ import {
 import {
   AccountApiError,
   getAccount,
+  getOrder,
+  openCheckout,
   takeTrial,
   getPublishedCatalogue,
   orderDocumentUrl,
@@ -181,6 +183,10 @@ function orderErrorMessage(err: unknown): string {
   switch (code) {
     case "not_priced_in_currency":
       return "That plan is not sold in this currency. Choose another currency or plan.";
+    case "checkout_failed":
+      // P2 — the provider would not open a checkout. The server says nothing was
+      // charged, and so does this.
+      return "The payment provider could not start this payment. Nothing has been charged — try again in a moment.";
     case "currency_not_for_billing_country":
       // The server refuses rather than re-denominating, so the honest fix is to
       // go back to the address that set the currency.
@@ -215,7 +221,15 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
 
-  const [screen, setScreen] = useState<AccountScreen>(entry === "buy-credits" ? "plan" : "account");
+  /**
+   * P2 — the provider's return lands on `/app/account?order=<id>`: open on that
+   * order's receipt. The server applies a payment nobody has reported yet before
+   * it answers, so a customer who paid sees "Paid" and their credits.
+   */
+  const [returningOrder] = useState(() => new URLSearchParams(location.search).get("order"));
+  const [screen, setScreen] = useState<AccountScreen>(
+    returningOrder ? "success" : entry === "buy-credits" ? "plan" : "account",
+  );
   const [account, setAccount] = useState<AccountDraft | null>(null);
   const [orgKind, setOrgKind] = useState<OrgKind>(user?.edition === "vc" ? "investor" : "incubator");
   const [org, setOrg] = useState<OrgDraft | null>(null);
@@ -347,6 +361,23 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
       live = false;
     };
   }, [reload, edition]);
+
+  // P2 — the receipt a provider return lands on (`returningOrder` above).
+  const [returnError, setReturnError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!returningOrder) return;
+    let live = true;
+    getOrder(returningOrder)
+      .then((o) => {
+        if (live) setOrder(o);
+      })
+      .catch(() => {
+        if (live) setReturnError("We couldn't load that order. It is listed under your recent orders once it is confirmed.");
+      });
+    return () => {
+      live = false;
+    };
+  }, [returningOrder]);
 
   // ── Overlay behaviour: Escape, scroll lock, focus, and an inert shell behind.
   useEffect(() => {
@@ -868,6 +899,11 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
       });
       setOrder(res.order);
       go("success");
+      // P2 — with a provider configured the order is `redirected`: the customer
+      // pays on Razorpay's page and comes back to `/app/account?order=<id>`. The
+      // receipt rendered above keeps a "Continue to secure payment" link in case
+      // the navigation is blocked.
+      if (res.checkout.hosted && res.checkout.url) openCheckout(res.checkout.url);
     } catch (err) {
       setOrderError(orderErrorMessage(err));
     } finally {
@@ -1134,6 +1170,22 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         error={orderError}
         billing={billingBack ? billing : null}
       />
+    );
+  } else if (screen === "success" && !order && returningOrder) {
+    body = (
+      <Card>
+        <h1 className="text-[23px] font-bold leading-[1.2] text-fg">Your order</h1>
+        <p className="mt-3 text-[13.5px] text-fg-2" aria-live="polite" role={returnError ? "alert" : undefined}>
+          {returnError ?? "Checking your payment…"}
+        </p>
+        {returnError && (
+          <div className="mt-[26px] flex justify-end">
+            <button type="button" className={BTN_GHOST} onClick={() => go(planScreen)}>
+              Back to plan selection
+            </button>
+          </div>
+        )}
+      </Card>
     );
   } else if (screen === "success" && order) {
     body = (

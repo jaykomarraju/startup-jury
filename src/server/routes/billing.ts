@@ -15,12 +15,15 @@
  * the provider's business, on a page the provider hosts
  * (`src/server/billing/provider.ts`).
  *
- * **§1.3 — interface-complete, provider-stubbed.** A purchase RECORDS its intent
- * in `billing_payment_intents` with `status='recorded'`, exactly as
- * `crm_sync_log` records a sync it did not perform and `email_outbox` records a
- * message it did not send. It grants no credits and activates no plan, and the
- * response says so in as many words. Reporting a recorded intent as a completed
- * payment is the one failure this whole module is shaped to prevent.
+ * **§1.3 — a purchase is never reported as paid until the provider says so.**
+ * With no provider configured, a purchase RECORDS its intent in
+ * `billing_payment_intents` with `status='recorded'`, exactly as `crm_sync_log`
+ * records a sync it did not perform. With Razorpay configured (P2,
+ * `PAYMENTS_RAZORPAY_KEY`), it opens a hosted checkout (`redirected`), and the
+ * credits are granted only when Razorpay confirms the money — through the two
+ * session-less routes at the top of this file — by `billing/fulfilment.ts`.
+ * Reporting an unconfirmed intent as a completed payment is the one failure
+ * this whole module is shaped to prevent.
  *
  * Metering is untouched and stays where it is: `decks/versions.ts` reserves one
  * credit per evaluation under a conditional UPDATE, and now writes the ledger
@@ -59,7 +62,17 @@ import {
   readTaxSettings,
   usageTotals,
 } from "../billing/ledger";
-import { paymentConfigured, recordPaymentIntent, type IntentPurpose } from "../billing/provider";
+import {
+  INTENT_ID,
+  paymentConfigured,
+  paymentReturnUrl,
+  paymentWebhookSecretRef,
+  recordPaymentIntent,
+  resolvePaymentAdapter,
+  secretFor,
+  type IntentPurpose,
+} from "../billing/provider";
+import { closeUnpaidIntent, fulfilPayment } from "../billing/fulfilment";
 // V6-INVOICE — the two templates, the record behind them, and the 10 GB-per-seat
 // figure. All in `src/server/billing/**` so this router stays a router.
 import { loadInvoiceRecord, renderInvoiceDocument } from "../billing/invoice";
@@ -67,6 +80,79 @@ import { storageAllowanceForSeats } from "../billing/storage";
 import { emailDeliveryConfigured } from "../email/outbox";
 
 const billing = new Hono<AppEnv>();
+
+// ══ P2 · THE TWO ROUTES WITH NO SESSION — REGISTERED BEFORE `requireAuth` ═══
+//
+// Razorpay calls the webhook server-to-server, and sends the customer back
+// through the return route from its own domain — neither carries a session we
+// can rely on (a customer who paid on a phone and was signed out meanwhile has
+// still paid). Hono runs handlers in REGISTRATION order, so these two answer
+// before the `use("*", requireAuth)` below is ever reached; every other route in
+// this file is registered after it and stays behind it, which
+// `payment-gateway.test.ts` asserts with a cookie-less negative control.
+//
+// They are mounted HERE, under `/api/billing`, because `src/server/index.ts` is
+// not this lane's file and a new top-level mount would be a cross-lane edit.
+// What authenticates them instead of a session is the provider's HMAC
+// (`billing/razorpay.ts`), checked before anything is read or written.
+
+/** Where the customer lands after paying: their receipt, or this console section. */
+async function landingFor(env: AppEnv["Bindings"], intentId: string): Promise<string> {
+  const row = await env.DB.prepare("SELECT 1 AS n FROM account_orders WHERE intent_id = ?")
+    .bind(intentId)
+    .first<{ n: number }>();
+  return row ? `/app/account?order=${encodeURIComponent(intentId)}` : "/app/admin?section=bl";
+}
+
+billing.post("/webhooks/:provider", async (c) => {
+  const adapter = resolvePaymentAdapter(c.env);
+  if (!adapter || adapter.provider !== c.req.param("provider")) {
+    return c.json({ error: "payments_not_configured" }, 503);
+  }
+  // 503, not 401, when the webhook secret is missing: the request may be genuine
+  // and the fault is ours, so Razorpay should retry once it is set rather than
+  // count failures toward disabling the endpoint.
+  if (!secretFor(c.env, paymentWebhookSecretRef(adapter.provider))) {
+    return c.json({ error: "webhook_secret_not_configured" }, 503);
+  }
+  // The RAW body: the signature is over these exact bytes.
+  const verdict = await adapter.verifyWebhook(await c.req.text(), c.req.raw.headers);
+  switch (verdict.kind) {
+    case "unverified":
+      return c.json({ error: "invalid_signature" }, 401);
+    case "ignored":
+      return c.json({ ok: true, ignored: verdict.event });
+    case "closed":
+      await closeUnpaidIntent(c.env, adapter.provider, verdict.reference, verdict.providerRef);
+      return c.json({ ok: true });
+    case "paid": {
+      // A database failure throws out of here as a 500, which is what makes
+      // Razorpay deliver again: a paid webhook is never acknowledged unapplied.
+      const result = await fulfilPayment(c.env, adapter.provider, verdict.confirmation);
+      return c.json({ ok: true, outcome: result.outcome });
+    }
+  }
+});
+
+billing.get("/return", async (c) => {
+  const query = new URL(c.req.url).searchParams;
+  const reference = query.get("razorpay_payment_link_reference_id");
+  const intentId = reference && INTENT_ID.test(reference) ? reference : null;
+  const adapter = resolvePaymentAdapter(c.env);
+  if (adapter) {
+    try {
+      const confirmation = await adapter.verifyReturn(query);
+      if (confirmation) await fulfilPayment(c.env, adapter.provider, confirmation);
+    } catch (err) {
+      // The customer is sent on regardless. The webhook, and the receipt's own
+      // lookup (`GET /api/account/orders/:id`), apply the payment if this did not.
+      console.error("payment return:", err);
+    }
+  }
+  // 303: the browser must GET the landing page whatever method brought it here.
+  return c.redirect(intentId ? await landingFor(c.env, intentId) : "/app/account", 303);
+});
+
 billing.use("*", requireAuth);
 // The whole Admin console is admin + superuser, gated on the `adminconsole` task
 // so that revoking that cell closes the screen AND its API in one place (§8 Q16).
@@ -372,6 +458,7 @@ billing.post("/purchase", async (c) => {
     currency,
     money,
     actorId: c.var.user.id,
+    returnUrl: paymentReturnUrl(c.env, c.req.url),
   });
 
   await recordAudit(c, {
@@ -391,8 +478,26 @@ billing.post("/purchase", async (c) => {
     targetId: intent.id,
   });
 
-  // The contract, spelled out in the payload so no client can misreport it: the
-  // intent is RECORDED, no payment has been taken, and no credits were granted.
+  // P2 — the provider REFUSED to open a checkout. Nothing was charged, and the
+  // answer says so with a non-2xx rather than an `ok: true` the panel would
+  // render as a recorded purchase: this is the "honestly refused" branch.
+  if (intent.status === "failed") {
+    return c.json(
+      {
+        error: "checkout_failed",
+        intent,
+        completed: false,
+        creditsGranted: 0,
+        message: "The payment provider could not start this payment. Nothing has been charged — try again.",
+      },
+      502,
+    );
+  }
+
+  // The contract, spelled out in the payload so no client can misreport it:
+  // nothing has been paid YET and no credits have been granted. With a provider,
+  // the customer pays on its page and `billing/fulfilment.ts` grants on its
+  // confirmation; without one, the intent is only recorded.
   return c.json({
     ok: true,
     intent,
@@ -402,7 +507,7 @@ billing.post("/purchase", async (c) => {
       ? { hosted: true, url: intent.checkoutUrl }
       : { hosted: false, url: null },
     message: intent.checkoutUrl
-      ? "Continue on the payment provider's own page to complete this purchase."
+      ? "Continue on the payment provider's own page to complete this purchase. Credits are added as soon as the payment is confirmed."
       : "Purchase intent recorded. No payment provider is configured, so nothing has been " +
         "charged and no credits have been added — our team will follow up to complete it.",
   });

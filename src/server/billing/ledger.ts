@@ -185,14 +185,18 @@ export interface GrantResult {
  *      row's id is minted fresh for this call, so "it exists" means exactly
  *      "statement 1 inserted it, in this transaction". The balance therefore
  *      moves if and only if its explanation was written.
- *   3. `also` — whatever else must change with the grant (a payment intent's
- *      status), so a crash cannot leave an intent "completed" with no credits,
- *      or credits with an intent still "waiting".
+ *   3. `also(entryId)` — whatever else must change with the grant (a payment
+ *      intent's status, its invoice, the audit row), so a crash cannot leave an
+ *      intent "completed" with no credits, or credits with an intent still
+ *      "waiting". It is handed the ledger row's id so each statement can carry
+ *      the same `WHERE EXISTS (… id = ?)` and be a no-op when the guard refused.
  *
- * Rejected: reading `changes()` in statement 2. SQLite does report the previous
- * statement's count there, but it is a property of the CONNECTION, and whether
- * a batch's statements share one is D1's implementation rather than its
- * contract. A fresh id is a contract.
+ * Considered: `WHERE changes() = 1` in statement 2. It works — Wave A's P4
+ * measured it in the local runtime on the same day (`automation.test.ts`, its
+ * shortlist sweep) — but it holds only for the statement IMMEDIATELY after the
+ * write, and this batch has three more that must follow the same decision.
+ * `changes()` after statement 2 describes statement 2. A fresh id stays true for
+ * every statement in the batch, so it is the one used here.
  *
  * Statement 2 is an upsert and not a bare `UPDATE` for the reason
  * `routes/config.ts` records at length: nothing in the running product creates a
@@ -211,7 +215,7 @@ export async function grantCredits(
   env: Env,
   scope: TenantScope,
   entry: LedgerEntry,
-  opts: { guard?: GrantGuard; also?: D1PreparedStatement[] } = {},
+  opts: { guard?: GrantGuard; also?: (entryId: string) => D1PreparedStatement[] } = {},
 ): Promise<GrantResult> {
   const delta = Math.trunc(entry.delta);
   if (!(delta > 0)) throw new Error("grantCredits: a grant adds credits — use reserveCredits to spend");
@@ -242,7 +246,7 @@ export async function grantCredits(
       "credits_balance = org_settings.credits_balance + excluded.credits_balance",
   ).bind(...t.binds, delta, id);
 
-  const results = await env.DB.batch([ledger, balance, ...(opts.also ?? [])]);
+  const results = await env.DB.batch([ledger, balance, ...(opts.also?.(id) ?? [])]);
   return { granted: (results[0]?.meta.changes ?? 0) === 1, entryId: id };
 }
 

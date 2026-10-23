@@ -2583,12 +2583,12 @@ export function PaymentScreen({
           <Lock className="h-[14px] w-[14px] shrink-0 text-[var(--ac-green)]" aria-hidden="true" />
           Your card, UPI or bank details are entered on the payment provider's secure page — never in this application.
         </div>
-        {/* V6 names the provider: "Payments secured by Razorpay". It is named,
-            not integrated — `ADAPTERS` in `src/server/billing/provider.ts` is
-            empty by design until pricing is final, so this line says who will
-            take the payment and the button below says what happens today. No
-            method row is added for it: `PaymentMethod` is persisted, and a new
-            value is a schema change, not a copy change. */}
+        {/* V6 names the provider: "Payments secured by Razorpay". P2 integrated
+            it (`src/server/billing/razorpay.ts`); it TAKES money only on a
+            deployment where `PAYMENTS_RAZORPAY_KEY` is set, which is what
+            `paymentConfigured` reports, so the note below still says what
+            happens without it. No method row is added for the provider:
+            `PaymentMethod` is persisted, and a new value is a schema change. */}
         <div className="mb-3.5 text-[11px] leading-[1.55] text-fg-muted" data-testid="ac-provider-note">
           Payments are processed by <b className="font-semibold text-fg-2">Razorpay</b> — UPI, cards,
           net banking and wallets — on their own secure page.
@@ -2606,7 +2606,16 @@ export function PaymentScreen({
         )}
         <button type="button" className={`${BTN_GO} ${BTN_FULL}`} onClick={onPay} disabled={busy} data-testid="ac-pay">
           <Lock className="h-4 w-4" aria-hidden="true" />
-          {busy ? "Recording order…" : paymentConfigured ? `Pay ${total} & activate plan` : `Place order · ${total}`}
+          {/* P2 — V6 reads "Pay <total> & activate plan". A completed payment
+              grants the order's decks (`billing/fulfilment.ts`); it does not change
+              the workspace's tier or seats, so the button does not promise that. */}
+          {busy
+            ? paymentConfigured
+              ? "Opening secure payment…"
+              : "Recording order…"
+            : paymentConfigured
+              ? `Pay ${total} securely`
+              : `Place order · ${total}`}
         </button>
         <div className="mt-3.5 text-center">
           <button type="button" onClick={onBack} className="inline-flex items-center gap-1 text-[12.5px] text-fg-muted hover:text-fg">
@@ -2752,9 +2761,22 @@ export function ReceiptScreen({
         <Check className="h-9 w-9" aria-hidden="true" />
       </div>
       <h1 className="text-[25px] font-bold text-fg">{successTitle(order)}</h1>
-      <div className="mt-[7px] text-[13.5px] leading-[1.55] text-fg-muted">
+      <div className="mt-[7px] text-[13.5px] leading-[1.55] text-fg-muted" data-testid="ac-receipt-lead">
+        {/* P2 — what a completed payment actually DID: `billing/fulfilment.ts`
+            adds the order's decks to the balance. It does not change the
+            workspace's tier or seats, so "your plan is now active" (V6) would be a
+            claim nothing backs. */}
         {order.status === "completed" ? (
-          <>Your {order.planName} plan is now active.</>
+          order.units !== null && order.units > 0 ? (
+            <>
+              Payment received — {order.units.toLocaleString("en-IN")} credit{order.units === 1 ? " is" : "s are"} now in
+              your balance.
+            </>
+          ) : (
+            <>Payment received for your {order.planName} order.</>
+          )
+        ) : order.status === "redirected" ? (
+          <>Your {order.planName} order is waiting for payment on the provider&rsquo;s page — nothing has been charged yet.</>
         ) : (
           <>Your {order.planName} order is recorded — nothing has been charged yet.</>
         )}
@@ -2805,9 +2827,13 @@ export function ReceiptScreen({
 
       <div className="mt-[18px] flex gap-[9px] rounded-[10px] border border-stone-dk bg-offwhite px-4 py-[13px] text-left text-[12px] leading-[1.55] text-fg-2">
         <Mail className="mt-px h-[15px] w-[15px] shrink-0 text-[var(--ac-green)]" aria-hidden="true" />
-        {order.taxed
-          ? "A GST-compliant tax invoice, suitable for input tax credit, is emailed to your registered address and stays downloadable here — issued once payment is confirmed. The pro-forma below records this order."
-          : "Your invoice is emailed to your registered address and stays downloadable here. The pro-forma below records this order; international prices are exclusive of local taxes."}
+        {order.status === "completed"
+          ? order.taxed
+            ? "Your GST tax invoice, suitable for input tax credit, is ready to download below."
+            : "Your invoice is ready to download below. International prices are exclusive of local taxes."
+          : order.taxed
+            ? "A GST-compliant tax invoice, suitable for input tax credit, is emailed to your registered address and stays downloadable here — issued once payment is confirmed. The pro-forma below records this order."
+            : "Your invoice is emailed to your registered address and stays downloadable here. The pro-forma below records this order; international prices are exclusive of local taxes."}
       </div>
       <div className="mt-[22px] flex flex-col gap-[11px]">
         <button type="button" className={`${BTN_GO} ${BTN_FULL}`} onClick={onDashboard}>
@@ -2824,7 +2850,13 @@ export function ReceiptScreen({
           </button>
         )}
         <a href={documentUrl} download className={`${BTN_GHOST} ${BTN_FULL}`} data-testid="ac-download-invoice">
-          <Download className="h-4 w-4" aria-hidden="true" /> Download pro-forma invoice
+          <Download className="h-4 w-4" aria-hidden="true" />{" "}
+          {/* A non-INR document is an export invoice (`invoice.ts`), not a GST one. */}
+          {order.status === "completed"
+            ? order.taxed
+              ? "Download tax invoice"
+              : "Download invoice"
+            : "Download pro-forma invoice"}
         </a>
       </div>
     </Card>

@@ -20,11 +20,14 @@
  *   - With no provider configured — which is every deployment today — the
  *     attempt lands in `billing_payment_intents` with `status='recorded'`, the
  *     exact `crm_sync_log` contract: audited, and **never** reported as a
- *     completed payment. `'completed'` is unreachable from this build, because
- *     `ADAPTERS` is empty and only a provider webhook could legitimately write
- *     it.
+ *     completed payment.
+ *   - `'completed'` is written in exactly one place, `billing/fulfilment.ts`,
+ *     and only from a `PaymentConfirmation` — a provider-signed return, a
+ *     provider-signed webhook, or the provider's own API — in the same
+ *     transaction that grants the credits (P2). Nothing here writes it.
  *   - No vendor SDK and no credential is on the critical path. The imports here
- *     are this repo's own modules only.
+ *     are this repo's own modules only; `billing/razorpay.ts` speaks Razorpay's
+ *     REST API with `fetch` and Web Crypto.
  *
  * **T1-COMMERCE — an intent names the customer it is for.**
  * `PaymentIntentAttempt.tenantId` is required, not optional: the column's
@@ -39,6 +42,7 @@ import type { Env } from "../types";
 import type { Edition } from "../../shared/roles";
 import { insertScope } from "../../shared/tenant";
 import type { PaymentIntentView, TaxBreakdown } from "../../shared/plans";
+import { razorpayAdapter } from "./razorpay";
 
 /** The providers an adapter could be written for. Naming them costs nothing. */
 export type PaymentProvider = "razorpay" | "stripe" | "manual";
@@ -69,6 +73,13 @@ export interface PaymentIntentAttempt {
   /** Already computed in integer minor units by `src/shared/plans.ts`. */
   money: TaxBreakdown;
   actorId: string | null;
+  /**
+   * P2 — the ABSOLUTE URL the provider sends the customer back to
+   * (`GET /api/billing/return`). A provider needs an absolute one; the routes
+   * build it from `APP_BASE_URL`. Optional only so the stub-era callers and
+   * their tests keep compiling; with no provider it is never used.
+   */
+  returnUrl?: string;
 }
 
 /**
@@ -90,6 +101,52 @@ export interface PaymentClient {
 }
 
 /**
+ * P2 — a payment the PROVIDER says is complete, after its signature or its own
+ * API has been checked. Nothing in this application constructs one from a
+ * request a customer could have shaped: `verifyReturn` and `verifyWebhook` only
+ * return one when an HMAC keyed with a secret the customer never sees holds, and
+ * `lookup` asks the provider directly.
+ */
+export interface PaymentConfirmation {
+  /** OUR intent id — the `reference` handed to `createCheckout`, signed back. */
+  reference: string;
+  /** The provider's id for the checkout (`plink_…`) — `provider_ref` on the intent. */
+  providerRef: string;
+  /** The provider's id for the money (`pay_…`) — the transaction reference on the invoice. */
+  paymentId: string;
+  /** What was actually paid, in minor units. */
+  amountMinor: number;
+  currency: string;
+}
+
+/** What a provider → server notification turned out to be. */
+export type WebhookVerdict =
+  | { kind: "paid"; confirmation: PaymentConfirmation }
+  /** The checkout closed with nothing paid — it expired or was cancelled. */
+  | { kind: "closed"; reference: string; providerRef: string }
+  /** Authentic, and not an event this application acts on. */
+  | { kind: "ignored"; event: string }
+  /** Not signed by the provider, or no webhook secret is configured. */
+  | { kind: "unverified" };
+
+/**
+ * The confirming half of a live provider. Separate from `PaymentClient` so the
+ * test doubles that only start a checkout (`billing.test.ts`) need not grow
+ * methods they do not exercise.
+ */
+export interface PaymentConfirmer {
+  readonly provider: PaymentProvider;
+  /** The customer's return from the hosted page, verified. Null unless it proves a completed payment. */
+  verifyReturn(query: URLSearchParams): Promise<PaymentConfirmation | null>;
+  /** A notification, verified against the RAW body — re-serialising it would break the signature. */
+  verifyWebhook(rawBody: string, headers: Headers): Promise<WebhookVerdict>;
+  /** Ask the provider directly, for a payment whose return and webhook never arrived. */
+  lookup(providerRef: string): Promise<PaymentConfirmation | null>;
+}
+
+export type PaymentAdapter = PaymentClient & PaymentConfirmer;
+
+/**
  * Credentials live in Worker secrets, named like `PAYMENTS_RAZORPAY_KEY`. The
  * pattern is fixed in code so a configured name can never reach for another
  * binding (the constraint W3-D's `CREDENTIAL_REF` added for the same reason);
@@ -108,37 +165,72 @@ export function secretFor(env: Env, ref: string): string | undefined {
   return typeof v === "string" && v.trim() ? v : undefined;
 }
 
-/**
- * Provider adapters, by provider. **Empty by design** (§1.3): the vendor call is
- * a later configuration step. The table exists so that adding one is a single
- * entry and nothing else in the application moves.
- */
-const ADAPTERS: Partial<Record<PaymentProvider, (credential: string) => PaymentClient>> = {};
+/** `PAYMENTS_RAZORPAY_WEBHOOK_SECRET` — the key Razorpay signs its webhooks with. */
+export function paymentWebhookSecretRef(provider: PaymentProvider): string {
+  return `PAYMENTS_${provider.toUpperCase()}_WEBHOOK_SECRET`;
+}
 
 /**
- * The configured client, or `null` when this deployment has none — the payment
+ * Provider adapters, by provider.
+ *
+ * **P2 — Razorpay is registered.** It was empty by instruction while pricing
+ * was open; the integrator confirmed on 2026-10-23 that the Razorpay keys
+ * secured in September are still valid. (On 24-Sep the client had said "STRIPE,
+ * not Razorpay" — `docs/plan_myaccount.md` §9 Q4. The integrator's confirmation
+ * is the later word; Stripe would be one more entry here.)
+ *
+ * Registering an adapter turns NOTHING on by itself. `resolvePaymentClient`
+ * builds one only when `PAYMENTS_RAZORPAY_KEY` is set on the deployment, which
+ * no deployment has today, so every build keeps recording intents exactly as it
+ * did until the integrator sets the secret. No key is in this repository.
+ */
+const ADAPTERS: Partial<
+  Record<PaymentProvider, (credential: string, webhookSecret: string | undefined) => PaymentAdapter | null>
+> = {
+  razorpay: (credential, webhookSecret) => razorpayAdapter(credential, webhookSecret),
+};
+
+/**
+ * The configured adapter, or `null` when this deployment has none — the payment
  * counterpart of `emailDeliveryConfigured` and `resolveCrmClient`.
  *
- * Returns `null` unconditionally today. The credential lookup still runs, so a
- * deployment that sets the secret without an adapter gets the same honest
- * `'recorded'` result rather than a false "paid".
+ * A secret that does not parse as a credential (Razorpay's is `key_id:key_secret`)
+ * resolves to `null` rather than to an adapter that fails at checkout: the honest
+ * `'recorded'` result beats a customer sent to a page that cannot take money.
  */
-export function resolvePaymentClient(env: Env): PaymentClient | null {
+export function resolvePaymentAdapter(env: Env): PaymentAdapter | null {
   for (const provider of ["razorpay", "stripe", "manual"] as PaymentProvider[]) {
     const credential = secretFor(env, paymentCredentialRef(provider));
     if (!credential) continue;
-    // No adapter is registered (§1.3). When one is, it is constructed here — the
-    // only line in the application that needs to change to go live.
-    const client = ADAPTERS[provider]?.(credential);
-    if (client) return client;
+    const adapter = ADAPTERS[provider]?.(credential, secretFor(env, paymentWebhookSecretRef(provider)));
+    if (adapter) return adapter;
   }
   return null;
 }
 
-/** True when a purchase could actually be taken. False on every build today. */
+/** The checkout half, for the callers that only start one. */
+export function resolvePaymentClient(env: Env): PaymentClient | null {
+  return resolvePaymentAdapter(env);
+}
+
+/** True when a purchase could actually be taken — i.e. the Razorpay key is set. */
 export function paymentConfigured(env: Env): boolean {
   return resolvePaymentClient(env) !== null;
 }
+
+/**
+ * Where the provider sends the customer back: `GET /api/billing/return` on THIS
+ * deployment. `APP_BASE_URL` first — it is the configured public origin and
+ * cannot be steered by a `Host` header — and the request's own origin only
+ * where it is unset (local development, tests).
+ */
+export function paymentReturnUrl(env: Env, requestUrl: string): string {
+  const base = (env.APP_BASE_URL?.trim() || new URL(requestUrl).origin).replace(/\/+$/, "");
+  return `${base}/api/billing/return`;
+}
+
+/** The shape of every intent id `recordPaymentIntent` mints. */
+export const INTENT_ID = /^pi_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
  * Record a purchase intent and, if this deployment has a provider, ask it for a
@@ -149,10 +241,10 @@ export function paymentConfigured(env: Env): boolean {
  * no-purchase rather than a half-charged customer.
  *
  * What it does **not** do, in any branch: grant credits, mark a plan active, or
- * write `status='completed'`. A recorded intent is not a payment. Crediting
- * happens when a provider confirms a payment, which is the webhook a live
- * deployment adds — and until then, the honest state of every purchase in this
- * application is "recorded".
+ * write `status='completed'`. A recorded or redirected intent is not a payment.
+ * Crediting happens in `billing/fulfilment.ts`, when the provider confirms the
+ * money — and with no provider configured, the honest state of every purchase
+ * is "recorded".
  */
 export async function recordPaymentIntent(
   env: Env,
@@ -179,7 +271,7 @@ export async function recordPaymentIntent(
         amountMinor: attempt.money.totalMinor,
         currency: attempt.currency,
         description: attempt.planName,
-        returnUrl: "/app/admin?section=bl",
+        returnUrl: attempt.returnUrl ?? "/app/admin?section=bl",
       });
       checkoutUrl = res.url;
       providerRef = res.providerRef ?? null;
