@@ -2,6 +2,11 @@ import { SELF, env } from "cloudflare:test";
 import { describe, it, expect, vi } from "vitest";
 import { evaluateDeck, callAnthropic, type RawEvaluation } from "../../src/server/ai/evaluate";
 import type { Env } from "../../src/server/types";
+import {
+  applyShortlistCriteria,
+  sweepShortlistCriteria,
+  type ShortlistCriteriaOutcome,
+} from "../../src/server/routes/pipeline";
 
 // Session 5 — Automation: the per-program shortlist floor, AI determinism, the
 // soft duplicate / returning-company flags, upload validation (required founder
@@ -130,7 +135,46 @@ async function seedDeck(id: string, opts: SeedDeckOpts = {}): Promise<void> {
 // ── 1. Per-program shortlist floor ───────────────────────────────────────────
 
 describe("per-program shortlist floor", () => {
-  it("blocks a shortlist below the program's minimum", async () => {
+  // RE-POINTED 23-Oct (tracker row 4: "the startups are shortlisted as per the
+  // criteria set in the admin console. NO MANUAL SHORTLISTING"). Every case
+  // below used to post `{"action":"shortlist"}` and read the floor's verdict
+  // off the transition's 409 / 200. No role may shortlist by hand any more —
+  // that refusal is the negative control in `shortlist-criteria.test.ts` — so
+  // each case now reaches the SAME floor check (`checkShortlistFloor`) the way
+  // a deck now does: through the criteria, applied when the deck's panel
+  // completes (the juror's submit) or when a sweep re-applies them (a floor
+  // lowered in the console). What each case asserts about the FLOOR — which
+  // number, whose minimum, what the sentence says — is unchanged.
+
+  /** The incubator juror every fixture here is assigned to. */
+  const JURY = "rajesh.kumar@demo.startupjury.ai";
+  const SCOPE = { tenantId: "t_default", edition: "incubator" } as const;
+
+  /** The juror scores every parameter at `value` — the panel's last submit. */
+  async function juryScores(id: string, value: number) {
+    const keys = await paramKeys();
+    const res = await post(`/api/decks/${id}/evaluate`, await login(JURY), {
+      scores: keys.map((key) => ({ key, value })),
+    });
+    expect(res.status, await res.clone().text()).toBe(200);
+    return (await res.json()) as { status: string; shortlist: ShortlistCriteriaOutcome | null };
+  }
+
+  async function statusOf(id: string): Promise<string> {
+    return (await env.DB.prepare("SELECT status FROM decks WHERE id = ?").bind(id).first<{ status: string }>())!
+      .status;
+  }
+
+  /** A completed panel with no number in it — a juror row whose total is NULL, as legacy seeds carry. */
+  async function nullEvaluation(id: string) {
+    await env.DB.prepare(
+      "INSERT INTO evaluations (id, deck_id, evaluator_id, weighted_total, verdict) VALUES (?, ?, 'inc_jury', NULL, 'scored')",
+    )
+      .bind(`ev_${id}`, id)
+      .run();
+  }
+
+  it("holds a deck below the program's minimum at jury evaluation", async () => {
     await seedProgram("prog_floor_hi", "High Bar Program", 7.5);
     await seedDeck("sl_below", {
       status: "jury_evaluation",
@@ -139,30 +183,22 @@ describe("per-program shortlist floor", () => {
       assignedTo: "inc_jury",
     });
 
-    const cookie = await login(ADMIN);
-    const res = await post("/api/decks/sl_below/transition", cookie, { action: "shortlist" });
-    expect(res.status).toBe(409);
-    const body = (await res.json()) as {
-      error: string;
-      message: string;
-      score: number;
-      minimum: number;
-      programName: string;
-    };
-    expect(body.error).toBe("below_shortlist_minimum");
-    expect(body.minimum).toBe(7.5);
-    expect(body.score).toBe(6);
-    expect(body.programName).toBe("High Bar Program");
-    expect(body.message).toContain("Below the program's shortlist minimum");
+    const body = await juryScores("sl_below", 6);
+    expect(body.status).toBe("jury_evaluation");
+    expect(body.shortlist).toMatchObject({
+      shortlisted: false,
+      reason: "below_floor",
+      minimum: 7.5,
+      score: 6,
+      programName: "High Bar Program",
+    });
+    expect(body.shortlist!.message).toContain("Below the program's shortlist minimum");
 
     // The deck did not move.
-    const row = await env.DB.prepare("SELECT status FROM decks WHERE id = 'sl_below'").first<{
-      status: string;
-    }>();
-    expect(row!.status).toBe("jury_evaluation");
+    expect(await statusOf("sl_below")).toBe("jury_evaluation");
   });
 
-  it("allows the shortlist once the deck clears the floor", async () => {
+  it("shortlists the deck, with nobody clicking, once its panel clears the floor", async () => {
     await seedProgram("prog_floor_lo", "Low Bar Program", 5.0);
     await seedDeck("sl_above", {
       status: "jury_evaluation",
@@ -170,13 +206,24 @@ describe("per-program shortlist floor", () => {
       aiScore: 8.0,
       assignedTo: "inc_jury",
     });
-    const cookie = await login(ADMIN);
-    const res = await post("/api/decks/sl_above/transition", cookie, { action: "shortlist" });
-    expect(res.status).toBe(200);
-    const row = await env.DB.prepare("SELECT status FROM decks WHERE id = 'sl_above'").first<{
-      status: string;
-    }>();
-    expect(row!.status).toBe("shortlisted");
+    const body = await juryScores("sl_above", 8);
+    expect(body.status).toBe("shortlisted");
+    expect(body.shortlist).toMatchObject({ shortlisted: true, score: 8, minimum: 5, source: "program" });
+    expect(await statusOf("sl_above")).toBe("shortlisted");
+
+    // The move is the SYSTEM's, and says on what numbers.
+    const event = await env.DB.prepare(
+      "SELECT actor_id, from_stage, to_stage, action, note FROM pipeline_events WHERE deck_id = 'sl_above' AND to_stage = 'shortlisted'",
+    ).all<{ actor_id: string | null; from_stage: string; to_stage: string; action: string; note: string }>();
+    expect(event.results).toEqual([
+      {
+        actor_id: null,
+        from_stage: "jury_evaluation",
+        to_stage: "shortlisted",
+        action: "auto_shortlist",
+        note: "Shortlisted by the criteria — 8.00 clears Low Bar Program's shortlist floor of 5.0.",
+      },
+    ]);
   });
 
   it("judges the deck on the AI + jury average, not the AI score alone", async () => {
@@ -195,28 +242,43 @@ describe("per-program shortlist floor", () => {
       aiScore: 8.0,
       assignedTo: "inc_jury",
     });
-    await env.DB.prepare(
-      "INSERT INTO evaluations (id, deck_id, evaluator_id, weighted_total, verdict) VALUES ('ev_sl_avg', 'sl_avg', 'inc_jury', 5.0, 'scored')",
-    ).run();
 
-    const cookie = await login(ADMIN);
-    const res = await post("/api/decks/sl_avg/transition", cookie, { action: "shortlist" });
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as { score: number }).score).toBe(6.2);
+    const body = await juryScores("sl_avg", 5);
+    expect(body.shortlist).toMatchObject({ shortlisted: false, reason: "below_floor", score: 6.2 });
+    expect(await statusOf("sl_avg")).toBe("jury_evaluation");
   });
 
-  it("blocks an unscored deck when a floor is set", async () => {
+  it("never judges a deck before its panel has finished — however high its AI score", async () => {
+    // The floor is 5 and the AI says 9.5: the deck would clear it on the AI
+    // alone. It still waits, because the criteria decide when every assigned
+    // juror has scored, not on the first number to arrive.
     await seedProgram("prog_floor_unscored", "Unscored Program", 5.0);
     await seedDeck("sl_unscored", {
       status: "jury_evaluation",
       programId: "prog_floor_unscored",
-      aiScore: null,
+      aiScore: 9.5,
       assignedTo: "inc_jury",
     });
-    const cookie = await login(ADMIN);
-    const res = await post("/api/decks/sl_unscored/transition", cookie, { action: "shortlist" });
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as { message: string }).message).toContain("no score yet");
+    const waiting = await applyShortlistCriteria(env.DB, SCOPE, {
+      id: "sl_unscored",
+      edition: "incubator",
+      status: "jury_evaluation",
+    });
+    expect(waiting).toMatchObject({ shortlisted: false, reason: "panel_incomplete" });
+    expect(await statusOf("sl_unscored")).toBe("jury_evaluation");
+
+    // …and a panel that finished with no number at all is not shortlisted
+    // under a programme floor either — the case this test was named for.
+    await env.DB.prepare("UPDATE decks SET ai_score = NULL WHERE id = 'sl_unscored'").run();
+    await nullEvaluation("sl_unscored");
+    const unscored = await applyShortlistCriteria(env.DB, SCOPE, {
+      id: "sl_unscored",
+      edition: "incubator",
+      status: "jury_evaluation",
+    });
+    expect(unscored).toMatchObject({ shortlisted: false, reason: "unscored" });
+    expect(unscored!.message).toContain("no score yet");
+    expect(await statusOf("sl_unscored")).toBe("jury_evaluation");
   });
 
   it("falls back to the org-wide shortlist threshold when the program has no floor", async () => {
@@ -239,56 +301,73 @@ describe("per-program shortlist floor", () => {
       aiScore: 1.0,
       assignedTo: "inc_jury",
     });
-    const cookie = await login(ADMIN);
     for (const id of ["sl_nofloor", "sl_noprogram"]) {
-      const res = await post(`/api/decks/${id}/transition`, cookie, { action: "shortlist" });
-      expect(res.status, id).toBe(409);
-      const body = (await res.json()) as { minimum: number; minimumSource: string; message: string };
-      expect(body.minimum).toBe(7);
-      expect(body.minimumSource).toBe("org");
-      expect(body.message).toContain("organisation's shortlist threshold");
+      const body = await juryScores(id, 1);
+      expect(body.shortlist, id).toMatchObject({ shortlisted: false, reason: "below_floor", minimum: 7, source: "org" });
+      expect(body.shortlist!.message).toContain("organisation's shortlist threshold");
     }
 
-    // Lowering the org threshold in the admin console unblocks them — the field
-    // is the only thing standing in the way, which is what makes it real.
+    // Lowering the org threshold in the admin console carries them over it — the
+    // field is the only thing standing in the way, which is what makes it real.
+    // Nobody may click shortlist, so it is the SWEEP that re-applies the criteria
+    // (`sweepShortlistCriteria`, which the console's save is asked to call —
+    // `docs/parity-requests/A-P4.md`).
     await env.DB.prepare(
       "UPDATE org_scoring_settings SET shortlist_threshold = 0.5 WHERE edition = 'incubator'",
     ).run();
-    expect((await post("/api/decks/sl_nofloor/transition", cookie, { action: "shortlist" })).status).toBe(200);
-    expect((await post("/api/decks/sl_noprogram/transition", cookie, { action: "shortlist" })).status).toBe(200);
+    const swept = await sweepShortlistCriteria(env.DB, SCOPE);
+    for (const id of ["sl_nofloor", "sl_noprogram"]) {
+      expect(swept.find((o) => o.deckId === id), id).toMatchObject({ shortlisted: true, minimum: 0.5, source: "org" });
+      expect(await statusOf(id)).toBe("shortlisted");
+    }
+    // A second sweep finds nothing left to move, and writes no second event.
+    expect((await sweepShortlistCriteria(env.DB, SCOPE)).filter((o) => o.shortlisted)).toEqual([]);
+    const events = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM pipeline_events WHERE deck_id IN ('sl_nofloor', 'sl_noprogram') AND action = 'auto_shortlist'",
+    ).first<{ n: number }>();
+    expect(events!.n).toBe(2);
     await env.DB.prepare(
       "UPDATE org_scoring_settings SET shortlist_threshold = 7.0 WHERE edition = 'incubator'",
     ).run();
   });
 
-  it("leaves an UNSCORED deck to the program floor — the org threshold is a score bar", async () => {
-    // A programme that set a floor blocks an unscored deck (the case above).
-    // The org-wide threshold does not: it compares a score, and a deck with no
-    // score has nothing to compare. Without this, no deck in a fresh workspace
-    // could be shortlisted before it had been scored. See plan §8.
+  it("never shortlists an UNSCORED deck under the org threshold either", async () => {
+    // The transition left an unscored deck to the programme floor alone — "the
+    // org threshold is a score bar", so a fresh workspace could shortlist before
+    // anything was scored (plan §8). That was a rule about a PERSON's click. The
+    // system shortlisting a deck nobody has put a number on is a different act,
+    // and it does not: no score, no shortlist, under either floor.
     await seedDeck("sl_org_unscored", {
       status: "jury_evaluation",
       programId: null,
       aiScore: null,
       assignedTo: "inc_jury",
     });
-    const cookie = await login(ADMIN);
-    expect(
-      (await post("/api/decks/sl_org_unscored/transition", cookie, { action: "shortlist" })).status,
-    ).toBe(200);
+    await nullEvaluation("sl_org_unscored");
+    const outcome = await applyShortlistCriteria(env.DB, SCOPE, {
+      id: "sl_org_unscored",
+      edition: "incubator",
+      status: "jury_evaluation",
+    });
+    expect(outcome).toMatchObject({ shortlisted: false, reason: "unscored", source: "org" });
+    expect(await statusOf("sl_org_unscored")).toBe("jury_evaluation");
   });
 
-  it("is uniform — a superuser is held to the same floor", async () => {
-    await seedProgram("prog_floor_super", "Uniform Program", 9.0);
+  it("is uniform — a superuser cannot shortlist by hand, even a deck that clears the floor", async () => {
+    // The floor is 5 and the deck scores 8, so until 23-Oct this request was a
+    // 200: a refusal here can only be the no-manual-shortlisting rule, never the
+    // floor. The full role matrix is `shortlist-criteria.test.ts`.
+    await seedProgram("prog_floor_super", "Uniform Program", 5.0);
     await seedDeck("sl_super", {
       status: "jury_evaluation",
       programId: "prog_floor_super",
-      aiScore: 6.0,
+      aiScore: 8.0,
     });
     const cookie = await login(SUPER);
     const res = await post("/api/decks/sl_super/transition", cookie, { action: "shortlist" });
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as { error: string }).error).toBe("below_shortlist_minimum");
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toBe("shortlist_automatic");
+    expect(await statusOf("sl_super")).toBe("jury_evaluation");
   });
 
   it("applies to the VC shortlist-to-partner action too", async () => {

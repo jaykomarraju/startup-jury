@@ -4,7 +4,9 @@
 //
 // Transition authZ is enforced by `performAction` (per-transition role lists,
 // superuser bypass built into the pipeline config); coarse endpoint gates use
-// `requireRole` where an action is role-shaped rather than stage-shaped.
+// `requireRole` where an action is role-shaped rather than stage-shaped. One
+// action is refused to every role before that: the incubator `shortlist`, which
+// since 23-Oct only the shortlist criteria take (`applyShortlistCriteria`).
 
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -65,7 +67,7 @@ import { capacityFor } from "../../shared/assignment";
 // T1-DECKS — T0's one scope helper. `TENANT_OWNER` is where the question "what owns
 // `scores`?" is answered, so `viaParent` is used in place of a predicate invented
 // here; see `src/shared/tenant.ts`.
-import { scopeOf, scoped } from "../../shared/tenant";
+import { scopeOf, scoped, type TenantScope } from "../../shared/tenant";
 
 const pipeline = new Hono<AppEnv>();
 // Scope auth to this router's own prefixes (not "*"): mounted at /api, a "*"
@@ -153,31 +155,36 @@ function eventId(deckId: string): string {
  *
  * Both read `evaluations`, which `POST /decks/:id/evaluate` writes one row of
  * per evaluator and replaces on a re-submit, so the count never double-counts.
+ *
+ * 23-Oct — takes the database and the scope rather than the request, because the
+ * shortlist criteria below ask it too and one of their callers is a sweep with
+ * no request (`sweepShortlistCriteria`). Behaviour is unchanged.
  */
 async function allEvaluatorsHaveScored(
-  c: Context<AppEnv>,
-  deck: DeckRow,
+  db: D1Database,
+  scope: TenantScope,
+  deck: Pick<DeckRow, "id" | "edition">,
 ): Promise<boolean> {
   if (deck.edition === "incubator") {
-    const assignees = await assigneeIdsOf(c.env.DB, deck.id);
+    const assignees = await assigneeIdsOf(db, deck.id);
     if (assignees.length === 0) return false;
-    const qa = scoped(scopeOf(c.var.user));
+    const qa = scoped(scope);
     const aJoin = qa.viaParent("evaluations", "e");
     qa.and("e.deck_id = ?", deck.id).andRaw("e.evaluator_id IS NOT NULL");
     const scored = new Set(
       (
-        await c.env.DB.prepare(`SELECT e.evaluator_id FROM evaluations e ${aJoin} ${qa.whereClause()}`)
+        await db.prepare(`SELECT e.evaluator_id FROM evaluations e ${aJoin} ${qa.whereClause()}`)
           .bind(...qa.binds)
           .all<{ evaluator_id: string }>()
       ).results.map((r) => r.evaluator_id),
     );
     return assignees.every((id) => scored.has(id));
   }
-  const qb2 = scoped(scopeOf(c.var.user));
+  const qb2 = scoped(scope);
   const bJoin = qb2.viaParent("evaluations", "e");
   qb2.and("e.deck_id = ?", deck.id);
   const scored = (
-    await c.env.DB.prepare(
+    await db.prepare(
       "SELECT DISTINCT u.role AS role FROM evaluations e " +
         `${bJoin} JOIN users u ON u.id = e.evaluator_id ${qb2.whereClause()}`,
     )
@@ -270,8 +277,15 @@ function transitionSideEffects(
 /**
  * The actions that put a deck on the shortlist. The incubator's `shortlist`
  * (jury_evaluation → shortlisted) and the VC's `shortlist_to_partner`
- * (associate_review → partner_review) are the two moments a human decides a deck
- * moves forward on merit, which is what the per-program floor guards.
+ * (associate_review → partner_review) were the two moments a human decided a
+ * deck moves forward on merit, which is what the per-program floor guards.
+ *
+ * Since 23-Oct only the VC's is still a human's: the incubator's is refused
+ * outright in the transition route (`MANUAL_SHORTLIST_REFUSED`) and taken by
+ * `applyShortlistCriteria` instead, so its entry here guards nothing a request
+ * can reach. It stays so the floor keeps its meaning in one set if the refusal
+ * is ever lifted — the same reason `ADMIN_ONLY_GROUPS` outlived the hidden
+ * Sign-up group.
  */
 const SHORTLIST_ACTIONS = new Set(["shortlist", "shortlist_to_partner"]);
 
@@ -283,6 +297,9 @@ interface ShortlistGuard {
   source: "program" | "org";
   programName: string | null;
   message: string;
+  /** `score` and `minimum` on the org's display scale, for any other sentence (W7-D §9). */
+  scoreText: string | null;
+  minimumText: string;
 }
 
 /**
@@ -299,21 +316,30 @@ interface ShortlistGuard {
  * number the evaluator was looking at. A deck with no score at all can't clear a
  * floor, so it's blocked too.
  *
- * Returns null when the deck has no program, or the program has no floor set.
+ * Returns null only when the deck is not in `scope`: a deck with no programme, or
+ * a programme with no floor, is held to the organisation's threshold (F0187).
+ *
+ * 23-Oct — the incubator's shortlist is no longer a person's (see
+ * `applyShortlistCriteria`), so this is now the CRITERION the system applies as
+ * well as the guard the VC's manual `shortlist_to_partner` still meets. It takes
+ * the database and a scope rather than the request because the sweep that
+ * applies it has no request.
  */
-async function checkShortlistFloor(c: Context<AppEnv>, deckId: string): Promise<ShortlistGuard | null> {
+async function checkShortlistFloor(
+  db: D1Database,
+  scope: TenantScope,
+  deckId: string,
+): Promise<ShortlistGuard | null> {
   // The guard is reached by deck id, so it is scoped like every other by-id read:
   // a floor read off another customer's programme would refuse — or wave through —
   // a shortlist on a number from the wrong workspace. T1: the ONE scope the guard
-  // uses, and it comes from the principal — the deck row and the org threshold are
-  // two reads of the same workspace, so they cannot be allowed to disagree. The
-  // caller used to hand in `deck.edition`; `loadDeck` already scopes that row to
-  // this principal, so the parameter said nothing the session did not.
-  const scope = scopeOf(c.var.user);
+  // uses, and the caller derives it from the principal (or, for the sweep, from
+  // the workspace it is sweeping) — the deck row and the org threshold are two
+  // reads of the same workspace, so they cannot be allowed to disagree.
   const qd = scoped(scope).on("d").and("d.id = ?", deckId);
   // LEFT JOIN, not JOIN: a deck with no programme still faces the org-wide
   // shortlist threshold (F0187), which the programme floor merely overrides.
-  const row = await c.env.DB.prepare(
+  const row = await db.prepare(
     "SELECT d.ai_score AS ai_score, p.name AS program_name, p.shortlist_min AS shortlist_min, " +
       // V4-WEIGHT (0074) — the same two columns `routes/decks.ts` reads, for the
       // same reason: the transition must blend at the split the hint blended at.
@@ -337,7 +363,7 @@ async function checkShortlistFloor(c: Context<AppEnv>, deckId: string): Promise<
   // Scoring framework; the build only had the per-programme floor, reachable
   // from a different screen. The programme's own value still wins where one is
   // set; otherwise every deck is held to the organisation's.
-  const scoring = await loadScoringSettings(c.env.DB, scope);
+  const scoring = await loadScoringSettings(db, scope);
   const { minimum, source } = shortlistFloor(row.shortlist_min, scoring.shortlistThreshold);
 
   const score = decisionScore(
@@ -367,7 +393,183 @@ async function checkShortlistFloor(c: Context<AppEnv>, deckId: string): Promise<
       : source === "program"
         ? `Below the program's shortlist minimum — ${who} requires at least ${onScale(minimum, 1)}, this deck scores ${onScale(score, 2)}.`
         : `Below the organisation's shortlist threshold — at least ${onScale(minimum, 1)} is required, this deck scores ${onScale(score, 2)}.`;
-  return { blocked, score, minimum, source, programName: row.program_name, message };
+  return {
+    blocked,
+    score,
+    minimum,
+    source,
+    programName: row.program_name,
+    message,
+    scoreText: score === null ? null : onScale(score, 2),
+    minimumText: onScale(minimum, 1),
+  };
+}
+
+// ── Shortlisting by the criteria alone (23-Oct tracker rows 4 and 10) ─────────
+//
+// *"Shortlisted startups should reflect in the 'Signup pipeline'. The startups
+// are shortlisted as per the criteria set in the admin console. NO MANUAL
+// SHORTLISTING SHOULD BE ALLOWED BY THE SYSTEM."*
+//
+// Measured before changing anything: exactly ONE request could put an incubator
+// deck at `shortlisted` — `POST /decks/:id/transition {"action":"shortlist"}`,
+// open to the programme manager, admin and superuser since the 3-Oct wave took
+// it from the jury. Every other writer of `decks.status` was read and none
+// reaches the stage: `send_to_assign` / `details_completed` (routes/decks.ts)
+// rejoin at `ai_evaluated`, `schedule_intro` (routes/calls.ts) leaves FROM
+// `shortlisted`, `restore` lands at `ai_evaluated`, the cron archives, the AI
+// path stops at `ai_evaluated` / `incomplete`, and `PUT …/recommendation` writes
+// a recommendation and moves nothing (0057). The VC's `shortlist_to_partner` is
+// a different stage in an out-of-scope edition and keeps its floor-guarded
+// manual action.
+//
+// "The criteria set in the admin console" already existed: the Scoring
+// framework's org-wide "Shortlist threshold" with the programme's own floor
+// winning where it has one (`shortlistFloor`), judged on the decision score —
+// the workbench's AI · jury blend — by `checkShortlistFloor` above. Until today
+// that was a guard on a person's click. Now it is the decision itself.
+
+/** The refusal a manual incubator shortlist meets — every role, superuser included. */
+const MANUAL_SHORTLIST_REFUSED = "shortlist_automatic";
+
+/** The `pipeline_events.action` the system writes when the criteria shortlist a deck. */
+const AUTO_SHORTLIST_ACTION = "auto_shortlist";
+
+/** What applying the criteria to one deck decided, and on what numbers. */
+export interface ShortlistCriteriaOutcome {
+  deckId: string;
+  shortlisted: boolean;
+  /** Why not, when not. */
+  reason?: "panel_incomplete" | "unscored" | "below_floor";
+  /** Canonical 0–10, like the transition guard's: the wire never changes scale. */
+  score: number | null;
+  minimum: number;
+  source: "program" | "org";
+  programName: string | null;
+  /** What was decided and on what numbers, on the org's display scale. */
+  message: string;
+}
+
+/**
+ * Apply the shortlist criteria to one incubator deck waiting at
+ * `jury_evaluation`, and move it to `shortlisted` if it meets them. Returns null
+ * for a deck the criteria do not apply to (another stage, another edition, or a
+ * deck outside `scope`).
+ *
+ * **When.** A deck is judged once its PANEL is complete — every evaluator it
+ * was assigned has scored it (`allEvaluatorsHaveScored`, the same question that
+ * fires "All evaluations complete"). Judging earlier would shortlist on the
+ * first juror's number alone, and the average a second juror then moved would
+ * have nothing left to decide.
+ *
+ * **On what.** The decision score against the floor — `checkShortlistFloor`, the
+ * very check that used to refuse a person's click, so the bar a deck clears
+ * automatically is the bar it used to be refused at. One deliberate difference:
+ * that guard waves an unscored deck through the ORG threshold (see its comment);
+ * the system never shortlists a deck with no score, under either floor.
+ *
+ * **Below the floor** the deck simply stays at `jury_evaluation`, where the
+ * programme keeps the decision it always had about it — Reject or Archive. The
+ * client's sentence takes away the manual shortlist, not the manual rejection,
+ * and the 3-Oct ruling is that the final call on a deck the criteria do not
+ * carry is the incubator's.
+ *
+ * **Atomic and once.** The move and its event are one batch, and the UPDATE is
+ * conditional on the deck still being at `jury_evaluation`; the event is written
+ * only `WHERE changes() = 1`, i.e. only if that UPDATE moved the row. Two jurors
+ * completing the panel in the same instant, or a sweep crossing a submit, can
+ * therefore move the deck once and record it once. The event's actor is NULL —
+ * the system, as `ai_evaluated` and `ai_skipped` are — and its note carries the
+ * numbers the decision was taken on, because "who shortlisted this?" now has a
+ * rule for an answer rather than a name.
+ */
+export async function applyShortlistCriteria(
+  db: D1Database,
+  scope: TenantScope,
+  deck: Pick<DeckRow, "id" | "edition" | "status">,
+): Promise<ShortlistCriteriaOutcome | null> {
+  if (deck.edition !== "incubator" || deck.status !== "jury_evaluation") return null;
+  const guard = await checkShortlistFloor(db, scope, deck.id);
+  if (!guard) return null;
+  const outcome = {
+    deckId: deck.id,
+    score: guard.score,
+    minimum: guard.minimum,
+    source: guard.source,
+    programName: guard.programName,
+  };
+  if (!(await allEvaluatorsHaveScored(db, scope, deck))) {
+    return {
+      ...outcome,
+      shortlisted: false,
+      reason: "panel_incomplete",
+      message: "Not every juror assigned to this deck has scored it yet, so the shortlist criteria have not been applied.",
+    };
+  }
+  // The guard's own sentences already speak the org's scale, and say "no score
+  // yet" / "below the … minimum" in the words the evaluator was shown before.
+  // (`scoreText` is null exactly when `score` is; asked of both so the note
+  // below needs no assertion.)
+  if (guard.score === null || guard.scoreText === null) {
+    return { ...outcome, shortlisted: false, reason: "unscored", message: guard.message };
+  }
+  if (guard.blocked) return { ...outcome, shortlisted: false, reason: "below_floor", message: guard.message };
+
+  const ts = new Date().toISOString();
+  const whose =
+    guard.source === "program" && guard.programName ? `${guard.programName}'s shortlist floor` : "the shortlist threshold";
+  const note = `Shortlisted by the criteria — ${guard.scoreText} clears ${whose} of ${guard.minimumText}.`;
+  // Scoped like every by-id write in this file: the sweep reaches decks by a
+  // scoped SELECT, but the UPDATE re-states it rather than trusting its caller.
+  const qu = scoped(scope).on("decks").and("decks.id = ?", deck.id).andRaw("decks.status = 'jury_evaluation'");
+  const [moved] = await db.batch([
+    db.prepare(`UPDATE decks SET status = 'shortlisted', updated_at = ? ${qu.whereClause()}`).bind(ts, ...qu.binds),
+    db.prepare(
+      "INSERT INTO pipeline_events (id, deck_id, actor_id, from_stage, to_stage, action, note, created_at) " +
+        "SELECT ?, ?, NULL, 'jury_evaluation', 'shortlisted', ?, ?, ? WHERE changes() = 1",
+    ).bind(eventId(deck.id), deck.id, AUTO_SHORTLIST_ACTION, note, ts),
+  ]);
+  // No row moved: something else took the deck out of `jury_evaluation` between
+  // the read above and this write — most often the other juror's request, which
+  // shortlisted it. The criteria did not apply HERE, so this says so rather than
+  // claiming the move.
+  if (moved.meta.changes !== 1) return null;
+  return { ...outcome, shortlisted: true, message: note };
+}
+
+/**
+ * Apply the criteria to every incubator deck in `scope` waiting at
+ * `jury_evaluation`, and return what each decided.
+ *
+ * The submit path below covers the commonest way a deck crosses its floor — the
+ * last juror's score. It cannot see the others: an admin LOWERING a floor or the
+ * org threshold (`routes/config.ts`, `routes/programs.ts`), moving the AI / jury
+ * split, an AI re-score, a panel shrinking on reassignment. Each leaves a deck
+ * that now meets the criteria waiting for a click nobody is allowed to make. This
+ * is the one entry point for those writers and for the cron, so the rule is
+ * applied in exactly one place however the deck got there. Wiring it into those
+ * files is outside this session's lane; the call sites are in
+ * `docs/parity-requests/A-P4.md`.
+ *
+ * Raising a floor does not un-shortlist anybody: the criteria decide whether a
+ * deck is shortlisted, once, under the bar in force when its panel completed.
+ */
+export async function sweepShortlistCriteria(
+  db: D1Database,
+  scope: TenantScope,
+): Promise<ShortlistCriteriaOutcome[]> {
+  if (scope.edition !== "incubator") return [];
+  const q = scoped(scope).on("d").andRaw("d.status = 'jury_evaluation'");
+  const { results } = await db
+    .prepare(`SELECT d.id, d.edition, d.status FROM decks d ${q.whereClause()} ORDER BY d.id`)
+    .bind(...q.binds)
+    .all<Pick<DeckRow, "id" | "edition" | "status">>();
+  const out: ShortlistCriteriaOutcome[] = [];
+  for (const deck of results) {
+    const outcome = await applyShortlistCriteria(db, scope, deck);
+    if (outcome) out.push(outcome);
+  }
+  return out;
 }
 
 // ── Stage transitions ─────────────────────────────────────────────────────────
@@ -380,6 +582,35 @@ pipeline.post("/decks/:id/transition", async (c) => {
 
   const body = await readBody<TransitionBody>(c);
   const action = typeof body.action === "string" ? body.action : "";
+
+  // 23-Oct — NO MANUAL SHORTLISTING, for any role. Asked BEFORE `performAction`,
+  // and on the action alone, so the answer does not depend on the transition
+  // table in `pipeline/incubator.ts` (which on this branch still lists the
+  // programme manager, admin and superuser — that file is not this session's;
+  // the request to remove the entry, so that `allowedTransitions` stops OFFERING
+  // the action too, is patch 1 of `docs/parity-requests/A-P4.md`). With the entry
+  // gone `performAction` would answer `unknown_action`; this keeps the refusal a
+  // 403 that names the rule. The superuser is refused like everyone else:
+  // the client's sentence has no exception in it, and a bypass for the one role
+  // that can do anything is exactly the transition a hidden button leaves open.
+  // The numbers come back with the refusal so a screen can say what the deck
+  // still needs rather than only that the click was wrong.
+  if (deck.edition === "incubator" && action === "shortlist") {
+    const guard = await checkShortlistFloor(c.env.DB, scopeOf(user), deck.id);
+    return c.json(
+      {
+        error: MANUAL_SHORTLIST_REFUSED,
+        message:
+          "Shortlisting is automatic. A deck is shortlisted when every juror assigned to it has scored it " +
+          "and its score clears the shortlist floor set in the Admin console.",
+        score: guard?.score ?? null,
+        minimum: guard?.minimum ?? null,
+        minimumSource: guard?.source ?? null,
+      },
+      403,
+    );
+  }
+
   const result = performAction(deck.edition, deck.status, action, user.role);
   if (!result.ok) {
     const code = result.error === "forbidden" ? 403 : 409;
@@ -403,9 +634,10 @@ pipeline.post("/decks/:id/transition", async (c) => {
   }
 
   // The shortlist floor: the programme's own where it has one, otherwise the
-  // org-wide Scoring-framework threshold.
+  // org-wide Scoring-framework threshold. Reached by the VC's
+  // `shortlist_to_partner` only, since the incubator's is refused above.
   if (SHORTLIST_ACTIONS.has(action)) {
-    const guard = await checkShortlistFloor(c, deck.id);
+    const guard = await checkShortlistFloor(c.env.DB, scopeOf(user), deck.id);
     if (guard?.blocked) {
       return c.json(
         {
@@ -713,21 +945,40 @@ pipeline.post(
         dedupeKey: `evaluator_scores_submitted:${deck.id}:${user.id}:v${deck.content_version ?? 1}`,
     });
 
-    if (await allEvaluatorsHaveScored(c, deck)) {
+    // 23-Oct — the panel completing is the moment the shortlist criteria decide
+    // (`applyShortlistCriteria`): the last juror's submit is what moves a deck
+    // that clears its floor, with nobody clicking anything. Asked AFTER the batch,
+    // so the average it judges includes the score just written, and with the
+    // stage this request may itself have advanced to (`assigned` →
+    // `jury_evaluation` above, for a one-juror panel).
+    const scope = scopeOf(user);
+    const panelComplete = await allEvaluatorsHaveScored(c.env.DB, scope, deck);
+    const shortlist = panelComplete
+      ? await applyShortlistCriteria(c.env.DB, scope, { id: deck.id, edition: deck.edition, status })
+      : null;
+    if (shortlist?.shortlisted) status = "shortlisted";
+
+    if (panelComplete) {
+      // The alert now says what the criteria did, because "ready for review"
+      // asked the PM for a shortlist decision that is no longer theirs to make.
+      // Both sentences come from the criteria and so speak the org's scale.
+      const decided = !shortlist
+        ? "It is ready for review."
+        : shortlist.shortlisted
+          ? shortlist.message
+          : `${shortlist.message} It waits at Jury Evaluation for the programme's decision.`;
       await emitNotification(c.env, {
         event: "all_evaluations_complete",
         edition: deck.edition,
         title: `All evaluations complete: ${deck.name}`,
-        body:
-          `Every evaluator assigned to ${deck.name} has submitted their scores. ` +
-          "It is ready for review.",
+        body: `Every evaluator assigned to ${deck.name} has submitted their scores. ${decided}`,
         link: `/app/decks/${deck.id}`,
         deckId: deck.id,
         actorId: user.id,
         dedupeKey: `all_evaluations_complete:${deck.id}:v${deck.content_version ?? 1}`,
       });
     }
-    return c.json({ ok: true, weightedTotal: total, signal: signalTag(total), status });
+    return c.json({ ok: true, weightedTotal: total, signal: signalTag(total), status, shortlist });
   },
 );
 
