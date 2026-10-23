@@ -143,10 +143,58 @@ export interface NotificationPreferenceView {
   source: "user" | "default";
 }
 
+/**
+ * The support ticket's two alerts (tracker row 13, "raise to close with status and
+ * notifications"). Deliberately NOT members of `NOTIFICATION_EVENTS`, for two
+ * reasons that are each sufficient:
+ *
+ *   • That list IS the prototype's ten-row toggle grid (`admin/s-nt.html`) and the
+ *     `event_key` column of `0031`. A member added there is an eleventh toggle on a
+ *     screen the client wants exact, and a preference row nobody asked for.
+ *   • A ticket alert is addressed to NAMED people — the triagers when a ticket is
+ *     raised, the raiser when its status moves — which is the transactional side of
+ *     the line `email/outbox.ts:664-686` draws, not a platform event fanned out to
+ *     whoever subscribed. A raiser cannot opt out of hearing that their own ticket
+ *     was resolved, any more than an evaluator opts out of an assignment.
+ *
+ * So `email/outbox.ts`'s `AUDIENCE` (an exhaustive `Record<NotificationEvent, …>`)
+ * is untouched, and so is `EmailKind`, which derives its `alert_*` members from
+ * `NotificationEvent` — see `routes/support.ts` for why tickets therefore produce no
+ * email yet, and what one line would change that.
+ */
+export const TICKET_NOTIFICATION_EVENTS = ["ticket_raised", "ticket_status_changed"] as const;
+export type TicketNotificationEvent = (typeof TICKET_NOTIFICATION_EVENTS)[number];
+
+/**
+ * Every `notifications.event_key` the bell can hold. The column has no CHECK
+ * (`0041`), so this union — not the schema — is what says which values exist.
+ */
+export type BellEvent = NotificationEvent | TicketNotificationEvent;
+
+/**
+ * What a ticket action actually told people, read back from the rows it wrote.
+ *
+ * `inApp` lists a name only when that person's `notifications` row was written —
+ * never the intended audience — so a screen built on it cannot say someone was told
+ * who was not. There is no email field because a ticket sends none (see
+ * `routes/support.ts`); a screen that wants to mention email has nothing here to
+ * misread as a send. `failed` is true when the action committed but recording the
+ * alert threw: the status DID change, and nobody was told.
+ */
+export interface TicketNotice {
+  inApp: string[];
+  failed: boolean;
+}
+
 /** One row of the bell's notification centre. */
 export interface NotificationView {
   id: string;
-  event: NotificationEvent;
+  /**
+   * Widened from `NotificationEvent` with the ticket alerts: the bell lists every
+   * row the caller owns, and since tickets write rows of their own a narrower type
+   * here would be a claim about the table that is no longer true.
+   */
+  event: BellEvent;
   title: string;
   body: string | null;
   link: string | null;

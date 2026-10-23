@@ -35,12 +35,61 @@
 // the staff channel to every session in the workspace, founders and mentors
 // included. `canUseTeamChannel` below is that second predicate, and it is taken from
 // the nav manifest rather than restated here. Nothing about the tenant arm changed.
+//
+// Re-measured 2026-10-23 for tracker row 13, because the brief for that row described
+// this hole as still open (`:331` "is `messages.use("*", requireAuth)` and nothing
+// more"). It is not: `79bfcd1` closed it on 2026-10-05. Mutating the two lines back to
+// that shape turns exactly three cases in `test/worker/l5-hardening.test.ts` red — the
+// founder's read, the mentor's read and the founder's write — and restoring them turns
+// them green, so those cases are real controls and not ones that pass vacuously.
+// They stay the one proof of this boundary; `test/worker/tickets.test.ts` proves the
+// same two principals at the TICKET router's edge instead of copying them.
+
+// ── WAVE A · P3 · TICKETS, RAISE TO CLOSE (tracker row 13) ──────────────────
+// "Tickets module from raise to close with status and notifications." Raise and a
+// binary open/closed toggle existed; three things did not:
+//
+//   1. THE MIDDLE STEP. `POST /:id/status` stored `body.status === "closed" ?
+//      "closed" : "open"`, so `in_progress` — the issue log's middle step on this same
+//      table and column since `0018` — was silently written as `open`. The workflow is
+//      now the issue log's three values, and anything else is refused, not coerced.
+//   2. A CLOSE THAT SAYS WHY. Closing requires a resolution and stores it in
+//      `tickets.resolution`, which `0018` added and only the issue log ever wrote.
+//   3. SOMEBODY BEING TOLD. A raise alerts the people who triage; every status change
+//      alerts the person who raised it. See `notifyRaiser` / `notifyTriagers`.
+//
+// And the raise moved to where the prototype puts it. In all eleven prototype files
+// that have the screen — five incubator, all six VC — Contact Admin is "Raise a support
+// ticket for any issue": category, priority, subject, description, beside "My recent
+// tickets" (`AISJ_IC_PM_V5.HTM`, `#panel-contactadmin`).
+// The build had it as a free-text message to an inbox, so a jury member could raise a
+// ticket only by typing `curl`, and the only person who could see a ticket's status
+// was the admin closing it. `GET /mine` is the raiser's half of the loop.
+//
+// ── WHAT A TICKET DOES NOT SEND, AND WHY NO SCREEN CLAIMS IT DOES ───────────
+// Ticket alerts are IN-APP ONLY. Email would need an `EmailKind`, and that union is
+// in `email/outbox.ts:73-81`, which is not this lane's file — its brief placed it in
+// `shared/notifications.ts`, which holds only the event list the `alert_*` members
+// are derived from. Widening THAT list is not the honest route either: it is the
+// prototype's ten-row toggle grid, and `AUDIENCE` (`outbox.ts:700`) is an exhaustive
+// `Record` over it that would stop compiling. Borrowing an existing kind is the
+// shortcut `registration.ts:539` records and this repo is removing. So the email half
+// is reported as a one-line change to that union plus one `sendEmail` per recipient
+// here, rather than faked.
+//
+// What that costs today is nothing anybody would receive: `EMAIL_FROM` is "", so
+// every message the outbox takes is `status='recorded'` and dispatched to no one.
+// In-app is the only channel that currently reaches a person, and the response's
+// `notified` (`TicketNotice`) names only those whose `notifications` row was actually
+// written. The screens say "notified in the app" — never "sent", never "emailed".
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { AppEnv, SessionUser } from "../types";
+import type { AppEnv, Env, SessionUser } from "../types";
 import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
 import { canAccessNav } from "../../shared/nav";
-import { scopeOf, scoped, insertScope } from "../../shared/tenant";
+import { ROLES_BY_EDITION, isMentor, roleLabel } from "../../shared/roles";
+import type { TicketNotice, TicketNotificationEvent } from "../../shared/notifications";
+import { scopeOf, scoped, insertScope, type ScopeBuilder, type TenantScope } from "../../shared/tenant";
 
 /** Issue workflow states. `in_progress` is the "someone is on it" middle step. */
 const ISSUE_STATUSES = ["open", "in_progress", "closed"] as const;
@@ -53,55 +102,150 @@ async function readBody<T>(c: Context<AppEnv>): Promise<Partial<T>> {
 // ── Tickets ──────────────────────────────────────────────────────────────────
 
 const tickets = new Hono<AppEnv>();
-tickets.use("*", requireAuth);
+// `denyMentor` joins `requireAuth` for the reason it already sits on the two routers
+// below (`issues`, `messages`): a mentor is a directory record, and no screen of
+// theirs reaches this queue. It matters more than it did, because a raise now ALERTS
+// every administrator — an unrefused mentor session could ring every admin's bell in
+// the workspace from an account that has no screens at all.
+tickets.use("*", requireAuth, denyMentor);
+
+/**
+ * The ticket workflow — the SAME three values as the issue log's, on the same table
+ * and the same column, so a status string means one thing whichever queue holds the
+ * row. The screens label `closed` "Resolved", which is the prototype's word
+ * (`tkStatLabel`, `AISJ_ICAdmin_V6.html`); the stored value stays `closed` because
+ * the seeded rows, the issue log and every existing reader already use it.
+ */
+const TICKET_STATUSES = ISSUE_STATUSES;
+type TicketStatus = (typeof TICKET_STATUSES)[number];
+
+function isTicketStatus(value: unknown): value is TicketStatus {
+  return TICKET_STATUSES.some((s) => s === value);
+}
+
+/** The raise form's Priority select (`AISJ_IC_PM_V5.HTM` `#ca-pri`); Medium is preselected there. */
+const TICKET_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
+
+// ── Category and priority, without a migration ──────────────────────────────
+// The prototype's raise form asks for both, and its queue shows both as columns.
+// `0018` already gave this table `area` and `severity` for the issue log, and the two
+// queues never read each other's rows — every statement carries `t.category =
+// 'support' | 'issue'` — so a support ticket keeps its category in `area` and its
+// priority in `severity`. That is not a new convention: the demo seed already writes
+// support tickets exactly this way, `area = 'Billing'`, `severity = 'low'`, and a
+// resolution on the closed one (`0020_seed_demo_refresh.sql:707-711`) — it was the
+// screens that never read them. Note the trap in the names: `tickets.category` is
+// the QUEUE, not the prototype's "Issue category". The view calls the two fields
+// `area` and `priority`, and `toTicketView` is the only place that knows both.
+
+interface TicketRow {
+  id: string;
+  subject: string;
+  body: string | null;
+  status: string;
+  billing_routed: number;
+  area: string | null;
+  severity: string | null;
+  resolution: string | null;
+  created_at: string;
+  updated_at: string | null;
+  created_by: string | null;
+  creator: string | null;
+  creator_role: string | null;
+}
+
+/**
+ * The queue's FROM clause. The LEFT JOIN also matches the workspace: `u.name` is
+ * rendered as the ticket's `creator`, so a `created_by` pointing at another
+ * customer's user would print that person's name on this screen. Column-to-column,
+ * no bind.
+ */
+const TICKET_SELECT =
+  "SELECT t.id, t.subject, t.body, t.status, t.billing_routed, t.area, t.severity, t.resolution, " +
+  "t.created_at, t.updated_at, t.created_by, u.name AS creator, u.role AS creator_role FROM tickets t " +
+  "LEFT JOIN users u ON u.id = t.created_by AND u.tenant_id = t.tenant_id AND u.edition = t.edition ";
+
+/** The workspace, and the support queue. Every ticket read starts here. */
+const ticketScope = (c: Context<AppEnv>) =>
+  scoped(scopeOf(c.var.user)).on("t").andRaw("t.category = 'support'");
+
+function toTicketView(t: TicketRow, viewer: SessionUser) {
+  const scope = scopeOf(viewer);
+  // The role LABEL ("Program Manager"), because the prototype's row reads "Vikram
+  // Nair · Program Manager". Found in the edition's own list rather than cast: a
+  // `users.role` outside it (a mentor's historical ticket) has no label to show.
+  const role = ROLES_BY_EDITION[scope.edition].find((r) => r === t.creator_role);
+  return {
+    id: t.id,
+    subject: t.subject,
+    body: t.body,
+    status: t.status,
+    billingRouted: t.billing_routed === 1,
+    area: t.area,
+    priority: t.severity,
+    resolution: t.resolution,
+    createdAt: t.created_at,
+    updatedAt: t.updated_at,
+    creator: t.creator ?? "—",
+    creatorRole: role ? roleLabel(scope.edition, role) : null,
+    // So a screen can say why nobody was told — "you raised it" — without the raw
+    // `created_by` id leaving the server.
+    raisedByMe: t.created_by === viewer.id,
+  };
+}
+
+async function readTickets(c: Context<AppEnv>, mineOnly: boolean) {
+  const q = ticketScope(c);
+  if (mineOnly) q.and("t.created_by = ?", c.var.user.id);
+  const rows = (
+    await c.env.DB.prepare(`${TICKET_SELECT}${q.whereClause()} ORDER BY t.created_at DESC`)
+      .bind(...q.binds)
+      .all<TicketRow>()
+  ).results;
+  return rows.map((t) => toTicketView(t, c.var.user));
+}
 
 /** GET /api/tickets — every ticket in the workspace (admin-only Tickets screen). */
-tickets.get("/", requireRole("admin"), async (c) => {
-  // The LEFT JOIN also matches the workspace: `u.name` is rendered as the
-  // ticket's `creator`, so a `created_by` pointing at another customer's user
-  // would print that person's name on this screen. Column-to-column, no bind.
-  const q = scoped(scopeOf(c.var.user)).on("t").andRaw("t.category = 'support'");
-  const rows = (
-    await c.env.DB.prepare(
-      "SELECT t.id, t.subject, t.body, t.status, t.billing_routed, t.created_at, u.name AS creator " +
-        "FROM tickets t LEFT JOIN users u " +
-        "ON u.id = t.created_by AND u.tenant_id = t.tenant_id AND u.edition = t.edition " +
-        `${q.whereClause()} ORDER BY t.created_at DESC`,
-    )
-      .bind(...q.binds)
-      .all<{
-        id: string;
-        subject: string;
-        body: string | null;
-        status: string;
-        billing_routed: number;
-        created_at: string;
-        creator: string | null;
-      }>()
-  ).results;
-  return c.json({
-    tickets: rows.map((t) => ({
-      id: t.id,
-      subject: t.subject,
-      body: t.body,
-      status: t.status,
-      billingRouted: t.billing_routed === 1,
-      createdAt: t.created_at,
-      creator: t.creator ?? "—",
-    })),
-  });
-});
+tickets.get("/", requireRole("admin"), async (c) => c.json({ tickets: await readTickets(c, false) }));
+
+/**
+ * GET /api/tickets/mine — the caller's own tickets: Contact Admin's "My recent
+ * tickets". Any session the router admits, founders included, because every row it
+ * can return is one the caller wrote. `created_by = ?` is the per-user predicate and
+ * the scope is the workspace one; neither stands in for the other (the same
+ * reasoning as the `admin` arm of `GET /api/messages` below).
+ */
+tickets.get("/mine", async (c) => c.json({ tickets: await readTickets(c, true) }));
 
 /** POST /api/tickets — raise a support ticket (any authed user). */
 tickets.post("/", async (c) => {
-  const body = await readBody<{ subject: string; body: string; billing: boolean }>(c);
+  const body = await readBody<{
+    subject: string;
+    body: string;
+    billing: boolean;
+    area: string;
+    priority: string;
+  }>(c);
   const subject = typeof body.subject === "string" ? body.subject.trim() : "";
   if (!subject) return c.json({ error: "subject_required" }, 400);
   const text = typeof body.body === "string" ? body.body.trim() : "";
-  // Route to billing when flagged, or when the text obviously concerns credits.
+  const area = typeof body.area === "string" ? body.area.trim() : "";
+  // An unknown priority defaults to Medium, as an unknown issue severity does, and
+  // for the same reason: the field is advisory, and refusing a ticket over it would
+  // lose the one thing the raiser came to say.
+  const priority = TICKET_PRIORITIES.find((p) => p === body.priority) ?? "medium";
+  // Route to billing when flagged, or when the text obviously concerns credits. The
+  // category is part of the text now: "Billing & subscription" is a billing ticket
+  // whatever its subject says.
   const billingRouted =
-    body.billing === true || /\b(billing|credit|invoice|payment|refund)\b/i.test(`${subject} ${text}`);
+    body.billing === true ||
+    /\b(billing|credit|invoice|payment|refund)\b/i.test(`${subject} ${text} ${area}`);
   const id = `tkt_${crypto.randomUUID()}`;
+  // ISO, not the column's `datetime('now')` default: the seeded rows and the issue
+  // log both write ISO, and `"2026-10-23 16:00:00"` is not a string every browser's
+  // `Date` will parse — Safari returns Invalid Date for it, on the phone the demo
+  // is driven from.
+  const ts = new Date().toISOString();
   // ── THE SILENT HALF OF THE WAVE, AND THIS IS THE ROUTE THAT NAMES IT ──────
   // `test/worker/tenant-scope.test.ts`'s layer 3 measured this INSERT on
   // 2026-09-30: it named no tenant, so `tickets.tenant_id`'s `DEFAULT 't_default'`
@@ -111,32 +255,255 @@ tickets.post("/", async (c) => {
   // write assertion can. `insertScope` is why the column cannot be forgotten.
   const t = insertScope(scopeOf(c.var.user));
   await c.env.DB.prepare(
-    `INSERT INTO tickets (id, ${t.columns}, subject, body, status, created_by, billing_routed, category) ` +
-      `VALUES (?, ${t.placeholders}, ?, ?, 'open', ?, ?, 'support')`,
+    `INSERT INTO tickets (id, ${t.columns}, subject, body, status, created_by, billing_routed, category, ` +
+      `area, severity, created_at, updated_at) VALUES (?, ${t.placeholders}, ?, ?, 'open', ?, ?, 'support', ?, ?, ?, ?)`,
   )
-    .bind(id, ...t.binds, subject, text || null, c.var.user.id, billingRouted ? 1 : 0)
+    .bind(id, ...t.binds, subject, text || null, c.var.user.id, billingRouted ? 1 : 0, area || null, priority, ts, ts)
     .run();
-  return c.json({ ok: true, id, billingRouted });
+  const notified = await notifyTriagers(c, { id, subject, area, priority, billingRouted });
+  return c.json({ ok: true, id, billingRouted, notified });
 });
 
-/** POST /api/tickets/:id/status — open/close a ticket (admin). */
+/**
+ * POST /api/tickets/:id/status — move a ticket through the workflow (admin).
+ * Body: `{ status: 'open' | 'in_progress' | 'closed', resolution? }`; a close
+ * REQUIRES a resolution.
+ *
+ * A reopen keeps the old resolution rather than clearing it. With no thread table,
+ * that text is the only record of what was already tried, and the screen shows it as
+ * "Previously resolved" until the next close replaces it. `closed` therefore always
+ * has a resolution; a non-closed status may carry the last one.
+ */
 tickets.post("/:id/status", requireRole("admin"), async (c) => {
-  const body = await readBody<{ status: string }>(c);
-  const status = body.status === "closed" ? "closed" : "open";
+  const body = await readBody<{ status: string; resolution: string }>(c);
+  if (!isTicketStatus(body.status)) return c.json({ error: "invalid_status" }, 400);
+  const status = body.status;
+  const resolution = typeof body.resolution === "string" ? body.resolution.trim() : "";
+  if (status === "closed" && !resolution) return c.json({ error: "resolution_required" }, 400);
+
+  const id = c.req.param("id");
+  const readQ = ticketScope(c).and("t.id = ?", id);
+  const current = await c.env.DB.prepare(
+    `SELECT t.status, t.subject, t.created_by FROM tickets t ${readQ.whereClause()}`,
+  )
+    .bind(...readQ.binds)
+    .first<{ status: string; subject: string; created_by: string | null }>();
+  if (!current) return c.json({ error: "not_found" }, 404);
+  // Re-selecting the status a ticket already has is not a transition, so nothing is
+  // written and nobody is told. Without this a double-click on "Mark in progress"
+  // would alert the raiser twice about a change that happened once.
+  if (current.status === status) {
+    return c.json({ ok: true, status, changed: false, notified: { inApp: [], failed: false } });
+  }
+
+  const sets = ["status = ?", "updated_at = ?"];
+  const binds: string[] = [status, new Date().toISOString()];
+  if (status === "closed") {
+    sets.push("resolution = ?");
+    binds.push(resolution);
+  }
   // An UPDATE is where an insufficient predicate stops being a read leak and
   // becomes a cross-tenant WRITE: `WHERE id = ? AND edition = ?` would have let an
   // administrator close another customer's ticket, and `meta.changes === 1` would
   // have reported it as a success.
+  //
+  // `tickets.status = ?` (the status just read) makes the write conditional on
+  // nobody having moved the ticket in between. Two admins resolving the same ticket
+  // would otherwise both "succeed", both overwrite the resolution, and alert the
+  // raiser twice with two different answers. The second gets a 409 instead.
   const q = scoped(scopeOf(c.var.user))
     .on("tickets")
-    .and("tickets.id = ?", c.req.param("id"))
-    .andRaw("tickets.category = 'support'");
-  const res = await c.env.DB.prepare(`UPDATE tickets SET status = ? ${q.whereClause()}`)
-    .bind(status, ...q.binds)
+    .and("tickets.id = ?", id)
+    .andRaw("tickets.category = 'support'")
+    .and("tickets.status = ?", current.status);
+  const res = await c.env.DB.prepare(`UPDATE tickets SET ${sets.join(", ")} ${q.whereClause()}`)
+    .bind(...binds, ...q.binds)
     .run();
-  if (res.meta.changes !== 1) return c.json({ error: "not_found" }, 404);
-  return c.json({ ok: true, status });
+  if (res.meta.changes !== 1) return c.json({ error: "status_changed" }, 409);
+
+  const notified = await notifyRaiser(c, {
+    subject: current.subject,
+    raisedBy: current.created_by,
+    from: current.status,
+    to: status,
+    resolution,
+  });
+  const after = await c.env.DB.prepare(`${TICKET_SELECT}${readQ.whereClause()}`)
+    .bind(...readQ.binds)
+    .first<TicketRow>();
+  return c.json({
+    ok: true,
+    status,
+    changed: true,
+    ticket: after ? toTicketView(after, c.var.user) : null,
+    notified,
+  });
 });
+
+// ── Who is told, and the one place it is written ────────────────────────────
+
+interface Recipient {
+  id: string;
+  name: string;
+  role: string;
+}
+
+interface TicketAlert {
+  event: TicketNotificationEvent;
+  title: string;
+  body: string;
+  link: string | null;
+}
+
+/**
+ * Write one in-app alert per recipient, and report who actually got one.
+ *
+ * This is not `emitNotification` (`email/outbox.ts:853`) because that function's
+ * `event` is a `NotificationEvent` and its audience an exhaustive `Record` over the
+ * prototype's ten toggles — see the header of `TICKET_NOTIFICATION_EVENTS`. The row it
+ * writes is the same shape `insertInAppNotification` writes, so the bell reads both
+ * without knowing which produced it.
+ *
+ * Same two rules, too. The tenant comes from the caller's SCOPE and never from a
+ * fallback: `emitNotification`'s once filed one customer's alert in another's
+ * workspace when two call sites omitted it (`l5-hardening.test.ts` §C). And it never
+ * throws — the ticket has already moved, and a status change that 500s after it
+ * committed would invite the admin to press the button again. `failed` says so
+ * instead, and the screen reports it.
+ *
+ * One batch, so it is all or none: `inApp` cannot name a person whose row was rolled
+ * back.
+ */
+async function writeTicketAlerts(
+  env: Env,
+  scope: TenantScope,
+  recipients: Recipient[],
+  alert: TicketAlert,
+): Promise<TicketNotice> {
+  if (recipients.length === 0) return { inApp: [], failed: false };
+  try {
+    const t = insertScope(scope);
+    const ts = new Date().toISOString();
+    const insert = env.DB.prepare(
+      `INSERT INTO notifications (id, ${t.columns}, user_id, event_key, title, body, link, created_at) ` +
+        `VALUES (?, ${t.placeholders}, ?, ?, ?, ?, ?, ?)`,
+    );
+    const results = await env.DB.batch(
+      recipients.map((u) =>
+        insert.bind(`ntf_${crypto.randomUUID()}`, ...t.binds, u.id, alert.event, alert.title, alert.body, alert.link, ts),
+      ),
+    );
+    return {
+      inApp: recipients.filter((_, i) => results[i]?.meta.changes === 1).map((u) => u.name),
+      failed: false,
+    };
+  } catch (err) {
+    console.error(`ticket alert failed (${alert.event}):`, err);
+    return { inApp: [], failed: true };
+  }
+}
+
+/**
+ * Live people in THIS workspace matching `predicate`, minus the actor and any
+ * mentor. Nobody is told about their own action, and a mentor holds no screen an
+ * alert could open (`denyMentor`).
+ */
+async function findRecipients(
+  c: Context<AppEnv>,
+  predicate: (q: ScopeBuilder) => void,
+): Promise<Recipient[]> {
+  const q = scoped(scopeOf(c.var.user)).on("u").andRaw("u.active = 1").and("u.id <> ?", c.var.user.id);
+  predicate(q);
+  const rows = (
+    await c.env.DB.prepare(`SELECT u.id, u.name, u.role FROM users u ${q.whereClause()}`)
+      .bind(...q.binds)
+      .all<Recipient>()
+  ).results;
+  return rows.filter((u) => !isMentor(u.role));
+}
+
+/**
+ * Raised → the people who TRIAGE: whoever the nav manifest gives the Tickets screen
+ * (`support`). That is `admin`, plus `superuser` by bypass, in both editions — read
+ * from `shared/nav.ts` rather than restated, the way `canUseTeamChannel` reads
+ * `contactteam`, so opening the queue to another role later alerts them too without
+ * a second list to forget.
+ */
+async function notifyTriagers(
+  c: Context<AppEnv>,
+  t: { id: string; subject: string; area: string; priority: string; billingRouted: boolean },
+): Promise<TicketNotice> {
+  const user = c.var.user;
+  const scope = scopeOf(user);
+  const triagers = ROLES_BY_EDITION[scope.edition].filter((r) => canAccessNav(scope.edition, r, "support"));
+  // Never empty while `superuser` bypasses the nav, but an empty `IN ()` is a SQL
+  // error rather than an empty set, so it is not left to that.
+  if (triagers.length === 0) return { inApp: [], failed: false };
+  try {
+    const recipients = await findRecipients(c, (q) =>
+      q.and(`u.role IN (${triagers.map(() => "?").join(", ")})`, ...triagers),
+    );
+    const detail = [`${t.priority[0].toUpperCase()}${t.priority.slice(1)} priority`, t.area].filter(Boolean).join(" · ");
+    return await writeTicketAlerts(c.env, scope, recipients, {
+      event: "ticket_raised",
+      title: `New ticket from ${user.name}`,
+      body: `${t.subject} — ${detail}${t.billingRouted ? " · routed to billing" : ""}`,
+      link: "/app/support",
+    });
+  } catch (err) {
+    console.error("ticket alert failed (ticket_raised):", err);
+    return { inApp: [], failed: true };
+  }
+}
+
+/** The copy for each transition. `from` matters: a reopen is not a fresh start. */
+function transitionCopy(
+  to: TicketStatus,
+  from: string,
+  actor: string,
+  resolution: string,
+): { title: string; detail: string } {
+  if (to === "closed") return { title: "Your ticket was resolved", detail: resolution };
+  if (from === "closed") return { title: "Your ticket was re-opened", detail: `${actor} re-opened it.` };
+  if (to === "in_progress") return { title: "Your ticket is in progress", detail: `${actor} is looking into it.` };
+  return { title: "Your ticket is back in the queue", detail: `${actor} moved it back to Open.` };
+}
+
+/**
+ * Any status change → the person who RAISED it, linked to wherever they can see it:
+ * the Tickets screen for a triager, Contact Admin's "My recent tickets" for anyone
+ * else on staff, and nowhere for a founder (who holds neither screen, so the alert
+ * carries the whole answer in its body rather than a link that 403s).
+ */
+async function notifyRaiser(
+  c: Context<AppEnv>,
+  t: { subject: string; raisedBy: string | null; from: string; to: TicketStatus; resolution: string },
+): Promise<TicketNotice> {
+  if (!t.raisedBy || t.raisedBy === c.var.user.id) return { inApp: [], failed: false };
+  const raisedBy = t.raisedBy;
+  const scope = scopeOf(c.var.user);
+  try {
+    const recipients = await findRecipients(c, (q) => q.and("u.id = ?", raisedBy));
+    const role = ROLES_BY_EDITION[scope.edition].find((r) => r === recipients[0]?.role);
+    const link = !role
+      ? null
+      : canAccessNav(scope.edition, role, "support")
+        ? "/app/support"
+        : canAccessNav(scope.edition, role, "contactadmin")
+          ? "/app/contactadmin"
+          : null;
+    const copy = transitionCopy(t.to, t.from, c.var.user.name, t.resolution);
+    return await writeTicketAlerts(c.env, scope, recipients, {
+      event: "ticket_status_changed",
+      title: copy.title,
+      body: `${t.subject} — ${copy.detail}`,
+      link,
+    });
+  } catch (err) {
+    console.error("ticket alert failed (ticket_status_changed):", err);
+    return { inApp: [], failed: true };
+  }
+}
 
 // ── Internal issue log ───────────────────────────────────────────────────────
 // The team's own tracker for what it finds while testing (FINISH-PLAN §4/S7):
