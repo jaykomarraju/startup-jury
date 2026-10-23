@@ -376,12 +376,30 @@ function shortlistHint(row: DeckRow, scoring: ShortlistSettings) {
   return { decision, blocked, weight };
 }
 
-function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: ShortlistSettings) {
+/**
+ * `seenHumanAvg` — P1, 23-Oct: the mean of only the human evaluations this viewer
+ * may see, from `averagesSeenBy`. `undefined` means they may see every one, and
+ * the view is exactly what it always was; `null` means they may see none.
+ */
+function toDeckView(
+  edition: Edition,
+  row: DeckRow,
+  role: Role,
+  scoring: ShortlistSettings,
+  seenHumanAvg?: number | null,
+) {
   const missingFields = parseMissingFields(row.missing_fields);
   // The number a shortlist decision is judged on — the composite form of the
   // workbench's AI · My · Average column (see shared/scoring.ts decisionScore).
   const { decision, blocked, weight } = shortlistHint(row, scoring);
   const shortlistMin = row.shortlist_min ?? null;
+  // What the viewer is SHOWN. `blocked` above stays the whole panel's judgement
+  // — see `averagesSeenBy` for why the hint is not recomputed with these.
+  const shownHumanAvg = seenHumanAvg === undefined ? row.human_avg : seenHumanAvg;
+  const shownDecision =
+    seenHumanAvg === undefined
+      ? decision
+      : decisionScore(row.ai_score, typeof shownHumanAvg === "number" ? [shownHumanAvg] : [], weight.pct);
   return {
     id: row.id,
     name: row.name,
@@ -403,7 +421,7 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: Shortli
     relatedDeckId: row.related_deck_id ?? undefined,
     contentVersion: row.content_version ?? 1,
     aiScore: row.ai_score ?? undefined,
-    decisionScore: decision ?? undefined,
+    decisionScore: shownDecision ?? undefined,
     // Which split produced `decisionScore`, so a screen showing the number can
     // say where it came from instead of implying the org control moved it.
     //
@@ -431,7 +449,7 @@ function toDeckView(edition: Edition, row: DeckRow, role: Role, scoring: Shortli
     weakAreas: splitList(row.weak_areas),
     missingSections: splitList(row.missing_sections),
     // Aug-2026 stage-screen columns (issues 25–31).
-    juryScore: typeof row.human_avg === "number" ? row.human_avg : undefined,
+    juryScore: typeof shownHumanAvg === "number" ? shownHumanAvg : undefined,
     assignedAt: row.assigned_at ?? undefined,
     assigneeSubmitted: (row.assignee_submitted ?? 0) > 0,
     callScheduledAt: row.call_at ?? undefined,
@@ -617,43 +635,73 @@ function oneDeck(user: SessionUser, deckId: string, alias = "d") {
   return scoped(scopeOf(user)).on(alias).and(`${alias}.id = ?`, deckId);
 }
 
-// ── Whose numbers a viewer may see — ONE rule, two readers ───────────────────
+// ── Whose numbers a viewer may see — ONE rule, every reader ──────────────────
 //
 // Issue 21 (the hierarchy), V3 item 13 (the configurable matrix) and F0109 (the
-// "Jury can see each other's scores" toggle), exactly as `GET /:id/report` has
-// enforced them. Lifted out of that route, unchanged in order, when the Jury
-// Pipeline began printing each juror's score beside their name (23-Oct tracker,
-// P1): that report is one click from the same row, and a second copy of this
-// predicate is how a cell ends up showing a number the report it opens withholds.
+// "Jury can see each other's scores" toggle). Lifted out of `GET /:id/report`
+// when the Jury Pipeline began printing each juror's score beside their name
+// (23-Oct tracker, P1): that report is one click from the same row, and a second
+// copy of this predicate is how a cell ends up showing a number the report it
+// opens withholds. It now decides the report's columns, the panel's per-juror
+// scores and the deck-level averages (`averagesSeenBy`).
 //
-// The order is the report's and it matters:
+// **The rule, as the product owner restated it on 23-Oct reviewing P1:** "anyone
+// senior should be able to see the junior persons scoring but the junior cant see
+// the seniors score." That is issue 21's own sentence again, and the ranks are
+// `EVALUATION_RANK`: programme associate 1 · jury 2 · programme manager 3 ·
+// admin / superuser 99. In order:
 //   1. your OWN evaluation is always yours — identity beats role;
-//   2. the peer toggle: OFF (the shipped default, `0026`), every ASSIGNABLE
-//      evaluator — jury, programme associate AND programme manager
-//      (`ASSIGNABLE_EVALUATOR_ROLES`) — sees no one else's, matrix unconsulted;
-//   3. the matrix, falling through to the rank ladder for pairs it does not draw
-//      (`admin`), which is what keeps admin and superuser seeing everything.
+//   2. the peer toggle hides PEERS — evaluators holding YOUR role — while it is
+//      off (the shipped default, `0026`). Its label is "Jury can see each other's
+//      scores", and peers are the only people a hierarchy cannot order;
+//   3. everyone else is the matrix, whose incubator default IS the hierarchy
+//      (`DEFAULT_VISIBILITY`): above you hidden, below you shown. Pairs it does not
+//      draw (`admin`) fall through to the rank ladder.
 //
-// The one behaviour that moved in the lift: an evaluator whose role cannot be
+// What moved on 23-Oct, measured on P1's own fixtures: the toggle used to stop
+// every ASSIGNABLE evaluator seeing ANYONE else — so a programme manager, senior
+// to the whole panel, saw no juror's score on the report or the Jury Pipeline.
+// It now reaches peers only. **Incubator only**: VC is out of scope by instruction
+// and keeps the old reach (`PEER_TOGGLE_REACHES_PEERS_ONLY`).
+//
+// One behaviour also moved in the lift: an evaluator whose role cannot be
 // resolved (no `users` row behind the id, or a value outside this edition's
-// roles) is now WITHHELD. The report used to cast it to `"" as Role`, which the
+// roles) is WITHHELD. The report used to cast it to `"" as Role`, which the
 // ladder reads as rank 0 — visible to every viewer, a fail-open no write path
 // can reach. Resolving through `ROLES_BY_EDITION` closes it without a cast.
+
+/**
+ * Editions where the F0109 toggle hides only same-role peers. VC is false and the
+ * table says so out loud: its toggle still reduces every assignable evaluator to
+ * "AI + own", exactly as before 23-Oct, because the edition is out of scope and
+ * `e2e/vc-intake.spec.ts` is not the only thing that would notice.
+ */
+const PEER_TOGGLE_REACHES_PEERS_ONLY: Record<Edition, boolean> = { incubator: true, vc: false };
+
 function evaluatorScoreRule(
   viewer: Pick<SessionUser, "id" | "edition" | "role">,
   scoring: Pick<ScoringSettings, "jurySeesPeerScores">,
   visibility: VisibilityMatrix,
 ) {
   const peerRestricted = !scoring.jurySeesPeerScores && isAssignableEvaluator(viewer.edition, viewer.role);
+  const peersOnly = PEER_TOGGLE_REACHES_PEERS_ONLY[viewer.edition];
   return {
     peerRestricted,
     canSee(evaluatorId: string, evaluatorRole: string | null): boolean {
       if (evaluatorId === viewer.id) return true;
-      if (peerRestricted) return false;
       const target = ROLES_BY_EDITION[viewer.edition].find((r) => r === evaluatorRole);
-      return target !== undefined && canSeeEvaluatorScoresIn(visibility, viewer.edition, viewer.role, target);
+      if (target === undefined) return false;
+      if (peerRestricted && (!peersOnly || target === viewer.role)) return false;
+      return canSeeEvaluatorScoresIn(visibility, viewer.edition, viewer.role, target);
     },
   };
+}
+
+type ScoreRule = ReturnType<typeof evaluatorScoreRule>;
+
+/** The rule for THIS request's viewer — the session's workspace, its toggle and its matrix. */
+async function scoreRuleFor(c: Context<AppEnv>, scoring: Pick<ScoringSettings, "jurySeesPeerScores">) {
+  return evaluatorScoreRule(c.var.user, scoring, await loadScoreVisibility(c.env.DB, scopeOf(c.var.user)));
 }
 
 // ── Jury members and their scores (23-Oct tracker, P1) ───────────────────────
@@ -754,7 +802,7 @@ interface JurorRow {
 async function loadJurors(
   c: Context<AppEnv>,
   deckIds: string[],
-  scoring: Pick<ScoringSettings, "jurySeesPeerScores">,
+  rule: ScoreRule,
 ): Promise<Map<string, JurorView[]>> {
   const panels = new Map<string, JurorView[]>();
   if (deckIds.length === 0) return panels;
@@ -780,11 +828,6 @@ async function loadJurors(
       .all<JurorRow>()
   ).results;
 
-  const rule = evaluatorScoreRule(
-    c.var.user,
-    scoring,
-    await loadScoreVisibility(c.env.DB, scopeOf(c.var.user)),
-  );
   for (const r of rows) {
     const submitted = r.submitted > 0;
     const visible = rule.canSee(r.evaluator_id, r.role);
@@ -801,6 +844,101 @@ async function loadJurors(
     else panels.set(r.deck_id, [juror]);
   }
   return panels;
+}
+
+// ── The deck-level averages, through the same rule (23-Oct) ─────────────────
+//
+// `juryScore` is the mean of EVERY human evaluation on the deck (`human_avg`),
+// and `decisionScore` blends it with the AI score at the deck's split. Served
+// as-is they hand a junior the seniors' numbers in aggregate. Measured on 23-Oct
+// against P1's local seed: the programme associate's listing carried InsureFlow's
+// `juryScore` 7.83 — the mean of both jurors', the programme manager's and the
+// admin's evaluations with their own — and `decisionScore` gives the same mean
+// back to anyone who takes the AI half off (`aiScore` and `aiWeightPct` ride on
+// the same row). On a deck carrying only their own evaluation and one juror's,
+// that is the juror's number exactly. "The junior cant see the seniors score" has
+// to hold for the average too; the analytics reports learned the same thing at
+// Wave 9 — a filtered mean IS the protection (`humanEvalsByDeck`).
+//
+// So on each deck where the viewer may NOT see every evaluation, both numbers are
+// recomputed over the ones they may. Where they see all of them — the superuser,
+// the admin — the deck is served exactly as before: the same SQL `AVG`, the same
+// bytes.
+//
+// **`shortlistBlocked` is deliberately not recomputed.** It must agree with the
+// check the SERVER runs on the transition (`checkShortlistFloor`,
+// `routes/pipeline.ts`), which judges the whole panel; a hint judged on part of
+// it is the W7-A defect again — "shortlistable" on screen, refused on click. It
+// says whether the deck clears its floor, which is a pipeline fact, not anybody's
+// score.
+
+/**
+ * Editions whose averages follow the hierarchy. VC is false — out of scope, and
+ * its own blind/peer rules are untouched by the 23-Oct decision.
+ */
+const AVERAGES_FOLLOW_HIERARCHY: Record<Edition, boolean> = { incubator: true, vc: false };
+
+/**
+ * Whose deck views are filtered. Not founders: they are outside the evaluation
+ * hierarchy altogether, and what their portal shows of the jury is F0464's own
+ * question — this change must not quietly answer it.
+ */
+function averagesFollowRule(user: Pick<SessionUser, "edition" | "role">): boolean {
+  return AVERAGES_FOLLOW_HIERARCHY[user.edition] && user.role !== "founder";
+}
+
+/**
+ * The human mean each deck shows THIS viewer — present only for the decks where
+ * the rule hid at least one evaluation (`null` when it hid them all). One
+ * statement for any number of decks, keyed like `loadJurors` and for the same
+ * reason (D1's 100-bind cap).
+ */
+async function averagesSeenBy(
+  c: Context<AppEnv>,
+  deckIds: string[],
+  rule: ScoreRule,
+): Promise<Map<string, number | null>> {
+  const seen = new Map<string, number | null>();
+  if (!averagesFollowRule(c.var.user) || deckIds.length === 0) return seen;
+  // `evaluations` is owned through `decks`, which this statement joins and
+  // scopes — `humanEvalsByDeck`'s shape. The same `AVG` inputs as `human_avg`:
+  // a human row (`evaluator_id` set) with a total.
+  const qa = scoped(scopeOf(c.var.user))
+    .on("d")
+    .and("d.id IN (SELECT value FROM json_each(?))", JSON.stringify(deckIds))
+    .andRaw("e.evaluator_id IS NOT NULL")
+    .andRaw("e.weighted_total IS NOT NULL");
+  const rows = (
+    await c.env.DB.prepare(
+      "SELECT e.deck_id AS deck_id, e.evaluator_id AS evaluator_id, u.role AS role, e.weighted_total AS total " +
+        "FROM evaluations e JOIN decks d ON d.id = e.deck_id " +
+        // A drifted id resolves to no role, and an unresolved role is withheld.
+        `LEFT JOIN users u ON u.id = e.evaluator_id AND u.tenant_id = d.tenant_id ${qa.whereClause()}`,
+    )
+      .bind(...qa.binds)
+      .all<{ deck_id: string; evaluator_id: string; role: string | null; total: number }>()
+  ).results;
+  const tally = new Map<string, { sum: number; n: number; hidden: boolean }>();
+  for (const r of rows) {
+    const t = tally.get(r.deck_id) ?? { sum: 0, n: 0, hidden: false };
+    if (rule.canSee(r.evaluator_id, r.role)) {
+      t.sum += r.total;
+      t.n += 1;
+    } else {
+      t.hidden = true;
+    }
+    tally.set(r.deck_id, t);
+  }
+  for (const [deckId, t] of tally) if (t.hidden) seen.set(deckId, t.n > 0 ? t.sum / t.n : null);
+  return seen;
+}
+
+/** `toDeckView` for ONE deck read by id, its averages seen through this viewer's rule. */
+async function deckViewFor(c: Context<AppEnv>, row: DeckRow, scoring: ScoringSettings) {
+  const { edition, role } = c.var.user;
+  if (!averagesFollowRule(c.var.user)) return toDeckView(edition, row, role, scoring);
+  const seen = await averagesSeenBy(c, [row.id], await scoreRuleFor(c, scoring));
+  return toDeckView(edition, row, role, scoring, seen.get(row.id));
 }
 
 /** GET /api/decks — decks in the caller's edition (Review-decks table),
@@ -1014,9 +1152,19 @@ decks.get("/", async (c) => {
   // P1 — each listed deck's panel, from a second statement (`loadJurors`), so the
   // row count above is the row count served. Attached before routing and before
   // the blind-scoring pass below, so both branches carry it; neither reads it.
-  const panels = receivesJurors(edition, role) ? await loadJurors(c, rows.map((r) => r.id), scoring) : null;
+  //
+  // The deck-level averages go through the SAME rule (`averagesSeenBy`), loaded
+  // once for both. Nothing the partition reads moves with them — `deckListRoute`
+  // and the two post-filters read the AI score, the stage and the intake fields,
+  // never `juryScore` or `decisionScore` — so a filtered average cannot change
+  // which list a deck is on.
+  const deckIds = rows.map((r) => r.id);
+  const wantsRule = receivesJurors(edition, role) || averagesFollowRule(c.var.user);
+  const rule = wantsRule ? await scoreRuleFor(c, scoring) : null;
+  const panels = rule && receivesJurors(edition, role) ? await loadJurors(c, deckIds, rule) : null;
+  const seen = rule ? await averagesSeenBy(c, deckIds, rule) : new Map<string, number | null>();
   const views = rows.map((r) => {
-    const view = toDeckView(edition, r, role, scoring);
+    const view = toDeckView(edition, r, role, scoring, seen.get(r.id));
     return panels ? { ...view, jurors: panels.get(r.id) ?? [] } : view;
   });
   if (!withholdsAiScore(scoring, { isEvaluator: isAssignableEvaluator(edition, role), hasSubmitted: false })) {
@@ -1190,7 +1338,7 @@ decks.get("/:id", async (c) => {
     hasSubmitted: Boolean(submitted),
   });
 
-  const view = toDeckView(edition, row, role, scoring);
+  const view = await deckViewFor(c, row, scoring);
   return c.json({
     deck: blind ? { ...view, aiScore: undefined, signal: undefined } : view,
     extraction,
@@ -1221,7 +1369,7 @@ const ONBOARDING_ROLES = ["program_associate", "program_manager", "admin", "part
  * ready. One row per deck, created on first write.
  */
 decks.put("/:id/onboarding", requireTask("onboard", ...ONBOARDING_ROLES), async (c) => {
-  const { edition, id: actorId } = c.var.user;
+  const { id: actorId } = c.var.user;
   const id = c.req.param("id");
   const qg = oneDeck(c.var.user, id);
   const deck = await c.env.DB.prepare(`SELECT d.id FROM decks d ${qg.whereClause()}`)
@@ -1304,7 +1452,7 @@ decks.put("/:id/onboarding", requireTask("onboard", ...ONBOARDING_ROLES), async 
   const scoring = updated ? await loadScoringSettings(c.env.DB, scopeOf(c.var.user)) : null;
   return c.json({
     ok: true,
-    deck: updated && scoring ? toDeckView(edition, updated, c.var.user.role, scoring) : null,
+    deck: updated && scoring ? await deckViewFor(c, updated, scoring) : null,
   });
 });
 
@@ -1677,7 +1825,7 @@ decks.patch("/:id", requireTask("upload", ...EDIT_DECK_ROLES), async (c) => {
   const scoring = updated ? await loadScoringSettings(c.env.DB, scopeOf(c.var.user)) : null;
   return c.json({
     ok: true,
-    deck: updated && scoring ? toDeckView(edition, updated, c.var.user.role, scoring) : null,
+    deck: updated && scoring ? await deckViewFor(c, updated, scoring) : null,
   });
 });
 
@@ -1830,7 +1978,7 @@ decks.post("/:id/send-to-query", requireTask("query", ...SEND_TO_QUERY_ROLES), a
     // `false` when the deck was already on the list, so the screen can say
     // "already queried" rather than claiming it just did something.
     raised: !open,
-    deck: updated && scoring ? toDeckView(edition, updated, c.var.user.role, scoring) : null,
+    deck: updated && scoring ? await deckViewFor(c, updated, scoring) : null,
   });
 });
 
@@ -1929,7 +2077,7 @@ decks.post("/:id/send-to-assign", requireTask("assign", ...SEND_TO_ASSIGN_ROLES)
   const scoring = updated ? await loadScoringSettings(c.env.DB, scopeOf(c.var.user)) : null;
   return c.json({
     ok: true,
-    deck: updated && scoring ? toDeckView(edition, updated, c.var.user.role, scoring) : null,
+    deck: updated && scoring ? await deckViewFor(c, updated, scoring) : null,
   });
 });
 
@@ -2054,10 +2202,11 @@ decks.get("/:id/report", async (c) => {
   // only default-off toggle in the section — while the build behaved as if it
   // were always on.
   //
-  // Off, an evaluator sees the AI column and their own, and nothing else. On,
-  // the role rule below still applies on top: the two are a conjunction, not a
-  // replacement. Roles that oversee rather than score — admin, superuser — are
-  // outside the toggle entirely.
+  // Off, an evaluator does not see their PEERS — evaluators holding their own
+  // role (incubator, since 23-Oct; on VC it still hides everyone but the AI
+  // column and their own). On, the role rule below still applies on top: the
+  // two are a conjunction, not a replacement. Roles that oversee rather than
+  // score — admin, superuser — are outside the toggle entirely.
   const scoring = await loadScoringSettings(c.env.DB, scope);
   // V4-WEIGHT (0074) — the split THIS deck is judged at, not the org's bare
   // value: its cohort's, else its programme's, else the organisation's.
@@ -2221,8 +2370,12 @@ decks.get("/:id/report", async (c) => {
     groups.get(p.role_scope)?.rows.push(toRow(p));
   }
 
+  // P1 — the report's own deck row shows the averages through the same rule as
+  // its columns: a junior who cannot see a senior's column must not read that
+  // senior's number back out of `juryScore` on the same response.
+  const seen = await averagesSeenBy(c, [id], rule);
   return c.json({
-    deck: toDeckView(edition, deckRow, role, scoring),
+    deck: toDeckView(edition, deckRow, role, scoring, seen.get(id)),
     columns,
     core,
     // A section whose role has no parameters configured has nothing to show.

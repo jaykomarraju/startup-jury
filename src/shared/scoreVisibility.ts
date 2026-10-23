@@ -28,10 +28,13 @@
  *    diagonal is about OTHER people who hold your role.
  *  - **`jurySeesPeerScores`** (F0109, the "Jury can see each other's scores"
  *    toggle). It remains a live conjunctive gate on the deck report: off, an
- *    assignable evaluator sees only the AI column and their own, and the matrix
- *    is not consulted. The v3 prototype deletes that toggle's row from `s-fw`;
- *    we do NOT, because deleting it removes the blind-round kill switch F0109
- *    was built for — §4 Q72.
+ *    assignable evaluator does not see their PEERS — evaluators holding their
+ *    own role — whatever the diagonal says. Incubator since 23-Oct; before
+ *    that, and still on VC, it hid everyone but the AI column and their own,
+ *    which stopped a programme manager seeing the panel below them
+ *    (`evaluatorScoreRule` in `routes/decks.ts` is where it is applied). The v3
+ *    prototype deletes that toggle's row from `s-fw`; we do NOT, because
+ *    deleting it removes the blind-round kill switch F0109 was built for — §4 Q72.
  *  - **Roles the matrices do not list.** `admin` is a row/column in neither
  *    matrix, and `founder`/`mentor` are outside this surface entirely. Any pair
  *    the matrix does not cover falls through to `canSeeEvaluatorScores`, so
@@ -39,28 +42,26 @@
  *
  * ## The defaults, and where they differ from what shipped
  *
- * `DEFAULT_VISIBILITY` is the prototype's own printed default state — the
- * footnote the screen renders is therefore TRUE, which matters more here than
- * anywhere else: a permission screen that shows a state the server does not
- * enforce is the exact failure mode this file exists to prevent.
+ * `DEFAULT_VISIBILITY` is what the console's footnote describes — the footnote
+ * the screen renders must be TRUE, which matters more here than anywhere else:
+ * a permission screen that shows a state the server does not enforce is the
+ * exact failure mode this file exists to prevent.
  *
- * Four incubator cells differ from the rank ladder that shipped. Recorded as
- * §4 Q71, with the deltas measured per surface:
+ * The prototype's printed incubator default differed from the rank ladder in
+ * four cells, recorded as §4 Q71. The product owner settled the two OFF the
+ * diagonal on 23-Oct (the hierarchy wins — see `DEFAULT_VISIBILITY`); the two
+ * ON it are the prototype's blind-evaluation default and stand:
  *
- *  | cell                            | ladder | v3 default | direction |
- *  |---------------------------------|--------|------------|-----------|
- *  | program_manager → superuser     | off    | **on**     | WIDENS    |
- *  | program_associate → program_associate | on | **off**  | narrows   |
- *  | jury → program_associate        | on     | **off**    | narrows   |
- *  | jury → jury                     | on     | **off**    | narrows   |
- *
- * On the deck report at the shipped settings nothing moves at all, because
- * `jurySeesPeerScores` defaults OFF and already reduces every assignable
- * evaluator to "AI + own". The deltas are visible only once an org turns that
- * toggle on, and on the three analytics reports, which never applied it.
+ *  | cell                            | ladder | v3 printed | shipped now |
+ *  |---------------------------------|--------|------------|-------------|
+ *  | program_manager → superuser     | off    | on         | **off**     |
+ *  | jury → program_associate        | on     | off        | **on**      |
+ *  | program_associate → program_associate | on | off      | off         |
+ *  | jury → jury                     | on     | off        | off         |
  */
 import {
   canSeeEvaluatorScores,
+  evaluationRank,
   type Edition,
   type Role,
 } from "./roles";
@@ -129,17 +130,48 @@ function rows(edition: Edition, on: readonly Role[]): VisibilityMatrix {
 }
 
 /**
- * The prototype's shipped toggle state, read off the decoded markup:
- * every `<div class="tog on">` in a row is on, every `<div class="tog">` off.
+ * The hierarchy as a matrix: off the diagonal a viewer sees exactly the roles
+ * RANKED BELOW them (`EVALUATION_RANK`) and none above; on the diagonal — peers,
+ * whom no hierarchy orders — only the roles listed in `peers` see each other.
+ */
+function hierarchy(edition: Edition, peers: readonly Role[]): VisibilityMatrix {
+  const all = VISIBILITY_ROLES[edition];
+  const m: VisibilityMatrix = {};
+  for (const viewer of all) {
+    const row: Partial<Record<Role, boolean>> = {};
+    for (const target of all) {
+      row[target] =
+        viewer === target ? peers.includes(viewer) : evaluationRank(edition, viewer) > evaluationRank(edition, target);
+    }
+    m[viewer] = row;
+  }
+  return m;
+}
+
+/**
+ * The shipped state of each matrix — what an org that never touched it gets.
+ * Every cell stays an admin's to change in the console.
  *
- * Incubator: "Super User & Program Manager see everyone; Program Associate and
- * Jury Member see no one — jury members cannot see each other (blind
- * evaluation) until turned on here."
- * VC: "Managing Partner, IC member and Partner/Principal see everyone; Inv.
- * Associate and Analyst see no one until turned on here."
+ * **Incubator is the hierarchy** (23-Oct, the product owner, reviewing Wave A
+ * P1): "anyone senior should be able to see the junior persons scoring but the
+ * junior cant see the seniors score." The prototype's printed default — "Super
+ * User & Program Manager see everyone; Program Associate and Jury Member see no
+ * one" — broke that sentence in TWO cells, both already recorded as §4 Q71
+ * departures from the ladder and left open until now:
+ *   • program_manager → superuser was ON — a junior reading a senior's scores;
+ *   • jury → program_associate was OFF — a senior refused a junior's.
+ * Both follow the ranks now. The diagonal is the prototype's, untouched: Super
+ * User and Program Manager see their peers, Program Associate and Jury Member do
+ * not — "jury members cannot see each other (blind evaluation) until turned on
+ * here."
+ *
+ * VC is the prototype's read-off, unchanged (every `<div class="tog on">` in a
+ * row is on): "Managing Partner, IC member and Partner/Principal see everyone;
+ * Inv. Associate and Analyst see no one until turned on here." The VC edition
+ * is out of scope (client, 2026-10-01) and must keep working untouched.
  */
 export const DEFAULT_VISIBILITY: Record<Edition, VisibilityMatrix> = {
-  incubator: rows("incubator", ["superuser", "program_manager"]),
+  incubator: hierarchy("incubator", ["superuser", "program_manager"]),
   vc: rows("vc", ["superuser", "ic_member", "partner"]),
 };
 

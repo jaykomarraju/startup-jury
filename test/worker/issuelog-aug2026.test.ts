@@ -278,24 +278,19 @@ describe("evaluation report (issues 20, 21, 23, 24)", () => {
   });
 
   it("hides evaluators the matrix does not allow and says how many were withheld", async () => {
-    // Issue 21's rule, asserted with peer visibility ON — see the test below
-    // for why that is something the test has to switch on.
+    // Issue 21's rule, asserted with peer visibility ON so the matrix alone is
+    // answering — the test below covers what the toggle adds when it is off.
     //
-    // **V3 item 13 changed one row here, deliberately.** The fixed
-    // `EVALUATION_RANK` ladder is now the admin console's configurable
-    // `Score visibility matrix`, and its shipped default is the v3 prototype's
-    // own printed toggle state: "Program Associate and Jury Member see no one
-    // — jury members cannot see each other (blind evaluation) until turned on
-    // here." So a juror no longer reads the programme associate's column by
-    // rank; they read their own and nothing else until an admin turns the
-    // `jury → program_associate` cell on. The next test does exactly that,
-    // from the API, and watches this column come back.
-    //
-    // The programme associate and the programme manager are unchanged: the
-    // associate only ever had their own column, and the PM's widened cell
-    // (`program_manager → superuser`) is invisible on this seed, which holds
-    // no superuser evaluation. `admin` is in NEITHER matrix, so it still falls
-    // through to the ladder and stays hidden from all three. Recorded as §4 Q71.
+    // V3 item 13 made the ladder a configurable `Score visibility matrix` and
+    // shipped the v3 prototype's printed default, under which a juror stopped
+    // reading the programme associate's column. **23-Oct put it back**: the
+    // product owner restated issue 21 — "anyone senior should be able to see the
+    // junior persons scoring but the junior cant see the seniors score" — and the
+    // incubator default is now that hierarchy (`DEFAULT_VISIBILITY`). So the
+    // juror reads the associate below them again, and still not the PM or the
+    // admin above. The associate and the PM read exactly what they did.
+    // `admin` is in NEITHER matrix, falls through to the ladder, and stays hidden
+    // from all three.
     await setPeerVisibility(true);
     try {
       const pa = await report(await login(PA));
@@ -303,8 +298,8 @@ describe("evaluation report (issues 20, 21, 23, 24)", () => {
       expect(pa.hiddenEvaluators).toBe(3);
 
       const jury = await report(await login(JURY));
-      expect(jury.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "jury"]);
-      expect(jury.hiddenEvaluators).toBe(3);
+      expect(jury.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "program_associate", "jury"]);
+      expect(jury.hiddenEvaluators).toBe(2);
 
       const pm = await report(await login(PM));
       expect(pm.columns.map((c) => c.role ?? "ai")).toEqual([
@@ -319,18 +314,48 @@ describe("evaluation report (issues 20, 21, 23, 24)", () => {
     }
   });
 
-  it("shows an evaluator only their own column while peer visibility is off", async () => {
+  it("hides an evaluator's PEERS while peer visibility is off — and only their peers", async () => {
     // W2-A / F0109 — admin console → Scoring framework → "Jury can see each
     // other's scores" · "Turn off for fully independent scoring rounds". It is
     // the one toggle the prototype ships OFF, and 0026 seeds it off, while the
     // build behaved as though it were permanently on.
     //
-    // Off, an evaluator sees the AI column and their own and nothing else. The
-    // issue-21 hierarchy above is not replaced by this — it applies on top when
-    // the toggle is on, which is what the previous test now asserts explicitly.
-    const jury = await report(await login(JURY));
-    expect(jury.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "jury"]);
-    expect(jury.peerScoresHidden).toBe(true);
+    // **Re-pointed 23-Oct.** Off, this used to reduce an evaluator to the AI
+    // column and their own — which also stopped a programme manager seeing the
+    // jury below them, against issue 21's "anyone senior should be able to see
+    // the junior persons scoring". It now hides PEERS — people holding the
+    // viewer's own role, the only pairs a hierarchy cannot order — and leaves
+    // everyone else to the hierarchy. The seed has one evaluator per role, so a
+    // second juror's evaluation is written here to give the toggle a peer to hide.
+    await env.DB.prepare(
+      "INSERT INTO users (id, tenant_id, edition, name, email, password_hash, role, initials, active) " +
+        "VALUES ('il_peer_jury', 't_default', 'incubator', 'Peer Juror', 'peer.juror.il@demo.startupjury.ai', NULL, 'jury', 'PJ', 1)",
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO evaluations (id, deck_id, evaluator_id, weighted_total, verdict, submitted_at) " +
+        "VALUES ('il_peer_eval', 'inc_deck_insureflow', 'il_peer_jury', 6.4, 'scored', '2026-10-23T10:00:00Z')",
+    ).run();
+    try {
+      const jury = await report(await login(JURY));
+      // Their own and the associate's below them — never the peer beside them.
+      expect(jury.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "program_associate", "jury"]);
+      expect(jury.columns.some((c) => c.id === "il_peer_jury")).toBe(false);
+      expect(jury.peerScoresHidden).toBe(true);
+
+      // The PM has no peer on this deck, so the toggle hides nothing from them:
+      // the whole panel below them, own column included.
+      const pm = await report(await login(PM));
+      expect(pm.columns.map((c) => c.role ?? "ai")).toEqual([
+        "ai",
+        "program_associate",
+        "jury",
+        "jury",
+        "program_manager",
+      ]);
+    } finally {
+      await env.DB.prepare("DELETE FROM evaluations WHERE id = 'il_peer_eval'").run();
+      await env.DB.prepare("DELETE FROM users WHERE id = 'il_peer_jury'").run();
+    }
 
     // Oversight roles are outside the toggle: they do not score, they review.
     const admin = await report(await login(SUPER));

@@ -534,11 +534,14 @@ describe("Score visibility matrices (V3 item 13)", () => {
     expect(within(vc).getAllByRole("switch")).toHaveLength(VISIBILITY_ROLES.vc.length ** 2);
   });
 
-  it("carries the prototype's two footnotes verbatim", async () => {
+  it("carries the two footnotes — incubator's states the hierarchy it now ships (23-Oct), VC's is the prototype's verbatim", async () => {
+    // The incubator footnote was the prototype's, verbatim, until 23-Oct moved
+    // two default cells (`DEFAULT_VISIBILITY`); a footnote describing a default
+    // the server no longer ships is the failure this screen exists to prevent.
     await mountAsSuperuser();
     expect(
       screen.getByText(
-        "Defaults: Super User & Program Manager see everyone; Program Associate and Jury Member see no one — jury members cannot see each other (blind evaluation) until turned on here.",
+        "Defaults: a role sees the roles ranked below it and never those above (Super User › Program Manager › Jury Member › Program Associate). Super User and Program Manager also see their peers; jury members cannot see each other (blind evaluation) until turned on here.",
       ),
     ).toBeInTheDocument();
     expect(
@@ -570,39 +573,41 @@ describe("Score visibility matrices (V3 item 13)", () => {
     );
   });
 
-  it("shows the prototype's shipped toggle state for an org that has set nothing", async () => {
+  it("shows the shipped toggle state for an org that has set nothing — the hierarchy (23-Oct)", async () => {
     await mountAsSuperuser();
-    // "Super User & Program Manager see everyone…"
-    for (const col of ["Super User", "Program Mgr", "Program Assoc", "Jury Member"]) {
-      for (const row of ["Super User", "Program Manager"]) {
+    // Row → the columns it sees: those ranked below it, plus its peers for the
+    // two roles whose diagonal ships on. Every other cell is off.
+    const sees: Record<string, string[]> = {
+      "Super User": ["Super User", "Program Mgr", "Program Assoc", "Jury Member"],
+      "Program Manager": ["Program Mgr", "Program Assoc", "Jury Member"],
+      "Jury Member": ["Program Assoc"],
+      "Program Associate": [],
+    };
+    for (const [row, cols] of Object.entries(sees)) {
+      for (const col of ["Super User", "Program Mgr", "Program Assoc", "Jury Member"]) {
         expect(screen.getByRole("switch", { name: `${row} can see ${col} scores` })).toHaveAttribute(
           "aria-checked",
-          "true",
-        );
-      }
-      // "…Program Associate and Jury Member see no one."
-      for (const row of ["Program Associate", "Jury Member"]) {
-        expect(screen.getByRole("switch", { name: `${row} can see ${col} scores` })).toHaveAttribute(
-          "aria-checked",
-          "false",
+          cols.includes(col) ? "true" : "false",
         );
       }
     }
   });
 
   it("sends ONLY the flipped cells, so untouched ones keep following the default", async () => {
+    // 23-Oct: `jury → program_associate` ships ON (the hierarchy), so the flip
+    // this test makes is now an admin turning a default OFF — still one cell.
     const { saved } = await mountAsSuperuser();
     fireEvent.click(screen.getByRole("switch", { name: "Jury Member can see Program Assoc scores" }));
     expect(screen.getByRole("switch", { name: "Jury Member can see Program Assoc scores" })).toHaveAttribute(
       "aria-checked",
-      "true",
+      "false",
     );
     expect(saved.state?.dirty).toBe(true);
 
     await saved.state!.onSave();
     expect(saveScoringFramework).toHaveBeenCalledWith(
       expect.objectContaining({ aiWeightPct: 40 }),
-      { incubator: { jury: { program_associate: true } } },
+      { incubator: { jury: { program_associate: false } } },
     );
   });
 
