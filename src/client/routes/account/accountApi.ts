@@ -4,7 +4,7 @@
  * line it depends on.
  */
 import type { PublishedPriceBook } from "../../../shared/priceBook";
-import type { BillingAddress, BillingLocale } from "../../../shared/plans";
+import type { BillingAddress, BillingLocale, FreeTrialStatus } from "../../../shared/plans";
 import type {
   AccountOrderView,
   AccountProfile,
@@ -36,6 +36,18 @@ export interface AccountState {
   billing: AccountBillingView;
   orders: AccountOrderView[];
   paymentConfigured: boolean;
+  /** P2 — the free trial as `credit_ledger` records it. */
+  trial: FreeTrialStatus;
+  /** P2 — `org_settings.credits_balance`, what an upload spends. */
+  balance: number;
+}
+
+/** What `POST /api/account/trial` answers, granted or already taken. */
+export interface TrialResult {
+  /** True when THIS call granted the trial; false when the workspace already had one. */
+  granted: boolean;
+  trial: FreeTrialStatus;
+  balance: number;
 }
 
 export interface OrderResult {
@@ -71,6 +83,24 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const getAccount = () => call<AccountState>("/api/account");
+
+/**
+ * P2 — take the free trial. `409 trial_already_taken` is not an error to the
+ * screen: it means the workspace has its trial (a second tab, a double tap), and
+ * the body carries that trial so the screen can simply show it.
+ */
+export async function takeTrial(): Promise<TrialResult> {
+  const res = await fetch("/api/account/trial", { method: "POST", credentials: "include" });
+  const body = (await res.json().catch(() => ({}))) as Partial<TrialResult> & {
+    error?: string;
+    fields?: FieldErrors;
+  };
+  const taken = res.status === 409 && body.error === "trial_already_taken";
+  if ((res.ok || taken) && body.trial && typeof body.balance === "number") {
+    return { granted: res.ok, trial: body.trial, balance: body.balance };
+  }
+  throw new AccountApiError(res.status, body);
+}
 
 /** The live catalogue — the only place the wizard reads a price from. */
 export const getPublishedCatalogue = () => call<PublishedPriceBook>("/api/pricing/published");

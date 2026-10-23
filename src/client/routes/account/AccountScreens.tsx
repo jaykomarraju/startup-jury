@@ -45,6 +45,7 @@ import {
   validateBillingAddress,
   type BillingAddress,
   type BillingLocale,
+  type FreeTrialStatus,
   type Plan,
 } from "../../../shared/plans";
 import {
@@ -55,7 +56,6 @@ import {
   DIAL_CODES,
   EMPLOYEE_BANDS,
   EXTRA_CREDIT_PACKS,
-  FREE_TRIAL_DECKS,
   PAYMENT_METHODS,
   SEAT_PERIOD_VIEWS,
   SEAT_STORAGE_GB,
@@ -1268,7 +1268,7 @@ export function SeatScreen({
           onClick={onTrial}
         >
           <Gift className="h-4 w-4" aria-hidden="true" />
-          Take a {FREE_TRIAL_DECKS}-deck free trial
+          {trialButtonLabel(book)}
         </button>
         <ContinueButton onClick={onContinue} disabled={!ready}>
           Continue to pay
@@ -1396,7 +1396,7 @@ export function EnterpriseSeatScreen({
           disabled={planCode === null}
         >
           <Gift className="h-4 w-4" aria-hidden="true" />
-          Take a {FREE_TRIAL_DECKS}-deck free trial
+          {trialButtonLabel(book)}
         </button>
         <ContinueButton onClick={onContinue} disabled={planCode === null}>
           Continue to pay
@@ -1590,26 +1590,72 @@ export function LegacyOrgPlanScreen({
 // ── 2b. The free trial, and the paid one (V3-PT) ─────────────────────────────
 
 /**
- * `#acs-trial` — three free decks, used one at a time.
+ * The amber button's words, from the PUBLISHED catalogue's `trial.decks` — the
+ * figure `POST /api/account/trial` grants. It was `FREE_TRIAL_DECKS`, a constant
+ * in `accountOrder.ts`; an administrator who set the trial to five decks in
+ * Price configuration would have been granted five under a button promising
+ * three. A book offering no trial still needs the button: the trial screen is
+ * the only road to the paid trial and the annual plans (`TrialScreen`).
+ */
+export function trialButtonLabel(book: PublishedPriceBook): string {
+  const n = book.trial.decks;
+  return n > 0 ? `Take a ${n}-deck free trial` : "Trials & annual plans";
+}
+
+/** "23 Oct 2026" from the ledger's `YYYY-MM-DD HH:MM:SS` (UTC). */
+function ledgerDate(at: string): string {
+  const d = new Date(`${at.replace(" ", "T")}${/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? "" : "Z"}`);
+  return Number.isNaN(d.getTime())
+    ? at.slice(0, 10)
+    : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+/**
+ * `#acs-trial` — the free trial, as the books record it (P2).
  *
- * The prototype's counter is local state that resets on every visit
- * (`renderTrial` sets `iTrialLeft = 3` unconditionally). This screen is the
- * same: nothing is spent and nothing is recorded — it is a demonstration of
- * what the trial gives you before you pay. Once all three are used it offers
- * the two ways forward the prototype offers, and no others.
+ * **What the prototype draws and this no longer does.** `renderTrial` sets
+ * `iTrialLeft = 3` on every visit and "Use a trial deck" counts it down in the
+ * page. W6-B reproduced that faithfully, so the screen promised three free
+ * evaluations and granted nothing: the customer's first real upload was 402.
+ * Now:
+ *
+ *   • **Start my free trial** grants the credits — a `trial_grant` row and the
+ *     balance, together, once per workspace (`POST /api/account/trial`).
+ *   • The count and the chips are the SERVER's `used` / `granted`, so they
+ *     survive a reload and agree with the upload gate.
+ *   • "Use a trial deck" is gone. A trial deck is used by evaluating a deck, so
+ *     the button that remains goes to Upload (when the role may upload).
+ *
+ * **One deliberate departure from V6:** the "how would you like to continue?"
+ * panel is always drawn — before the trial is taken and while it is being used —
+ * not only once it is used up. In the mockup it was three clicks away; with real
+ * decks it would be three real evaluations away, and it is the ONLY road to
+ * `#acs-paidtrial` and `#acs-annual`. A customer who wants to pay now must not
+ * be made to take and spend a trial first. Its heading says "Trial complete"
+ * exactly when the trial is complete, and `ac-trial-done` marks only that state.
  */
 export function TrialScreen({
   planName,
-  used,
-  onUse,
+  trial,
+  balance,
+  busy,
+  error,
+  onStart,
+  onUpload,
   onBack,
   onPayChosen,
   onPaidTrial,
   onAnnual,
 }: {
   planName: string;
-  used: number;
-  onUse: () => void;
+  trial: FreeTrialStatus;
+  /** The workspace's balance after the trial, which is what an upload spends. */
+  balance: number;
+  busy: boolean;
+  error: string | null;
+  onStart: () => void;
+  /** Undefined when this role cannot upload — the button is then not drawn. */
+  onUpload?: () => void;
   onBack: () => void;
   onPayChosen: () => void;
   onPaidTrial: () => void;
@@ -1621,17 +1667,31 @@ export function TrialScreen({
    */
   onAnnual?: () => void;
 }) {
-  const left = Math.max(FREE_TRIAL_DECKS - used, 0);
-  const done = left === 0;
+  // Once taken, the trial is what was GRANTED, not what the catalogue offers
+  // today — an administrator may have changed the figure since.
+  const decks = trial.taken ? trial.granted : trial.decks;
+  const used = trial.taken ? Math.min(trial.used, decks) : 0;
+  const left = Math.max(decks - used, 0);
+  const done = trial.taken && left === 0;
+  const offered = trial.decks > 0 || trial.taken;
   return (
     <Card>
       <Heading
-        title={`Your ${FREE_TRIAL_DECKS}-deck free trial`}
+        title={offered ? `Your ${decks}-deck free trial` : "Free trial"}
         sub={
-          <>
-            Evaluate up to {FREE_TRIAL_DECKS} decks free on your <b>{planName}</b>. When your trial
-            decks are used, payment unlocks for the plan you chose.
-          </>
+          !offered ? (
+            <>No free trial is on offer right now. You can still try a paid pack or choose a plan.</>
+          ) : trial.taken && trial.grantedAt ? (
+            <>
+              {decks} free deck{decks === 1 ? " was" : "s were"} added to your balance on{" "}
+              {ledgerDate(trial.grantedAt)}. Each one evaluates a deck on your <b>{planName}</b>.
+            </>
+          ) : (
+            <>
+              Evaluate up to {decks} decks free on your <b>{planName}</b>. Start the trial and {decks}{" "}
+              credits are added to your balance — no payment and no card.
+            </>
+          )
         }
       />
       <div className="px-0 pb-0.5 pt-2 text-center">
@@ -1641,10 +1701,17 @@ export function TrialScreen({
         >
           {left}
         </div>
-        <div className="text-[12px] text-fg-2">free decks remaining</div>
+        <div className="text-[12px] text-fg-2">
+          {trial.taken ? "free decks remaining" : "free decks included"}
+        </div>
+        {trial.taken && (
+          <div className="mt-1 text-[12px] text-fg-muted" data-testid="ac-trial-balance">
+            Your balance: {balance} credit{balance === 1 ? "" : "s"}
+          </div>
+        )}
       </div>
       <div className="my-5 flex justify-center gap-3" data-testid="ac-trial-decks">
-        {Array.from({ length: FREE_TRIAL_DECKS }, (_, i) => {
+        {Array.from({ length: decks }, (_, i) => {
           const spent = i < used;
           return (
             <span
@@ -1666,41 +1733,62 @@ export function TrialScreen({
           );
         })}
       </div>
-      {done && (
-        <div className="mt-1.5 rounded-[11px] border border-gold bg-gold-lt px-4 py-3.5" data-testid="ac-trial-done">
-          <div className="mb-[11px] text-center text-[12.5px] font-semibold text-gold-dk">
-            Trial complete — how would you like to continue?
-          </div>
-          <div className="flex flex-wrap justify-center gap-2.5">
-            <button type="button" className={BTN_GO} onClick={onPayChosen} data-testid="ac-pay-chosen">
-              <CreditCard className="h-4 w-4" aria-hidden="true" />
-              Pay for the plan chosen
-            </button>
-            <button type="button" className={BTN_AMBER} onClick={onPaidTrial} data-testid="ac-try-paid">
-              <Gift className="h-4 w-4" aria-hidden="true" />
-              Try paid trials
-            </button>
-            {onAnnual && (
-              <button type="button" className={BTN_GO} onClick={onAnnual} data-testid="ac-try-annual">
-                <Crown className="h-4 w-4" aria-hidden="true" />
-                Annual subscriptions
-              </button>
-            )}
-          </div>
-        </div>
+      {error && (
+        <p role="alert" className="mb-3 text-center text-[12.5px] text-signal-flagged">
+          {error}
+        </p>
       )}
+      <div
+        className="mt-1.5 rounded-[11px] border border-gold bg-gold-lt px-4 py-3.5"
+        data-testid={done ? "ac-trial-done" : "ac-trial-next"}
+      >
+        <div className="mb-[11px] text-center text-[12.5px] font-semibold text-gold-dk">
+          {done
+            ? "Trial complete — how would you like to continue?"
+            : trial.taken
+              ? "Ready for more? Choose how to continue."
+              : "Prefer not to wait? Choose how to continue."}
+        </div>
+        <div className="flex flex-wrap justify-center gap-2.5">
+          <button type="button" className={BTN_GO} onClick={onPayChosen} data-testid="ac-pay-chosen">
+            <CreditCard className="h-4 w-4" aria-hidden="true" />
+            Pay for the plan chosen
+          </button>
+          <button type="button" className={BTN_AMBER} onClick={onPaidTrial} data-testid="ac-try-paid">
+            <Gift className="h-4 w-4" aria-hidden="true" />
+            Try paid trials
+          </button>
+          {onAnnual && (
+            <button type="button" className={BTN_GO} onClick={onAnnual} data-testid="ac-try-annual">
+              <Crown className="h-4 w-4" aria-hidden="true" />
+              Annual subscriptions
+            </button>
+          )}
+        </div>
+      </div>
       <Foot>
         <BackButton onClick={onBack} />
-        <button
-          type="button"
-          className={BTN_AMBER}
-          onClick={onUse}
-          disabled={done}
-          data-testid="ac-use-trial-deck"
-        >
-          <Upload className="h-4 w-4" aria-hidden="true" />
-          Use a trial deck
-        </button>
+        {offered && !trial.taken ? (
+          <button
+            type="button"
+            className={BTN_AMBER}
+            onClick={onStart}
+            disabled={busy}
+            data-testid="ac-start-trial"
+          >
+            <Gift className="h-4 w-4" aria-hidden="true" />
+            {busy ? "Starting…" : "Start my free trial"}
+          </button>
+        ) : (
+          !done &&
+          trial.taken &&
+          onUpload && (
+            <button type="button" className={BTN_AMBER} onClick={onUpload} data-testid="ac-trial-upload">
+              <Upload className="h-4 w-4" aria-hidden="true" />
+              Upload a deck
+            </button>
+          )
+        )}
       </Foot>
     </Card>
   );

@@ -710,6 +710,34 @@ export interface CreditsBillingView {
   paymentConfigured: boolean;
 }
 
+/**
+ * P2 — the free trial, as the server reports it (`GET /api/account`,
+ * `POST /api/account/trial`).
+ *
+ * Before P2 the trial screen was a counter in the browser that "used" a deck on
+ * every click and granted nothing; the customer met a promise of three free
+ * decks and an empty balance. These fields are read off `credit_ledger`, so the
+ * screen can only say what the books say.
+ */
+export interface FreeTrialStatus {
+  /** Decks the PUBLISHED catalogue offers (`book.trial.decks`). 0 = none on offer. */
+  decks: number;
+  /** This workspace already holds a `trial_grant` movement. Once per workspace. */
+  taken: boolean;
+  /** When it was granted. Null until taken. */
+  grantedAt: string | null;
+  /** Credits the trial actually granted — may differ from `decks` if the catalogue moved since. */
+  granted: number;
+  /**
+   * How many of those have been spent. Credits are fungible, so this is a
+   * convention, stated: evaluations debit the OLDEST credits first. For a new
+   * workspace the trial is the oldest grant, so its first evaluations are trial
+   * decks; for one that already held credits (GCW), those are spent first.
+   * `src/server/billing/trial.ts` computes it; clamped to `[0, granted]`.
+   */
+  used: number;
+}
+
 /** A ledger entry consumes credits. */
 export function isDebit(entry: { delta: number }): boolean {
   return entry.delta < 0;

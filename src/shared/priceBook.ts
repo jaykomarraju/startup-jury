@@ -422,6 +422,26 @@ export function paidTrialPlan(book: PriceBook): PricePlanRow | undefined {
 }
 
 /**
+ * P2 — everything the My account wizard can sell to an edition, as ONE list.
+ *
+ * `AccountOverlay` draws the incubator's seat flow from `isSeatCatalogueRow`
+ * rows and every other audience's plan screens from the rows that are NOT, and
+ * no incubator buyer reaches the legacy screens (its header, "S3-ACCOUNT — the
+ * audience"). This is that split stated once, so the Admin console's Credits &
+ * billing panel (`src/server/billing/catalogue.ts`) offers an incubator exactly
+ * what its wizard offers instead of a second price list. Before it, the console
+ * sold the pre-V3 10 / 50 / 100 packs to an incubator whose wizard sells none of
+ * them. (The VC panel keeps its old, wider list — VC is out of scope; see there.)
+ *
+ * The free trial is never sellable: it is taken (`POST /api/account/trial`).
+ */
+export function sellablePlans(book: PriceBook, edition: "incubator" | "vc"): PricePlanRow[] {
+  return listedPlans(book).filter(
+    (p) => p.group !== "free_trial" && isSeatCatalogueRow(p) === (edition === "incubator"),
+  );
+}
+
+/**
  * `ICREDIT_RATE` — what one extra deck costs on a tier, in minor units.
  *
  * The prototype states it as "annual plan price / 500 included decks" and hard

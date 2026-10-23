@@ -34,19 +34,19 @@ import { requireAuth, requireTask } from "../auth/middleware";
 // off the session and never off the request, which is what keeps §2's one piece of
 // good news true: not one of the 211 existing predicates takes its key from the
 // browser, and a `scopeOf(c.req.query())` would not compile.
-import { scopeOf, insertScope, type TenantScope } from "../../shared/tenant";
+import { scopeOf, scoped, insertScope, type TenantScope } from "../../shared/tenant";
 // The Billing audit category — the same one W3-C's `recordCreditMovement` writes.
 import { changedFragment, recordAudit } from "../audit/log";
 import { LOW_CREDIT_THRESHOLD } from "../../shared/notifications";
 import {
+  billingCurrencyFor,
   formatMinor,
-  multiplyMinor,
-  priceBreakdown,
-  publishablePlans,
   type CreditsBillingView,
   type PlanGroup,
-  type PublishedPlan,
+  type SubscriptionView,
 } from "../../shared/plans";
+import { quoteOrder, taxSettingsOf, type AccountType } from "../../shared/accountOrder";
+import { publishedBook, publishedPlansFor } from "../billing/catalogue";
 import {
   issueMissingInvoices,
   listIntents,
@@ -79,48 +79,48 @@ billing.use("*", requireTask("adminconsole", "admin"));
 
 // ── The published catalogue ──────────────────────────────────────────────────
 
-interface PlanRow {
-  code: string;
-  plan_group: PlanGroup;
-  name: string;
-  badge: string | null;
-  tagline: string | null;
-  features: string | null;
-  units: number | null;
-  period: string | null;
-  amount_minor: number;
-  currency: string;
+/**
+ * P2 — **this section used to read `price_plans` × `price_amounts` directly**:
+ * Price configuration's DRAFT tables, so an administrator's unpublished edit was
+ * the price this panel charged, and the panel sold the pre-V3 10 / 50 / 100 packs
+ * that the incubator's My account wizard never offers. The two "Buy" surfaces
+ * showed two price lists. Both now read the PUBLISHED book and select with the
+ * same predicate (`src/server/billing/catalogue.ts`, which carries the measured
+ * account of the divergence), and `POST /purchase` below prices with the same
+ * `quoteOrder` that `POST /api/account/orders` does.
+ */
+
+/**
+ * Who is buying, as far as the commercial record says. `account_profiles` is
+ * the My account wizard's row; this panel has no screen of its own for it.
+ */
+interface Buyer {
+  accountType: AccountType | null;
+  billingCountry: string | null;
+}
+
+async function readBuyer(env: AppEnv["Bindings"], scope: TenantScope): Promise<Buyer> {
+  const q = scoped(scope).on("p");
+  const row = await env.DB.prepare(
+    `SELECT p.account_type, p.billing_country FROM account_profiles p ${q.whereClause()}`,
+  )
+    .bind(...q.binds)
+    .first<{ account_type: AccountType; billing_country: string | null }>();
+  return { accountType: row?.account_type ?? null, billingCountry: row?.billing_country ?? null };
 }
 
 /**
- * Active catalogue rows in one currency, stripped of the per-deck derivations
- * §8 Q1 retired (`publishablePlans`). A plan with no price in that currency is
- * omitted rather than converted here — FX is W4-D's screen.
+ * The ONE currency this panel quotes and charges in.
+ *
+ * V6-CURRENCY's rule — the billing address decides — applied here too. Before
+ * P2 this panel priced in `billing_subscriptions.currency` and nothing else, so
+ * a customer whose billing country is the United States was quoted in rupees
+ * with GST here and in dollars without it in My account. With no billing
+ * country on file, the subscription's currency stands, exactly as before: `0104`
+ * records why an unrecorded country must not be guessed in either direction.
  */
-async function readCatalogue(
-  c: { env: AppEnv["Bindings"] },
-  currency: string,
-): Promise<PublishedPlan[]> {
-  const res = await c.env.DB.prepare(
-    "SELECT p.code, p.plan_group, p.name, p.badge, p.tagline, p.features, p.units, p.period, " +
-      "a.amount_minor, a.currency FROM price_plans p JOIN price_amounts a ON a.plan_id = p.id " +
-      "WHERE p.active = 1 AND a.currency = ? ORDER BY p.sort_order ASC",
-  )
-    .bind(currency)
-    .all<PlanRow>();
-  const plans: PublishedPlan[] = (res.results ?? []).map((r) => ({
-    code: r.code,
-    group: r.plan_group,
-    name: r.name,
-    badge: r.badge,
-    tagline: r.tagline,
-    features: r.features,
-    units: r.units,
-    period: (r.period as PublishedPlan["period"]) ?? null,
-    currency: r.currency,
-    amountMinor: r.amount_minor,
-  }));
-  return publishablePlans(plans);
+function panelCurrency(buyer: Buyer, subscription: SubscriptionView): string {
+  return billingCurrencyFor(buyer.billingCountry) ?? subscription.currency;
 }
 
 // ── GET / — everything the section renders ───────────────────────────────────
@@ -141,6 +141,8 @@ billing.get("/", async (c) => {
   const subscription = await readSubscription(c.env, scope, now);
   const tax = await readTaxSettings(c.env);
   const usage = await usageTotals(c.env, scope, subscription.cycle, now);
+  const book = await publishedBook(c.env);
+  const currency = panelCurrency(await readBuyer(c.env, scope), subscription);
 
   const view: CreditsBillingView = {
     edition,
@@ -150,10 +152,18 @@ billing.get("/", async (c) => {
     usedThisCycle: usage.usedThisCycle,
     lowCreditThreshold: LOW_CREDIT_THRESHOLD,
     subscription,
-    tax,
+    // The panel computes its GST line from this, so it must be the rate the
+    // order is CHARGED at — the published book's (`quoteOrder` →
+    // `taxSettingsOf(book.tax)`), not `pricing_settings`, which Price
+    // configuration edits before publishing. Invoices keep snapshotting
+    // `readTaxSettings` at issue (`issueMissingInvoices`); that is W4-C's
+    // document rule and unchanged here.
+    tax: book ? taxSettingsOf(book.tax) : tax,
     ledger: await listLedger(c.env, scope, 50),
     invoices: await listInvoices(c.env, scope),
-    plans: await readCatalogue(c, subscription.currency),
+    // Nothing published → nothing to sell, and the panel already says "Publish
+    // the price list in Price configuration first" for an empty list.
+    plans: book ? publishedPlansFor(book, edition, currency) : [],
     intents: await listIntents(c.env, scope, 10),
     paymentConfigured: paymentConfigured(c.env),
   };
@@ -309,12 +319,10 @@ billing.put("/subscription", async (c) => {
 
 // ── POST /purchase — records an intent; charges nothing ──────────────────────
 
-const PURPOSE_OF_GROUP: Record<PlanGroup, IntentPurpose | null> = {
+const PURPOSE_OF_GROUP: Record<Exclude<PlanGroup, "free_trial">, IntentPurpose> = {
   credit_pack: "credit_pack",
   subscription: "subscription",
   enterprise: "enterprise",
-  // The free trial is granted, not bought.
-  free_trial: null,
 };
 
 billing.post("/purchase", async (c) => {
@@ -329,27 +337,39 @@ billing.post("/purchase", async (c) => {
     return c.json({ error: "invalid_quantity" }, 400);
   }
 
+  const book = await publishedBook(c.env);
+  if (!book) return c.json({ error: "not_published" }, 503);
   const subscription = await readSubscription(c.env, scope);
-  const tax = await readTaxSettings(c.env);
-  const plan = (await readCatalogue(c, subscription.currency)).find((p) => p.code === planCode);
-  if (!plan) return c.json({ error: "unknown_plan" }, 404);
+  const buyer = await readBuyer(c.env, scope);
+  // Chosen by the SERVER from the billing address, never read from the body —
+  // so V6's invariant ("an Indian billing address is never priced in USD") holds
+  // here by construction rather than by the refusal `POST /api/account/orders`
+  // needs for a currency a client sent.
+  const currency = panelCurrency(buyer, subscription);
 
-  const purpose = PURPOSE_OF_GROUP[plan.group];
-  if (!purpose) return c.json({ error: "plan_not_purchasable" }, 400);
-
-  const stated = multiplyMinor(plan.amountMinor, quantity);
-  if (stated <= 0) return c.json({ error: "plan_not_purchasable" }, 400);
-  const money = priceBreakdown(stated, tax, plan.currency);
+  // P2 — the same function, and therefore the same price, as My account. With no
+  // profile on file the buyer is taken to be an ORGANISATION: this is the admin
+  // console of an incubator's workspace, `quoteOrder` sells enterprise plans to
+  // organisations only, and an individual is somebody who said so in My account.
+  // A free trial is refused (`plan_not_purchasable`) — it is taken, not bought.
+  const quote = quoteOrder(book, planCode, currency, buyer.accountType ?? "organization", { quantity });
+  if ("error" in quote) {
+    return c.json({ error: quote.error }, quote.error === "unknown_plan" ? 404 : 400);
+  }
+  const money = quote.breakdown;
+  const plan = quote.plan;
 
   const intent = await recordPaymentIntent(c.env, {
     tenantId: scope.tenantId,
     edition: scope.edition,
-    purpose,
+    purpose: PURPOSE_OF_GROUP[quote.group],
     planCode: plan.code,
     planName: plan.name,
-    units: plan.units,
+    // The TOTAL the purchase grants — what fulfilment credits (`billing/
+    // fulfilment.ts`) — the same meaning `POST /api/account/orders` gives it.
+    units: quote.unitsTotal,
     quantity,
-    currency: plan.currency,
+    currency,
     money,
     actorId: c.var.user.id,
   });
@@ -359,12 +379,13 @@ billing.post("/purchase", async (c) => {
     action: "billing_intent_recorded",
     summary:
       `Purchase intent recorded — ${quantity} × ${plan.name} · ` +
-      `${formatMinor(money.totalMinor, plan.currency)} incl. GST · no payment taken`,
+      `${formatMinor(money.totalMinor, currency)}${money.taxed ? " incl. GST" : ""} · no payment taken`,
     detail: {
       intentId: intent.id,
       planCode: plan.code,
       quantity,
       status: intent.status,
+      priceVersion: book.version,
     },
     targetType: "billing_payment_intents",
     targetId: intent.id,

@@ -35,7 +35,7 @@ import { X } from "lucide-react";
 import { useAuth } from "../../auth/useAuth";
 import { usePermissions } from "../../auth/usePermissions";
 import { useBranding } from "../../theme/useBranding";
-import { landingNavId } from "../../../shared/nav";
+import { canAccessNav, landingNavId } from "../../../shared/nav";
 import {
   enterpriseSeatPlans,
   isSeatCatalogueRow,
@@ -57,7 +57,6 @@ import {
   INDIVIDUAL_GROUPS,
   ORGANIZATION_GROUPS,
   PAID_TRIAL_PACKS,
-  FREE_TRIAL_DECKS,
   TEAM_ROLES,
   annualCartQuote,
   billableCurrencies,
@@ -87,6 +86,7 @@ import {
 import {
   AccountApiError,
   getAccount,
+  takeTrial,
   getPublishedCatalogue,
   orderDocumentUrl,
   placeOrder,
@@ -243,8 +243,13 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
   const [extraCredits, setExtraCredits] = useState(0);
   /** `iPaidPack` — decks of the paid trial, 0 while none is chosen. */
   const [paidPack, setPaidPack] = useState(0);
-  /** `iTrialLeft`, counted up rather than down. Local, spends nothing. */
-  const [trialUsed, setTrialUsed] = useState(0);
+  /**
+   * P2 — `iTrialLeft` was a counter here that "used" a deck per click and
+   * granted nothing. The trial is now the server's (`state.trial`); this is only
+   * the in-flight flag and the one sentence a failed grant needs.
+   */
+  const [trialBusy, setTrialBusy] = useState(false);
+  const [trialError, setTrialError] = useState<string | null>(null);
   const [orgPlanCode, setOrgPlanCode] = useState<string | null>(null);
 
   // ── V6's five new screens ─────────────────────────────────────────────────
@@ -814,12 +819,39 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
     return quote ? planScreenFor(accountType, quote.group) : planScreen;
   };
 
-  /** The amber "Take a 3-deck free trial" button on both plan screens. */
-  function takeTrial() {
+  /**
+   * The amber "Take a 3-deck free trial" button on both plan screens. It OPENS
+   * the trial screen and grants nothing: a customer who only looks at the trial
+   * must not have spent it. **Start my free trial** on that screen is the grant.
+   */
+  function openTrial() {
     setPaidPack(0);
-    setTrialUsed(0);
+    setTrialError(null);
     go("trial");
   }
+
+  /** `POST /api/account/trial` — the credits, for real, once per workspace. */
+  async function startTrial() {
+    setTrialBusy(true);
+    setTrialError(null);
+    try {
+      const res = await takeTrial();
+      setState((s) => (s ? { ...s, trial: res.trial, balance: res.balance } : s));
+    } catch (err) {
+      setTrialError(
+        err instanceof AccountApiError && err.code === "forbidden"
+          ? "Your role cannot start a trial for this workspace."
+          : err instanceof AccountApiError && err.code === "trial_not_offered"
+            ? "No free trial is on offer right now."
+            : "We couldn't start your trial. Try again.",
+      );
+    } finally {
+      setTrialBusy(false);
+    }
+  }
+
+  /** A trial deck is used by evaluating one — so the trial screen leads to Upload. */
+  const canUpload = canAccessNav(edition, role, "upload", can);
 
   async function pay() {
     if (!quote) return;
@@ -992,7 +1024,7 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         currency={currency}
         onCurrency={setCurrency}
         onBack={() => go("orgdetails")}
-        onTrial={takeTrial}
+        onTrial={openTrial}
         onContinue={continueToPayment}
       />
     ) : (
@@ -1026,7 +1058,7 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         currency={currency}
         onCurrency={setCurrency}
         onBack={() => go("account")}
-        onTrial={takeTrial}
+        onTrial={openTrial}
         onContinue={continueToPayment}
       />
     ) : (
@@ -1053,8 +1085,12 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
     body = (
       <TrialScreen
         planName={chosenPlanName}
-        used={trialUsed}
-        onUse={() => setTrialUsed((n) => Math.min(n + 1, FREE_TRIAL_DECKS))}
+        trial={state.trial}
+        balance={state.balance}
+        busy={trialBusy}
+        error={trialError}
+        onStart={() => void startTrial()}
+        onUpload={canUpload ? () => navigate("/app/upload") : undefined}
         onBack={() => go(planScreen)}
         onPayChosen={() => {
           setPaidPack(0);

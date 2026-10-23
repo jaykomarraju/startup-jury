@@ -6,7 +6,9 @@
  * plan for an organisation), takes a payment method and prints a receipt with an
  * invoice. This router is the server half of that flow:
  *
- *   GET  /                      the saved profile (or a prefill), recent orders
+ *   GET  /                      the saved profile (or a prefill), recent orders,
+ *                               the free trial's status and the balance
+ *   POST /trial                 the free trial — a real grant, once (P2)
  *   PUT  /profile               the Account + Org details screens
  *   POST /orders                Payment → records an intent, charges nothing
  *   GET  /orders/:id            the receipt
@@ -49,7 +51,10 @@ import {
   type BillingLocale,
   type TaxSettings,
 } from "../../shared/plans";
-import type { PriceBook, PublishedPriceBook } from "../../shared/priceBook";
+import type { PublishedPriceBook } from "../../shared/priceBook";
+import { publishedBook } from "../billing/catalogue";
+import { readTrialStatus, takeFreeTrial } from "../billing/trial";
+import { readBalance } from "../billing/ledger";
 import {
   billingCycleLine,
   isPaymentMethod,
@@ -217,29 +222,11 @@ async function prefill(env: Env, scope: TenantScope, userId: string): Promise<Ac
   };
 }
 
-/**
- * The live catalogue. `src/server/routes/pricing.ts` has the same three lines as
- * a private `livePublished`; it is `W4-D`'s file and does not export it, so the
- * read is repeated here rather than edited there (§9 records the one-word export
- * that would remove this copy).
- *
- * **DELIBERATELY UNSCOPED, and it must stay that way.** `pricing_versions` is one
- * of §3's eight PLATFORM-GLOBAL tables: one catalogue serves the whole product,
- * `CREATE UNIQUE INDEX pricing_versions_one_published ON pricing_versions (status)
- * WHERE status = 'published'` enforces exactly one live book product-wide, and
- * `0100`'s integrity assertion fails the migration chain if a sweep "finishes the
- * job" by scoping these. §2 A6 names this read as a leak; the leak is the GATE on
- * the write side (closed by `pricing-owner.test.ts`), not the absence of a tenant
- * key on the read.
- */
-async function publishedBook(env: Env): Promise<PublishedPriceBook | null> {
-  const row = await env.DB.prepare(
-    "SELECT version, document, published_at FROM pricing_versions WHERE status = 'published'",
-  ).first<{ version: number; document: string; published_at: string }>();
-  if (!row) return null;
-  const book = JSON.parse(row.document) as PriceBook;
-  return { ...book, version: row.version, publishedAt: row.published_at };
-}
+// `publishedBook` — the live catalogue — moved to `src/server/billing/catalogue.ts`
+// (P2), so the Admin console's Credits & billing panel prices from the same book
+// as this wizard instead of from the draft tables. Its "DELIBERATELY UNSCOPED"
+// note travelled with it. `src/server/routes/pricing.ts` still holds its own
+// private `livePublished`; §9 records the export that would remove that copy too.
 
 interface OrderRow {
   id: string;
@@ -377,16 +364,60 @@ account.get("/", async (c) => {
   )
     .bind(...listQ.binds)
     .all<OrderRow>();
+  const book = await publishedBook(c.env);
   return c.json({
     profile: saved?.profile ?? (await prefill(c.env, scope, id)),
     saved: saved !== null,
     // V6-CURRENCY. Always present, even unsaved: `locale.currency` is then null,
     // which is the screens' cue that the billing step has not been taken. It is
     // NOT a currency default — see `0104`'s header on the two production rows.
-    billing: billingPayload(saved?.billing ?? null, await publishedBook(c.env)),
+    billing: billingPayload(saved?.billing ?? null, book),
     orders: (orders.results ?? []).map(toOrder),
     paymentConfigured: paymentConfigured(c.env),
+    // P2 — the trial screen prints what the ledger says, and the balance beside
+    // it, so "3 free decks" is never a promise the upload gate then refuses.
+    trial: await readTrialStatus(c.env, scope, book?.trial.decks ?? 0),
+    balance: await readBalance(c.env, scope),
   });
+});
+
+// ── POST /trial — the free trial, granted for real ──────────────────────────
+
+/**
+ * "Take a 3-deck free trial" → `#acs-trial` → **Start my free trial**.
+ *
+ * Grants `book.trial.decks` credits with a `trial_grant` ledger row, balance and
+ * row in one transaction, once per workspace (`src/server/billing/trial.ts`).
+ * Behind this router's `upgrade` gate, like every other purchase action: the
+ * trial is the first thing a buyer takes, and the people who may buy are the
+ * people who may take it.
+ *
+ * 409 `trial_already_taken` carries the status so the screen can show the trial
+ * the workspace already has instead of an error. No audit row on that refusal —
+ * it changes nothing, and a double tap on a phone is not an event.
+ */
+account.post("/trial", async (c) => {
+  const scope = scopeOf(c.var.user);
+  const book = await publishedBook(c.env);
+  if (!book) return c.json({ error: "not_published" }, 503);
+  const decks = book.trial.decks;
+
+  const result = await takeFreeTrial(c.env, scope, decks, c.var.user.id);
+  const trial = await readTrialStatus(c.env, scope, decks);
+  const balance = await readBalance(c.env, scope);
+  if (!result.ok) {
+    return c.json({ error: result.error, trial, balance }, result.error === "trial_already_taken" ? 409 : 400);
+  }
+
+  await recordAudit(c, {
+    category: "billing",
+    action: "trial_granted",
+    summary: `Free trial taken — ${result.granted} credit${result.granted === 1 ? "" : "s"} added (balance ${balance})`,
+    detail: { granted: result.granted, balance, priceVersion: book.version },
+    targetType: "credit_ledger",
+    targetId: result.entryId,
+  });
+  return c.json({ ok: true, granted: result.granted, trial, balance });
 });
 
 // ── PUT /profile — the Account and Org details screens ───────────────────────
