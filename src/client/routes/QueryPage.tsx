@@ -22,11 +22,12 @@
 // Email is recorded, not necessarily sent (§1.4): the confirmation says "sent"
 // only when the server reports the outbox actually delivered.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import {
   ArrowLeft,
   Bot,
+  Building2,
   Check,
   CircleCheck,
   Circle,
@@ -46,7 +47,10 @@ import {
 } from "lucide-react";
 import { EmptyState, PageToolbar, ToolbarButton } from "../components";
 import type { DeckView } from "../types";
-import { listDecks, listQueries, listAllQueries, type QueryView } from "../api";
+import { listDecks, listPrograms, listQueries, listAllQueries, type ProgramView, type QueryView } from "../api";
+import { AuthContext } from "../auth/AuthProvider";
+import { followedDeckFilter, useActiveContext } from "../activeContext";
+import type { Edition } from "../../shared/roles";
 import { fetchDeckScores, fetchLetterDraft, recordQuery, type DeckScores, type QueryLetterDraft } from "../queryApi";
 import { downloadCsv, toCsv } from "../exportCsv";
 import {
@@ -107,7 +111,109 @@ function deckMeta(deck: DeckView): string {
   return [deck.sector, deck.stage, deck.city].filter(Boolean).join(" · ");
 }
 
+/**
+ * ── THE PROGRAMME IN FORCE, ON SCREEN (23-Oct tracker rows 20 and 23) ────────
+ *
+ * A deck list narrowed to a programme with nothing on screen saying so is the
+ * defect that hid 28 decks from GCW's CEO (the header of `activeContext.ts`
+ * has the measurement). So a screen that follows the context draws this
+ * whenever — and only when — `followedDeckFilter` narrowed its request: one
+ * condition for both, so the strip and the filter cannot disagree.
+ *
+ * It names what is in force and clears it. Clearing writes the SHARED context,
+ * so the Dashboard is cleared too: the client's rule is one context across the
+ * sidebar, and a Clear that held on this screen alone would be a second,
+ * hidden one.
+ *
+ * When the name cannot be shown, the strip says what is true instead:
+ *   • still loading, or `/api/programs` did not answer — "one program", no guess;
+ *   • the id resolves to nothing — the programme or cohort was retired.
+ *     `GET /api/programs` returns active rows only (routes/programs.ts:128-141)
+ *     and soft-delete is how one leaves (test/worker/programs.test.ts:154). Its
+ *     decks keep their `program_id`, so the list need not be empty: this says
+ *     what the list is filtered BY, not that nothing matches.
+ *
+ * ── AT 393px ──
+ * A strip of its own under the toolbar, NOT a `.tbb` inside `.tbr`: below 900px
+ * `index.css:478` hides every non-primary `.tbb` in `.tbr` except a listbox
+ * trigger, and this is neither — put there, it would vanish on exactly the
+ * phone the demo is driven on. Its Clear takes the phone tier's 36px floor
+ * (`index.css:514-517`) itself, because that floor is written for `.tbb`.
+ *
+ * Text is `olive-ink` on `olive-lt`, not `olive-dk`: 6.13:1 light and 7.81:1
+ * dark, where `olive-dk` on `olive-lt` is 2.10:1 in dark (tracker row 18).
+ *
+ * Lives in this file only because S1 owns no shared component file, and of its
+ * three screens this is the one no parallel session edits (S3 also owns
+ * AssignPage.tsx; S4 and S5 own StagePage.tsx). It belongs in `components/`.
+ */
+export function ProgrammeContextBar({ edition }: { edition: Edition }) {
+  const [ctx, setCtx] = useActiveContext(edition);
+  const filter = followedDeckFilter(edition, ctx);
+  const narrowed = Boolean(filter.programId || filter.cohortId);
+  // `null` while the read is in flight; "failed" when it did not answer.
+  const [programs, setPrograms] = useState<ProgramView[] | "failed" | null>(null);
+
+  useEffect(() => {
+    if (!narrowed) return;
+    let live = true;
+    listPrograms()
+      .then((r) => live && setPrograms(r.programs))
+      .catch(() => live && setPrograms("failed"));
+    return () => {
+      live = false;
+    };
+  }, [narrowed]);
+
+  if (!narrowed) return null;
+
+  let label: string;
+  if (Array.isArray(programs)) {
+    const program = programs.find((p) => p.id === filter.programId);
+    const cohort = programs.flatMap((p) => p.cohorts).find((c) => c.id === filter.cohortId);
+    label = [
+      filter.programId ? (program?.name ?? "a program that is no longer active") : null,
+      filter.cohortId ? (cohort?.name ?? "a cohort that is no longer active") : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  } else {
+    label = filter.programId ? "one program" : "one cohort";
+  }
+
+  return (
+    <div
+      role="status"
+      data-testid="programme-context"
+      className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-stone-dk bg-olive-lt px-[18px] py-1.5 text-[11.5px] text-olive-ink"
+    >
+      <span className="flex min-w-0 items-center gap-1.5">
+        <Building2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        <span className="min-w-0">
+          Showing only <strong className="font-semibold">{label}</strong>
+        </span>
+      </span>
+      <button
+        type="button"
+        onClick={() => setCtx({ programId: null, cohortId: null })}
+        className="ml-auto inline-flex min-h-7 items-center gap-1 rounded-md px-2 font-semibold underline-offset-2 hover:underline max-[639px]:min-h-9"
+      >
+        <X className="h-3 w-3" aria-hidden="true" />
+        Show all programs
+      </button>
+    </div>
+  );
+}
+
 export function QueryPage() {
+  // S1 — the edition is read for the programme context alone; nothing else on
+  // this screen depends on it. Through `AuthContext` rather than `useAuth()`,
+  // which throws outside a provider and this screen's tests mount it bare.
+  const edition: Edition = useContext(AuthContext)?.user?.edition ?? "incubator";
+  const [programmeContext] = useActiveContext(edition);
+  // Memoised on the store's snapshot, which is referentially stable while the
+  // context is unchanged, so `load` is not re-created on every render.
+  const followed = useMemo(() => followedDeckFilter(edition, programmeContext), [edition, programmeContext]);
   const [decks, setDecks] = useState<DeckView[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [allQueries, setAllQueries] = useState<QueryView[]>([]);
@@ -172,7 +278,9 @@ export function QueryPage() {
         // V4-ROUTE — the server's enforced list, not the whole table filtered
         // here. `deckListRoute` has already partitioned Assign from Query, so
         // an evaluated deck marked incomplete arrives HERE and nowhere else.
-        listDecks({ list: "query" }),
+        // S1 — narrowed to the programme in force, on the server as the
+        // Dashboard's list is (`?programId=` runs before the partition).
+        listDecks({ list: "query", ...followed }),
         // Staff-only listing; a role without it just loses the status history.
         listAllQueries().catch(() => ({ queries: [] as QueryView[] })),
       ]);
@@ -183,7 +291,7 @@ export function QueryPage() {
       setDecks([]);
       setLoadError(true);
     }
-  }, []);
+  }, [followed]);
 
   useEffect(() => {
     void load();
@@ -357,6 +465,9 @@ export function QueryPage() {
           </>
         }
       />
+
+      {/* S1 — under the toolbar, over both tabs; the one-deck flow view has no list to narrow. */}
+      {view !== "founder" && <ProgrammeContextBar edition={edition} />}
 
       {/* Issue 15 — the two tabs. The flow view hides them, as `qShowTab('founder')` does. */}
       {view !== "founder" && (

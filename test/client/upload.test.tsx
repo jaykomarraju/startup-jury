@@ -6,6 +6,7 @@ import { uploadDeadlineMs } from "../../src/client/api";
 import { ResultsScreen, RESULTS_COLUMNS } from "../../src/client/routes/upload/ResultsScreen";
 import { ReviewScreen, isFlaggable, isUploadable } from "../../src/client/routes/upload/ReviewScreen";
 import { AuthContext, type AuthUser } from "../../src/client/auth/AuthProvider";
+import { setActiveContext } from "../../src/client/activeContext";
 import type { StagedDeck } from "../../src/client/routes/upload/types";
 import type { DeckView } from "../../src/client/types";
 import { catalogueFixture } from "../unit/fixtures/accountCatalogue";
@@ -265,7 +266,11 @@ describe("the wizard", () => {
   });
 
   it("defaults the cohort from the active context and the sector from its programme", async () => {
-    localStorage.setItem("sj_active_context_incubator", JSON.stringify({ programId: "p1", cohortId: "c1" }));
+    // Re-pointed at S1 (23-Oct): the context is keyed by the signed-in
+    // principal now, not `sj_active_context_${edition}`, so it is seeded through
+    // the store for the principal this screen mounts under rather than by
+    // writing a storage key this test would have to know the shape of.
+    setActiveContext(PA(), "incubator", { programId: "p1", cohortId: "c1" });
     mount(PA());
     await waitFor(() => expect((screen.getByLabelText("Cohort") as HTMLSelectElement).value).toBe("c:c1"));
     expect((screen.getByLabelText("Sector") as HTMLSelectElement).value).toBe("CleanTech");

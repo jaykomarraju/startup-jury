@@ -17,6 +17,7 @@ import {
 import { SectionPlaceholder } from "../../src/client/routes/admin/SectionPlaceholder";
 import { SECTION_COMPONENTS } from "../../src/client/routes/admin/registry";
 import { AuthContext, type AuthUser } from "../../src/client/auth/AuthProvider";
+import { setActiveContext } from "../../src/client/activeContext";
 import { listUsers, listPrograms } from "../../src/client/api";
 import type { Edition, Role } from "../../src/shared/roles";
 
@@ -487,10 +488,10 @@ describe("AdminConsole shell", () => {
   });
 
   it("carries the active program/cohort in the title-bar context chip", async () => {
-    localStorage.setItem(
-      "sj_active_context_incubator",
-      JSON.stringify({ programId: "p1", cohortId: "c1" }),
-    );
+    // Re-pointed at S1 (23-Oct): the context is keyed by the signed-in principal
+    // now, not by edition alone, so it is seeded through the store for the
+    // principal the console mounts under.
+    setActiveContext(user("incubator", "admin"), "incubator", { programId: "p1", cohortId: "c1" });
     vi.mocked(listPrograms).mockResolvedValue({
       sectors: [],
       programs: [

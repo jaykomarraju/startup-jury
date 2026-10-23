@@ -2,6 +2,8 @@ import { useCallback, useContext, useEffect, useMemo, useState, type ReactNode }
 import { useNavigate } from "react-router-dom";
 import { Armchair, Download, FileBarChart, Lock, PhoneCall, Signature, TriangleAlert } from "lucide-react";
 import { AuthContext } from "../auth/AuthProvider";
+import { followedDeckFilter, useActiveContext } from "../activeContext";
+import { ProgrammeContextBar } from "./QueryPage";
 import type { Role } from "../../shared/roles";
 import {
   Card,
@@ -439,6 +441,14 @@ export function StagePage({ config: base }: { config: StageConfig }) {
   // R7-JURY — the jury's Evaluated table shows the viewer's OWN score, their own
   // submission date and their own status, so the cells need to know who is asking.
   const viewerId = useContext(AuthContext)?.user?.id;
+  // S1 (tracker row 23) — "On any screen of the item on the sidebar, the context
+  // of the program will be same as what is selected on the dashboard page." The
+  // incubator's five stage screens are sidebar items that list decks, so they
+  // follow it; in VC `followedDeckFilter` is empty and the request is unchanged.
+  // Not `ctx` — that name is the footer's `StageContext` further down.
+  const edition = useContext(AuthContext)?.user?.edition ?? "incubator";
+  const [programmeContext] = useActiveContext(edition);
+  const followed = useMemo(() => followedDeckFilter(edition, programmeContext), [edition, programmeContext]);
   const config = useMemo<StageConfig>(() => {
     const variant = role ? base.roleVariants?.[role] : undefined;
     return variant ? { ...base, ...variant } : base;
@@ -497,13 +507,13 @@ export function StagePage({ config: base }: { config: StageConfig }) {
   const loadExtra = config.extra;
   const load = useCallback(() => {
     return Promise.all([
-      listDecks()
+      listDecks(followed)
         .then((r) => setDecks(r.decks))
         .catch(() => setDecks([])),
       loadSignups(),
       loadExtra ? loadExtra().then(setExtras, () => setExtras({})) : Promise.resolve(),
     ]).then(() => undefined);
-  }, [loadSignups, loadExtra]);
+  }, [loadSignups, loadExtra, followed]);
 
   useEffect(() => {
     load();
@@ -1075,6 +1085,7 @@ export function StagePage({ config: base }: { config: StageConfig }) {
           </>
         }
       />
+      <ProgrammeContextBar edition={edition} />
 
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col">

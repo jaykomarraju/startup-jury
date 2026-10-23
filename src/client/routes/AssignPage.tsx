@@ -38,6 +38,8 @@ import { exportDecks } from "../exportCsv";
 // population; `manual_review` and the query-history tail are Query's alone.
 import { ASSIGNABLE_STAGES } from "../../shared/queries";
 import { useAuth } from "../auth/useAuth";
+import { followedDeckFilter, useActiveContext } from "../activeContext";
+import { ProgrammeContextBar } from "./QueryPage";
 import { type Edition } from "../../shared/roles";
 import {
   ASSIGNMENT_DEADLINE_DAYS,
@@ -165,6 +167,11 @@ export function AssignPage() {
   const { user } = useAuth();
   const edition: Edition = user?.edition ?? "incubator";
   const navigate = useNavigate();
+  // S1 (tracker row 20) — "The decks of other programs are also appearing when
+  // I am processing decks related to 'Climate24'." Both lists below follow the
+  // programme in force on the Dashboard, and the strip under the toolbar says so.
+  const [programmeContext] = useActiveContext(edition);
+  const followed = useMemo(() => followedDeckFilter(edition, programmeContext), [edition, programmeContext]);
 
   const [decks, setDecks] = useState<DeckView[] | null>(null);
   /** `?list=query` — the decks this screen hands over rather than assigns.
@@ -198,11 +205,12 @@ export function AssignPage() {
     let live = true;
     // The roster and the hand-over list are two server-enforced lists, not one
     // response sliced two ways: whatever put a deck at its stage, the partition
-    // has already been applied by the time either arrives.
-    listDecks({ list: "assign" })
+    // has already been applied by the time either arrives. The drawer takes the
+    // same programme as the roster, so its Incomplete count is this programme's.
+    listDecks({ list: "assign", ...followed })
       .then((r) => live && setDecks(r.decks))
       .catch(() => live && setDecks([]));
-    listDecks({ list: "query" })
+    listDecks({ list: "query", ...followed })
       .then((r) => live && setRoutedToQuery(r.decks))
       .catch(() => live && setRoutedToQuery([]));
     getAssignBoard()
@@ -214,7 +222,7 @@ export function AssignPage() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [followed]);
 
   useEffect(() => load(), [load]);
 
@@ -509,6 +517,7 @@ export function AssignPage() {
             </ToolbarButton>
           }
         />
+        <ProgrammeContextBar edition={edition} />
         <div className="min-h-0 flex-1 overflow-y-auto px-[22px] py-[18px]">
           <div className="overflow-x-auto rounded-[10px] border border-stone-dk bg-surface">
             <table className="w-full min-w-[780px] border-collapse text-xs" aria-label="Incomplete decks">
@@ -635,6 +644,7 @@ export function AssignPage() {
           </>
         }
       />
+      <ProgrammeContextBar edition={edition} />
 
       <div className="flex min-h-0 flex-1 overflow-x-auto">
         {/* COL 1 — evaluated decks (.as-col1, 240px) */}
