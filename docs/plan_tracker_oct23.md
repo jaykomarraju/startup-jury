@@ -30,10 +30,10 @@ each session is for._
 | 17 | Pending invites — nobody receives the email | 🚫 **BLOCKED** — `EMAIL_FROM` is still `""`; needs the zone move |
 | 18 | AI score not legible | ✅ **DONE** this session — and it was 14 screens, not one |
 | 19 | Complete decks auto-appear in Assign | **S3** |
-| 20 | Other programmes' decks appear in Assign | **S1** |
+| 20 | Other programmes' decks appear in Assign | ✅ **DONE** — S1, `2cced45` |
 | 21 | Remove AI+ score and "AI base" dropdown | ✅ **DONE** this session |
 | 22 | Email query — which address does the founder reply to? | **S9**, blocked behind #17 |
-| 23 | Other programmes' decks in Query; context should follow the dashboard | **S1** |
+| 23 | Other programmes' decks in Query; context should follow the dashboard | ✅ **DONE** — S1, `2cced45` |
 | 24 | Sort on all tables (City, AI score, Status) + export | **S6** |
 
 ---
@@ -94,7 +94,47 @@ npm test` green — **check the exit codes, not a piped tail**.
 
 ---
 
-### S1 — Programme context, everywhere
+### S1 — Programme context, everywhere ✅ LANDED (`2cced45`, merged 2026-10-23)
+
+**What shipped.** The storage key is now
+`sj_active_context:<tenantId>:<userId>:<edition>` — tenant because that is the
+organisation, user because this is one person's working view and two people sharing a
+device is the same failure with a smaller blast radius. The old edition-only value is
+**discarded, not migrated**: it cannot be attributed to an organisation, so carrying it
+across would deliberately re-apply the filter that hid the CEO's decks.
+
+Assign, Query and the five incubator stage screens now follow the context, and each
+draws a strip naming the programme in force with a Clear — on the same condition that
+narrows the request, so the two cannot disagree. When it cannot name what is in force it
+says what is true ("one program" while loading, "a program that is no longer active" for
+a retired one) rather than going blank, which is the shape of the original incident.
+
+`?programId=` stays a caller-supplied FILTER and `decks.ts` is unchanged, which was the
+right call: it runs inside the tenant scope, so a foreign id returns zero rows.
+
+Gate: typecheck, lint, build, tests all exit 0 — **3220 passed, 1 skipped** (+25).
+The incident is pinned as a regression test, as are the old-key discard, a colleague on
+a shared device, the VC out-of-scope guards, and that the strip cannot be hidden by the
+phone rule that hides `.tbb` in `.tbr` below 900px.
+
+**Follow-ups it surfaced, in files it did not own:**
+
+1. `auth/AuthProvider.tsx` — `AuthUser` should declare `tenantId?: string`. The wire
+   already carries it (`routes/auth.ts:351`, `:462`), the type just hides it; S1 worked
+   around it with an optional field and no cast. Small, and it belongs to whoever next
+   owns that file.
+2. **S2 inherits one:** a retired programme still filters the **Dashboard** silently —
+   the same class as the incident, on the one screen S1 did not own.
+3. Intro calls (`CallsPage.tsx:601`), Evaluate and the jury's Assigned
+   (`EvaluatePage.tsx:211`) and the Reports still ignore the context. Decide whether
+   they should; the client's wording ("any screen of the item on the sidebar") suggests
+   yes.
+4. `ProgrammeContextBar` lives in `QueryPage.tsx` only because that was the one S1 file
+   no parallel session edits. It belongs in `components/`.
+
+---
+
+### S1 — original brief (kept for the record)
 
 **Owns:** `src/client/activeContext.ts`, `src/client/routes/AssignPage.tsx`,
 `src/client/routes/QueryPage.tsx`, `src/client/routes/StagePage.tsx`,
