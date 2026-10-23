@@ -19,7 +19,11 @@ export function deckMeta(deck: DeckView): string {
 export function ScoreChip({ value }: { value?: number }) {
   if (value === undefined) return <span className="text-fg-muted">—</span>;
   return (
-    <span className="inline-flex rounded-[5px] bg-olive-lt px-[7px] py-0.5 font-mono text-[11px] font-semibold text-olive-dk">
+    // `text-olive-ink`, not `text-olive-dk`: in dark mode `--olive-lt` drops to
+    // #1f2a1c while `--olive-dk` deliberately stays #4a5e3a for the brand ribbon,
+    // which left this chip at 2.1:1 — the client's "the scores are not legible".
+    // See the token's note in `index.css`.
+    <span className="inline-flex rounded-[5px] bg-olive-lt px-[7px] py-0.5 font-mono text-[11px] font-semibold text-olive-ink">
       {value.toFixed(1)}
     </span>
   );

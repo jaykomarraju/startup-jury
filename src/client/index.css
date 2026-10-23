@@ -27,6 +27,17 @@
   --olive-dk: #4a5e3a;
   --olive-lt: #ebf0e4;
   --olive-md: #8fa67a;
+  /* TEXT THAT SITS ON `--olive-lt`, and it needs its own token.
+     `--olive-dk` is doing two opposite jobs: a dark BACKGROUND (`--topbar`, 15
+     `bg-olive-dk`, 7 hovers) and a dark FOREGROUND (75 `text-olive-dk`, most of
+     them on an `--olive-lt` chip). Dark mode wants those to move in opposite
+     directions, so one token cannot serve both — and the dark block deliberately
+     leaves `--olive-dk` alone to keep the brand ribbon olive.
+     Measured: in dark mode `--olive-lt` becomes #1f2a1c while `--olive-dk` stays
+     #4a5e3a, i.e. dark green on dark green at **2.1:1** against WCAG AA's 4.5:1.
+     The client reported it as "the AI score is not legible" on the Dashboard; it
+     is the same pairing on 14 screens. */
+  --olive-ink: #4a5e3a;
 
   /* Gold — logo + sparse accents. */
   --gold: #e8a020;
@@ -101,6 +112,9 @@
 
   --olive: #8fa67a;
   --olive-lt: #1f2a1c;
+  /* Lifts with the surface it sits on. #a8c493 on #1f2a1c is 7.8:1 — AA and AAA
+     for normal text — where the unoverridden `--olive-dk` was 2.1:1. */
+  --olive-ink: #a8c493;
 
   --gold-lt: #2c2410;
   --gold-dk: #e8a020;
@@ -163,6 +177,7 @@
   /* Prototype palette as Tailwind colours (bg-olive, text-text-3, …). */
   --color-olive: var(--olive);
   --color-olive-dk: var(--olive-dk);
+  --color-olive-ink: var(--olive-ink);
   --color-olive-lt: var(--olive-lt);
   --color-olive-md: var(--olive-md);
   --color-gold: var(--gold);

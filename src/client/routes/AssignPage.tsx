@@ -38,7 +38,7 @@ import { exportDecks } from "../exportCsv";
 // population; `manual_review` and the query-history tail are Query's alone.
 import { ASSIGNABLE_STAGES } from "../../shared/queries";
 import { useAuth } from "../auth/useAuth";
-import { ADDITIONAL_PARAM_OWNERS, ROLE_LABELS, type Edition } from "../../shared/roles";
+import { type Edition } from "../../shared/roles";
 import {
   ASSIGNMENT_DEADLINE_DAYS,
   assignBottomSummary,
@@ -101,9 +101,6 @@ const LOAD_COLOURS = {
   mid: { fill: "bg-warn", text: "text-warn" },
   low: { fill: "bg-green", text: "text-green" },
 } as const;
-
-/** AI+ · AI++ · AI+++ by owner role, in `ADDITIONAL_PARAM_OWNERS` order (§8 Q10). */
-const TIERS = ["AI+", "AI++", "AI+++"] as const;
 
 function deckMeta(d: DeckView): string {
   return [d.sector, d.stage].filter(Boolean).join(" · ");
@@ -194,8 +191,6 @@ export function AssignPage() {
   const [stage, setStage] = useState("");
   const [assignedFilter, setAssignedFilter] = useState<"" | "unassigned" | "assigned">("");
 
-  /** Per-row AI badge view: -1 base, else the AI+ tier index (the `.ai-dd` select). */
-  const [aiView, setAiView] = useState<Record<string, number>>({});
   const [paramsFor, setParamsFor] = useState<DeckView | null>(null);
   const [reportFor, setReportFor] = useState<{ id: string; name: string } | null>(null);
 
@@ -396,20 +391,20 @@ export function AssignPage() {
       .map((p) => ({ name: p.name, weight: p.weight, value: values.get(p.key)! }));
   }
 
-  const owners = ADDITIONAL_PARAM_OWNERS[edition];
-
+  /**
+   * The deck's AI score, and only that.
+   *
+   * It used to switch between the base score and each role's additional-parameter
+   * tier, driven by an "AI base" dropdown beside it. The client, 2026-10-23: "AI+
+   * score and a dropdown box saying 'AI base' appear against every deck. This is
+   * no more relevant. This must be removed from design." The tier branch went with
+   * the control that was its only caller — nothing else could set a tier, so
+   * keeping it would have been a branch no input can reach.
+   *
+   * The per-role additional scores are still read on the Evaluation report, which
+   * is where a column per evaluator belongs.
+   */
   function aiBadge(deck: DeckView) {
-    const entry = board[deck.id];
-    const tier = aiView[deck.id] ?? -1;
-    if (tier >= 0) {
-      const v = entry?.additional[owners[tier]];
-      return (
-        <>
-          {TIERS[tier]} {typeof v === "number" ? Math.round(v) : "—"}
-          <small className="font-medium opacity-65">/30</small>
-        </>
-      );
-    }
     return <>AI {typeof deck.aiScore === "number" ? deck.aiScore.toFixed(1) : "—"}</>;
   }
 
@@ -663,7 +658,6 @@ export function AssignPage() {
                 {visible.map((d) => {
                   const checked = deckIds.includes(d.id);
                   const assigned = d.statusId === "assigned";
-                  const entry = board[d.id];
                   const values = paramRowsFor(d).map((r) => r.value);
                   return (
                     <li
@@ -698,25 +692,6 @@ export function AssignPage() {
                         <div className="flex flex-wrap items-center gap-1">
                           <span className="rounded-full bg-blue-lt px-[5px] py-px text-[9px] font-semibold text-blue-dk">
                             {aiBadge(d)}
-                          </span>
-                          <select
-                            aria-label={`AI score view for ${d.name}`}
-                            title="View each role additional score"
-                            className="max-w-[140px] cursor-pointer rounded-[5px] border border-stone-dk bg-surface px-1 py-px text-[9px] text-fg-muted"
-                            value={aiView[d.id] ?? -1}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) => setAiView((v) => ({ ...v, [d.id]: Number(e.target.value) }))}
-                          >
-                            <option value={-1}>AI base</option>
-                            {owners.map((o, i) => (
-                              <option key={o} value={i}>
-                                {TIERS[i]} · {ROLE_LABELS[edition][o]}
-                              </option>
-                            ))}
-                          </select>
-                          <span className="rounded-[5px] bg-[#EFE7D6] px-[7px] py-0.5 text-[9.5px] font-bold text-[#854F0B]">
-                            AI+ {typeof entry?.additional[owners[0]] === "number" ? Math.round(entry.additional[owners[0]]!) : "—"}
-                            <small className="font-medium opacity-65">/30</small>
                           </span>
                           {values.length > 0 && (
                             <span className="inline-flex items-center gap-1.5">

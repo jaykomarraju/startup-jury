@@ -166,13 +166,12 @@ describe("Assign — toolbar and columns", () => {
     expect(screen.getByTestId("assign-incomplete-count")).toHaveTextContent("0");
   });
 
-  it("draws each evaluated deck with the AI badge, AI+ /30, sparkline and the status vocabulary", async () => {
+  it("draws each evaluated deck with the AI badge, sparkline and the status vocabulary", async () => {
     setup();
     await ready();
     const fin = deckRow("FinStack");
     expect(within(fin).getByText("B2B Fintech · Seed")).toBeInTheDocument();
     expect(within(fin).getByText("AI 7.2")).toBeInTheDocument();
-    expect(fin).toHaveTextContent("AI+ 21/30");
     expect(within(fin).getByText("Evaluated")).toBeInTheDocument();
     expect(within(fin).queryByText("Assigned")).toBeNull();
     expect(within(fin).getByRole("button", { name: "View AI parameter scores for FinStack" })).toBeInTheDocument();
@@ -182,14 +181,24 @@ describe("Assign — toolbar and columns", () => {
     expect(within(tax).getByRole("checkbox", { name: "Select TaxPilot" })).toBeEnabled();
   });
 
-  it("switches the AI badge to a role's additional score from the row's dropdown", async () => {
+  it("no longer carries the AI+ badge or the AI-base dropdown", async () => {
+    // The client, 2026-10-23: "AI+ score and a dropdown box saying 'AI base'
+    // appear against every deck. This is no more relevant. This must be removed
+    // from design."
+    //
+    // This case replaces two that asserted the opposite — one pinned "AI+ 21/30"
+    // on the row, the other drove the dropdown and expected the badge to switch to
+    // "AI++ 18/30". Removing a feature means its tests go with it; what is left
+    // behind is this guard, so the control cannot quietly return.
     setup();
     await ready();
     const fin = deckRow("FinStack");
-    fireEvent.change(within(fin).getByRole("combobox", { name: "AI score view for FinStack" }), { target: { value: "1" } });
-    expect(fin).toHaveTextContent("AI++ 18/30");
-    const options = within(within(fin).getByRole("combobox")).getAllByRole("option").map((o) => o.textContent);
-    expect(options).toEqual(["AI base", "AI+ · Program Associate", "AI++ · Program Manager", "AI+++ · Jury Member"]);
+    expect(within(fin).queryByRole("combobox", { name: "AI score view for FinStack" })).toBeNull();
+    expect(fin).not.toHaveTextContent("AI base");
+    expect(fin).not.toHaveTextContent("/30");
+    expect(fin).not.toHaveTextContent(/AI\+/);
+    // …and the AI score itself, which was never the thing being removed, stays.
+    expect(within(fin).getByText("AI 7.2")).toBeInTheDocument();
   });
 
   it("keeps incomplete decks OFF the incubator's Assign screen entirely (2026-10-02)", async () => {
