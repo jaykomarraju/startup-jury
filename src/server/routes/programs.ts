@@ -19,6 +19,8 @@ import type { AppEnv } from "../types";
 import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
 import { insertScope, scopeOf, scoped, type TenantScope } from "../../shared/tenant";
 import { NEW_PROGRAMME_AI_WEIGHT_PCT } from "../../shared/scoring";
+// 23-Oct — the shortlist criteria, re-applied when a programme's floor moves.
+import { sweepShortlistCriteria } from "./pipeline";
 
 const programs = new Hono<AppEnv>();
 programs.use("*", requireAuth, denyMentor);
@@ -350,6 +352,12 @@ programs.put("/:id", requireRole("admin"), async (c) => {
       ...saveQ.binds,
     )
     .run();
+
+  // 23-Oct — a lowered `shortlist_min` can carry this programme's waiting decks
+  // over their floor, and nobody may shortlist by hand, so the criteria are
+  // re-applied now rather than at the next cron tick. Raising it un-shortlists
+  // nobody: the criteria decide a deck once.
+  if (shortlistMin !== existing.shortlist_min) await sweepShortlistCriteria(c.env.DB, scope);
 
   return c.json({
     ok: true,

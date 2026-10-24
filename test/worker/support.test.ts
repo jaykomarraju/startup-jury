@@ -52,9 +52,15 @@ describe("tickets", () => {
     const { tickets } = (await list.json()) as { tickets: Array<{ id: string; status: string }> };
     expect(tickets.length).toBeGreaterThan(0);
 
-    // Close the first open ticket.
+    // Close the first open ticket. A close now records WHY (Wave A · P3), so the
+    // triage this case is about sends a resolution — without one the 400 below would
+    // be the validation talking, and this would no longer test that an admin CAN
+    // close. `tickets.test.ts` pins the refusal itself.
     const open = tickets.find((t) => t.status === "open")!;
-    const closed = await req("POST", `/api/tickets/${open.id}/status`, admin, { status: "closed" });
+    const closed = await req("POST", `/api/tickets/${open.id}/status`, admin, {
+      status: "closed",
+      resolution: "Balance corrected.",
+    });
     expect(((await closed.json()) as { status: string }).status).toBe("closed");
   });
 });
@@ -413,7 +419,14 @@ describe("tenancy — the writes, where a leak shows nothing at all", () => {
     // success, so the handler answers `{ ok: true }` while another customer's queue
     // changes under them.
     const ours = await login(INC_ADMIN);
-    const close = await req("POST", "/api/tickets/sx_tkt/status", ours, { status: "closed" });
+    // A VALID close — resolution included — because a close without one is refused
+    // with a 400 before the scope is ever consulted (Wave A · P3). A bare
+    // `{ status: "closed" }` would turn this into a validation test that passes
+    // whatever the WHERE clause says.
+    const close = await req("POST", "/api/tickets/sx_tkt/status", ours, {
+      status: "closed",
+      resolution: "Closed from the wrong workspace.",
+    });
     expect(close.status).toBe(404);
     const triage = await req("PATCH", "/api/issues/sx_iss", ours, { status: "closed", severity: "low" });
     expect(triage.status).toBe(404);
@@ -430,7 +443,9 @@ describe("tenancy — the writes, where a leak shows nothing at all", () => {
     // And tenant B's own admin CAN, so the 404s above are the scope rather than a
     // broken route.
     const theirs = await login(SX_ADMIN);
-    expect((await req("POST", "/api/tickets/sx_tkt/status", theirs, { status: "closed" })).status).toBe(200);
+    expect(
+      (await req("POST", "/api/tickets/sx_tkt/status", theirs, { status: "closed", resolution: "Done." })).status,
+    ).toBe(200);
     expect((await req("PATCH", "/api/issues/sx_iss", theirs, { status: "closed" })).status).toBe(200);
   });
 

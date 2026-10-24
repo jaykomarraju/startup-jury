@@ -23,25 +23,25 @@ import { test, expect, type Page } from "@playwright/test";
 test.describe.configure({ mode: "serial" });
 
 /**
- * ── THE CONSOLE WALKS ARE SKIPPED 30-Sep-2026 · feedback row 11 ─────────────
+ * ── THE INCUBATOR WALKS ARE BACK 23-Oct-2026 · tracker row 10 ───────────────
  *
- * The Admin console's whole **Sign-up group** is hidden until the next release:
- * *"we want to introduce this in the next release."* All three sections this
- * file walks — `sudocs`, `suseat`, `sufund` — are in it, and `openSection`
- * reaches them through `/app/admin?section=…`, which now resolves to Scoring
- * framework.
+ * Feedback row 11 hid the Admin console's whole **Sign-up group** on 24-Sep and
+ * these walks were skipped one test at a time on 30-Sep, because `openSection`
+ * reaches each section through `/app/admin?section=…` and a hidden id resolves
+ * to Scoring framework. Row 10 of the 23-Oct tracker asked for the group back,
+ * so the incubator's five walks — `sudocs` ×3 and `suseat` ×2 — run again,
+ * unchanged: they were the proof, before un-hiding, that the screens still work.
  *
- * **Skipped one test at a time and NOT deleted — this is the coverage that comes
- * back with the group.** What is NOT skipped is the API check at the foot of the
- * file, added with these skips: a screen leaving a rail neither unmounts it nor
- * unguards its routes, and with every walk here dark that assertion is the only
- * live proof left in a browser that `/api/signup-config/*` still serves. It is
- * the same shape `e2e/price-configuration.spec.ts` kept when `pc` went.
+ * **The VC walk of `sufund` stays skipped.** The group is back in the incubator
+ * rail only: the VC edition is out of scope (client, 2026-10-01) and keeps the
+ * rail it has (`HIDDEN_ADMIN_GROUPS` in `src/client/routes/admin/sections.ts`
+ * is now per edition), so `?section=sufund` still resolves to Scoring framework
+ * for the VC admin.
  *
- * Un-skip when "Sign-up" leaves `HIDDEN_ADMIN_GROUPS` in
- * `src/client/routes/admin/sections.ts`. Meanwhile the screens keep
- * `test/client/signupConfig.test.tsx` and the routes keep
- * `test/worker/signup-config.test.ts`, neither of which needed a change.
+ * The API pair at the foot of the file stays live in both editions — it is the
+ * only browser proof that the VC's `/api/signup-config/fund` still serves with
+ * its section hidden, and the only one that the `wrong_edition` refusal names
+ * the section it refuses.
  */
 
 const INC_ADMIN = "nisha.kapoor@demo.startupjury.ai";
@@ -66,7 +66,7 @@ const save = (page: Page) => page.getByRole("button", { name: /Save changes/ });
 
 // ── Required documents ───────────────────────────────────────────────────────
 
-test.skip("the checklist renders the prototype's five items with their mandatory toggles", async ({
+test("the checklist renders the prototype's five items with their mandatory toggles", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -91,7 +91,7 @@ test.skip("the checklist renders the prototype's five items with their mandatory
   await expect(page.getByText(/this list is the per-program default/)).toBeVisible();
 });
 
-test.skip("turning an item mandatory saves and survives a reload", async ({ page }) => {
+test("turning an item mandatory saves and survives a reload", async ({ page }) => {
   test.setTimeout(120_000);
   await openSection(page, INC_ADMIN, "sudocs", "Required documents");
   const toggle = page.getByRole("switch", { name: "GST / tax registration mandatory" });
@@ -118,7 +118,7 @@ test.skip("turning an item mandatory saves and survives a reload", async ({ page
   await expect(page.getByText(/Checklist saved/)).toBeVisible();
 });
 
-test.skip("a document walks the lifecycle one step at a time, and the skip is refused", async ({
+test("a document walks the lifecycle one step at a time, and the skip is refused", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -170,7 +170,7 @@ test.skip("a document walks the lifecycle one step at a time, and the skip is re
 
 // ── Seat capacity ───────────────────────────────────────────────────────────
 
-test.skip("seat capacity draws the seeded cohorts, and over capacity warns without blocking", async ({
+test("seat capacity draws the seeded cohorts, and over capacity warns without blocking", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -208,7 +208,7 @@ test.skip("seat capacity draws the seeded cohorts, and over capacity warns witho
   await expect(page.getByText(/Seat settings saved/)).toBeVisible();
 });
 
-test.skip("the seatless queue reports an all-clear on the seeded workspace", async ({ page }) => {
+test("the seatless queue reports an all-clear on the seeded workspace", async ({ page }) => {
   test.setTimeout(120_000);
   await openSection(page, INC_ADMIN, "suseat", "Seat capacity");
   await expect(page.getByTestId("seatless-note")).toHaveText(
@@ -217,6 +217,10 @@ test.skip("the seatless queue reports an all-clear on the seeded workspace", asy
 });
 
 // ── Fund Deployment ─────────────────────────────────────────────────────────
+//
+// STILL SKIPPED after 23-Oct: `sufund` is the VC build's section, and the VC
+// rail keeps the Sign-up group hidden (the edition is out of scope — see the
+// header). Un-skip with `vc: []` in `HIDDEN_ADMIN_GROUPS`, not before.
 
 test.skip("fund deployment draws the third figure and reconciles, then warns when it does not", async ({
   page,
@@ -258,19 +262,20 @@ test.skip("fund deployment draws the third figure and reconciles, then warns whe
   );
 });
 
-// ── REWRITTEN for row 11, and this pair is the file's only LIVE test ─────────
+// ── REWRITTEN for row 11; re-titled 23-Oct when the incubator walks came back ─
 //
 // It used to walk each edition's fourth Sign-up section — `suseat` Seat capacity
 // in the incubator, `sufund` Fund Deployment in the VC build — to prove the
-// console resolves that one entry per edition. Hiding the group leaves that
-// check no subject on screen; the swap itself still lives in
-// `allAdminSections()` and is asserted in `test/client/adminConsole.test.tsx`.
+// console resolves that one entry per edition. Hiding the group left that check
+// no subject on screen; the swap itself still lives in `allAdminSections()` and
+// is asserted in `test/client/adminConsole.test.tsx`.
 //
-// What replaces it is the assertion the skips above create a need for: the
-// SECTIONS are hidden, the ROUTES are not. Nothing in the repo unguarded them
-// and nothing should re-guard, widen or delete them on the strength of a rail
-// entry going away — the screens come back next release and the data has to be
-// there. Per edition, because the config is edition-resolved on the server too.
+// What replaced it: the SECTIONS were hidden, the ROUTES were not. Since 23-Oct
+// that is still true of the VC build, whose group stays hidden, and this pair is
+// the only browser proof that its `/fund` still serves. In the incubator the
+// walks above now reach the same routes through the screens; the pair keeps the
+// `wrong_edition` refusal pinned for both. Per edition, because the config is
+// edition-resolved on the server too.
 //
 // One test per edition, NOT one test that signs in twice: a second `login()` on
 // an already-authenticated page navigates to /login, gets redirected straight
@@ -281,7 +286,7 @@ const EDITIONS = [
 ] as const;
 
 for (const e of EDITIONS) {
-  test(`the ${e.edition} sign-up config API still serves /${e.own} with the sections hidden`, async ({
+  test(`the ${e.edition} sign-up config API serves /${e.own} and refuses /${e.other}`, async ({
     page,
   }) => {
     test.setTimeout(120_000);

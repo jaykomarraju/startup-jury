@@ -141,10 +141,13 @@ describe("the matrix the prototype draws", () => {
     }
   });
 
-  it("ships the prototype's printed defaults, and they are not the old ladder", () => {
-    // "Super User & Program Manager see everyone; Program Associate and Jury
-    // Member see no one — jury members cannot see each other (blind
-    // evaluation) until turned on here."
+  it("ships the hierarchy off the diagonal and the prototype's blind diagonal on it (incubator, 23-Oct)", () => {
+    // Re-pointed 23-Oct. This pinned the v3 prototype's printed default — "Super
+    // User & Program Manager see everyone; Program Associate and Jury Member see
+    // no one". The product owner then restated issue 21 for the default: "anyone
+    // senior should be able to see the junior persons scoring but the junior cant
+    // see the seniors score." Off the diagonal a role now sees exactly the roles
+    // ranked below it; the diagonal (peers) is still the prototype's.
     const inc = DEFAULT_VISIBILITY.incubator;
     expect(inc.superuser).toEqual({
       superuser: true,
@@ -153,13 +156,18 @@ describe("the matrix the prototype draws", () => {
       jury: true,
     });
     expect(inc.program_manager).toEqual({
-      superuser: true,
+      superuser: false, // ranked above — was ON in the prototype's printed default
       program_manager: true,
       program_associate: true,
       jury: true,
     });
+    expect(inc.jury).toEqual({
+      superuser: false,
+      program_manager: false,
+      program_associate: true, // ranked below — was OFF in the prototype's printed default
+      jury: false, // "jury members cannot see each other (blind evaluation)"
+    });
     expect(Object.values(inc.program_associate!).every((v) => v === false)).toBe(true);
-    expect(Object.values(inc.jury!).every((v) => v === false)).toBe(true);
 
     // "Managing Partner, IC member and Partner/Principal see everyone; Inv.
     // Associate and Analyst see no one until turned on here."
@@ -171,8 +179,9 @@ describe("the matrix the prototype draws", () => {
       expect(Object.values(vc[r]!).every((v) => v === false)).toBe(true);
     }
 
-    // §4 Q71 — the four incubator cells this moves, named as data so the
-    // question is answerable rather than described in prose.
+    // §4 Q71 — the cells that still differ from the old ladder, named as data.
+    // There were four; 23-Oct settled the two off the diagonal in the ladder's
+    // favour, and only the prototype's blind-evaluation diagonal remains.
     const ladder = ladderVisibility("incubator");
     const moved: string[] = [];
     for (const viewer of VISIBILITY_ROLES.incubator) {
@@ -180,56 +189,58 @@ describe("the matrix the prototype draws", () => {
         if (inc[viewer]![target] !== ladder[viewer]![target]) moved.push(`${viewer}->${target}`);
       }
     }
-    expect(moved.sort()).toEqual([
-      "jury->jury",
-      "jury->program_associate",
-      "program_associate->program_associate",
-      "program_manager->superuser",
-    ]);
+    expect(moved.sort()).toEqual(["jury->jury", "program_associate->program_associate"]);
   });
 });
 
 // ── Enforcement · the deck report ────────────────────────────────────────────
 
 describe("the deck report is filtered by the matrix, on the server", () => {
-  it("is unchanged at the shipped settings — the peer toggle answers first", async () => {
-    // `jurySeesPeerScores` ships OFF, and off an assignable evaluator sees the
-    // AI column and their own whatever the matrix says. This is why swapping
-    // the ladder for the prototype's defaults moves nothing on a fresh org.
+  it("at the shipped settings the toggle hides peers and the hierarchy decides the rest", async () => {
+    // Re-pointed 23-Oct. `jurySeesPeerScores` ships OFF, and off it used to
+    // reduce every assignable evaluator to "AI + own" whatever the matrix said.
+    // It now hides PEERS only, so a juror reads the associate ranked below them
+    // (and still nothing above) on a fresh org.
     const jury = await report(await login(JURY));
-    expect(jury.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "jury"]);
+    expect(jury.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "program_associate", "jury"]);
     const su = await report(await login(SUPER));
     expect(su.columns.length).toBeGreaterThan(2);
   });
 
   it("the matrix decides the report, cells included", async () => {
     await setPeerVisibility(true);
-    // Default: the jury row is all off, so a juror reads only their own column
-    // — and, critically, only their own CELLS.
+    // Default (23-Oct): the jury row is on for the associate below and off for
+    // everyone above, so a juror reads those two columns — and, critically,
+    // only those columns' CELLS.
     const jury = await report(await login(JURY));
     const own = jury.columns.find((c) => c.role === "jury")!.id;
-    expect(jury.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "jury"]);
-    expect([...cellOwners(jury)].sort()).toEqual(["ai", own].sort());
-    expect(jury.hiddenEvaluators).toBe(3);
+    const pa = jury.columns.find((c) => c.role === "program_associate")!.id;
+    expect(jury.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "program_associate", "jury"]);
+    expect([...cellOwners(jury)].sort()).toEqual(["ai", own, pa].sort());
+    expect(jury.hiddenEvaluators).toBe(2);
   });
 
   it("turning a cell ON hands over columns that were withheld", async () => {
+    // Re-pointed 23-Oct: `jury → program_associate` is ON by default now, so the
+    // cell this test flips is one the hierarchy keeps OFF — a junior reading a
+    // senior. The default withholds it; an admin may still grant it, and the
+    // console is where that is decided, not here.
     await setPeerVisibility(true);
     const su = await login(SUPER);
 
-    const before = await report(await login(JURY));
-    expect(before.columns.some((c) => c.role === "program_associate")).toBe(false);
+    const before = await report(await login(PA));
+    expect(before.columns.some((c) => c.role === "jury")).toBe(false);
 
-    const res = await setCell(su, "jury", "program_associate", true);
+    const res = await setCell(su, "program_associate", "jury", true);
     expect(res.status).toBe(200);
 
-    const after = await report(await login(JURY));
-    expect(after.columns.some((c) => c.role === "program_associate")).toBe(true);
-    expect(after.hiddenEvaluators).toBe(2);
+    const after = await report(await login(PA));
+    expect(after.columns.some((c) => c.role === "jury")).toBe(true);
+    expect(after.hiddenEvaluators).toBe(before.hiddenEvaluators - 1);
     // The NUMBERS arrived too, not just the header.
-    const paColumn = after.columns.find((c) => c.role === "program_associate")!.id;
-    expect(cellOwners(after).has(paColumn)).toBe(true);
-    expect(cellOwners(before).has(paColumn)).toBe(false);
+    const juryColumn = after.columns.find((c) => c.role === "jury")!.id;
+    expect(cellOwners(after).has(juryColumn)).toBe(true);
+    expect(cellOwners(before).has(juryColumn)).toBe(false);
   });
 
   it("turning a cell OFF withholds a column the default allowed", async () => {
@@ -256,12 +267,13 @@ describe("the deck report is filtered by the matrix, on the server", () => {
     expect(pa.columns.map((c) => c.role ?? "ai")).toEqual(["ai", "program_associate"]);
   });
 
-  it("the one cell that WIDENS: a PM now reads the superuser's column (§4 Q71)", async () => {
-    // `program_manager → superuser` is off under the old ladder (rank 3 < 99)
-    // and ON under the prototype's printed default, which is the only grant
-    // this release makes. The seed holds no superuser evaluation, so the grant
-    // is invisible until one exists — hence this test writes one, asserts the
-    // PM receives it, and asserts an admin can take it away again.
+  it("a PM does NOT read the superuser's column by default — and an admin can still grant it (§4 Q71)", async () => {
+    // `program_manager → superuser` is off under the old ladder (rank 3 < 99) and
+    // was ON under the prototype's printed default — a junior reading a senior.
+    // 23-Oct settled it for the ladder: "the junior cant see the seniors score".
+    // The seed holds no superuser evaluation, so the cell is invisible until one
+    // exists — hence this test writes one, asserts the PM does not receive it,
+    // and asserts the cell is still an admin's to turn on.
     const su = (await env.DB.prepare(
       "SELECT id FROM users WHERE email = ?",
     ).bind(SUPER).first<{ id: string }>())!.id;
@@ -274,11 +286,11 @@ describe("the deck report is filtered by the matrix, on the server", () => {
     try {
       await setPeerVisibility(true);
       const pm = await report(await login(PM));
-      expect(pm.columns.some((c) => c.role === "superuser")).toBe(true);
+      expect(pm.columns.some((c) => c.role === "superuser")).toBe(false);
 
-      expect((await setCell(await login(SUPER), "program_manager", "superuser", false)).status).toBe(200);
+      expect((await setCell(await login(SUPER), "program_manager", "superuser", true)).status).toBe(200);
       const after = await report(await login(PM));
-      expect(after.columns.some((c) => c.role === "superuser")).toBe(false);
+      expect(after.columns.some((c) => c.role === "superuser")).toBe(true);
     } finally {
       await env.DB.prepare("DELETE FROM evaluations WHERE id = 'ev_v3sf_su'").run();
     }

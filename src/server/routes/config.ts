@@ -33,6 +33,8 @@ import { scopeOf, scoped, insertScope, type TenantScope } from "../../shared/ten
 import { inEdition } from "../config/scope";
 import { rescoreEdition } from "../config/rescore";
 import { loadScoringSettings } from "../config/scoringSettings";
+// 23-Oct — the shortlist criteria, re-applied when the bar they judge by moves.
+import { sweepShortlistCriteria } from "./pipeline";
 import { loadScoreVisibility } from "../config/scoreVisibility";
 import {
   VISIBILITY_EDITIONS,
@@ -1419,7 +1421,25 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
   await auditScoreVisibility(c, moved);
 
   const rescored = recompute ? await rescoreEdition(c.env, scope) : { decks: 0, evaluations: 0 };
-  return c.json({ ok: true, scoring: stored, visibility: { incubator, vc }, rescored });
+  // 23-Oct — nobody may shortlist by hand, so a deck waiting at Jury Evaluation
+  // that this save carries over its floor — a lower threshold, a moved AI / jury
+  // split, or the re-score just above — is shortlisted by the criteria HERE,
+  // after the re-score has landed, rather than waiting for the cron.
+  //
+  // ONLY when one of those three moved. A save that flips an unrelated toggle
+  // judges nothing: measured, an unconditional sweep here made
+  // `e2e/scoring-framework.spec.ts`'s show-AI-score flip shortlist the seeded
+  // InsureFlow out from under `e2e/incubator.spec.ts`, and the same save in
+  // production would have moved decks for a reason the admin never touched.
+  // Anything this misses, the ten-minute cron catches (`runShortlistSweep`).
+  const criteriaMoved =
+    recompute ||
+    stored.shortlistThreshold !== before.shortlistThreshold ||
+    stored.aiWeightPct !== before.aiWeightPct;
+  const shortlisted = criteriaMoved
+    ? (await sweepShortlistCriteria(c.env.DB, scope)).filter((o) => o.shortlisted).length
+    : 0;
+  return c.json({ ok: true, scoring: stored, visibility: { incubator, vc }, rescored, shortlisted });
 });
 
 // ── Cohort thresholds ────────────────────────────────────────────────────────

@@ -55,15 +55,17 @@ describe("Jury Pipeline is read-only for the programme associate", () => {
   });
 
   /**
-   * `JuryPipelineActionCell`'s only transition, relabelled "Send to intro
-   * calls". Asserted through `performAction` because that is the predicate the
-   * transition route calls — the refusal has to be the server's, not a
-   * `disabled` attribute's.
+   * `JuryPipelineActionCell`'s only transition was `shortlist`, relabelled
+   * "Send to intro calls". Since 23-Oct it is NOBODY's — the criteria shortlist
+   * a deck when its panel completes, and the entry left `pipeline/incubator.ts`
+   * — so the associate is refused it like every role, and by the table rather
+   * than by a `disabled` attribute. (The route refuses it before the table is
+   * read, with `shortlist_automatic`; `test/worker/shortlist-criteria.test.ts`.)
    */
-  it("refuses the associate the screen's one write (shortlist), with 'forbidden'", () => {
+  it("refuses the associate the screen's old write (shortlist) — it is no role's transition now", () => {
     expect(performAction("incubator", "jury_evaluation", "shortlist", "program_associate")).toEqual({
       ok: false,
-      error: "forbidden",
+      error: "unknown_action",
     });
   });
 
@@ -71,12 +73,16 @@ describe("Jury Pipeline is read-only for the programme associate", () => {
   it("leaves the decision with the incubator — the programme manager, not the juror", () => {
     // The juror was in this list until 2026-10-04, when the client took the
     // decision off them entirely: "It is the prerogative of the Incubator to
-    // take a final call. Juror is always an external guy." So this case now
-    // carries BOTH halves — somebody still decides, and it is not the jury.
+    // take a final call. Juror is always an external guy." So this case carries
+    // BOTH halves — somebody still decides, and it is not the jury.
+    //
+    // RE-POINTED 23-Oct: the decision left is REJECT. The shortlist is the
+    // criteria's, held by no role at all, the decision-makers included.
     for (const role of ["program_manager", "admin", "superuser"] as const) {
-      expect(performAction("incubator", "jury_evaluation", "shortlist", role).ok, role).toBe(true);
+      expect(performAction("incubator", "jury_evaluation", "reject", role).ok, role).toBe(true);
+      expect(performAction("incubator", "jury_evaluation", "shortlist", role).ok, role).toBe(false);
     }
-    expect(performAction("incubator", "jury_evaluation", "shortlist", "jury").ok).toBe(false);
+    expect(performAction("incubator", "jury_evaluation", "reject", "jury").ok).toBe(false);
   });
 
   /**

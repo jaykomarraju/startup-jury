@@ -290,13 +290,30 @@ function reportInvariants() {
   );
 
   // ── §8: incubator Program Manager is the DECISION MAKER ───────────────────
+  //
+  // Less the shortlist since 23-Oct — see the check below this loop.
   for (const [from, action] of [
     ["ai_evaluated", "assign_jury"],
-    ["jury_evaluation", "shortlist"],
     ["jury_evaluation", "reject"],
     ["shortlisted", "schedule_intro"],
   ] as const) {
     check(`§8 [incubator] program_manager may ${action}`, can("incubator", "program_manager", from, action));
+  }
+  // ── 23-Oct tracker row 4: NOBODY shortlists by hand ─────────────────────
+  //
+  // "The startups are shortlisted as per the criteria set in the admin
+  // console. NO MANUAL SHORTLISTING SHOULD BE ALLOWED BY THE SYSTEM." Every
+  // incubator role, the superuser included — stated over the state machine, as
+  // the jury's removal below is, because a hidden button over a reachable
+  // transition is this repo's recurring defect. The route refuses the action
+  // before the table is read (`shortlist_automatic`); this is the table's half.
+  {
+    const holders = ROLES_BY_EDITION.incubator.filter((r) => can("incubator", r, "jury_evaluation", "shortlist"));
+    check(
+      "23-Oct [incubator] no role shortlists by hand — the criteria do",
+      holders.length === 0,
+      holders.join(",") || "(none)",
+    );
   }
   check(
     "§8 [incubator] the program_associate is the executor, not the decision maker (no shortlist / reject)",
@@ -318,9 +335,10 @@ function reportInvariants() {
   // what `POST /decks/:id/transition` consults.
   //
   // The screen (`INCUBATOR_STAGE_CONFIG.jurypipeline`) lists four stages, and
-  // `JuryPipelineActionCell` runs exactly one transition out of them —
-  // `shortlist`, relabelled "Send to intro calls". Its other option navigates
-  // to Assign and writes nothing. So "read-only" is checkable without the
+  // `JuryPipelineActionCell` ran exactly one transition out of them —
+  // `shortlist`, relabelled "Send to intro calls" — which since 23-Oct is no
+  // role's at all (above). Its other option navigates to Assign and writes
+  // nothing. So "read-only" is checkable without the
   // screen: of every transition leaving the four stages, the associate may hold
   // only `schedule_intro`, which belongs to Intro calls and is theirs by §8
   // delegation — the Jury Pipeline screen never offers it, because a
@@ -364,17 +382,18 @@ function reportInvariants() {
   // Stated as both halves in ONE check, because either alone passes for the
   // wrong reason — a juror with no decision is right only while somebody else
   // still has it, and a PM with the decision is right only while the juror does
-  // not. Both `jury_evaluation` transitions are named: hiding a button while the
-  // route still says yes is this repo's recurring defect.
+  // not. Both `jury_evaluation` decisions are named: hiding a button while the
+  // route still says yes is this repo's recurring defect. Since 23-Oct the
+  // decision somebody else still has is REJECT — the shortlist is the
+  // criteria's, held by no role (the check above).
   check(
     "§8 [incubator] the jury SCORES, the incubator DECIDES — neither shortlist nor reject",
     !can("incubator", "jury", "jury_evaluation", "shortlist") &&
       !can("incubator", "jury", "jury_evaluation", "reject") &&
-      can("incubator", "program_manager", "jury_evaluation", "shortlist") &&
       can("incubator", "program_manager", "jury_evaluation", "reject"),
     `jury shortlist=${can("incubator", "jury", "jury_evaluation", "shortlist")} ` +
       `jury reject=${can("incubator", "jury", "jury_evaluation", "reject")} ` +
-      `pm shortlist=${can("incubator", "program_manager", "jury_evaluation", "shortlist")}`,
+      `pm reject=${can("incubator", "program_manager", "jury_evaluation", "reject")}`,
   );
   check(
     "[incubator] the jury cannot assign itself work or send a signup",

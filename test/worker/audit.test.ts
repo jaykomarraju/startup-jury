@@ -531,22 +531,38 @@ describe("the Activity card and the Audit log are the same store", () => {
 
   it("a deck-scoped event reaches BOTH — the card, and the log's `pipeline` filter", async () => {
     const admin = await login(ADMIN);
-    // A real stage transition: `shortlist` runs from `jury_evaluation`, and
-    // admin is on that transition's role list (src/pipeline/incubator.ts).
-    const moved = await req("POST", "/api/decks/inc_deck_insureflow/transition", admin, {
-      action: "shortlist",
+    // A real stage transition: `reject` runs from `jury_evaluation`, and admin
+    // is on that transition's role list (src/pipeline/incubator.ts). It was
+    // `shortlist` on the seeded InsureFlow until 23-Oct, when no role could
+    // shortlist by hand any more (`shortlist-criteria.test.ts`); this case is
+    // about a deck event reaching both readers, which any person's transition
+    // proves, so it took the other decision on the same stage rather than a
+    // weaker assertion.
+    //
+    // On its OWN deck, with no panel, rather than the seeded InsureFlow: the
+    // Scoring-framework save earlier in this file is asked to re-apply the
+    // shortlist criteria (`docs/parity-requests/A-P4.md`, patch 3), and InsureFlow
+    // — AI 8.6, its juror's evaluation seeded — meets them, so it is shortlisted
+    // before this case runs. Measured: the reject then answered 409. A deck with
+    // no assignee has no panel to complete and nothing can move it but a person.
+    await env.DB.prepare(
+      "INSERT INTO decks (id, edition, name, status, ai_score, uploaded_by, complete) " +
+        "VALUES ('audit_reject', 'incubator', 'AuditReject', 'jury_evaluation', 8.6, 'inc_pa', 1)",
+    ).run();
+    const moved = await req("POST", "/api/decks/audit_reject/transition", admin, {
+      action: "reject",
     });
     expect(moved.status).toBe(200);
 
     const card = (await (await get("/api/activity", admin)).json()) as ActivityBody;
     const top = card.events[0];
-    expect(top.deckId).toBe("inc_deck_insureflow");
+    expect(top.deckId).toBe("audit_reject");
 
     const log = await page(admin, "?category=pipeline&limit=5");
     // The same row id, from the same store, under the Pipeline badge.
     expect(log.events[0].id).toBe(top.id);
     expect(log.events[0].category).toBe("pipeline");
-    expect(log.events[0].summary).toContain("InsureFlow");
+    expect(log.events[0].summary).toContain("AuditReject");
   });
 
   it("the card honours its programme filter, and the trail stays edition-wide", async () => {

@@ -1,5 +1,6 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
+import { applyShortlistCriteria } from "../../src/server/routes/pipeline";
 
 /**
  * W7-D — at the route level:
@@ -307,27 +308,44 @@ describe("override delta and shortlist threshold — enforced canonical, explain
     expect(near.status).toBe(200);
   });
 
-  it("the shortlist refusal quotes the threshold on the org's scale; the numbers on the wire stay canonical", async () => {
-    await seedDeck("w7d_floor_010", { status: "jury_evaluation", assignedTo: "inc_jury", aiScore: 1 });
-    await seedDeck("w7d_floor_15", { status: "jury_evaluation", assignedTo: "inc_jury", aiScore: 1 });
-    const jury = await login(PM);
+  // RE-POINTED 23-Oct. This read the sentence off the PM's manual shortlist
+  // refusal; no role may shortlist by hand now (`shortlist-criteria.test.ts`),
+  // and the sentence lives on in the shortlist CRITERIA's outcome — the
+  // `shortlist` field of the evaluate response, the "All evaluations complete"
+  // alert, and the system's pipeline event. Same scale rule, same strings; the
+  // panel is completed by a seeded juror row so the criteria decide.
+  it("the shortlist criteria quote the threshold on the org's scale; the numbers on the wire stay canonical", async () => {
+    const SCOPE = { tenantId: "t_default", edition: "incubator" } as const;
+    const judged = async (id: string, ai: number, human: number) => {
+      await seedDeck(id, { status: "jury_evaluation", assignedTo: "inc_jury", aiScore: ai });
+      await env.DB.prepare(
+        "INSERT INTO evaluations (id, deck_id, evaluator_id, weighted_total, verdict) VALUES (?, ?, 'inc_jury', ?, 'scored')",
+      )
+        .bind(`${id}_ev`, id, human)
+        .run();
+      const outcome = await applyShortlistCriteria(env.DB, SCOPE, { id, edition: "incubator", status: "jury_evaluation" });
+      expect(outcome, id).not.toBeNull();
+      return outcome!;
+    };
 
-    const ten = await send("POST", "/api/decks/w7d_floor_010/transition", jury, { action: "shortlist" });
-    expect(ten.status).toBe(409);
-    const tenBody = (await ten.json()) as { minimum: number; score: number; message: string };
-    expect(tenBody.message).toBe(
+    const ten = await judged("w7d_floor_010", 1, 1);
+    expect(ten.shortlisted).toBe(false);
+    expect(ten.message).toBe(
       "Below the organisation's shortlist threshold — at least 7.0 is required, this deck scores 1.00.",
     );
 
     await setScoring({ score_scale: "1-5" });
-    const five = await send("POST", "/api/decks/w7d_floor_15/transition", jury, { action: "shortlist" });
-    expect(five.status).toBe(409);
-    const fiveBody = (await five.json()) as { minimum: number; score: number; message: string };
-    expect(fiveBody.minimum).toBe(7);
-    expect(fiveBody.score).toBe(1);
-    expect(fiveBody.message).toBe(
+    const five = await judged("w7d_floor_15", 1, 1);
+    expect(five.minimum).toBe(7);
+    expect(five.score).toBe(1);
+    expect(five.message).toBe(
       "Below the organisation's shortlist threshold — at least 3.8 is required, this deck scores 1.4.",
     );
+
+    // …and the note the SYSTEM signs when the criteria do shortlist speaks it too.
+    const cleared = await judged("w7d_floor_15_ok", 9, 9);
+    expect(cleared).toMatchObject({ shortlisted: true, score: 9, minimum: 7 });
+    expect(cleared.message).toBe("Shortlisted by the criteria — 4.6 clears the shortlist threshold of 3.8.");
   });
 });
 

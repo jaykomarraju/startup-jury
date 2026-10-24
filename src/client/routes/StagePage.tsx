@@ -1718,17 +1718,146 @@ const payOf = (row: StageRow) => row.deck.paymentStatus ?? "pending";
 // `StagePage` applies exactly ONE variant per role with no composition, so a
 // future jury-specific variant has to be a separate object anyway.
 
-/** v3 `jpRender`: `submitted` → Evaluated, every other juror state → Pending. */
+// ── 23-Oct tracker, P1 — every juror, and each one's score ──────────────────
+//
+// The client, twice by email: "each startup may be assigned to multiple jurors.
+// Therefore it should show multiple juror names and their respective scores next
+// to each startup name." Both cells below are `jpRender`'s, line for line: the
+// Jury members cell is one `.jp-jrow` per juror (name, then the binary pill), and
+// the Jury score column is NOT the deck's averaged number but one `.jp-srow` per
+// juror, ALIGNED with the names ("individual score per juror, aligned; clickable
+// -> parameter breakdown"). Avg. score keeps the deck-level composite.
+//
+// Which numbers arrive is the SERVER's decision (`evaluatorScoreRule`, the same
+// function that filters the evaluation report): a juror whose score this viewer
+// may not see arrives with no `score` at all and `scoreWithheld` set. Nothing in
+// this file decides visibility — the programme associate's "Hidden" is the
+// server's absence, drawn.
+
+/**
+ * One juror as `GET /api/decks` serves it (`JurorView`, `server/routes/decks.ts`).
+ * `DeckView` (`client/types.ts`) does not declare the field yet — that file is
+ * outside this lane — so it is read through `jurorsOf` rather than cast.
+ */
+interface DeckJuror {
+  id: string;
+  name: string;
+  submitted: boolean;
+  score?: number;
+  scoreWithheld?: boolean;
+}
+
+function isDeckJuror(v: unknown): v is DeckJuror {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    "id" in v &&
+    typeof v.id === "string" &&
+    "name" in v &&
+    typeof v.name === "string" &&
+    "submitted" in v &&
+    typeof v.submitted === "boolean" &&
+    (!("score" in v) || typeof v.score === "number")
+  );
+}
+
+/** The deck's panel, or `undefined` for a payload that carries none (a single-deck write's echo). */
+function jurorsOf(deck: DeckView): DeckJuror[] | undefined {
+  if (!("jurors" in deck) || !Array.isArray(deck.jurors)) return undefined;
+  return deck.jurors.filter(isDeckJuror);
+}
+
+/**
+ * One row's height, shared by both cells so juror N's score sits on juror N's
+ * line. Names never wrap (`whitespace-nowrap`): a wrapped name would make its
+ * line taller than the score beside it. The table scrolls sideways below its
+ * `minWidth` instead, which is how every stage screen behaves at 393px.
+ */
+const JUROR_LINE = "flex h-6 items-center gap-2 whitespace-nowrap";
+
+/** v3 `jpRender`: one line per juror — `submitted` → Evaluated, every other state → Pending. */
 function JuryMembersCell({ row }: { row: StageRow }) {
   const deck = row.deck;
-  if (!deck.assignedToName) return <span className="text-sm text-fg-muted">Unassigned</span>;
+  const jurors = jurorsOf(deck);
+  // No panel on the payload: the single first-assignee rendering this cell drew
+  // before P1, so a deck echoed back by a write still reads correctly.
+  if (!jurors) {
+    if (!deck.assignedToName) return <span className="text-sm text-fg-muted">Unassigned</span>;
+    return (
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-fg">{deck.assignedToName}</span>
+        <Badge tone={deck.assigneeSubmitted ? "positive" : "amber"}>
+          {deck.assigneeSubmitted ? "Evaluated" : "Pending"}
+        </Badge>
+      </div>
+    );
+  }
+  if (jurors.length === 0) return <span className="text-sm text-fg-muted">Unassigned</span>;
   return (
-    <div className="flex items-center gap-2">
-      <span className="text-sm text-fg">{deck.assignedToName}</span>
-      <Badge tone={deck.assigneeSubmitted ? "positive" : "amber"}>
-        {deck.assigneeSubmitted ? "Evaluated" : "Pending"}
-      </Badge>
-    </div>
+    <ul className="flex flex-col gap-1" aria-label={`Jury members for ${deck.name}`}>
+      {jurors.map((j) => (
+        <li key={j.id} className={JUROR_LINE}>
+          <span className="text-sm text-fg">{j.name}</span>
+          <Badge tone={j.submitted ? "positive" : "amber"}>{j.submitted ? "Evaluated" : "Pending"}</Badge>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * v3 `jpRender`'s `.jp-scol`: each juror's own score on their own line, opening
+ * the parameter breakdown (`jpOpenScores` → the report's Core Parameters tab).
+ * `—` is "has not submitted"; Hidden is "submitted, and the server withheld it".
+ */
+function JuryScoresCell({ row, ctx }: { row: StageRow; ctx: StageContext }) {
+  const deck = row.deck;
+  const jurors = jurorsOf(deck);
+  // No panel on the payload: the deck-level number this column drew before P1.
+  if (!jurors) {
+    return (
+      <button
+        type="button"
+        title="Open the core parameter report"
+        className="underline-offset-2 hover:underline"
+        onClick={() => ctx.openReport(deck, "core")}
+      >
+        <BandScore value={deck.juryScore} />
+      </button>
+    );
+  }
+  if (jurors.length === 0) return <BandScore value={undefined} />;
+  return (
+    <ul className="flex flex-col gap-1" aria-label={`Jury scores for ${deck.name}`}>
+      {jurors.map((j) => (
+        <li key={j.id} className={JUROR_LINE}>
+          {j.scoreWithheld ? (
+            <span
+              className="inline-flex items-center gap-1 text-xs text-fg-muted"
+              title="Submitted — your role cannot see this juror's score"
+              aria-label={`${j.name}: score hidden`}
+            >
+              <Lock className="h-3 w-3" aria-hidden="true" />
+              Hidden
+            </span>
+          ) : j.submitted && j.score !== undefined ? (
+            <button
+              type="button"
+              title="View parameter scores"
+              aria-label={`${j.name}: ${j.score.toFixed(1)}`}
+              className="underline-offset-2 hover:underline"
+              onClick={() => ctx.openReport(deck, "core")}
+            >
+              <BandScore value={j.score} />
+            </button>
+          ) : (
+            <span aria-label={`${j.name}: not yet scored`}>
+              <BandScore value={undefined} />
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -1824,7 +1953,9 @@ const JURY_PIPELINE_V3: Partial<Omit<StageConfig, "roleVariants">> = {
     "startup",
     col("evaluators", "Jury members & status", (row) => <JuryMembersCell row={row} />),
     "ai",
-    "jury",
+    // P1 — per juror, aligned with the names. A declared column rather than the
+    // built-in `"jury"` case, which VC's two pipelines draw as "Analyst Score".
+    col("jury", "Jury score", (row, ctx) => <JuryScoresCell row={row} ctx={ctx} />),
     "avg",
     "addl",
     "assignedDate",
@@ -1862,7 +1993,9 @@ const JURY_PIPELINE_READONLY: Partial<Omit<StageConfig, "roleVariants">> = {
     "startup",
     col("evaluators", "Jury members & status", (row) => <JuryMembersCell row={row} />),
     "ai",
-    "jury",
+    // P1 — the associate's numbers are withheld by the SERVER (the report's
+    // rule), so this cell draws Hidden; it is not filtering anything itself.
+    col("jury", "Jury score", (row, ctx) => <JuryScoresCell row={row} ctx={ctx} />),
     "avg",
     "addl",
     "assignedDate",
@@ -2053,10 +2186,20 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
     emptyDescription: "Startups the jury shortlists arrive here for the intro call and sign-up.",
   },
   // Issue 29 — adds Payment status and Documents status.
+  //
+  // 23-Oct tracker row 4 — *"Shortlisted startups should reflect in the 'Signup
+  // pipeline'."* The prototype's `cuData` carries a `shortlisted` row (AgriChain),
+  // and `suSignupBody`'s first step, "Initiate & email founder", is the active
+  // one exactly when `d.signup === 'shortlisted'`: the screen starts at the
+  // shortlist, not at the invite. So it lists the deck from the moment the
+  // shortlist criteria take it (`applyShortlistCriteria`, routes/pipeline.ts) —
+  // `shortlisted`, then `intro` once the call is booked (the row's Call columns
+  // fill in), then `signup`. `signupStatusLabel` already reads both pre-record
+  // stages as "Shortlisted", the prototype's `suSignupLabel.shortlisted`.
   incuration: {
     title: "Sign up Pipeline",
     subtitle: "Signed-up startups being curated for the cohort — track payment and document readiness",
-    statuses: ["signup"],
+    statuses: ["shortlisted", "intro", "signup"],
     columns: [
       "startup",
       "ai",
@@ -2072,11 +2215,13 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
     ],
     minWidth: "88rem",
     workspace: true,
-    // Oct-3 issue 24 — `cuRender`'s `openSuWork` button, deactivated for every
-    // role that reaches this screen (admin · PM · associate, and the superuser
-    // over them): the client is holding the sign-up workflow back, as they
-    // already held back the console's whole Sign-up group.
-    signupComingSoon: true,
+    // `signupComingSoon` is OFF since 23-Oct. Oct-3 issue 24 deactivated
+    // `cuRender`'s `openSuWork` button here because the client was holding the
+    // sign-up workflow back, as they held back the console's whole Sign-up
+    // group; tracker row 10 releases both — *"Shortlisted startups should be
+    // able to sign up as per prototype design. The signup section of the admin
+    // console should be implemented."* The flag stays on `StageConfig` for the
+    // next screen that needs it.
     toolbar: {
       filters: [
         { id: "paid-all", label: "Paid / All docs", match: (r) => payOf(r) === "paid" && docsOf(r) === "complete" },
@@ -2093,7 +2238,8 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
       `${plural(rows.length, "startup")} in curation · ${count(rows, (r) => payOf(r) === "paid")} fully paid · ` +
       `${count(rows, (r) => docsOf(r) === "complete")} with all documents`,
     emptyTitle: "No sign-ups in progress",
-    emptyDescription: "Startups sent a sign-up invite appear here until they complete it.",
+    emptyDescription:
+      "Startups appear here the moment the shortlist criteria take them, and stay until they complete sign-up.",
   },
   // Issue 30 — Startup · Cohort · Curation stage · Jury member lead · Progress.
   curation: {

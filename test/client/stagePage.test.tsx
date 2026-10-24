@@ -364,23 +364,48 @@ describe("the W5-A consumers", () => {
   });
 
   /**
-   * Oct-3 issue 24 — "Sign up action button … should be deactivated, with a
-   * mouse over comment saying 'coming soon'". `cuRender`'s `openSuWork` button,
-   * on the Sign up Pipeline.
-   *
-   * The tooltip is asserted on the WRAPPER, not the button: `Button` carries
-   * `disabled:pointer-events-none`, so a `title` on the disabled button is
-   * markup a hover can never reach — the comment the client asked for would not
-   * exist on screen. The wrapper is the fix, so it is what the test pins.
+   * Oct-3 issue 24 deactivated `cuRender`'s `openSuWork` button on the Sign up
+   * Pipeline — "should be deactivated, with a mouse over comment saying 'coming
+   * soon'" — while the client held the sign-up workflow back. RE-POINTED 23-Oct:
+   * tracker row 10 releases it ("Shortlisted startups should be able to sign up
+   * as per prototype design"), so the same row's button is live and carries no
+   * coming-soon wrapper. The mechanism (`signupComingSoon`) is not deleted, and
+   * the control below still proves it is per screen.
    */
-  it("Sign up Pipeline — the row's Sign-up action is deactivated, and says coming soon on hover", async () => {
+  it("Sign up Pipeline — the row's Sign-up action is live again, with no coming-soon comment", async () => {
     mockApi([deck({ id: "d1", name: "LedgerLite", statusId: "signup", status: "Signup" })], [signup({ deckId: "d1" })]);
     render(<StagePage config={INCUBATOR_STAGE_CONFIG.incuration} />);
     const row = await screen.findByRole("row", { name: /LedgerLite/ });
 
     const button = await within(row).findByRole("button", { name: "Sign-up" });
-    expect(button).toBeDisabled();
-    expect(button.parentElement).toHaveAttribute("title", "Sign-up — coming soon");
+    expect(button).toBeEnabled();
+    expect(button.parentElement).not.toHaveAttribute("title");
+  });
+
+  /**
+   * 23-Oct tracker row 4 — "Shortlisted startups should reflect in the 'Signup
+   * pipeline'." The prototype's Sign up Pipeline (`cuData`) carries a
+   * `shortlisted` row; the build listed `signup` only, so a deck the criteria
+   * shortlisted reached Intro calls and the PM's pipeline but not this screen.
+   */
+  it("Sign up Pipeline — lists a deck from the moment it is shortlisted, and nothing still being judged", async () => {
+    mockApi(
+      [
+        deck({ id: "d1", name: "AgriChain", statusId: "shortlisted", status: "Shortlisted" }),
+        deck({ id: "d2", name: "WealthOS", statusId: "intro", status: "Intro" }),
+        deck({ id: "d3", name: "LedgerLite", statusId: "signup", status: "Signup" }),
+        deck({ id: "d4", name: "StillScoring", statusId: "jury_evaluation", status: "Jury Evaluation" }),
+      ],
+      [signup({ deckId: "d3" })],
+    );
+    render(<StagePage config={INCUBATOR_STAGE_CONFIG.incuration} />);
+    const shortlisted = await screen.findByRole("row", { name: /AgriChain/ });
+    // No sign-up record yet: the status reads the prototype's `suSignupLabel.shortlisted`.
+    expect(within(shortlisted).getByText("Shortlisted")).toBeInTheDocument();
+    expect(within(screen.getByRole("row", { name: /WealthOS/ })).getByText("Shortlisted")).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /LedgerLite/ })).toBeInTheDocument();
+    expect(screen.queryByRole("row", { name: /StillScoring/ })).not.toBeInTheDocument();
+    expect(screen.getByTestId("stage-footer-stat")).toHaveTextContent("3 startups in curation");
   });
 
   /**

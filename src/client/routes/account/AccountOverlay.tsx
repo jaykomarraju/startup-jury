@@ -35,7 +35,7 @@ import { X } from "lucide-react";
 import { useAuth } from "../../auth/useAuth";
 import { usePermissions } from "../../auth/usePermissions";
 import { useBranding } from "../../theme/useBranding";
-import { landingNavId } from "../../../shared/nav";
+import { canAccessNav, landingNavId } from "../../../shared/nav";
 import {
   enterpriseSeatPlans,
   isSeatCatalogueRow,
@@ -57,7 +57,6 @@ import {
   INDIVIDUAL_GROUPS,
   ORGANIZATION_GROUPS,
   PAID_TRIAL_PACKS,
-  FREE_TRIAL_DECKS,
   TEAM_ROLES,
   annualCartQuote,
   billableCurrencies,
@@ -87,6 +86,9 @@ import {
 import {
   AccountApiError,
   getAccount,
+  getOrder,
+  openCheckout,
+  takeTrial,
   getPublishedCatalogue,
   orderDocumentUrl,
   placeOrder,
@@ -181,6 +183,10 @@ function orderErrorMessage(err: unknown): string {
   switch (code) {
     case "not_priced_in_currency":
       return "That plan is not sold in this currency. Choose another currency or plan.";
+    case "checkout_failed":
+      // P2 — the provider would not open a checkout. The server says nothing was
+      // charged, and so does this.
+      return "The payment provider could not start this payment. Nothing has been charged — try again in a moment.";
     case "currency_not_for_billing_country":
       // The server refuses rather than re-denominating, so the honest fix is to
       // go back to the address that set the currency.
@@ -215,7 +221,15 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
 
-  const [screen, setScreen] = useState<AccountScreen>(entry === "buy-credits" ? "plan" : "account");
+  /**
+   * P2 — the provider's return lands on `/app/account?order=<id>`: open on that
+   * order's receipt. The server applies a payment nobody has reported yet before
+   * it answers, so a customer who paid sees "Paid" and their credits.
+   */
+  const [returningOrder] = useState(() => new URLSearchParams(location.search).get("order"));
+  const [screen, setScreen] = useState<AccountScreen>(
+    returningOrder ? "success" : entry === "buy-credits" ? "plan" : "account",
+  );
   const [account, setAccount] = useState<AccountDraft | null>(null);
   const [orgKind, setOrgKind] = useState<OrgKind>(user?.edition === "vc" ? "investor" : "incubator");
   const [org, setOrg] = useState<OrgDraft | null>(null);
@@ -243,8 +257,13 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
   const [extraCredits, setExtraCredits] = useState(0);
   /** `iPaidPack` — decks of the paid trial, 0 while none is chosen. */
   const [paidPack, setPaidPack] = useState(0);
-  /** `iTrialLeft`, counted up rather than down. Local, spends nothing. */
-  const [trialUsed, setTrialUsed] = useState(0);
+  /**
+   * P2 — `iTrialLeft` was a counter here that "used" a deck per click and
+   * granted nothing. The trial is now the server's (`state.trial`); this is only
+   * the in-flight flag and the one sentence a failed grant needs.
+   */
+  const [trialBusy, setTrialBusy] = useState(false);
+  const [trialError, setTrialError] = useState<string | null>(null);
   const [orgPlanCode, setOrgPlanCode] = useState<string | null>(null);
 
   // ── V6's five new screens ─────────────────────────────────────────────────
@@ -342,6 +361,23 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
       live = false;
     };
   }, [reload, edition]);
+
+  // P2 — the receipt a provider return lands on (`returningOrder` above).
+  const [returnError, setReturnError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!returningOrder) return;
+    let live = true;
+    getOrder(returningOrder)
+      .then((o) => {
+        if (live) setOrder(o);
+      })
+      .catch(() => {
+        if (live) setReturnError("We couldn't load that order. It is listed under your recent orders once it is confirmed.");
+      });
+    return () => {
+      live = false;
+    };
+  }, [returningOrder]);
 
   // ── Overlay behaviour: Escape, scroll lock, focus, and an inert shell behind.
   useEffect(() => {
@@ -814,12 +850,39 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
     return quote ? planScreenFor(accountType, quote.group) : planScreen;
   };
 
-  /** The amber "Take a 3-deck free trial" button on both plan screens. */
-  function takeTrial() {
+  /**
+   * The amber "Take a 3-deck free trial" button on both plan screens. It OPENS
+   * the trial screen and grants nothing: a customer who only looks at the trial
+   * must not have spent it. **Start my free trial** on that screen is the grant.
+   */
+  function openTrial() {
     setPaidPack(0);
-    setTrialUsed(0);
+    setTrialError(null);
     go("trial");
   }
+
+  /** `POST /api/account/trial` — the credits, for real, once per workspace. */
+  async function startTrial() {
+    setTrialBusy(true);
+    setTrialError(null);
+    try {
+      const res = await takeTrial();
+      setState((s) => (s ? { ...s, trial: res.trial, balance: res.balance } : s));
+    } catch (err) {
+      setTrialError(
+        err instanceof AccountApiError && err.code === "forbidden"
+          ? "Your role cannot start a trial for this workspace."
+          : err instanceof AccountApiError && err.code === "trial_not_offered"
+            ? "No free trial is on offer right now."
+            : "We couldn't start your trial. Try again.",
+      );
+    } finally {
+      setTrialBusy(false);
+    }
+  }
+
+  /** A trial deck is used by evaluating one — so the trial screen leads to Upload. */
+  const canUpload = canAccessNav(edition, role, "upload", can);
 
   async function pay() {
     if (!quote) return;
@@ -836,6 +899,11 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
       });
       setOrder(res.order);
       go("success");
+      // P2 — with a provider configured the order is `redirected`: the customer
+      // pays on Razorpay's page and comes back to `/app/account?order=<id>`. The
+      // receipt rendered above keeps a "Continue to secure payment" link in case
+      // the navigation is blocked.
+      if (res.checkout.hosted && res.checkout.url) openCheckout(res.checkout.url);
     } catch (err) {
       setOrderError(orderErrorMessage(err));
     } finally {
@@ -992,7 +1060,7 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         currency={currency}
         onCurrency={setCurrency}
         onBack={() => go("orgdetails")}
-        onTrial={takeTrial}
+        onTrial={openTrial}
         onContinue={continueToPayment}
       />
     ) : (
@@ -1026,7 +1094,7 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         currency={currency}
         onCurrency={setCurrency}
         onBack={() => go("account")}
-        onTrial={takeTrial}
+        onTrial={openTrial}
         onContinue={continueToPayment}
       />
     ) : (
@@ -1053,8 +1121,12 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
     body = (
       <TrialScreen
         planName={chosenPlanName}
-        used={trialUsed}
-        onUse={() => setTrialUsed((n) => Math.min(n + 1, FREE_TRIAL_DECKS))}
+        trial={state.trial}
+        balance={state.balance}
+        busy={trialBusy}
+        error={trialError}
+        onStart={() => void startTrial()}
+        onUpload={canUpload ? () => navigate("/app/upload") : undefined}
         onBack={() => go(planScreen)}
         onPayChosen={() => {
           setPaidPack(0);
@@ -1098,6 +1170,22 @@ export function AccountOverlay({ entry }: { entry: AccountEntry }) {
         error={orderError}
         billing={billingBack ? billing : null}
       />
+    );
+  } else if (screen === "success" && !order && returningOrder) {
+    body = (
+      <Card>
+        <h1 className="text-[23px] font-bold leading-[1.2] text-fg">Your order</h1>
+        <p className="mt-3 text-[13.5px] text-fg-2" aria-live="polite" role={returnError ? "alert" : undefined}>
+          {returnError ?? "Checking your payment…"}
+        </p>
+        {returnError && (
+          <div className="mt-[26px] flex justify-end">
+            <button type="button" className={BTN_GHOST} onClick={() => go(planScreen)}>
+              Back to plan selection
+            </button>
+          </div>
+        )}
+      </Card>
     );
   } else if (screen === "success" && order) {
     body = (

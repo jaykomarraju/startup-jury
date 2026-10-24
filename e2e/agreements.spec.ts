@@ -18,21 +18,17 @@ import { test, expect, type Page } from "@playwright/test";
 test.describe.configure({ mode: "serial" });
 
 /**
- * ── THE FIVE CONSOLE WALKS ARE SKIPPED 30-Sep-2026 · feedback row 11 ────────
+ * ── THE FIVE CONSOLE WALKS ARE BACK 23-Oct-2026 · tracker row 10 ────────────
  *
- * The Admin console's whole **Sign-up group** is hidden until the next release:
- * *"we want to introduce this in the next release."* Both sections this file
- * walks, `suagr` and `susign`, are in it, and `openSection` reaches them through
- * `/app/admin?section=…`, which now resolves to Scoring framework.
+ * Feedback row 11 hid the Admin console's whole **Sign-up group** on 24-Sep, and
+ * on 30-Sep the five walks below were skipped one at a time — `openSection`
+ * reaches `suagr` and `susign` through `/app/admin?section=…`, and a hidden id
+ * resolves to Scoring framework. Row 10 of the 23-Oct tracker asked for the
+ * group back in the incubator, which is the only edition this file walks, so all
+ * five run again, unchanged.
  *
- * **Skipped one test at a time, not by skipping the file, and NOT deleted.**
- * The last two tests here are pure `/api/esign/*` role checks that do not touch
- * the console — they must keep running, because hiding a rail entry does not
- * unguard a route, and the whole point of the `pc` precedent
- * (`e2e/price-configuration.spec.ts`) is that the API assertion survives the
- * screen. Un-skip the five below when "Sign-up" leaves `HIDDEN_ADMIN_GROUPS` in
- * `src/client/routes/admin/sections.ts`; the screens keep their component tests
- * (`test/client/agreements.test.tsx`) meanwhile.
+ * The three `/api/esign/*` role checks at the foot were never skipped and stay:
+ * a rail entry coming back widens no route either.
  */
 
 async function login(page: Page, email: string) {
@@ -68,7 +64,7 @@ function row(page: Page, name: string) {
   return page.locator("li").filter({ hasText: name }).first();
 }
 
-test.skip("the seeded library renders with its lifecycle badges and summary lines", async ({ page }) => {
+test("the seeded library renders with its lifecycle badges and summary lines", async ({ page }) => {
   test.setTimeout(120_000);
   await openLibrary(page);
 
@@ -91,7 +87,7 @@ test.skip("the seeded library renders with its lifecycle badges and summary line
   await expect(nda.getByRole("button", { name: "Retire" })).toHaveCount(0);
 });
 
-test.skip("an admin uploads a template, maps it to a stage and a programme, and it survives a reload", async ({
+test("an admin uploads a template, maps it to a stage and a programme, and it survives a reload", async ({
   page,
 }) => {
   test.setTimeout(180_000);
@@ -168,7 +164,7 @@ test.skip("an admin uploads a template, maps it to a stage and a programme, and 
   await expect(row(page, "E2E Incubation Addendum")).toHaveCount(0);
 });
 
-test.skip("the merge-field editor refuses a duplicate key before it reaches the server", async ({
+test("the merge-field editor refuses a duplicate key before it reaches the server", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -189,7 +185,7 @@ test.skip("the merge-field editor refuses a duplicate key before it reaches the 
   await expect(row(page, "Incubation Agreement")).toContainText("5 merge fields");
 });
 
-test.skip("a granted signatory appears in the sign-up countersign picker", async ({ page }) => {
+test("a granted signatory appears in the sign-up countersign picker", async ({ page }) => {
   test.setTimeout(120_000);
   await login(page, "nisha.kapoor@demo.startupjury.ai");
   await openSection(page, "susign", "Authorised signatories");
@@ -237,7 +233,7 @@ test.skip("a granted signatory appears in the sign-up countersign picker", async
   );
 });
 
-test.skip("a named individual can be granted from the roster behind Add individual", async ({ page }) => {
+test("a named individual can be granted from the roster behind Add individual", async ({ page }) => {
   test.setTimeout(120_000);
   await login(page, "nisha.kapoor@demo.startupjury.ai");
   await openSection(page, "susign", "Authorised signatories");
@@ -254,12 +250,12 @@ test.skip("a named individual can be granted from the roster behind Add individu
   await expect(page.getByRole("button", { name: "Show granted only" })).toBeVisible();
 });
 
-// Added 30-Sep with the skips above: with all five console walks dark, this is
-// the only live proof in a browser that the two hidden sections' routes still
-// serve their admin. A rail entry going away neither unmounts a screen nor
-// unguards a route — and must not be taken as licence to delete one, because the
-// screens come back next release and the data has to be there.
-test("the esign API still serves the admin with both sections hidden", async ({ page }) => {
+// Added 30-Sep with the skips above, as the only live proof in a browser that the
+// two hidden sections' routes still served their admin. The walks above cover
+// the same two routes through the screens again since 23-Oct; this stays as the
+// cheap, screen-free half — the one that still holds if a section is ever
+// hidden again — and was re-titled, not re-pointed.
+test("the esign API serves the admin both halves of the library", async ({ page }) => {
   test.setTimeout(120_000);
   await login(page, "nisha.kapoor@demo.startupjury.ai"); // incubator admin
   const templates = await page.request.get("/api/esign/templates");

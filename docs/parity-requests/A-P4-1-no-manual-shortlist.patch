@@ -1,0 +1,387 @@
+diff --git a/scripts/role-matrix.ts b/scripts/role-matrix.ts
+index 95dfd6c..f4dd1cc 100644
+--- a/scripts/role-matrix.ts
++++ b/scripts/role-matrix.ts
+@@ -290,14 +290,31 @@ function reportInvariants() {
+   );
+ 
+   // ── §8: incubator Program Manager is the DECISION MAKER ───────────────────
++  //
++  // Less the shortlist since 23-Oct — see the check below this loop.
+   for (const [from, action] of [
+     ["ai_evaluated", "assign_jury"],
+-    ["jury_evaluation", "shortlist"],
+     ["jury_evaluation", "reject"],
+     ["shortlisted", "schedule_intro"],
+   ] as const) {
+     check(`§8 [incubator] program_manager may ${action}`, can("incubator", "program_manager", from, action));
+   }
++  // ── 23-Oct tracker row 4: NOBODY shortlists by hand ─────────────────────
++  //
++  // "The startups are shortlisted as per the criteria set in the admin
++  // console. NO MANUAL SHORTLISTING SHOULD BE ALLOWED BY THE SYSTEM." Every
++  // incubator role, the superuser included — stated over the state machine, as
++  // the jury's removal below is, because a hidden button over a reachable
++  // transition is this repo's recurring defect. The route refuses the action
++  // before the table is read (`shortlist_automatic`); this is the table's half.
++  {
++    const holders = ROLES_BY_EDITION.incubator.filter((r) => can("incubator", r, "jury_evaluation", "shortlist"));
++    check(
++      "23-Oct [incubator] no role shortlists by hand — the criteria do",
++      holders.length === 0,
++      holders.join(",") || "(none)",
++    );
++  }
+   check(
+     "§8 [incubator] the program_associate is the executor, not the decision maker (no shortlist / reject)",
+     !can("incubator", "program_associate", "jury_evaluation", "shortlist") &&
+@@ -318,9 +335,10 @@ function reportInvariants() {
+   // what `POST /decks/:id/transition` consults.
+   //
+   // The screen (`INCUBATOR_STAGE_CONFIG.jurypipeline`) lists four stages, and
+-  // `JuryPipelineActionCell` runs exactly one transition out of them —
+-  // `shortlist`, relabelled "Send to intro calls". Its other option navigates
+-  // to Assign and writes nothing. So "read-only" is checkable without the
++  // `JuryPipelineActionCell` ran exactly one transition out of them —
++  // `shortlist`, relabelled "Send to intro calls" — which since 23-Oct is no
++  // role's at all (above). Its other option navigates to Assign and writes
++  // nothing. So "read-only" is checkable without the
+   // screen: of every transition leaving the four stages, the associate may hold
+   // only `schedule_intro`, which belongs to Intro calls and is theirs by §8
+   // delegation — the Jury Pipeline screen never offers it, because a
+@@ -364,17 +382,18 @@ function reportInvariants() {
+   // Stated as both halves in ONE check, because either alone passes for the
+   // wrong reason — a juror with no decision is right only while somebody else
+   // still has it, and a PM with the decision is right only while the juror does
+-  // not. Both `jury_evaluation` transitions are named: hiding a button while the
+-  // route still says yes is this repo's recurring defect.
++  // not. Both `jury_evaluation` decisions are named: hiding a button while the
++  // route still says yes is this repo's recurring defect. Since 23-Oct the
++  // decision somebody else still has is REJECT — the shortlist is the
++  // criteria's, held by no role (the check above).
+   check(
+     "§8 [incubator] the jury SCORES, the incubator DECIDES — neither shortlist nor reject",
+     !can("incubator", "jury", "jury_evaluation", "shortlist") &&
+       !can("incubator", "jury", "jury_evaluation", "reject") &&
+-      can("incubator", "program_manager", "jury_evaluation", "shortlist") &&
+       can("incubator", "program_manager", "jury_evaluation", "reject"),
+     `jury shortlist=${can("incubator", "jury", "jury_evaluation", "shortlist")} ` +
+       `jury reject=${can("incubator", "jury", "jury_evaluation", "reject")} ` +
+-      `pm shortlist=${can("incubator", "program_manager", "jury_evaluation", "shortlist")}`,
++      `pm reject=${can("incubator", "program_manager", "jury_evaluation", "reject")}`,
+   );
+   check(
+     "[incubator] the jury cannot assign itself work or send a signup",
+diff --git a/src/client/routes/EvaluatePage.tsx b/src/client/routes/EvaluatePage.tsx
+index 83535ce..3b06962 100644
+--- a/src/client/routes/EvaluatePage.tsx
++++ b/src/client/routes/EvaluatePage.tsx
+@@ -402,7 +402,10 @@ export function EvaluatePage() {
+     }
+   }
+ 
+-  async function decide(action: "shortlist" | "reject") {
++  // `"reject"` only since 23-Oct: shortlisting is the criteria's, not a person's
++  // (`applyShortlistCriteria` in `routes/pipeline.ts`), so the workbench offers
++  // the one decision the incubator still makes by hand.
++  async function decide(action: "reject") {
+     if (!selected) return;
+     setError(null);
+     // A deck still at Assigned has no evaluation yet. Deciding on it used to
+@@ -421,12 +424,11 @@ export function EvaluatePage() {
+       closeDeck();
+       await Promise.all([load(), loadRecommendations()]);
+     } catch (err) {
+-      // The shortlist floor refuses with a message written for the evaluator
+-      // ("below the program's shortlist minimum…") — show it verbatim.
+-      if (
+-        err instanceof ApiError &&
+-        (err.code === "below_shortlist_minimum" || err.code === "rationale_required")
+-      ) {
++      // The override-rationale rule refuses the scores submitted first with a
++      // message written for the evaluator — show it verbatim. (The shortlist
++      // floor's `below_shortlist_minimum` was the other; it went with the
++      // workbench's Shortlist button on 23-Oct.)
++      if (err instanceof ApiError && err.code === "rationale_required") {
+         setError(err.message);
+         await load();
+       } else {
+@@ -947,27 +949,23 @@ export function EvaluatePage() {
+                     which is computed from the slug: a juror who reaches this
+                     workbench from `/app/evaluate` instead of `/app/jassigned`
+                     must not get the buttons back. A programme manager keeps
+-                    both, on every route.
++                    Reject, on every route.
++
++                    Shortlist is gone for EVERY role since 23-Oct (tracker row
++                    4, "no manual shortlisting"): the server refuses it to all
++                    of them and `pipeline/incubator.ts` lists nobody, and the
++                    deck is shortlisted by its scores when the panel completes.
++                    The minimum beside this is still the bar it is judged on.
+                   */}
+                   {user?.role !== "jury" && (
+-                    <>
+-                      <button
+-                        type="button"
+-                        className="tbb"
+-                        disabled={busy}
+-                        onClick={() => decide("reject")}
+-                      >
+-                        Reject
+-                      </button>
+-                      <button
+-                        type="button"
+-                        className="tbb pr"
+-                        disabled={busy}
+-                        onClick={() => decide("shortlist")}
+-                      >
+-                        Shortlist
+-                      </button>
+-                    </>
++                    <button
++                      type="button"
++                      className="tbb"
++                      disabled={busy}
++                      onClick={() => decide("reject")}
++                    >
++                      Reject
++                    </button>
+                   )}
+                 </>
+               }
+diff --git a/src/pipeline/incubator.ts b/src/pipeline/incubator.ts
+index 252eab3..b400499 100644
+--- a/src/pipeline/incubator.ts
++++ b/src/pipeline/incubator.ts
+@@ -3,11 +3,13 @@ import type { PipelineConfig } from "./types";
+ // Incubator pipeline — mirrors INC_DIAGRAM_2 and the role×stage permission matrix,
+ // reconciled with the Jul-24 demo decision that the Program Manager is the
+ // DECISION MAKER (the role matrix image predates it). superuser + admin have full
+-// access at every stage. The program_manager assigns jury, makes/overrides the
+-// shortlist decision, and decides (schedules, or delegates to the associate) the
+-// intro call; the program_associate stays the frontline EXECUTOR (assign, schedule
+-// on the PM's direction, send signup, run the founder-query loop). Jury still
+-// scores + shortlists their assigned decks.
++// access at every stage. The program_manager assigns jury, makes the reject
++// decision, and decides (schedules, or delegates to the associate) the intro
++// call; the program_associate stays the frontline EXECUTOR (assign, schedule on
++// the PM's direction, send signup, run the founder-query loop). The jury scores
++// its assigned decks and decides nothing (2026-10-04). Since 23-Oct nobody
++// shortlists by hand: the criteria do, when the panel completes — see the note
++// where the `shortlist` entry used to be.
+ export const incubatorPipeline: PipelineConfig = {
+   edition: "incubator",
+   initialStage: "uploaded",
+@@ -121,15 +123,24 @@ export const incubatorPipeline: PipelineConfig = {
+     // portal), and an external evaluator holding a transition nobody draws is
+     // exactly that shape.
+     //
+-    // The decision stays with the incubator: programme manager, admin and super
+-    // user keep both, and keep them on the same screen.
+-    {
+-      from: "jury_evaluation",
+-      to: "shortlisted",
+-      action: "shortlist",
+-      label: "Shortlist",
+-      roles: ["program_manager", "admin", "superuser"],
+-    },
++    // The decision stayed with the incubator: programme manager, admin and super
++    // user kept both, on the same screen — until 23-Oct for the shortlist.
++    //
++    // **`jury_evaluation → shortlisted` is no longer a person's transition**
++    // (23-Oct tracker row 4): *"The startups are shortlisted as per the criteria
++    // set in the admin console. NO MANUAL SHORTLISTING SHOULD BE ALLOWED BY THE
++    // SYSTEM."* The same reasoning as the jury's removal above, one step
++    // further: the entry is GONE, so `allowedTransitions` offers it to no screen
++    // and `performAction` grants it to no role. The move itself is made by
++    // `applyShortlistCriteria` (`routes/pipeline.ts`) as the system — NULL
++    // actor, action `auto_shortlist` — when a deck's panel has scored it over
++    // its floor. That is the established shape for a system move here
++    // (`routes/decks.ts:1433`: `ai_evaluated`, `ai_skipped`, `send_to_assign`,
++    // `details_completed` have no entry either), and it keeps this table's
++    // invariant that every transition is some role's. The route refuses
++    // `{"action":"shortlist"}` itself, before this table is read, so neither
++    // half of the rule depends on the other. Reject keeps its roles: the client
++    // took away the shortlist, not the incubator's final call.
+     {
+       from: "jury_evaluation",
+       to: "rejected",
+diff --git a/test/client/evaluateScoring.test.tsx b/test/client/evaluateScoring.test.tsx
+index 65db0c4..a8bf546 100644
+--- a/test/client/evaluateScoring.test.tsx
++++ b/test/client/evaluateScoring.test.tsx
+@@ -293,3 +293,20 @@ describe("issue 6 — the report overlay no longer presents itself as the scorer
+     ).toHaveLength(4);
+   });
+ });
++
++// ── 23-Oct — no manual shortlisting ──────────────────────────────────────────
++
++describe("23-Oct tracker row 4 — the workbench offers no manual Shortlist", () => {
++  // "The startups are shortlisted as per the criteria set in the admin console.
++  // NO MANUAL SHORTLISTING SHOULD BE ALLOWED BY THE SYSTEM." The server refuses
++  // the action to every role (`test/worker/shortlist-criteria.test.ts`) and
++  // `pipeline/incubator.ts` lists nobody; this is the drawing of that rule. The
++  // other decision on the stage — Reject — stays with the incubator.
++  for (const role of ["program_manager", "admin"] as const) {
++    it(`${role} — Reject is offered and Shortlist is not`, async () => {
++      const dialog = await openAndScore(role);
++      expect(within(dialog).getByRole("button", { name: "Reject" })).toBeInTheDocument();
++      expect(within(dialog).queryByRole("button", { name: "Shortlist" })).toBeNull();
++    });
++  }
++});
+diff --git a/test/unit/jury-pipeline-readonly.test.ts b/test/unit/jury-pipeline-readonly.test.ts
+index 37d55be..d6275a3 100644
+--- a/test/unit/jury-pipeline-readonly.test.ts
++++ b/test/unit/jury-pipeline-readonly.test.ts
+@@ -55,15 +55,17 @@ describe("Jury Pipeline is read-only for the programme associate", () => {
+   });
+ 
+   /**
+-   * `JuryPipelineActionCell`'s only transition, relabelled "Send to intro
+-   * calls". Asserted through `performAction` because that is the predicate the
+-   * transition route calls — the refusal has to be the server's, not a
+-   * `disabled` attribute's.
++   * `JuryPipelineActionCell`'s only transition was `shortlist`, relabelled
++   * "Send to intro calls". Since 23-Oct it is NOBODY's — the criteria shortlist
++   * a deck when its panel completes, and the entry left `pipeline/incubator.ts`
++   * — so the associate is refused it like every role, and by the table rather
++   * than by a `disabled` attribute. (The route refuses it before the table is
++   * read, with `shortlist_automatic`; `test/worker/shortlist-criteria.test.ts`.)
+    */
+-  it("refuses the associate the screen's one write (shortlist), with 'forbidden'", () => {
++  it("refuses the associate the screen's old write (shortlist) — it is no role's transition now", () => {
+     expect(performAction("incubator", "jury_evaluation", "shortlist", "program_associate")).toEqual({
+       ok: false,
+-      error: "forbidden",
++      error: "unknown_action",
+     });
+   });
+ 
+@@ -71,12 +73,16 @@ describe("Jury Pipeline is read-only for the programme associate", () => {
+   it("leaves the decision with the incubator — the programme manager, not the juror", () => {
+     // The juror was in this list until 2026-10-04, when the client took the
+     // decision off them entirely: "It is the prerogative of the Incubator to
+-    // take a final call. Juror is always an external guy." So this case now
+-    // carries BOTH halves — somebody still decides, and it is not the jury.
++    // take a final call. Juror is always an external guy." So this case carries
++    // BOTH halves — somebody still decides, and it is not the jury.
++    //
++    // RE-POINTED 23-Oct: the decision left is REJECT. The shortlist is the
++    // criteria's, held by no role at all, the decision-makers included.
+     for (const role of ["program_manager", "admin", "superuser"] as const) {
+-      expect(performAction("incubator", "jury_evaluation", "shortlist", role).ok, role).toBe(true);
++      expect(performAction("incubator", "jury_evaluation", "reject", role).ok, role).toBe(true);
++      expect(performAction("incubator", "jury_evaluation", "shortlist", role).ok, role).toBe(false);
+     }
+-    expect(performAction("incubator", "jury_evaluation", "shortlist", "jury").ok).toBe(false);
++    expect(performAction("incubator", "jury_evaluation", "reject", "jury").ok).toBe(false);
+   });
+ 
+   /**
+diff --git a/test/unit/pipeline.test.ts b/test/unit/pipeline.test.ts
+index ff83a21..2189497 100644
+--- a/test/unit/pipeline.test.ts
++++ b/test/unit/pipeline.test.ts
+@@ -53,19 +53,36 @@ describe("incubator role permissions", () => {
+     // PERMISSION and the recurring defect in this repo is a client-side-only
+     // gate (`role-boundary-leaks`). Hiding the buttons without this would leave
+     // the transition reachable by anyone who could post to the route.
+-    for (const action of ["shortlist", "reject"] as const) {
+-      expect(performAction("incubator", "jury_evaluation", action, "jury")).toEqual({
+-        ok: false,
+-        error: "forbidden",
+-      });
+-    }
++    expect(performAction("incubator", "jury_evaluation", "reject", "jury")).toEqual({
++      ok: false,
++      error: "forbidden",
++    });
+     // And it MOVED rather than vanished — the decision-makers still hold it.
+     for (const role of ["program_manager", "admin", "superuser"] as const) {
+-      expect(performAction("incubator", "jury_evaluation", "shortlist", role).ok, role).toBe(true);
+       expect(performAction("incubator", "jury_evaluation", "reject", role).ok, role).toBe(true);
+     }
+   });
+ 
++  it("nobody shortlists by hand — the criteria do (23-Oct)", () => {
++    // "The startups are shortlisted as per the criteria set in the admin
++    // console. NO MANUAL SHORTLISTING SHOULD BE ALLOWED BY THE SYSTEM." The
++    // `jury_evaluation → shortlisted` entry is gone from the table, so no role —
++    // the superuser included — holds it, and no screen is offered it. The system
++    // makes the move itself (`applyShortlistCriteria`, a NULL-actor
++    // `auto_shortlist` event), as it does `pending_ai → ai_evaluated`.
++    for (const role of ["jury", "program_associate", "program_manager", "admin", "superuser", "founder"] as const) {
++      expect(performAction("incubator", "jury_evaluation", "shortlist", role), role).toEqual({
++        ok: false,
++        error: "unknown_action",
++      });
++      expect(allowedTransitions("incubator", "jury_evaluation", role).map((t) => t.action), role).not.toContain(
++        "shortlist",
++      );
++    }
++    // The stage is still reached, and still left by the way it always was.
++    expect(performAction("incubator", "shortlisted", "schedule_intro", "program_manager").ok).toBe(true);
++  });
++
+   it("jury cannot assign jury at the AI gate", () => {
+     expect(performAction("incubator", "ai_evaluated", "assign_jury", "jury")).toEqual({
+       ok: false,
+@@ -82,14 +99,11 @@ describe("incubator role permissions", () => {
+     ).toBe(true);
+   });
+ 
+-  it("program manager holds decision authority: assign, shortlist/reject and schedule intro", () => {
++  it("program manager holds decision authority: assign, reject and schedule intro", () => {
+     // PM is the decision maker (Jul-24 demo) — can assign jury...
+     expect(performAction("incubator", "ai_evaluated", "assign_jury", "program_manager").ok).toBe(true);
+-    // ...make or override the shortlist / reject decision...
+-    expect(performAction("incubator", "jury_evaluation", "shortlist", "program_manager")).toEqual({
+-      ok: true,
+-      to: "shortlisted",
+-    });
++    // ...make the reject decision (the shortlist is the criteria's since 23-Oct
++    // — "nobody shortlists by hand", above)...
+     expect(performAction("incubator", "jury_evaluation", "reject", "program_manager")).toEqual({
+       ok: true,
+       to: "rejected",
+@@ -98,9 +112,11 @@ describe("incubator role permissions", () => {
+     expect(performAction("incubator", "shortlisted", "schedule_intro", "program_manager").ok).toBe(true);
+   });
+ 
+-  it("founder completes signup but cannot shortlist", () => {
++  it("founder completes signup but cannot reject", () => {
++    // Was "…but cannot shortlist"; nobody can since 23-Oct (above), so the
++    // founder's refusal is asserted on the decision that is still a role's.
+     expect(performAction("incubator", "signup", "complete_signup", "founder").ok).toBe(true);
+-    expect(performAction("incubator", "jury_evaluation", "shortlist", "founder")).toEqual({
++    expect(performAction("incubator", "jury_evaluation", "reject", "founder")).toEqual({
+       ok: false,
+       error: "forbidden",
+     });
+diff --git a/test/worker/pipeline.test.ts b/test/worker/pipeline.test.ts
+index d4969a0..455ce9a 100644
+--- a/test/worker/pipeline.test.ts
++++ b/test/worker/pipeline.test.ts
+@@ -651,12 +651,18 @@ describe("deck list exposes per-role actions + status id", () => {
+     expect(actions).not.toContain("reject");
+ 
+     // The guard on the guard: the decision did not vanish, it moved. A
+-    // programme manager sees exactly what the juror no longer does.
++    // programme manager sees what the juror does not — Reject. And since 23-Oct
++    // NOBODY is offered Shortlist, the PM included: the criteria shortlist a
++    // deck when its panel completes, and the server refuses the action to every
++    // role (`shortlist-criteria.test.ts`). An offered action the route refuses
++    // would be a button that 403s, which is why the table and the route moved
++    // together.
+     const pmBody = (await (await get("/api/decks", await login(PM))).json()) as {
+       decks: Array<{ id: string; actions: Array<{ action: string }> }>;
+     };
+     const pmActions = pmBody.decks.find((d) => d.id === id)!.actions.map((a) => a.action);
+-    expect(pmActions).toEqual(expect.arrayContaining(["shortlist", "reject"]));
++    expect(pmActions).toContain("reject");
++    expect(pmActions).not.toContain("shortlist");
+   });
+ });
+ 

@@ -423,7 +423,16 @@ describe("POST /api/billing/purchase", () => {
     const row = await env.DB.prepare("SELECT * FROM billing_payment_intents WHERE id = ?")
       .bind(payload.intent.id)
       .first<Record<string, unknown>>();
-    const serialised = JSON.stringify(row);
+    // The three columns the SERVER mints are left out of the scan, and only
+    // those: `id` is a random UUID and the two timestamps are clock readings, so
+    // "123" turns up in them by chance — measured 2026-10-23 (P2), `pi_8f7a1236-…`
+    // failed this test with no card data anywhere in the row, and passed on three
+    // reruns. Nothing a request carries can reach them; every column it CAN
+    // reach is still scanned for both values.
+    const minted = new Set(["id", "created_at", "updated_at"]);
+    const written = Object.fromEntries(Object.entries(row ?? {}).filter(([k]) => !minted.has(k)));
+    expect(Object.keys(written).length).toBeGreaterThan(10);
+    const serialised = JSON.stringify(written);
     expect(serialised).not.toContain("4111111111111111");
     expect(serialised).not.toContain("123");
     const columns = await env.DB.prepare("PRAGMA table_info(billing_payment_intents)").all<{

@@ -143,6 +143,128 @@ export function asScope(scope: TenantScope | Edition): TenantScope {
   return typeof scope === "string" ? { tenantId: DEFAULT_TENANT_ID, edition: scope } : scope;
 }
 
+// ── Granting: the balance and its explanation in ONE transaction ────────────
+
+/**
+ * A condition a grant is conditional on, evaluated INSIDE the transaction that
+ * makes the grant — "this workspace has no trial row yet", "this intent is still
+ * waiting for its payment". Checking it in a SELECT beforehand would be a race:
+ * two requests could both read "not yet" and both grant.
+ */
+export interface GrantGuard {
+  sql: string;
+  binds: unknown[];
+}
+
+export interface GrantResult {
+  /** False when the guard refused, in which case NOTHING was written. */
+  granted: boolean;
+  /** The ledger row's id. Only meaningful when `granted`. */
+  entryId: string;
+}
+
+/**
+ * P2 (23-Oct tracker) — add credits to a workspace so that the balance and the
+ * ledger cannot disagree, even for an instant and even under a retry.
+ *
+ * Fact 1 at the top of this file says the balance is the authority and the
+ * ledger explains it. Every OTHER writer of a positive movement — the operator
+ * SET and the demo top-up in `routes/config.ts`, `refundCredits` in
+ * `decks/versions.ts` — runs the balance UPDATE and the ledger INSERT as two
+ * separate statements, so a failure between them leaves a balance with no
+ * movement behind it. That is precisely how production's books went wrong:
+ * `0007` moved a balance with nothing behind it, and `0108` had to reconcile
+ * months of drift (`d1` read 2026-10-05: incubator balance 0, ledger 12).
+ *
+ * So this is one `DB.batch()`, which D1 runs as a single SQL transaction —
+ * all statements or none:
+ *
+ *   1. INSERT the ledger row — `INSERT … SELECT … WHERE <guard>`, so a refused
+ *      guard writes nothing.
+ *   2. UPSERT the balance — `WHERE EXISTS (the row statement 1 just wrote)`. The
+ *      row's id is minted fresh for this call, so "it exists" means exactly
+ *      "statement 1 inserted it, in this transaction". The balance therefore
+ *      moves if and only if its explanation was written.
+ *   3. `also(entryId)` — whatever else must change with the grant (a payment
+ *      intent's status, its invoice, the audit row), so a crash cannot leave an
+ *      intent "completed" with no credits, or credits with an intent still
+ *      "waiting". It is handed the ledger row's id so each statement can carry
+ *      the same `WHERE EXISTS (… id = ?)` and be a no-op when the guard refused.
+ *
+ * Considered: `WHERE changes() = 1` in statement 2. It works — Wave A's P4
+ * measured it in the local runtime on the same day (`automation.test.ts`, its
+ * shortlist sweep) — but it holds only for the statement IMMEDIATELY after the
+ * write, and this batch has three more that must follow the same decision.
+ * `changes()` after statement 2 describes statement 2. A fresh id stays true for
+ * every statement in the batch, so it is the one used here.
+ *
+ * Statement 2 is an upsert and not a bare `UPDATE` for the reason
+ * `routes/config.ts` records at length: nothing in the running product creates a
+ * workspace's `org_settings` row, so on a brand-new customer an UPDATE matches
+ * zero rows — and here that would be a ledger row with no balance, the exact
+ * defect this function exists to make impossible. `ON CONFLICT (tenant_id,
+ * edition)` names the table's only uniqueness constraint (measured there, and
+ * asserted by `config-upsert.test.ts`). The `WHERE` on the `SELECT` is also what
+ * SQLite requires to parse an `INSERT … SELECT` that carries an upsert clause.
+ *
+ * Positive deltas only. A debit has its own, older contract — the conditional
+ * `UPDATE … WHERE credits_balance >= n` in `reserveCredits` is what stops two
+ * uploads sharing the last credit, and folding it in here would weaken that.
+ */
+export async function grantCredits(
+  env: Env,
+  scope: TenantScope,
+  entry: LedgerEntry,
+  opts: { guard?: GrantGuard; also?: (entryId: string) => D1PreparedStatement[] } = {},
+): Promise<GrantResult> {
+  const delta = Math.trunc(entry.delta);
+  if (!(delta > 0)) throw new Error("grantCredits: a grant adds credits — use reserveCredits to spend");
+  const id = `cl_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  const t = insertScope(scope);
+  const guard = opts.guard ?? { sql: "1 = 1", binds: [] };
+
+  const ledger = env.DB.prepare(
+    `INSERT INTO credit_ledger (id, ${t.columns}, delta, reason, deck_id, amount_minor, currency, reference, note, actor_id) ` +
+      `SELECT ?, ${t.placeholders}, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${guard.sql}`,
+  ).bind(
+    id,
+    ...t.binds,
+    delta,
+    entry.reason,
+    entry.deckId ?? null,
+    entry.amountMinor ?? null,
+    entry.currency ?? null,
+    entry.reference ?? null,
+    entry.note ?? null,
+    entry.actorId ?? null,
+    ...guard.binds,
+  );
+  const balance = env.DB.prepare(
+    `INSERT INTO org_settings (${t.columns}, credits_balance) ` +
+      `SELECT ${t.placeholders}, ? WHERE EXISTS (SELECT 1 FROM credit_ledger WHERE id = ?) ` +
+      "ON CONFLICT (tenant_id, edition) DO UPDATE SET " +
+      "credits_balance = org_settings.credits_balance + excluded.credits_balance",
+  ).bind(...t.binds, delta, id);
+
+  const results = await env.DB.batch([ledger, balance, ...(opts.also?.(id) ?? [])]);
+  return { granted: (results[0]?.meta.changes ?? 0) === 1, entryId: id };
+}
+
+/**
+ * `SUM(credit_ledger.delta)` for one workspace — what the balance SHOULD be if
+ * every movement was recorded. Exported for the invariant test and for any
+ * future reconciliation screen; nothing on the request path needs it.
+ */
+export async function ledgerSum(env: Env, scope: TenantScope): Promise<number> {
+  const q = scoped(scope).on("l");
+  const row = await env.DB.prepare(
+    `SELECT COALESCE(SUM(l.delta), 0) AS n FROM credit_ledger l ${q.whereClause()}`,
+  )
+    .bind(...q.binds)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
 // ── Reading ──────────────────────────────────────────────────────────────────
 
 interface LedgerRow {

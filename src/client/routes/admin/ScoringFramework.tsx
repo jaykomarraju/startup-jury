@@ -860,7 +860,10 @@ export function ScoringFrameworkSection() {
                 (e.g. jury ↔ jury) can see each other&apos;s scores.
               </>
             }
-            footnote="Defaults: Super User & Program Manager see everyone; Program Associate and Jury Member see no one — jury members cannot see each other (blind evaluation) until turned on here."
+            // 23-Oct — the default is the hierarchy ("anyone senior should be able
+            // to see the junior persons scoring but the junior cant see the seniors
+            // score"), so the sentence states it; `DEFAULT_VISIBILITY` is the data.
+            footnote="Defaults: a role sees the roles ranked below it and never those above (Super User › Program Manager › Jury Member › Program Associate). Super User and Program Manager also see their peers; jury members cannot see each other (blind evaluation) until turned on here."
             matrix={visibility.incubator}
             onToggle={(viewer, target, next) =>
               toggleVisibility("incubator", viewer, target, next)

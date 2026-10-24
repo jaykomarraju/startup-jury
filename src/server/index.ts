@@ -28,7 +28,7 @@ import { tickets, messages, issues, help } from "./routes/support";
 import { calls } from "./routes/calls";
 import { assignments } from "./routes/assignments"; // W7-E · Assign: board + cross-product confirm
 import { handleQueue } from "./queue";
-import { runMonthlyUsageSummary, runReminders, runStuckSweep } from "./scheduled";
+import { runMonthlyUsageSummary, runReminders, runShortlistSweep, runStuckSweep } from "./scheduled";
 import { withSecurityHeaders } from "./security";
 import { rateLimit, AUTH_RATE_LIMITS } from "./middleware/rateLimit";
 
@@ -133,13 +133,17 @@ export default {
   //   "0 8 * * *"    — daily evaluator reminders.
   //   "*/10 * * * *" — re-drive decks stranded at `pending_ai` (§9). It runs
   //                    often because a stranded deck is invisible to its
-  //                    uploader until something picks it back up.
+  //                    uploader until something picks it back up. Since 23-Oct
+  //                    it also re-applies the shortlist criteria
+  //                    (`runShortlistSweep`), for the same reason: a deck that
+  //                    meets them and is not moved is invisible to the Sign up
+  //                    Pipeline.
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     // W3-B rides the daily schedule rather than adding a third cron: the
     // monthly digest is made monthly by its dedupe key (see `scheduled.ts`), so
     // thirty of every thirty-one runs are no-ops.
     if (controller.cron === "0 8 * * *")
       ctx.waitUntil(Promise.all([runReminders(env), runMonthlyUsageSummary(env)]));
-    else ctx.waitUntil(runStuckSweep(env));
+    else ctx.waitUntil(Promise.all([runStuckSweep(env), runShortlistSweep(env)]));
   },
 } satisfies ExportedHandler<Env, EvalMessage>;
