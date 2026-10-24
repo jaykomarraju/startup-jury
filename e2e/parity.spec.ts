@@ -257,9 +257,12 @@ const EXPECTED: Record<string, Screen> = {
   "incubator/superuser/contactteam": { title: "Contact team", tables: [] },
   // V3 item 15 — JURYbuddy. No table: the FAQ list is a column of buttons.
   "incubator/superuser/help": { title: "Help", tables: [] },
+  // Wave A · P3 — the prototype's `#panel-support`: "Support tickets", and its
+  // ID · Ticket · Category · Priority · Status · Age less the ID (a sequential ref is
+  // a migration). Replaced rather than unioned: the old header set cannot render.
   "incubator/superuser/support": {
-    title: "Tickets",
-    tables: [["SUBJECT", "FROM", "ROUTING", "STATUS", "RAISED", ""]],
+    title: "Support tickets",
+    tables: [["TICKET", "CATEGORY", "PRIORITY", "STATUS", "AGE", ""]],
   },
   "incubator/superuser/issues": {
     title: "Issue log",
@@ -350,7 +353,10 @@ const EXPECTED: Record<string, Screen> = {
   "incubator/admin/contactteam": { title: "Contact team", tables: [] },
   // V3 item 15 — JURYbuddy. No table: the FAQ list is a column of buttons.
   "incubator/admin/help": { title: "Help", tables: [] },
-  "incubator/admin/support": { title: "Tickets", tables: [["SUBJECT", "FROM", "ROUTING", "STATUS", "RAISED", ""]] },
+  "incubator/admin/support": {
+    title: "Support tickets",
+    tables: [["TICKET", "CATEGORY", "PRIORITY", "STATUS", "AGE", ""]],
+  },
   "incubator/admin/issues": {
     title: "Issue log",
     tables: [["ISSUE", "AREA", "SEVERITY", "STATUS", "OWNER", "RAISED", "AGE"]],
@@ -646,7 +652,10 @@ const EXPECTED: Record<string, Screen> = {
   "vc/superuser/billing": { title: "Choose your plan", tables: [] },
   "vc/superuser/contactadmin": { title: "Contact Admin", tables: [] },
   "vc/superuser/contactteam": { title: "Contact team", tables: [] },
-  "vc/superuser/support": { title: "Tickets", tables: [["SUBJECT", "FROM", "ROUTING", "STATUS", "RAISED", ""]] },
+  "vc/superuser/support": {
+    title: "Support tickets",
+    tables: [["TICKET", "CATEGORY", "PRIORITY", "STATUS", "AGE", ""]],
+  },
   "vc/superuser/issues": {
     title: "Issue log",
     tables: [["ISSUE", "AREA", "SEVERITY", "STATUS", "OWNER", "RAISED", "AGE"]],
@@ -750,7 +759,10 @@ const EXPECTED: Record<string, Screen> = {
   "vc/admin/billing": { title: "Choose your plan", tables: [] },
   "vc/admin/contactadmin": { title: "Contact Admin", tables: [] },
   "vc/admin/contactteam": { title: "Contact team", tables: [] },
-  "vc/admin/support": { title: "Tickets", tables: [["SUBJECT", "FROM", "ROUTING", "STATUS", "RAISED", ""]] },
+  "vc/admin/support": {
+    title: "Support tickets",
+    tables: [["TICKET", "CATEGORY", "PRIORITY", "STATUS", "AGE", ""]],
+  },
   "vc/admin/issues": {
     title: "Issue log",
     tables: [["ISSUE", "AREA", "SEVERITY", "STATUS", "OWNER", "RAISED", "AGE"]],

@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 
 // Phase 7 — analytics report screens render real aggregates for one incubator
-// and one VC role, plus tickets/contact submit.
+// and one VC role, plus raising a ticket from Contact Admin.
 
 async function login(page: Page, email: string) {
   await page.goto("/login");
@@ -48,9 +48,16 @@ test("VC admin sees capital deployment and decision history", async ({ page }) =
 test("a jury member raises a support ticket and contacts admin", async ({ page }) => {
   await login(page, "rajesh.kumar@demo.startupjury.ai"); // inc_jury
 
+  // Wave A · P3 re-pointed this at what its title always said. Contact Admin is the
+  // prototype's raise-a-ticket screen (`AISJ_IC_PM_V5.HTM` `#panel-contactadmin`);
+  // it used to post a free-text message, which this case typed into a "Message"
+  // box that no longer exists. The full raise → resolve loop is `tickets.spec.ts`.
+  const subject = `Please reassign the TaxPilot deck ${Date.now()}`;
   await page.goto("/app/contactadmin");
   await expect(page.getByRole("heading", { name: "Contact Admin" })).toBeVisible();
-  await page.getByLabel("Message").fill("Please reassign the TaxPilot deck.");
-  await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Please reassign the TaxPilot deck.")).toBeVisible();
+  await page.getByLabel("Subject").fill(subject);
+  await page.getByLabel("Description").fill("I have a conflict of interest.");
+  await page.getByRole("button", { name: "Raise ticket" }).click();
+  await expect(page.getByTestId("ticket-notice")).toContainText("Ticket raised.");
+  await expect(page.getByText(subject)).toBeVisible();
 });
