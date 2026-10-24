@@ -10,6 +10,7 @@ import {
   resolveBillingLocale,
   validateBillingAddress,
   type BillingAddress,
+  type FreeTrialStatus,
 } from "../../src/shared/plans";
 import {
   ANNUAL_SEAT_MONTHS,
@@ -81,8 +82,17 @@ interface Server {
    * set), because `validateBillingAddress` requires all four.
    */
   billing: BillingAddress | null;
+  /**
+   * P2 — the workspace's trial as `credit_ledger` records it, and its balance.
+   * `POST /api/account/trial` below grants exactly as the route does: the
+   * published `trial.decks`, once, and a 409 carrying the trial the second time.
+   */
+  trial: FreeTrialStatus;
+  balance: number;
   calls: Array<{ method: string; url: string; body: unknown }>;
 }
+
+const UNTAKEN: FreeTrialStatus = { decks: 3, taken: false, grantedAt: null, granted: 0, used: 0 };
 
 /** `billingPayload()` in `src/server/routes/account.ts`, same resolver. */
 function billingPayload() {
@@ -148,7 +158,7 @@ function json(status: number, body: unknown) {
 }
 
 beforeEach(() => {
-  server = { book: catalogueFixture(), saved: false, billing: null, calls: [] };
+  server = { book: catalogueFixture(), saved: false, billing: null, trial: UNTAKEN, balance: 0, calls: [] };
   lastAccountType = "individual";
   vi.stubGlobal(
     "fetch",
@@ -164,7 +174,18 @@ beforeEach(() => {
           billing: billingPayload(),
           orders: [],
           paymentConfigured: false,
+          trial: server.trial,
+          balance: server.balance,
         });
+      }
+      if (url === "/api/account/trial" && method === "POST") {
+        if (server.trial.taken) {
+          return json(409, { error: "trial_already_taken", trial: server.trial, balance: server.balance });
+        }
+        const decks = server.book?.trial.decks ?? 0;
+        server.trial = { decks, taken: true, grantedAt: "2026-10-23 21:05:54", granted: decks, used: 0 };
+        server.balance += decks;
+        return json(200, { ok: true, granted: decks, trial: server.trial, balance: server.balance });
       }
       if (url === "/api/pricing/published") {
         return server.book ? json(200, server.book) : json(404, { error: "not_published" });
@@ -396,7 +417,7 @@ describe("the Individual branch", () => {
     fireEvent.click(screen.getByTestId("ac-pm-card"));
     fireEvent.click(screen.getByTestId("ac-pay"));
     await screen.findByRole("heading", { level: 1, name: "Order recorded" });
-    expect(server.calls.find((c) => c.method === "POST")?.body).toEqual({
+    expect(server.calls.find((c) => c.method === "POST" && c.url === "/api/account/orders")?.body).toEqual({
       planCode: "seat_pro_12",
       currency: "INR",
       paymentMethod: "card",
@@ -457,7 +478,14 @@ describe("the Individual branch", () => {
     expect(screen.getByTestId("ac-period-3")).toHaveTextContent("₹1,111");
   });
 
-  it("walks the 3-deck free trial, then the paid one, and orders the pack it chose", async () => {
+  /**
+   * P2 — the trial is a GRANT, not a counter. This test used to click "Use a
+   * trial deck" three times and watch a number in the browser fall to zero; that
+   * control granted nothing and is gone. What it holds now is the same walk with
+   * the server in it: opening the screen asks for nothing, **Start my free
+   * trial** POSTs once, and every figure afterwards is what the server returned.
+   */
+  it("starts the real 3-deck trial, shows what the server granted, then the paid one", async () => {
     mount("/app/account", SUPERUSER);
     await screen.findByRole("heading", { level: 1, name: "Create your account" });
     fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
@@ -470,23 +498,28 @@ describe("the Individual branch", () => {
     // The trial belongs to the seat step, not a step of its own.
     expect(activeStep()).toBe("Seat & pricing");
     expect(screen.getByText(/Premium plan/)).toBeInTheDocument();
+    // LOOKING is not TAKING: nothing has been asked of the server yet.
+    const trialPosts = () => server.calls.filter((c) => c.url === "/api/account/trial" && c.method === "POST");
+    expect(trialPosts()).toHaveLength(0);
     expect(screen.getByTestId("ac-trial-count")).toHaveTextContent("3");
     const decks = () =>
       Array.from(screen.getByTestId("ac-trial-decks").children).map((d) => d.getAttribute("data-used"));
     expect(decks()).toEqual(["false", "false", "false"]);
+    // The browser-side counter is gone — no control "uses" a deck nobody evaluated.
+    expect(screen.queryByTestId("ac-use-trial-deck")).toBeNull();
     expect(screen.queryByTestId("ac-trial-done")).toBeNull();
 
-    fireEvent.click(screen.getByTestId("ac-use-trial-deck"));
-    expect(screen.getByTestId("ac-trial-count")).toHaveTextContent("2");
-    expect(decks()).toEqual(["true", "false", "false"]);
-    fireEvent.click(screen.getByTestId("ac-use-trial-deck"));
-    fireEvent.click(screen.getByTestId("ac-use-trial-deck"));
-    expect(screen.getByTestId("ac-trial-count")).toHaveTextContent("0");
-    expect(decks()).toEqual(["true", "true", "true"]);
-    expect(screen.getByTestId("ac-use-trial-deck")).toBeDisabled();
-    expect(screen.getByTestId("ac-trial-done")).toHaveTextContent(
-      "Trial complete — how would you like to continue?",
-    );
+    fireEvent.click(screen.getByTestId("ac-start-trial"));
+    await screen.findByTestId("ac-trial-balance");
+    expect(trialPosts()).toHaveLength(1);
+    expect(screen.getByTestId("ac-trial-balance")).toHaveTextContent("Your balance: 3 credits");
+    expect(screen.getByTestId("ac-trial-count")).toHaveTextContent("3");
+    expect(screen.getByText(/were added to your balance on 23 Oct 2026/)).toBeInTheDocument();
+    // Taken once, so there is nothing left to start…
+    expect(screen.queryByTestId("ac-start-trial")).toBeNull();
+    // …and not complete, so the panel does not say it is.
+    expect(screen.queryByTestId("ac-trial-done")).toBeNull();
+    expect(screen.getByTestId("ac-trial-next")).toHaveTextContent("Ready for more?");
 
     fireEvent.click(screen.getByTestId("ac-try-paid"));
     await screen.findByRole("heading", { level: 1, name: "Try a paid trial" });
@@ -513,7 +546,7 @@ describe("the Individual branch", () => {
 
     fireEvent.click(screen.getByTestId("ac-pay"));
     await screen.findByRole("heading", { level: 1, name: "Order recorded" });
-    expect(server.calls.find((c) => c.method === "POST")?.body).toEqual({
+    expect(server.calls.find((c) => c.method === "POST" && c.url === "/api/account/orders")?.body).toEqual({
       planCode: "paid_trial",
       currency: "INR",
       paymentMethod: "upi",
@@ -541,7 +574,8 @@ describe("the Individual branch", () => {
     fireEvent.click(screen.getByTestId("ac-period-6"));
     fireEvent.click(screen.getByTestId("ac-take-trial"));
     await screen.findByRole("heading", { level: 1, name: "Your 3-deck free trial" });
-    for (let i = 0; i < 3; i += 1) fireEvent.click(screen.getByTestId("ac-use-trial-deck"));
+    // P2 — the continue panel is drawn before the trial is taken: it is the only
+    // road to the annual screen, and paying must not wait on three evaluations.
 
     // V6's third option in the "Trial complete" panel.
     fireEvent.click(screen.getByTestId("ac-try-annual"));
@@ -584,7 +618,7 @@ describe("the Individual branch", () => {
 
     fireEvent.click(screen.getByTestId("ac-pay"));
     await screen.findByRole("heading", { level: 1, name: "Order recorded" });
-    expect(server.calls.find((c) => c.method === "POST")?.body).toEqual({
+    expect(server.calls.find((c) => c.method === "POST" && c.url === "/api/account/orders")?.body).toEqual({
       planCode: premium.code,
       currency: "INR",
       paymentMethod: "upi",
@@ -619,7 +653,8 @@ describe("the Individual branch", () => {
     fireEvent.click(screen.getByTestId("ac-period-12"));
     fireEvent.click(screen.getByTestId("ac-take-trial"));
     await screen.findByRole("heading", { level: 1, name: "Your 3-deck free trial" });
-    for (let i = 0; i < 3; i += 1) fireEvent.click(screen.getByTestId("ac-use-trial-deck"));
+    // P2 — the continue panel is drawn before the trial is taken: it is the only
+    // road to the annual screen, and paying must not wait on three evaluations.
     fireEvent.click(screen.getByTestId("ac-try-annual"));
     await screen.findByRole("heading", { level: 1, name: "Annual subscription" });
     // Still INR here: the address has not been given.
@@ -645,7 +680,7 @@ describe("the Individual branch", () => {
 
     fireEvent.click(screen.getByTestId("ac-pay"));
     await screen.findByRole("heading", { level: 1, name: "Order recorded" });
-    expect(server.calls.find((c) => c.method === "POST")?.body).toMatchObject({
+    expect(server.calls.find((c) => c.method === "POST" && c.url === "/api/account/orders")?.body).toMatchObject({
       planCode: premium.code,
       currency: "USD",
     });
@@ -686,7 +721,8 @@ describe("the Individual branch", () => {
     fireEvent.click(screen.getByTestId("ac-period-6"));
     fireEvent.click(screen.getByTestId("ac-take-trial"));
     await screen.findByRole("heading", { level: 1, name: "Your 3-deck free trial" });
-    for (let i = 0; i < 3; i += 1) fireEvent.click(screen.getByTestId("ac-use-trial-deck"));
+    // P2 — the continue panel is drawn before the trial is taken: it is the only
+    // road to the annual screen, and paying must not wait on three evaluations.
     fireEvent.click(screen.getByTestId("ac-try-annual"));
     await screen.findByRole("heading", { level: 1, name: "Annual subscription" });
 
@@ -698,6 +734,110 @@ describe("the Individual branch", () => {
     fireEvent.click(screen.getByTestId("ac-entplan-upgrade"));
     await screen.findByRole("heading", { level: 1, name: "What best describes your organisation?" });
     expect(stepLabels()).toEqual(["Account", "Org type", "Org details", "Plan", "Payment", "Done"]);
+  });
+});
+
+// ── P2 · the free trial is the server's ──────────────────────────────────────
+
+/**
+ * The trial screen used to be a counter in the browser. These hold that every
+ * figure on it now comes from `GET /api/account` / `POST /api/account/trial`,
+ * and that the screen never describes a trial the books do not record.
+ */
+describe("the free trial is the server's (P2)", () => {
+  async function openTrialScreen(user: AuthUser = SUPERUSER, heading = "Your 3-deck free trial") {
+    mount("/app/account", user);
+    await screen.findByRole("heading", { level: 1, name: "Create your account" });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+    await screen.findByRole("heading", { level: 1, name: "Choose your seat" });
+    fireEvent.click(screen.getByTestId("ac-tier-pro"));
+    fireEvent.click(screen.getByTestId("ac-period-12"));
+    fireEvent.click(screen.getByTestId("ac-take-trial"));
+    await screen.findByRole("heading", { level: 1, name: heading });
+  }
+  const chips = () =>
+    Array.from(screen.getByTestId("ac-trial-decks").children).map((d) => d.getAttribute("data-used"));
+
+  it("says 'Trial complete' only when the server says every trial deck was evaluated", async () => {
+    server.trial = { decks: 3, taken: true, grantedAt: "2026-05-28 09:00:00", granted: 3, used: 3 };
+    server.balance = 47;
+    await openTrialScreen();
+    expect(screen.getByTestId("ac-trial-count")).toHaveTextContent("0");
+    expect(chips()).toEqual(["true", "true", "true"]);
+    expect(screen.getByTestId("ac-trial-done")).toHaveTextContent("Trial complete — how would you like to continue?");
+    expect(screen.getByTestId("ac-trial-balance")).toHaveTextContent("Your balance: 47 credits");
+    expect(screen.getByText(/added to your balance on 28 May 2026/)).toBeInTheDocument();
+    // Nothing to start, nothing left to upload against.
+    expect(screen.queryByTestId("ac-start-trial")).toBeNull();
+    expect(screen.queryByTestId("ac-trial-upload")).toBeNull();
+  });
+
+  it("shows a trial part-used as part-used, and offers no second one", async () => {
+    server.trial = { decks: 3, taken: true, grantedAt: "2026-10-01 10:00:00", granted: 3, used: 1 };
+    server.balance = 2;
+    await openTrialScreen();
+    expect(screen.getByTestId("ac-trial-count")).toHaveTextContent("2");
+    expect(chips()).toEqual(["true", "false", "false"]);
+    expect(screen.queryByTestId("ac-start-trial")).toBeNull();
+    expect(screen.queryByTestId("ac-trial-done")).toBeNull();
+    expect(server.calls.some((c) => c.url === "/api/account/trial")).toBe(false);
+  });
+
+  it("treats a 409 from a second tab as the trial it is, not as an error", async () => {
+    await openTrialScreen();
+    // Another tab took it after this one loaded: the screen still says "untaken".
+    server.trial = { decks: 3, taken: true, grantedAt: "2026-10-23 21:00:00", granted: 3, used: 0 };
+    server.balance = 3;
+    fireEvent.click(screen.getByTestId("ac-start-trial"));
+    await screen.findByTestId("ac-trial-balance");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByTestId("ac-start-trial")).toBeNull();
+    expect(screen.getByTestId("ac-trial-count")).toHaveTextContent("3");
+  });
+
+  it("says so, and changes nothing, when the grant fails", async () => {
+    await openTrialScreen();
+    vi.mocked(fetch).mockImplementationOnce(() => json(500, { error: "internal" }));
+    fireEvent.click(screen.getByTestId("ac-start-trial"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't start your trial. Try again.");
+    // Still untaken, still offered — the customer can try again.
+    expect(screen.getByTestId("ac-start-trial")).toBeEnabled();
+    expect(screen.queryByTestId("ac-trial-balance")).toBeNull();
+  });
+
+  it("prints the PUBLISHED trial size on the button and the screen, not a constant", async () => {
+    const five = catalogueFixture();
+    five.trial = { ...five.trial, decks: 5 };
+    server.book = five;
+    server.trial = { ...UNTAKEN, decks: 5 };
+    mount("/app/account", SUPERUSER);
+    await screen.findByRole("heading", { level: 1, name: "Create your account" });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
+    await screen.findByRole("heading", { level: 1, name: "Choose your seat" });
+    fireEvent.click(screen.getByTestId("ac-tier-pro"));
+    fireEvent.click(screen.getByTestId("ac-period-12"));
+    expect(screen.getByTestId("ac-take-trial")).toHaveTextContent("Take a 5-deck free trial");
+    fireEvent.click(screen.getByTestId("ac-take-trial"));
+    await screen.findByRole("heading", { level: 1, name: "Your 5-deck free trial" });
+    expect(chips()).toHaveLength(5);
+    fireEvent.click(screen.getByTestId("ac-start-trial"));
+    await screen.findByTestId("ac-trial-balance");
+    expect(screen.getByTestId("ac-trial-balance")).toHaveTextContent("Your balance: 5 credits");
+  });
+
+  it("leads a role that may upload to Upload — a trial deck is used by evaluating one", async () => {
+    await openTrialScreen(principal("admin", ["upgrade", "adminconsole", "upload"]));
+    fireEvent.click(screen.getByTestId("ac-start-trial"));
+    fireEvent.click(await screen.findByTestId("ac-trial-upload"));
+    await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("/app/upload"));
+  });
+
+  it("draws no Upload button for a role that may not upload", async () => {
+    // Negative control for the one above: same screen, `upload` not granted.
+    await openTrialScreen(principal("admin", ["upgrade", "adminconsole"]));
+    fireEvent.click(screen.getByTestId("ac-start-trial"));
+    await screen.findByTestId("ac-trial-balance");
+    expect(screen.queryByTestId("ac-trial-upload")).toBeNull();
   });
 });
 
@@ -1007,9 +1147,6 @@ describe("the VC edition keeps the old plan screen", () => {
     fireEvent.click(screen.getByTestId("ac-period-12"));
     fireEvent.click(screen.getByTestId("ac-take-trial"));
     await screen.findByRole("heading", { level: 1, name: "Your 3-deck free trial" });
-    fireEvent.click(screen.getByTestId("ac-use-trial-deck"));
-    fireEvent.click(screen.getByTestId("ac-use-trial-deck"));
-    fireEvent.click(screen.getByTestId("ac-use-trial-deck"));
     fireEvent.click(screen.getByTestId("ac-try-paid"));
     await screen.findByRole("heading", { level: 1, name: "Try a paid trial" });
     // Not five packs priced at zero with a Continue that does nothing.

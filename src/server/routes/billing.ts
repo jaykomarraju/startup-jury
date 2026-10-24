@@ -15,12 +15,15 @@
  * the provider's business, on a page the provider hosts
  * (`src/server/billing/provider.ts`).
  *
- * **§1.3 — interface-complete, provider-stubbed.** A purchase RECORDS its intent
- * in `billing_payment_intents` with `status='recorded'`, exactly as
- * `crm_sync_log` records a sync it did not perform and `email_outbox` records a
- * message it did not send. It grants no credits and activates no plan, and the
- * response says so in as many words. Reporting a recorded intent as a completed
- * payment is the one failure this whole module is shaped to prevent.
+ * **§1.3 — a purchase is never reported as paid until the provider says so.**
+ * With no provider configured, a purchase RECORDS its intent in
+ * `billing_payment_intents` with `status='recorded'`, exactly as `crm_sync_log`
+ * records a sync it did not perform. With Razorpay configured (P2,
+ * `PAYMENTS_RAZORPAY_KEY`), it opens a hosted checkout (`redirected`), and the
+ * credits are granted only when Razorpay confirms the money — through the two
+ * session-less routes at the top of this file — by `billing/fulfilment.ts`.
+ * Reporting an unconfirmed intent as a completed payment is the one failure
+ * this whole module is shaped to prevent.
  *
  * Metering is untouched and stays where it is: `decks/versions.ts` reserves one
  * credit per evaluation under a conditional UPDATE, and now writes the ledger
@@ -34,19 +37,19 @@ import { requireAuth, requireTask } from "../auth/middleware";
 // off the session and never off the request, which is what keeps §2's one piece of
 // good news true: not one of the 211 existing predicates takes its key from the
 // browser, and a `scopeOf(c.req.query())` would not compile.
-import { scopeOf, insertScope, type TenantScope } from "../../shared/tenant";
+import { scopeOf, scoped, insertScope, type TenantScope } from "../../shared/tenant";
 // The Billing audit category — the same one W3-C's `recordCreditMovement` writes.
 import { changedFragment, recordAudit } from "../audit/log";
 import { LOW_CREDIT_THRESHOLD } from "../../shared/notifications";
 import {
+  billingCurrencyFor,
   formatMinor,
-  multiplyMinor,
-  priceBreakdown,
-  publishablePlans,
   type CreditsBillingView,
   type PlanGroup,
-  type PublishedPlan,
+  type SubscriptionView,
 } from "../../shared/plans";
+import { quoteOrder, taxSettingsOf, type AccountType } from "../../shared/accountOrder";
+import { publishedBook, publishedPlansFor } from "../billing/catalogue";
 import {
   issueMissingInvoices,
   listIntents,
@@ -59,7 +62,17 @@ import {
   readTaxSettings,
   usageTotals,
 } from "../billing/ledger";
-import { paymentConfigured, recordPaymentIntent, type IntentPurpose } from "../billing/provider";
+import {
+  INTENT_ID,
+  paymentConfigured,
+  paymentReturnUrl,
+  paymentWebhookSecretRef,
+  recordPaymentIntent,
+  resolvePaymentAdapter,
+  secretFor,
+  type IntentPurpose,
+} from "../billing/provider";
+import { closeUnpaidIntent, fulfilPayment } from "../billing/fulfilment";
 // V6-INVOICE — the two templates, the record behind them, and the 10 GB-per-seat
 // figure. All in `src/server/billing/**` so this router stays a router.
 import { loadInvoiceRecord, renderInvoiceDocument } from "../billing/invoice";
@@ -67,6 +80,79 @@ import { storageAllowanceForSeats } from "../billing/storage";
 import { emailDeliveryConfigured } from "../email/outbox";
 
 const billing = new Hono<AppEnv>();
+
+// ══ P2 · THE TWO ROUTES WITH NO SESSION — REGISTERED BEFORE `requireAuth` ═══
+//
+// Razorpay calls the webhook server-to-server, and sends the customer back
+// through the return route from its own domain — neither carries a session we
+// can rely on (a customer who paid on a phone and was signed out meanwhile has
+// still paid). Hono runs handlers in REGISTRATION order, so these two answer
+// before the `use("*", requireAuth)` below is ever reached; every other route in
+// this file is registered after it and stays behind it, which
+// `payment-gateway.test.ts` asserts with a cookie-less negative control.
+//
+// They are mounted HERE, under `/api/billing`, because `src/server/index.ts` is
+// not this lane's file and a new top-level mount would be a cross-lane edit.
+// What authenticates them instead of a session is the provider's HMAC
+// (`billing/razorpay.ts`), checked before anything is read or written.
+
+/** Where the customer lands after paying: their receipt, or this console section. */
+async function landingFor(env: AppEnv["Bindings"], intentId: string): Promise<string> {
+  const row = await env.DB.prepare("SELECT 1 AS n FROM account_orders WHERE intent_id = ?")
+    .bind(intentId)
+    .first<{ n: number }>();
+  return row ? `/app/account?order=${encodeURIComponent(intentId)}` : "/app/admin?section=bl";
+}
+
+billing.post("/webhooks/:provider", async (c) => {
+  const adapter = resolvePaymentAdapter(c.env);
+  if (!adapter || adapter.provider !== c.req.param("provider")) {
+    return c.json({ error: "payments_not_configured" }, 503);
+  }
+  // 503, not 401, when the webhook secret is missing: the request may be genuine
+  // and the fault is ours, so Razorpay should retry once it is set rather than
+  // count failures toward disabling the endpoint.
+  if (!secretFor(c.env, paymentWebhookSecretRef(adapter.provider))) {
+    return c.json({ error: "webhook_secret_not_configured" }, 503);
+  }
+  // The RAW body: the signature is over these exact bytes.
+  const verdict = await adapter.verifyWebhook(await c.req.text(), c.req.raw.headers);
+  switch (verdict.kind) {
+    case "unverified":
+      return c.json({ error: "invalid_signature" }, 401);
+    case "ignored":
+      return c.json({ ok: true, ignored: verdict.event });
+    case "closed":
+      await closeUnpaidIntent(c.env, adapter.provider, verdict.reference, verdict.providerRef);
+      return c.json({ ok: true });
+    case "paid": {
+      // A database failure throws out of here as a 500, which is what makes
+      // Razorpay deliver again: a paid webhook is never acknowledged unapplied.
+      const result = await fulfilPayment(c.env, adapter.provider, verdict.confirmation);
+      return c.json({ ok: true, outcome: result.outcome });
+    }
+  }
+});
+
+billing.get("/return", async (c) => {
+  const query = new URL(c.req.url).searchParams;
+  const reference = query.get("razorpay_payment_link_reference_id");
+  const intentId = reference && INTENT_ID.test(reference) ? reference : null;
+  const adapter = resolvePaymentAdapter(c.env);
+  if (adapter) {
+    try {
+      const confirmation = await adapter.verifyReturn(query);
+      if (confirmation) await fulfilPayment(c.env, adapter.provider, confirmation);
+    } catch (err) {
+      // The customer is sent on regardless. The webhook, and the receipt's own
+      // lookup (`GET /api/account/orders/:id`), apply the payment if this did not.
+      console.error("payment return:", err);
+    }
+  }
+  // 303: the browser must GET the landing page whatever method brought it here.
+  return c.redirect(intentId ? await landingFor(c.env, intentId) : "/app/account", 303);
+});
+
 billing.use("*", requireAuth);
 // The whole Admin console is admin + superuser, gated on the `adminconsole` task
 // so that revoking that cell closes the screen AND its API in one place (§8 Q16).
@@ -79,48 +165,48 @@ billing.use("*", requireTask("adminconsole", "admin"));
 
 // ── The published catalogue ──────────────────────────────────────────────────
 
-interface PlanRow {
-  code: string;
-  plan_group: PlanGroup;
-  name: string;
-  badge: string | null;
-  tagline: string | null;
-  features: string | null;
-  units: number | null;
-  period: string | null;
-  amount_minor: number;
-  currency: string;
+/**
+ * P2 — **this section used to read `price_plans` × `price_amounts` directly**:
+ * Price configuration's DRAFT tables, so an administrator's unpublished edit was
+ * the price this panel charged, and the panel sold the pre-V3 10 / 50 / 100 packs
+ * that the incubator's My account wizard never offers. The two "Buy" surfaces
+ * showed two price lists. Both now read the PUBLISHED book and select with the
+ * same predicate (`src/server/billing/catalogue.ts`, which carries the measured
+ * account of the divergence), and `POST /purchase` below prices with the same
+ * `quoteOrder` that `POST /api/account/orders` does.
+ */
+
+/**
+ * Who is buying, as far as the commercial record says. `account_profiles` is
+ * the My account wizard's row; this panel has no screen of its own for it.
+ */
+interface Buyer {
+  accountType: AccountType | null;
+  billingCountry: string | null;
+}
+
+async function readBuyer(env: AppEnv["Bindings"], scope: TenantScope): Promise<Buyer> {
+  const q = scoped(scope).on("p");
+  const row = await env.DB.prepare(
+    `SELECT p.account_type, p.billing_country FROM account_profiles p ${q.whereClause()}`,
+  )
+    .bind(...q.binds)
+    .first<{ account_type: AccountType; billing_country: string | null }>();
+  return { accountType: row?.account_type ?? null, billingCountry: row?.billing_country ?? null };
 }
 
 /**
- * Active catalogue rows in one currency, stripped of the per-deck derivations
- * §8 Q1 retired (`publishablePlans`). A plan with no price in that currency is
- * omitted rather than converted here — FX is W4-D's screen.
+ * The ONE currency this panel quotes and charges in.
+ *
+ * V6-CURRENCY's rule — the billing address decides — applied here too. Before
+ * P2 this panel priced in `billing_subscriptions.currency` and nothing else, so
+ * a customer whose billing country is the United States was quoted in rupees
+ * with GST here and in dollars without it in My account. With no billing
+ * country on file, the subscription's currency stands, exactly as before: `0104`
+ * records why an unrecorded country must not be guessed in either direction.
  */
-async function readCatalogue(
-  c: { env: AppEnv["Bindings"] },
-  currency: string,
-): Promise<PublishedPlan[]> {
-  const res = await c.env.DB.prepare(
-    "SELECT p.code, p.plan_group, p.name, p.badge, p.tagline, p.features, p.units, p.period, " +
-      "a.amount_minor, a.currency FROM price_plans p JOIN price_amounts a ON a.plan_id = p.id " +
-      "WHERE p.active = 1 AND a.currency = ? ORDER BY p.sort_order ASC",
-  )
-    .bind(currency)
-    .all<PlanRow>();
-  const plans: PublishedPlan[] = (res.results ?? []).map((r) => ({
-    code: r.code,
-    group: r.plan_group,
-    name: r.name,
-    badge: r.badge,
-    tagline: r.tagline,
-    features: r.features,
-    units: r.units,
-    period: (r.period as PublishedPlan["period"]) ?? null,
-    currency: r.currency,
-    amountMinor: r.amount_minor,
-  }));
-  return publishablePlans(plans);
+function panelCurrency(buyer: Buyer, subscription: SubscriptionView): string {
+  return billingCurrencyFor(buyer.billingCountry) ?? subscription.currency;
 }
 
 // ── GET / — everything the section renders ───────────────────────────────────
@@ -141,6 +227,8 @@ billing.get("/", async (c) => {
   const subscription = await readSubscription(c.env, scope, now);
   const tax = await readTaxSettings(c.env);
   const usage = await usageTotals(c.env, scope, subscription.cycle, now);
+  const book = await publishedBook(c.env);
+  const currency = panelCurrency(await readBuyer(c.env, scope), subscription);
 
   const view: CreditsBillingView = {
     edition,
@@ -150,10 +238,18 @@ billing.get("/", async (c) => {
     usedThisCycle: usage.usedThisCycle,
     lowCreditThreshold: LOW_CREDIT_THRESHOLD,
     subscription,
-    tax,
+    // The panel computes its GST line from this, so it must be the rate the
+    // order is CHARGED at — the published book's (`quoteOrder` →
+    // `taxSettingsOf(book.tax)`), not `pricing_settings`, which Price
+    // configuration edits before publishing. Invoices keep snapshotting
+    // `readTaxSettings` at issue (`issueMissingInvoices`); that is W4-C's
+    // document rule and unchanged here.
+    tax: book ? taxSettingsOf(book.tax) : tax,
     ledger: await listLedger(c.env, scope, 50),
     invoices: await listInvoices(c.env, scope),
-    plans: await readCatalogue(c, subscription.currency),
+    // Nothing published → nothing to sell, and the panel already says "Publish
+    // the price list in Price configuration first" for an empty list.
+    plans: book ? publishedPlansFor(book, edition, currency) : [],
     intents: await listIntents(c.env, scope, 10),
     paymentConfigured: paymentConfigured(c.env),
   };
@@ -309,12 +405,10 @@ billing.put("/subscription", async (c) => {
 
 // ── POST /purchase — records an intent; charges nothing ──────────────────────
 
-const PURPOSE_OF_GROUP: Record<PlanGroup, IntentPurpose | null> = {
+const PURPOSE_OF_GROUP: Record<Exclude<PlanGroup, "free_trial">, IntentPurpose> = {
   credit_pack: "credit_pack",
   subscription: "subscription",
   enterprise: "enterprise",
-  // The free trial is granted, not bought.
-  free_trial: null,
 };
 
 billing.post("/purchase", async (c) => {
@@ -329,29 +423,42 @@ billing.post("/purchase", async (c) => {
     return c.json({ error: "invalid_quantity" }, 400);
   }
 
+  const book = await publishedBook(c.env);
+  if (!book) return c.json({ error: "not_published" }, 503);
   const subscription = await readSubscription(c.env, scope);
-  const tax = await readTaxSettings(c.env);
-  const plan = (await readCatalogue(c, subscription.currency)).find((p) => p.code === planCode);
-  if (!plan) return c.json({ error: "unknown_plan" }, 404);
+  const buyer = await readBuyer(c.env, scope);
+  // Chosen by the SERVER from the billing address, never read from the body —
+  // so V6's invariant ("an Indian billing address is never priced in USD") holds
+  // here by construction rather than by the refusal `POST /api/account/orders`
+  // needs for a currency a client sent.
+  const currency = panelCurrency(buyer, subscription);
 
-  const purpose = PURPOSE_OF_GROUP[plan.group];
-  if (!purpose) return c.json({ error: "plan_not_purchasable" }, 400);
-
-  const stated = multiplyMinor(plan.amountMinor, quantity);
-  if (stated <= 0) return c.json({ error: "plan_not_purchasable" }, 400);
-  const money = priceBreakdown(stated, tax, plan.currency);
+  // P2 — the same function, and therefore the same price, as My account. With no
+  // profile on file the buyer is taken to be an ORGANISATION: this is the admin
+  // console of an incubator's workspace, `quoteOrder` sells enterprise plans to
+  // organisations only, and an individual is somebody who said so in My account.
+  // A free trial is refused (`plan_not_purchasable`) — it is taken, not bought.
+  const quote = quoteOrder(book, planCode, currency, buyer.accountType ?? "organization", { quantity });
+  if ("error" in quote) {
+    return c.json({ error: quote.error }, quote.error === "unknown_plan" ? 404 : 400);
+  }
+  const money = quote.breakdown;
+  const plan = quote.plan;
 
   const intent = await recordPaymentIntent(c.env, {
     tenantId: scope.tenantId,
     edition: scope.edition,
-    purpose,
+    purpose: PURPOSE_OF_GROUP[quote.group],
     planCode: plan.code,
     planName: plan.name,
-    units: plan.units,
+    // The TOTAL the purchase grants — what fulfilment credits (`billing/
+    // fulfilment.ts`) — the same meaning `POST /api/account/orders` gives it.
+    units: quote.unitsTotal,
     quantity,
-    currency: plan.currency,
+    currency,
     money,
     actorId: c.var.user.id,
+    returnUrl: paymentReturnUrl(c.env, c.req.url),
   });
 
   await recordAudit(c, {
@@ -359,19 +466,38 @@ billing.post("/purchase", async (c) => {
     action: "billing_intent_recorded",
     summary:
       `Purchase intent recorded — ${quantity} × ${plan.name} · ` +
-      `${formatMinor(money.totalMinor, plan.currency)} incl. GST · no payment taken`,
+      `${formatMinor(money.totalMinor, currency)}${money.taxed ? " incl. GST" : ""} · no payment taken`,
     detail: {
       intentId: intent.id,
       planCode: plan.code,
       quantity,
       status: intent.status,
+      priceVersion: book.version,
     },
     targetType: "billing_payment_intents",
     targetId: intent.id,
   });
 
-  // The contract, spelled out in the payload so no client can misreport it: the
-  // intent is RECORDED, no payment has been taken, and no credits were granted.
+  // P2 — the provider REFUSED to open a checkout. Nothing was charged, and the
+  // answer says so with a non-2xx rather than an `ok: true` the panel would
+  // render as a recorded purchase: this is the "honestly refused" branch.
+  if (intent.status === "failed") {
+    return c.json(
+      {
+        error: "checkout_failed",
+        intent,
+        completed: false,
+        creditsGranted: 0,
+        message: "The payment provider could not start this payment. Nothing has been charged — try again.",
+      },
+      502,
+    );
+  }
+
+  // The contract, spelled out in the payload so no client can misreport it:
+  // nothing has been paid YET and no credits have been granted. With a provider,
+  // the customer pays on its page and `billing/fulfilment.ts` grants on its
+  // confirmation; without one, the intent is only recorded.
   return c.json({
     ok: true,
     intent,
@@ -381,7 +507,7 @@ billing.post("/purchase", async (c) => {
       ? { hosted: true, url: intent.checkoutUrl }
       : { hosted: false, url: null },
     message: intent.checkoutUrl
-      ? "Continue on the payment provider's own page to complete this purchase."
+      ? "Continue on the payment provider's own page to complete this purchase. Credits are added as soon as the payment is confirmed."
       : "Purchase intent recorded. No payment provider is configured, so nothing has been " +
         "charged and no credits have been added — our team will follow up to complete it.",
   });

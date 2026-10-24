@@ -158,11 +158,12 @@ export interface InvoiceParty {
 /**
  * What actually happened to the money, as the payment intent recorded it.
  *
- * `"unconfirmed"` is the state of every document this build can produce: either
- * the invoice has no linked intent (`0046`'s seeded rows) or the intent is
- * `recorded` / `redirected` / `failed`. Only a provider webhook writing
- * `completed` moves a document out of pro-forma, which is the one line
- * `provider.ts` reserves for going live.
+ * `"unconfirmed"` is the state of a document whose invoice has no linked intent
+ * (`0046`'s seeded rows, and every invoice `issueMissingInvoices` writes from the
+ * ledger) or whose intent is `recorded` / `redirected` / `failed`. Only
+ * `billing/fulfilment.ts` writes `completed` — on a Razorpay-confirmed payment,
+ * in the same transaction that issues the invoice with its `intent_id` (P2) —
+ * and that is what moves a document out of pro-forma.
  */
 export type InvoicePaymentState = "unconfirmed" | "completed";
 

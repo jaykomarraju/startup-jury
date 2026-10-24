@@ -6,7 +6,9 @@
  * plan for an organisation), takes a payment method and prints a receipt with an
  * invoice. This router is the server half of that flow:
  *
- *   GET  /                      the saved profile (or a prefill), recent orders
+ *   GET  /                      the saved profile (or a prefill), recent orders,
+ *                               the free trial's status and the balance
+ *   POST /trial                 the free trial — a real grant, once (P2)
  *   PUT  /profile               the Account + Org details screens
  *   POST /orders                Payment → records an intent, charges nothing
  *   GET  /orders/:id            the receipt
@@ -23,12 +25,14 @@
  * the category the provider's hosted page should open on. A body carrying a
  * card-shaped key is simply never read, and a worker test posts one to prove it.
  *
- * **§1.3 — provider-stubbed.** An order goes through `W4-C`'s
- * `recordPaymentIntent`, so on every build today it lands `status='recorded'`,
- * grants no credits, activates no plan, and says so in the payload. Because no
- * payment has been taken, "Download invoice" produces a **pro-forma invoice**
- * that states it is not a tax invoice: issuing a GST tax invoice for money that
- * was never received would be the one document this flow must not produce.
+ * **§1.3 — paid only when the provider says so.** An order goes through `W4-C`'s
+ * `recordPaymentIntent`. With no provider it lands `status='recorded'`, grants
+ * no credits and says so in the payload; with Razorpay configured (P2) it opens
+ * a hosted checkout, and `billing/fulfilment.ts` grants the credits — and issues
+ * the GST invoice — only on Razorpay's confirmation. Until then "Download
+ * invoice" produces a **pro-forma invoice** that states it is not a tax invoice:
+ * issuing a GST tax invoice for money that was never received would be the one
+ * document this flow must not produce. A completed order serves the real one.
  */
 import { Hono } from "hono";
 import type { AppEnv, Env } from "../types";
@@ -37,7 +41,15 @@ import { requireAuth, requireTask } from "../auth/middleware";
 // and `scopeOf()` reads both halves off the session, never off the request.
 import { scopeOf, scoped, insertScope, type TenantScope } from "../../shared/tenant";
 import { recordAudit } from "../audit/log";
-import { recordPaymentIntent, paymentConfigured, type IntentPurpose } from "../billing/provider";
+import {
+  paymentConfigured,
+  paymentReturnUrl,
+  recordPaymentIntent,
+  resolvePaymentAdapter,
+  type IntentPurpose,
+} from "../billing/provider";
+import { reconcileIntent } from "../billing/fulfilment";
+import { loadInvoiceRecord, renderInvoiceDocument } from "../billing/invoice";
 import {
   billingCurrencyFor,
   formatMinor,
@@ -49,7 +61,10 @@ import {
   type BillingLocale,
   type TaxSettings,
 } from "../../shared/plans";
-import type { PriceBook, PublishedPriceBook } from "../../shared/priceBook";
+import type { PublishedPriceBook } from "../../shared/priceBook";
+import { publishedBook } from "../billing/catalogue";
+import { readTrialStatus, takeFreeTrial } from "../billing/trial";
+import { readBalance } from "../billing/ledger";
 import {
   billingCycleLine,
   isPaymentMethod,
@@ -217,29 +232,11 @@ async function prefill(env: Env, scope: TenantScope, userId: string): Promise<Ac
   };
 }
 
-/**
- * The live catalogue. `src/server/routes/pricing.ts` has the same three lines as
- * a private `livePublished`; it is `W4-D`'s file and does not export it, so the
- * read is repeated here rather than edited there (§9 records the one-word export
- * that would remove this copy).
- *
- * **DELIBERATELY UNSCOPED, and it must stay that way.** `pricing_versions` is one
- * of §3's eight PLATFORM-GLOBAL tables: one catalogue serves the whole product,
- * `CREATE UNIQUE INDEX pricing_versions_one_published ON pricing_versions (status)
- * WHERE status = 'published'` enforces exactly one live book product-wide, and
- * `0100`'s integrity assertion fails the migration chain if a sweep "finishes the
- * job" by scoping these. §2 A6 names this read as a leak; the leak is the GATE on
- * the write side (closed by `pricing-owner.test.ts`), not the absence of a tenant
- * key on the read.
- */
-async function publishedBook(env: Env): Promise<PublishedPriceBook | null> {
-  const row = await env.DB.prepare(
-    "SELECT version, document, published_at FROM pricing_versions WHERE status = 'published'",
-  ).first<{ version: number; document: string; published_at: string }>();
-  if (!row) return null;
-  const book = JSON.parse(row.document) as PriceBook;
-  return { ...book, version: row.version, publishedAt: row.published_at };
-}
+// `publishedBook` — the live catalogue — moved to `src/server/billing/catalogue.ts`
+// (P2), so the Admin console's Credits & billing panel prices from the same book
+// as this wizard instead of from the draft tables. Its "DELIBERATELY UNSCOPED"
+// note travelled with it. `src/server/routes/pricing.ts` still holds its own
+// private `livePublished`; §9 records the export that would remove that copy too.
 
 interface OrderRow {
   id: string;
@@ -377,16 +374,60 @@ account.get("/", async (c) => {
   )
     .bind(...listQ.binds)
     .all<OrderRow>();
+  const book = await publishedBook(c.env);
   return c.json({
     profile: saved?.profile ?? (await prefill(c.env, scope, id)),
     saved: saved !== null,
     // V6-CURRENCY. Always present, even unsaved: `locale.currency` is then null,
     // which is the screens' cue that the billing step has not been taken. It is
     // NOT a currency default — see `0104`'s header on the two production rows.
-    billing: billingPayload(saved?.billing ?? null, await publishedBook(c.env)),
+    billing: billingPayload(saved?.billing ?? null, book),
     orders: (orders.results ?? []).map(toOrder),
     paymentConfigured: paymentConfigured(c.env),
+    // P2 — the trial screen prints what the ledger says, and the balance beside
+    // it, so "3 free decks" is never a promise the upload gate then refuses.
+    trial: await readTrialStatus(c.env, scope, book?.trial.decks ?? 0),
+    balance: await readBalance(c.env, scope),
   });
+});
+
+// ── POST /trial — the free trial, granted for real ──────────────────────────
+
+/**
+ * "Take a 3-deck free trial" → `#acs-trial` → **Start my free trial**.
+ *
+ * Grants `book.trial.decks` credits with a `trial_grant` ledger row, balance and
+ * row in one transaction, once per workspace (`src/server/billing/trial.ts`).
+ * Behind this router's `upgrade` gate, like every other purchase action: the
+ * trial is the first thing a buyer takes, and the people who may buy are the
+ * people who may take it.
+ *
+ * 409 `trial_already_taken` carries the status so the screen can show the trial
+ * the workspace already has instead of an error. No audit row on that refusal —
+ * it changes nothing, and a double tap on a phone is not an event.
+ */
+account.post("/trial", async (c) => {
+  const scope = scopeOf(c.var.user);
+  const book = await publishedBook(c.env);
+  if (!book) return c.json({ error: "not_published" }, 503);
+  const decks = book.trial.decks;
+
+  const result = await takeFreeTrial(c.env, scope, decks, c.var.user.id);
+  const trial = await readTrialStatus(c.env, scope, decks);
+  const balance = await readBalance(c.env, scope);
+  if (!result.ok) {
+    return c.json({ error: result.error, trial, balance }, result.error === "trial_already_taken" ? 409 : 400);
+  }
+
+  await recordAudit(c, {
+    category: "billing",
+    action: "trial_granted",
+    summary: `Free trial taken — ${result.granted} credit${result.granted === 1 ? "" : "s"} added (balance ${balance})`,
+    detail: { granted: result.granted, balance, priceVersion: book.version },
+    targetType: "credit_ledger",
+    targetId: result.entryId,
+  });
+  return c.json({ ok: true, granted: result.granted, trial, balance });
 });
 
 // ── PUT /profile — the Account and Org details screens ───────────────────────
@@ -746,6 +787,7 @@ account.post("/orders", async (c) => {
     currency: quote.currency,
     money: quote.breakdown,
     actorId,
+    returnUrl: paymentReturnUrl(c.env, c.req.url),
   });
 
   // The write side, where the failure is silent: `account_orders.tenant_id` carries
@@ -793,15 +835,32 @@ account.post("/orders", async (c) => {
   });
 
   const order = (await loadOrder(c.env, scope, intent.id))!;
+  // P2 — "honestly refused". The provider would not open a checkout, so nothing
+  // can have been charged; a 502 with the reason, never an `ok: true` that a
+  // screen would render as a placed order. The row stays, `failed`, for audit.
+  if (order.status === "failed") {
+    return c.json(
+      {
+        error: "checkout_failed",
+        order,
+        completed: false,
+        creditsGranted: 0,
+        message: "The payment provider could not start this payment. Nothing has been charged — try again.",
+      },
+      502,
+    );
+  }
   return c.json({
     ok: true,
     order,
-    // The contract, spelled out so no client can misreport it (§1.3).
+    // The contract, spelled out so no client can misreport it (§1.3): nothing is
+    // paid YET. With a provider, `billing/fulfilment.ts` grants on its
+    // confirmation; without one the order is only recorded.
     completed: false,
     creditsGranted: 0,
     checkout: order.checkoutUrl ? { hosted: true, url: order.checkoutUrl } : { hosted: false, url: null },
     message: order.checkoutUrl
-      ? "Continue on the payment provider's secure page to complete this order."
+      ? "Continue on the payment provider's secure page to complete this order. Credits are added as soon as the payment is confirmed."
       : "Order recorded. No payment provider is connected, so nothing has been charged and no " +
         "credits have been added — our team will follow up to complete it.",
   });
@@ -810,8 +869,18 @@ account.post("/orders", async (c) => {
 // ── The receipt and its document ─────────────────────────────────────────────
 
 account.get("/orders/:id", async (c) => {
-  const order = await loadOrder(c.env, scopeOf(c.var.user), c.req.param("id"));
+  const scope = scopeOf(c.var.user);
+  const id = c.req.param("id");
+  let order = await loadOrder(c.env, scope, id);
   if (!order) return c.json({ error: "not_found" }, 404);
+  // P2 — the receipt the provider's return lands on. If neither that return nor
+  // the webhook has applied the payment yet, ask the provider now: a customer
+  // who paid is shown "Paid" and their credits, not "Awaiting payment". Only an
+  // order still `redirected` costs a provider call (`reconcileIntent`).
+  if (order.status === "redirected") {
+    const applied = await reconcileIntent(c.env, resolvePaymentAdapter(c.env), order.id);
+    if (applied) order = (await loadOrder(c.env, scope, id)) ?? order;
+  }
   return c.json(order);
 });
 
@@ -831,6 +900,31 @@ account.get("/orders/:id/document", async (c) => {
   const scope = scopeOf(c.var.user);
   const order = await loadOrder(c.env, scope, c.req.param("id"));
   if (!order) return c.json({ error: "not_found" }, 404);
+
+  // P2 — a PAID order has a real GST invoice: `billing/fulfilment.ts` issues it
+  // in the transaction that completes the intent, linked by `intent_id`. Serving
+  // the pro-forma below for it would print "NO PAYMENT RECEIVED" on a receipt
+  // for money we hold. `invoice.ts` decides the template and what it may claim;
+  // a row it refuses to render (tax on a non-INR invoice) falls through to the
+  // pro-forma rather than to a document that contradicts itself.
+  if (order.status === "completed") {
+    const q = scoped(scope).on("v").and("v.intent_id = ?", order.id);
+    const inv = await c.env.DB.prepare(`SELECT v.id FROM billing_invoices v ${q.whereClause()}`)
+      .bind(...q.binds)
+      .first<{ id: string }>();
+    const record = inv
+      ? await loadInvoiceRecord(c.env, scope, inv.id, scope.edition === "vc" ? "Investor workspace" : "Incubator workspace")
+      : null;
+    const html = record ? renderInvoiceDocument(record) : null;
+    if (record && html) {
+      return new Response(html, {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "content-disposition": `attachment; filename="${record.number}.html"`,
+        },
+      });
+    }
+  }
   const record = await readProfile(c.env, scope);
   const profile = record?.profile ?? null;
   const billing = record?.billing ?? null;

@@ -19,12 +19,27 @@ export const PLANS: readonly Plan[] = ["standard", "pro", "premium"];
  * value it knows will be rejected. Two copies of a threshold is the mistake this
  * product already carries four of.
  *
- * 5000 is five times the largest pack the price catalogue sells and roughly two
- * hundred times the whole deployed corpus. Each credit is one deck's worth of
- * real model calls billed to the operator (`decks.ts` reserves one per upload),
- * so an unbounded balance is an unbounded bill reachable from a number input.
- * Nothing legitimate is above it; a value that is, is a pasted figure or an extra
- * zero, and the server's refusal is audited so a near miss is findable.
+ * 5000 was five times the largest pre-V3 pack (1000) and roughly two hundred
+ * times the whole deployed corpus. Each credit is one deck's worth of real model
+ * calls billed to the operator (`decks.ts` reserves one per upload), so an
+ * unbounded balance is an unbounded bill reachable from a number input. A value
+ * above it is a pasted figure or an extra zero, and the server's refusal is
+ * audited so a near miss is findable.
+ *
+ * ── P2 · IT BOUNDS A TYPED NUMBER, NOT A SALE ───────────────────────────────
+ * The ceiling applies to the OPERATOR's SET and nowhere else. A paid purchase
+ * (`src/server/billing/fulfilment.ts`) is not capped by it, deliberately: the
+ * customer has been charged, and refusing the credits afterwards would be the
+ * one state the payment lane exists to rule out — money taken, nothing granted.
+ *
+ * Measured against the published catalogue (2026-10-23), "five times the
+ * largest pack" is no longer true: V3-PT's enterprise seat plans grant 2500,
+ * 5000 and 7500 decks (`ent_s5` / `ent_s10` / `ent_s15`), so one Large
+ * Organisation purchase alone ends above this figure. Consequence, recorded
+ * rather than fixed here because the number is the operator's guard-rail and
+ * `routes/config.ts` is not this lane's: after such a purchase the console's
+ * Plan & credits SET cannot express the workspace's own balance. Raising it, or
+ * making the SET relative, is the follow-up.
  */
 export const MAX_CREDIT_BALANCE = 5000;
 
@@ -706,8 +721,39 @@ export interface CreditsBillingView {
   plans: PublishedPlan[];
   /** The most recent purchase intents — recorded, not charged. */
   intents: PaymentIntentView[];
-  /** Whether a payment provider is configured (§1.3: false on this build). */
+  /**
+   * Whether a payment provider is configured — true once `PAYMENTS_RAZORPAY_KEY`
+   * is set on the deployment (P2), false everywhere until then.
+   */
   paymentConfigured: boolean;
+}
+
+/**
+ * P2 — the free trial, as the server reports it (`GET /api/account`,
+ * `POST /api/account/trial`).
+ *
+ * Before P2 the trial screen was a counter in the browser that "used" a deck on
+ * every click and granted nothing; the customer met a promise of three free
+ * decks and an empty balance. These fields are read off `credit_ledger`, so the
+ * screen can only say what the books say.
+ */
+export interface FreeTrialStatus {
+  /** Decks the PUBLISHED catalogue offers (`book.trial.decks`). 0 = none on offer. */
+  decks: number;
+  /** This workspace already holds a `trial_grant` movement. Once per workspace. */
+  taken: boolean;
+  /** When it was granted. Null until taken. */
+  grantedAt: string | null;
+  /** Credits the trial actually granted — may differ from `decks` if the catalogue moved since. */
+  granted: number;
+  /**
+   * How many of those have been spent. Credits are fungible, so this is a
+   * convention, stated: evaluations debit the OLDEST credits first. For a new
+   * workspace the trial is the oldest grant, so its first evaluations are trial
+   * decks; for one that already held credits (GCW), those are spent first.
+   * `src/server/billing/trial.ts` computes it; clamped to `[0, granted]`.
+   */
+  used: number;
 }
 
 /** A ledger entry consumes credits. */
