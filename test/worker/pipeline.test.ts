@@ -651,12 +651,18 @@ describe("deck list exposes per-role actions + status id", () => {
     expect(actions).not.toContain("reject");
 
     // The guard on the guard: the decision did not vanish, it moved. A
-    // programme manager sees exactly what the juror no longer does.
+    // programme manager sees what the juror does not — Reject. And since 23-Oct
+    // NOBODY is offered Shortlist, the PM included: the criteria shortlist a
+    // deck when its panel completes, and the server refuses the action to every
+    // role (`shortlist-criteria.test.ts`). An offered action the route refuses
+    // would be a button that 403s, which is why the table and the route moved
+    // together.
     const pmBody = (await (await get("/api/decks", await login(PM))).json()) as {
       decks: Array<{ id: string; actions: Array<{ action: string }> }>;
     };
     const pmActions = pmBody.decks.find((d) => d.id === id)!.actions.map((a) => a.action);
-    expect(pmActions).toEqual(expect.arrayContaining(["shortlist", "reject"]));
+    expect(pmActions).toContain("reject");
+    expect(pmActions).not.toContain("shortlist");
   });
 });
 

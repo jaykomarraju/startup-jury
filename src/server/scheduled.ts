@@ -10,6 +10,8 @@ import { scoped, type TenantScope } from "../shared/tenant";
 import { sendEmail, buildReminderEmail, emitNotification } from "./email/outbox";
 import { sweepStuckEvaluations, type SweepResult } from "./ai/health";
 import { ASSIGNEE_PAIRS_SQL } from "./decks/assignments";
+// 23-Oct — the shortlist criteria, re-applied for every live workspace.
+import { sweepShortlistCriteria, type ShortlistCriteriaOutcome } from "./routes/pipeline";
 // The client's open item — the five-working-day rule already lives here, and
 // this sweep reuses it rather than restating "5 days" in SQL.
 import { queryDueAt, QUERY_RESPONSE_WORKING_DAYS } from "../shared/queries";
@@ -151,6 +153,30 @@ async function remindersFor(env: Env, scope: TenantScope): Promise<EvaluatorRemi
  * more frequent cron. Thin wrapper so `index.ts` stays declarative and the
  * sweep's own logic lives with the rest of the AI-health code.
  */
+/**
+ * 23-Oct tracker row 4 — the shortlist criteria, for every live workspace.
+ *
+ * A deck is shortlisted by the system, never by a person, when its panel has
+ * scored it over its floor (`applyShortlistCriteria`, `routes/pipeline.ts`). The
+ * submit that completes the panel applies them at once, and the two console
+ * saves that move a floor re-apply them at once; this is the catch-all for every
+ * OTHER way a waiting deck comes to meet them — a cohort's AI / jury split, an AI
+ * re-score, a panel shrunk by reassignment — and for the decks already waiting
+ * at Jury Evaluation on the day this shipped, which no submit will touch again.
+ * It rides the ten-minute schedule because a deck that meets the criteria and
+ * stays put is invisible to the Sign up Pipeline until something moves it.
+ *
+ * Incubator only: the VC edition keeps its manual `shortlist_to_partner`.
+ */
+export async function runShortlistSweep(env: Env): Promise<ShortlistCriteriaOutcome[]> {
+  const out: ShortlistCriteriaOutcome[] = [];
+  for (const scope of await liveWorkspaces(env)) {
+    if (scope.edition !== "incubator") continue;
+    out.push(...(await sweepShortlistCriteria(env.DB, scope)));
+  }
+  return out;
+}
+
 export async function runStuckSweep(env: Env): Promise<SweepResult> {
   const result = await sweepStuckEvaluations(env);
   if (result.requeued.length || result.failed.length) {

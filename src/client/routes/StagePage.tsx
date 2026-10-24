@@ -2186,10 +2186,20 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
     emptyDescription: "Startups the jury shortlists arrive here for the intro call and sign-up.",
   },
   // Issue 29 — adds Payment status and Documents status.
+  //
+  // 23-Oct tracker row 4 — *"Shortlisted startups should reflect in the 'Signup
+  // pipeline'."* The prototype's `cuData` carries a `shortlisted` row (AgriChain),
+  // and `suSignupBody`'s first step, "Initiate & email founder", is the active
+  // one exactly when `d.signup === 'shortlisted'`: the screen starts at the
+  // shortlist, not at the invite. So it lists the deck from the moment the
+  // shortlist criteria take it (`applyShortlistCriteria`, routes/pipeline.ts) —
+  // `shortlisted`, then `intro` once the call is booked (the row's Call columns
+  // fill in), then `signup`. `signupStatusLabel` already reads both pre-record
+  // stages as "Shortlisted", the prototype's `suSignupLabel.shortlisted`.
   incuration: {
     title: "Sign up Pipeline",
     subtitle: "Signed-up startups being curated for the cohort — track payment and document readiness",
-    statuses: ["signup"],
+    statuses: ["shortlisted", "intro", "signup"],
     columns: [
       "startup",
       "ai",
@@ -2205,11 +2215,13 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
     ],
     minWidth: "88rem",
     workspace: true,
-    // Oct-3 issue 24 — `cuRender`'s `openSuWork` button, deactivated for every
-    // role that reaches this screen (admin · PM · associate, and the superuser
-    // over them): the client is holding the sign-up workflow back, as they
-    // already held back the console's whole Sign-up group.
-    signupComingSoon: true,
+    // `signupComingSoon` is OFF since 23-Oct. Oct-3 issue 24 deactivated
+    // `cuRender`'s `openSuWork` button here because the client was holding the
+    // sign-up workflow back, as they held back the console's whole Sign-up
+    // group; tracker row 10 releases both — *"Shortlisted startups should be
+    // able to sign up as per prototype design. The signup section of the admin
+    // console should be implemented."* The flag stays on `StageConfig` for the
+    // next screen that needs it.
     toolbar: {
       filters: [
         { id: "paid-all", label: "Paid / All docs", match: (r) => payOf(r) === "paid" && docsOf(r) === "complete" },
@@ -2226,7 +2238,8 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
       `${plural(rows.length, "startup")} in curation · ${count(rows, (r) => payOf(r) === "paid")} fully paid · ` +
       `${count(rows, (r) => docsOf(r) === "complete")} with all documents`,
     emptyTitle: "No sign-ups in progress",
-    emptyDescription: "Startups sent a sign-up invite appear here until they complete it.",
+    emptyDescription:
+      "Startups appear here the moment the shortlist criteria take them, and stay until they complete sign-up.",
   },
   // Issue 30 — Startup · Cohort · Curation stage · Jury member lead · Progress.
   curation: {

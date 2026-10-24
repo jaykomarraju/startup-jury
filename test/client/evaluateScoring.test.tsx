@@ -293,3 +293,20 @@ describe("issue 6 — the report overlay no longer presents itself as the scorer
     ).toHaveLength(4);
   });
 });
+
+// ── 23-Oct — no manual shortlisting ──────────────────────────────────────────
+
+describe("23-Oct tracker row 4 — the workbench offers no manual Shortlist", () => {
+  // "The startups are shortlisted as per the criteria set in the admin console.
+  // NO MANUAL SHORTLISTING SHOULD BE ALLOWED BY THE SYSTEM." The server refuses
+  // the action to every role (`test/worker/shortlist-criteria.test.ts`) and
+  // `pipeline/incubator.ts` lists nobody; this is the drawing of that rule. The
+  // other decision on the stage — Reject — stays with the incubator.
+  for (const role of ["program_manager", "admin"] as const) {
+    it(`${role} — Reject is offered and Shortlist is not`, async () => {
+      const dialog = await openAndScore(role);
+      expect(within(dialog).getByRole("button", { name: "Reject" })).toBeInTheDocument();
+      expect(within(dialog).queryByRole("button", { name: "Shortlist" })).toBeNull();
+    });
+  }
+});

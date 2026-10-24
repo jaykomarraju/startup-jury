@@ -53,17 +53,34 @@ describe("incubator role permissions", () => {
     // PERMISSION and the recurring defect in this repo is a client-side-only
     // gate (`role-boundary-leaks`). Hiding the buttons without this would leave
     // the transition reachable by anyone who could post to the route.
-    for (const action of ["shortlist", "reject"] as const) {
-      expect(performAction("incubator", "jury_evaluation", action, "jury")).toEqual({
-        ok: false,
-        error: "forbidden",
-      });
-    }
+    expect(performAction("incubator", "jury_evaluation", "reject", "jury")).toEqual({
+      ok: false,
+      error: "forbidden",
+    });
     // And it MOVED rather than vanished — the decision-makers still hold it.
     for (const role of ["program_manager", "admin", "superuser"] as const) {
-      expect(performAction("incubator", "jury_evaluation", "shortlist", role).ok, role).toBe(true);
       expect(performAction("incubator", "jury_evaluation", "reject", role).ok, role).toBe(true);
     }
+  });
+
+  it("nobody shortlists by hand — the criteria do (23-Oct)", () => {
+    // "The startups are shortlisted as per the criteria set in the admin
+    // console. NO MANUAL SHORTLISTING SHOULD BE ALLOWED BY THE SYSTEM." The
+    // `jury_evaluation → shortlisted` entry is gone from the table, so no role —
+    // the superuser included — holds it, and no screen is offered it. The system
+    // makes the move itself (`applyShortlistCriteria`, a NULL-actor
+    // `auto_shortlist` event), as it does `pending_ai → ai_evaluated`.
+    for (const role of ["jury", "program_associate", "program_manager", "admin", "superuser", "founder"] as const) {
+      expect(performAction("incubator", "jury_evaluation", "shortlist", role), role).toEqual({
+        ok: false,
+        error: "unknown_action",
+      });
+      expect(allowedTransitions("incubator", "jury_evaluation", role).map((t) => t.action), role).not.toContain(
+        "shortlist",
+      );
+    }
+    // The stage is still reached, and still left by the way it always was.
+    expect(performAction("incubator", "shortlisted", "schedule_intro", "program_manager").ok).toBe(true);
   });
 
   it("jury cannot assign jury at the AI gate", () => {
@@ -82,14 +99,11 @@ describe("incubator role permissions", () => {
     ).toBe(true);
   });
 
-  it("program manager holds decision authority: assign, shortlist/reject and schedule intro", () => {
+  it("program manager holds decision authority: assign, reject and schedule intro", () => {
     // PM is the decision maker (Jul-24 demo) — can assign jury...
     expect(performAction("incubator", "ai_evaluated", "assign_jury", "program_manager").ok).toBe(true);
-    // ...make or override the shortlist / reject decision...
-    expect(performAction("incubator", "jury_evaluation", "shortlist", "program_manager")).toEqual({
-      ok: true,
-      to: "shortlisted",
-    });
+    // ...make the reject decision (the shortlist is the criteria's since 23-Oct
+    // — "nobody shortlists by hand", above)...
     expect(performAction("incubator", "jury_evaluation", "reject", "program_manager")).toEqual({
       ok: true,
       to: "rejected",
@@ -98,9 +112,11 @@ describe("incubator role permissions", () => {
     expect(performAction("incubator", "shortlisted", "schedule_intro", "program_manager").ok).toBe(true);
   });
 
-  it("founder completes signup but cannot shortlist", () => {
+  it("founder completes signup but cannot reject", () => {
+    // Was "…but cannot shortlist"; nobody can since 23-Oct (above), so the
+    // founder's refusal is asserted on the decision that is still a role's.
     expect(performAction("incubator", "signup", "complete_signup", "founder").ok).toBe(true);
-    expect(performAction("incubator", "jury_evaluation", "shortlist", "founder")).toEqual({
+    expect(performAction("incubator", "jury_evaluation", "reject", "founder")).toEqual({
       ok: false,
       error: "forbidden",
     });

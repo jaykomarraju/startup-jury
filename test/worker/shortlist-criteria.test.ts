@@ -1,6 +1,8 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import { sweepShortlistCriteria } from "../../src/server/routes/pipeline";
+import { runShortlistSweep } from "../../src/server/scheduled";
+import type { Env } from "../../src/server/types";
 
 // 23-Oct tracker rows 4 and 10 — "The startups are shortlisted as per the
 // criteria set in the admin console. NO MANUAL SHORTLISTING SHOULD BE ALLOWED BY
@@ -253,5 +255,73 @@ describe("sweepShortlistCriteria", () => {
 
   it("does nothing for the VC edition", async () => {
     expect(await sweepShortlistCriteria(env.DB, { tenantId: "t_default", edition: "vc" })).toEqual([]);
+  });
+});
+
+// ── 4 · what re-applies the criteria when the BAR moves ──────────────────────
+//
+// Nobody may click shortlist, so a deck waiting at Jury Evaluation that a lower
+// floor would carry over it has to be moved by something. These are the three
+// somethings (`docs/parity-requests/A-P4.md`, patch 3).
+
+describe("lowering a floor shortlists the decks waiting under it", () => {
+  async function put(path: string, cookie: string, body: unknown) {
+    return SELF.fetch(`${BASE}${path}`, {
+      method: "PUT",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("a programme's floor, lowered in the console, moves its waiting deck at once", async () => {
+    await env.DB.prepare(
+      "INSERT INTO programs (id, edition, name, shortlist_min, active, sort_order) VALUES ('prog_crit_lower', 'incubator', 'Criteria Lower', 9.5, 1, 99)",
+    ).run();
+    await seedDeck("crit_prog_lower", { ai: 8, panel: ["inc_jury"], scored: { inc_jury: 8 } });
+    await env.DB.prepare("UPDATE decks SET program_id = 'prog_crit_lower' WHERE id = 'crit_prog_lower'").run();
+    // 8.0 against 9.5: waiting, and the sweep agrees.
+    const before = await sweepShortlistCriteria(env.DB, { tenantId: "t_default", edition: "incubator" });
+    expect(before.find((o) => o.deckId === "crit_prog_lower")).toMatchObject({ shortlisted: false, reason: "below_floor" });
+
+    const res = await put("/api/programs/prog_crit_lower", await login(ROLES.admin), { shortlistMin: 7.5 });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await statusOf("crit_prog_lower")).toBe("shortlisted");
+    expect(await shortlistEvents("crit_prog_lower")).toEqual([{ actor_id: null, action: "auto_shortlist" }]);
+  });
+
+  it("the organisation's threshold, lowered on the Scoring framework, does the same", async () => {
+    await seedDeck("crit_org_lower", { ai: 6, panel: ["inc_jury"], scored: { inc_jury: 6 } });
+    const admin = await login(ROLES.admin);
+    // 6.0 against the seeded 7.0.
+    expect(await statusOf("crit_org_lower")).toBe("jury_evaluation");
+    const res = await put("/api/config/scoring-framework", admin, { shortlistThreshold: 5.5 });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(((await res.json()) as { shortlisted: number }).shortlisted).toBeGreaterThanOrEqual(1);
+    expect(await statusOf("crit_org_lower")).toBe("shortlisted");
+    await put("/api/config/scoring-framework", admin, { shortlistThreshold: 7 });
+  });
+
+  it("a Scoring-framework save that moves nothing the criteria read moves no deck", async () => {
+    // Waiting and qualifying — 9.0 against 7.0 — but nothing has applied the
+    // criteria to it yet. An unrelated toggle must not be what does.
+    await seedDeck("crit_unrelated_save", { ai: 9, panel: ["inc_jury"], scored: { inc_jury: 9 } });
+    const admin = await login(ROLES.admin);
+    const res = await put("/api/config/scoring-framework", admin, { showAiScoreToJury: false });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(((await res.json()) as { shortlisted: number }).shortlisted).toBe(0);
+    expect(await statusOf("crit_unrelated_save")).toBe("jury_evaluation");
+    await put("/api/config/scoring-framework", admin, { showAiScoreToJury: true });
+    // Left waiting on purpose: the cron case below is the one that moves it.
+  });
+
+  it("the ten-minute cron catches whatever else moved the bar — every live workspace, incubator only", async () => {
+    // A deck that meets the criteria with nothing left to submit: the state the
+    // decks already waiting on the day this shipped are in.
+    await seedDeck("crit_cron", { ai: 9, panel: ["inc_jury"], scored: { inc_jury: 9 } });
+    const swept = await runShortlistSweep(env as Env);
+    expect(swept.find((o) => o.deckId === "crit_cron")).toMatchObject({ shortlisted: true });
+    expect(await statusOf("crit_cron")).toBe("shortlisted");
+    // …and the one the unrelated save above rightly left alone.
+    expect(await statusOf("crit_unrelated_save")).toBe("shortlisted");
   });
 });

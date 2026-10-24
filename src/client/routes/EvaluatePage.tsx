@@ -402,7 +402,10 @@ export function EvaluatePage() {
     }
   }
 
-  async function decide(action: "shortlist" | "reject") {
+  // `"reject"` only since 23-Oct: shortlisting is the criteria's, not a person's
+  // (`applyShortlistCriteria` in `routes/pipeline.ts`), so the workbench offers
+  // the one decision the incubator still makes by hand.
+  async function decide(action: "reject") {
     if (!selected) return;
     setError(null);
     // A deck still at Assigned has no evaluation yet. Deciding on it used to
@@ -421,12 +424,11 @@ export function EvaluatePage() {
       closeDeck();
       await Promise.all([load(), loadRecommendations()]);
     } catch (err) {
-      // The shortlist floor refuses with a message written for the evaluator
-      // ("below the program's shortlist minimum…") — show it verbatim.
-      if (
-        err instanceof ApiError &&
-        (err.code === "below_shortlist_minimum" || err.code === "rationale_required")
-      ) {
+      // The override-rationale rule refuses the scores submitted first with a
+      // message written for the evaluator — show it verbatim. (The shortlist
+      // floor's `below_shortlist_minimum` was the other; it went with the
+      // workbench's Shortlist button on 23-Oct.)
+      if (err instanceof ApiError && err.code === "rationale_required") {
         setError(err.message);
         await load();
       } else {
@@ -947,27 +949,23 @@ export function EvaluatePage() {
                     which is computed from the slug: a juror who reaches this
                     workbench from `/app/evaluate` instead of `/app/jassigned`
                     must not get the buttons back. A programme manager keeps
-                    both, on every route.
+                    Reject, on every route.
+
+                    Shortlist is gone for EVERY role since 23-Oct (tracker row
+                    4, "no manual shortlisting"): the server refuses it to all
+                    of them and `pipeline/incubator.ts` lists nobody, and the
+                    deck is shortlisted by its scores when the panel completes.
+                    The minimum beside this is still the bar it is judged on.
                   */}
                   {user?.role !== "jury" && (
-                    <>
-                      <button
-                        type="button"
-                        className="tbb"
-                        disabled={busy}
-                        onClick={() => decide("reject")}
-                      >
-                        Reject
-                      </button>
-                      <button
-                        type="button"
-                        className="tbb pr"
-                        disabled={busy}
-                        onClick={() => decide("shortlist")}
-                      >
-                        Shortlist
-                      </button>
-                    </>
+                    <button
+                      type="button"
+                      className="tbb"
+                      disabled={busy}
+                      onClick={() => decide("reject")}
+                    >
+                      Reject
+                    </button>
                   )}
                 </>
               }

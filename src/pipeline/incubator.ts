@@ -3,11 +3,13 @@ import type { PipelineConfig } from "./types";
 // Incubator pipeline — mirrors INC_DIAGRAM_2 and the role×stage permission matrix,
 // reconciled with the Jul-24 demo decision that the Program Manager is the
 // DECISION MAKER (the role matrix image predates it). superuser + admin have full
-// access at every stage. The program_manager assigns jury, makes/overrides the
-// shortlist decision, and decides (schedules, or delegates to the associate) the
-// intro call; the program_associate stays the frontline EXECUTOR (assign, schedule
-// on the PM's direction, send signup, run the founder-query loop). Jury still
-// scores + shortlists their assigned decks.
+// access at every stage. The program_manager assigns jury, makes the reject
+// decision, and decides (schedules, or delegates to the associate) the intro
+// call; the program_associate stays the frontline EXECUTOR (assign, schedule on
+// the PM's direction, send signup, run the founder-query loop). The jury scores
+// its assigned decks and decides nothing (2026-10-04). Since 23-Oct nobody
+// shortlists by hand: the criteria do, when the panel completes — see the note
+// where the `shortlist` entry used to be.
 export const incubatorPipeline: PipelineConfig = {
   edition: "incubator",
   initialStage: "uploaded",
@@ -121,15 +123,24 @@ export const incubatorPipeline: PipelineConfig = {
     // portal), and an external evaluator holding a transition nobody draws is
     // exactly that shape.
     //
-    // The decision stays with the incubator: programme manager, admin and super
-    // user keep both, and keep them on the same screen.
-    {
-      from: "jury_evaluation",
-      to: "shortlisted",
-      action: "shortlist",
-      label: "Shortlist",
-      roles: ["program_manager", "admin", "superuser"],
-    },
+    // The decision stayed with the incubator: programme manager, admin and super
+    // user kept both, on the same screen — until 23-Oct for the shortlist.
+    //
+    // **`jury_evaluation → shortlisted` is no longer a person's transition**
+    // (23-Oct tracker row 4): *"The startups are shortlisted as per the criteria
+    // set in the admin console. NO MANUAL SHORTLISTING SHOULD BE ALLOWED BY THE
+    // SYSTEM."* The same reasoning as the jury's removal above, one step
+    // further: the entry is GONE, so `allowedTransitions` offers it to no screen
+    // and `performAction` grants it to no role. The move itself is made by
+    // `applyShortlistCriteria` (`routes/pipeline.ts`) as the system — NULL
+    // actor, action `auto_shortlist` — when a deck's panel has scored it over
+    // its floor. That is the established shape for a system move here
+    // (`routes/decks.ts:1433`: `ai_evaluated`, `ai_skipped`, `send_to_assign`,
+    // `details_completed` have no entry either), and it keeps this table's
+    // invariant that every transition is some role's. The route refuses
+    // `{"action":"shortlist"}` itself, before this table is read, so neither
+    // half of the rule depends on the other. Reject keeps its roles: the client
+    // took away the shortlist, not the incubator's final call.
     {
       from: "jury_evaluation",
       to: "rejected",
