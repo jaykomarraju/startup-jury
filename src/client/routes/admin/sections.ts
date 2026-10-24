@@ -20,18 +20,20 @@
  * which session owns it — the slot those sessions land in.
  *
  * ── What the console SHIPS, versus those sixteen ─────────────────────────────
- * **Eleven.** Two client instructions have taken five sections out of the rail,
- * and both left the screen behind them standing:
+ * **Fifteen in the incubator, eleven in the VC build.** Two client
+ * instructions took five sections out of the rail, and both left the screen
+ * behind them standing:
  *
  *   `pc` Price configuration — REMOVED 24-Sep. One section, one group. The
  *   reasoning is at the foot of the Organisation block.
  *
- *   The whole **Sign-up group** — HIDDEN 24-Sep (feedback row 11). Four
- *   sections per edition: `sudocs`, `suagr`, `susign`, and `suseat` / `sufund`.
- *   See `HIDDEN_ADMIN_GROUPS` below.
+ *   The whole **Sign-up group** — HIDDEN 24-Sep (feedback row 11), and BACK in
+ *   the incubator on 23-Oct (tracker row 10). Four sections per edition:
+ *   `sudocs`, `suagr`, `susign`, and `suseat` / `sufund`. The VC build keeps
+ *   it hidden. See `HIDDEN_ADMIN_GROUPS` below.
  *
- * So: 16 − 1 removed − 4 hidden = 11 in the rail, and `allAdminSections()`
- * still returns all 15 that survive as screens.
+ * So: 16 − 1 removed = 15 in the incubator rail, 15 − 4 hidden = 11 in the VC
+ * rail, and `allAdminSections()` returns the 15 that survive as screens in both.
  */
 import type { Edition, Role } from "../../../shared/roles";
 
@@ -40,15 +42,24 @@ export type AdminSectionGroup = "Evaluation" | "Organisation" | "Sign-up" | "Sys
 /**
  * Fixed rail order, top to bottom (prototype `_ADMIN-CONSOLE.html` sidebar).
  *
- * **"Sign-up" is deliberately absent** — it is hidden, not deleted, and
- * `HIDDEN_ADMIN_GROUPS` is the single place that says so. This list is the
- * groups the rail DRAWS, which is what `adminGroupsFor` filters and what the
- * console's tests compare a rendered rail against; a hidden group that stayed
- * here would advertise a heading with nothing under it.
+ * Every group a rail MAY draw. Whether a given rail draws one is
+ * `adminGroupsFor`'s question, and it drops any group with no section visible to
+ * that (edition, role) — so the VC rail, whose Sign-up group is still hidden,
+ * and a non-admin's, which never had it, advertise no heading with nothing
+ * under it.
+ *
+ * Until 23-Oct "Sign-up" was missing from this list as well as named in
+ * `HIDDEN_ADMIN_GROUPS`, and the header there said un-hiding was "deleting one
+ * string from this array". It was two. With the group absent here,
+ * `adminGroupsFor` drops it however visible its sections are, and the rail
+ * draws sections group by group (`AdminConsole.tsx:269-277`) — so deleting the
+ * one string would have made the four sections open by `?section=` and appear
+ * nowhere in the rail.
  */
 export const ADMIN_SECTION_GROUPS: AdminSectionGroup[] = [
   "Evaluation",
   "Organisation",
+  "Sign-up",
   "System",
 ];
 
@@ -74,7 +85,26 @@ export interface AdminSection {
 }
 
 /**
- * Groups defined in full but withheld from every role, including superuser.
+ * Groups defined in full but withheld from every role, including superuser —
+ * PER EDITION.
+ *
+ * ── "Sign-up" · BACK in the incubator, tracker row 10, 23-Oct-2026 ──────────
+ * *"Shortlisted startups should be able to sign up as per prototype design. The
+ * signup section of the admin console should be implemented."* — the "next
+ * release" row 11 below was waiting for.
+ *
+ * Checked before un-hiding rather than assumed: all four incubator screens'
+ * component and route suites pass unchanged (`signupConfig.test.tsx`,
+ * `agreements.test.tsx`, `signup-config.test.ts`, `esign.test.ts`), and the
+ * browser walks row 11 skipped — `e2e/signup-config.spec.ts`,
+ * `e2e/agreements.spec.ts`, `e2e/signup-workspace.spec.ts` — run green again
+ * un-skipped, through the rail, for the incubator admin.
+ *
+ * **The VC build keeps the group hidden.** The VC edition is out of scope
+ * (client, 2026-10-01) and must keep working as it does today; un-hiding there
+ * would hand the VC admin four sections — `sufund` Fund Deployment among them —
+ * that nobody has asked for since row 11 took them away. So this became a
+ * per-edition list, and the VC walks of `sufund` stay skipped.
  *
  * ── "Sign-up" · feedback row 11, 24-Sep-2026 ─────────────────────────────────
  * *"Admin console: the Sign up section should be hidden — we want to introduce
@@ -94,12 +124,16 @@ export interface AdminSection {
  * files (`test/client/signupConfig.test.tsx`, `test/client/agreements.test.tsx`),
  * and **the server routes stay** — `routes/signup-config.ts` and
  * `esign/routes.ts` are not unguarded by a rail entry going away, and are not
- * re-guarded by it either. Un-hiding is deleting one string from this array.
+ * re-guarded by it either. (Un-hiding turned out to need `ADMIN_SECTION_GROUPS`
+ * as well as this list — see that constant.)
  *
  * This follows `pc` (see the Organisation block) in everything except that `pc`
  * is gone for good and this comes back.
  */
-export const HIDDEN_ADMIN_GROUPS: AdminSectionGroup[] = ["Sign-up"];
+export const HIDDEN_ADMIN_GROUPS: Record<Edition, readonly AdminSectionGroup[]> = {
+  incubator: [],
+  vc: ["Sign-up"],
+};
 
 /**
  * Sections in the Sign-up group configure org-wide commercial and legal
@@ -109,10 +143,9 @@ export const HIDDEN_ADMIN_GROUPS: AdminSectionGroup[] = ["Sign-up"];
  * role, and this list is what keeps that from carrying the Sign-up group with
  * it.
  *
- * Currently SUBSUMED by `HIDDEN_ADMIN_GROUPS`, and kept for exactly that
- * reason: the day the group is un-hidden it must come back admin-only, and a
- * restriction deleted because it was temporarily unreachable is a restriction
- * that does not come back.
+ * It was SUBSUMED by `HIDDEN_ADMIN_GROUPS` from 24-Sep to 23-Oct and kept for
+ * exactly the day it came back: the group returned admin-only because this
+ * line was still here, not because anyone remembered it should.
  */
 const ADMIN_ONLY_GROUPS: AdminSectionGroup[] = ["Sign-up"];
 
@@ -121,10 +154,10 @@ export function canOpenAdminConsole(role: Role): boolean {
   return role === "admin" || role === "superuser";
 }
 
-/** Whether a role may see a given group in the rail. */
-export function canSeeAdminGroup(role: Role, group: AdminSectionGroup): boolean {
+/** Whether a role may see a given group in an edition's rail. */
+export function canSeeAdminGroup(edition: Edition, role: Role, group: AdminSectionGroup): boolean {
   // Hidden beats role: a superuser does not see a group that is not shipped.
-  if (HIDDEN_ADMIN_GROUPS.includes(group)) return false;
+  if (HIDDEN_ADMIN_GROUPS[edition].includes(group)) return false;
   if (ADMIN_ONLY_GROUPS.includes(group)) return canOpenAdminConsole(role);
   return true;
 }
@@ -274,13 +307,12 @@ const ORGANISATION: AdminSection[] = [
   // mounted nowhere a customer can reach.
 ];
 
-// ── The "Sign-up" group · HIDDEN, NOT DELETED ───────────────────────────
+// ── The "Sign-up" group · in the incubator rail, hidden in the VC one ───
 //
 // Everything from here to the end of FUND_DEPLOYMENT is live, typechecked,
-// component-mounted and route-backed — and out of the rail until the next
-// release. `HIDDEN_ADMIN_GROUPS` is where that is decided and why; nothing in
-// these four objects records it, deliberately, so that un-hiding touches one
-// line and not five.
+// component-mounted and route-backed. `HIDDEN_ADMIN_GROUPS` is where each
+// edition's rail is decided and why; nothing in these four objects records it,
+// deliberately, so that it stays one decision in one place.
 const SIGNUP_COMMON: AdminSection[] = [
   {
     id: "sudocs",
@@ -456,7 +488,8 @@ export function allAdminSections(edition: Edition): AdminSection[] {
 }
 
 /**
- * Every section the console SHIPS for an edition, in rail order — eleven.
+ * Every section the console SHIPS for an edition, in rail order — fifteen in
+ * the incubator, eleven in the VC build.
  *
  * Hidden groups are dropped here, once, so that every reader downstream
  * (`adminSectionsFor`, `adminGroupsFor`, `resolveAdminSection`, the rail, the
@@ -464,12 +497,12 @@ export function allAdminSections(edition: Edition): AdminSection[] {
  * repeating it.
  */
 export function adminSections(edition: Edition): AdminSection[] {
-  return allAdminSections(edition).filter((s) => !HIDDEN_ADMIN_GROUPS.includes(s.group));
+  return allAdminSections(edition).filter((s) => !HIDDEN_ADMIN_GROUPS[edition].includes(s.group));
 }
 
 /** The sections a (edition, role) may see, in rail order. */
 export function adminSectionsFor(edition: Edition, role: Role): AdminSection[] {
-  return adminSections(edition).filter((s) => canSeeAdminGroup(role, s.group));
+  return adminSections(edition).filter((s) => canSeeAdminGroup(edition, role, s.group));
 }
 
 /** Rail groups that have at least one section this role may see, in order. */
@@ -486,9 +519,10 @@ export const DEFAULT_ADMIN_SECTION = "fw";
  * the default. A hidden or unknown id must not render a blank console.
  *
  * Three things arrive here and all three land on Scoring framework: a typo, a
- * bookmark from before a section left (`?section=pc`), and — since row 11 — a
- * Sign-up id from ANY role, an admin's included. That last one is new: the id
- * resolved for an admin until 24-Sep.
+ * bookmark from before a section left (`?section=pc`), and a Sign-up id from a
+ * role that may not see the group — any non-admin, and in the VC build anyone
+ * at all. An incubator admin's `?section=sudocs` resolves again since 23-Oct,
+ * as it did until row 11 hid it on 24-Sep.
  */
 export function resolveAdminSection(
   edition: Edition,

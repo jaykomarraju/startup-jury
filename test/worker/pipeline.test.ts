@@ -116,15 +116,24 @@ describe("incubator happy path: upload → AI → assign → jury → shortlist 
     expect(assignRes.status).toBe(200);
     expect(await statusOf(id)).toBe("assigned");
 
-    // Jury submits human scores → advances into jury_evaluation.
+    // Jury submits human scores → advances into jury_evaluation, and — this
+    // juror being the whole panel — the shortlist criteria decide in the same
+    // request (23-Oct, "no manual shortlisting"): AI 9 · jury 8 at the shipped
+    // 40/60 split is 8.4 against the org threshold of 7.0, so it is shortlisted
+    // without anyone clicking. The `start_jury_eval` step is still recorded.
     const keys = await paramKeys();
     const evalRes = await post(`/api/decks/${id}/evaluate`, jury, {
       scores: keys.map((key) => ({ key, value: 8 })),
       remarks: "Strong team",
     });
     expect(evalRes.status).toBe(200);
-    const evalBody = (await evalRes.json()) as { weightedTotal: number; status: string };
-    expect(evalBody.status).toBe("jury_evaluation");
+    const evalBody = (await evalRes.json()) as {
+      weightedTotal: number;
+      status: string;
+      shortlist: { shortlisted: boolean; score: number; minimum: number } | null;
+    };
+    expect(evalBody.status).toBe("shortlisted");
+    expect(evalBody.shortlist).toMatchObject({ shortlisted: true, score: 8.4, minimum: 7 });
     expect(evalBody.weightedTotal).toBe(8);
 
     // Human scores persist with evaluator_kind='human' + evaluator_id. The jury
@@ -143,12 +152,10 @@ describe("incubator happy path: upload → AI → assign → jury → shortlist 
       .first<{ n: number }>();
     expect(humanCount!.n).toBe(storable);
 
-    // The PM shortlists → shortlisted. The JURY scored, two steps above; it does
-    // not decide (2026-10-04 — "It is the prerogative of the Incubator to take a
-    // final call"). The happy path is otherwise unchanged, and the audit below
-    // still expects the same six events in the same order.
-    const decider = await login(PM);
-    expect((await post(`/api/decks/${id}/transition`, decider, { action: "shortlist" })).status).toBe(200);
+    // Shortlisted by the criteria, above — not by the PM, who decided it here
+    // from 2026-10-04 until 23-Oct, and not by the jury, who scored it. The
+    // happy path is otherwise unchanged, and the audit below still expects six
+    // events in the same order, the shortlist among them as the system's.
     expect(await statusOf(id)).toBe("shortlisted");
 
     // Associate schedules intro → intro.
@@ -178,7 +185,7 @@ describe("incubator happy path: upload → AI → assign → jury → shortlist 
       expect.arrayContaining([
         "assign_jury",
         "start_jury_eval",
-        "shortlist",
+        "auto_shortlist",
         "schedule_intro",
         "send_signup",
         "complete_signup",
@@ -588,13 +595,22 @@ describe("per-stage authorization", () => {
     expect(body.assignedTo).toBe("inc_jury");
   });
 
-  it("a program_manager can make the shortlist decision + schedule the intro call", async () => {
-    // Jury shortlist routes to the PM, who decides and schedules the intro call.
-    const id = "authz_pm_decide";
-    await seedDeck(id, "jury_evaluation");
+  // RE-POINTED 23-Oct. This was "a program_manager can make the shortlist
+  // decision + schedule the intro call". The decision is the criteria's now —
+  // the PM is refused it like every other role (`shortlist-criteria.test.ts` has
+  // the matrix) — and what the PM keeps is the step AFTER it, which is the half
+  // of this case that still has a subject.
+  it("a program_manager schedules the intro call on a shortlisted deck — and cannot shortlist one", async () => {
     const pm = await login(PM);
-    const shortlist = await post(`/api/decks/${id}/transition`, pm, { action: "shortlist" });
-    expect(shortlist.status).toBe(200);
+    const waiting = "authz_pm_decide";
+    await seedDeck(waiting, "jury_evaluation");
+    const shortlist = await post(`/api/decks/${waiting}/transition`, pm, { action: "shortlist" });
+    expect(shortlist.status).toBe(403);
+    expect(((await shortlist.json()) as { error: string }).error).toBe("shortlist_automatic");
+    expect(await statusOf(waiting)).toBe("jury_evaluation");
+
+    const id = "authz_pm_intro";
+    await seedDeck(id, "shortlisted");
     const intro = await post(`/api/decks/${id}/transition`, pm, { action: "schedule_intro" });
     expect(intro.status).toBe(200);
     const body = (await intro.json()) as { status: string };

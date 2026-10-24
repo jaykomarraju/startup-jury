@@ -1,0 +1,119 @@
+diff --git a/src/client/routes/StagePage.tsx b/src/client/routes/StagePage.tsx
+index 71342d8..029c98e 100644
+--- a/src/client/routes/StagePage.tsx
++++ b/src/client/routes/StagePage.tsx
+@@ -2053,10 +2053,20 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
+     emptyDescription: "Startups the jury shortlists arrive here for the intro call and sign-up.",
+   },
+   // Issue 29 — adds Payment status and Documents status.
++  //
++  // 23-Oct tracker row 4 — *"Shortlisted startups should reflect in the 'Signup
++  // pipeline'."* The prototype's `cuData` carries a `shortlisted` row (AgriChain),
++  // and `suSignupBody`'s first step, "Initiate & email founder", is the active
++  // one exactly when `d.signup === 'shortlisted'`: the screen starts at the
++  // shortlist, not at the invite. So it lists the deck from the moment the
++  // shortlist criteria take it (`applyShortlistCriteria`, routes/pipeline.ts) —
++  // `shortlisted`, then `intro` once the call is booked (the row's Call columns
++  // fill in), then `signup`. `signupStatusLabel` already reads both pre-record
++  // stages as "Shortlisted", the prototype's `suSignupLabel.shortlisted`.
+   incuration: {
+     title: "Sign up Pipeline",
+     subtitle: "Signed-up startups being curated for the cohort — track payment and document readiness",
+-    statuses: ["signup"],
++    statuses: ["shortlisted", "intro", "signup"],
+     columns: [
+       "startup",
+       "ai",
+@@ -2072,11 +2082,13 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
+     ],
+     minWidth: "88rem",
+     workspace: true,
+-    // Oct-3 issue 24 — `cuRender`'s `openSuWork` button, deactivated for every
+-    // role that reaches this screen (admin · PM · associate, and the superuser
+-    // over them): the client is holding the sign-up workflow back, as they
+-    // already held back the console's whole Sign-up group.
+-    signupComingSoon: true,
++    // `signupComingSoon` is OFF since 23-Oct. Oct-3 issue 24 deactivated
++    // `cuRender`'s `openSuWork` button here because the client was holding the
++    // sign-up workflow back, as they held back the console's whole Sign-up
++    // group; tracker row 10 releases both — *"Shortlisted startups should be
++    // able to sign up as per prototype design. The signup section of the admin
++    // console should be implemented."* The flag stays on `StageConfig` for the
++    // next screen that needs it.
+     toolbar: {
+       filters: [
+         { id: "paid-all", label: "Paid / All docs", match: (r) => payOf(r) === "paid" && docsOf(r) === "complete" },
+@@ -2093,7 +2105,8 @@ export const INCUBATOR_STAGE_CONFIG: Record<string, StageConfig> = {
+       `${plural(rows.length, "startup")} in curation · ${count(rows, (r) => payOf(r) === "paid")} fully paid · ` +
+       `${count(rows, (r) => docsOf(r) === "complete")} with all documents`,
+     emptyTitle: "No sign-ups in progress",
+-    emptyDescription: "Startups sent a sign-up invite appear here until they complete it.",
++    emptyDescription:
++      "Startups appear here the moment the shortlist criteria take them, and stay until they complete sign-up.",
+   },
+   // Issue 30 — Startup · Cohort · Curation stage · Jury member lead · Progress.
+   curation: {
+diff --git a/test/client/stagePage.test.tsx b/test/client/stagePage.test.tsx
+index 3e674de..5ac3d36 100644
+--- a/test/client/stagePage.test.tsx
++++ b/test/client/stagePage.test.tsx
+@@ -364,23 +364,48 @@ describe("the W5-A consumers", () => {
+   });
+ 
+   /**
+-   * Oct-3 issue 24 — "Sign up action button … should be deactivated, with a
+-   * mouse over comment saying 'coming soon'". `cuRender`'s `openSuWork` button,
+-   * on the Sign up Pipeline.
+-   *
+-   * The tooltip is asserted on the WRAPPER, not the button: `Button` carries
+-   * `disabled:pointer-events-none`, so a `title` on the disabled button is
+-   * markup a hover can never reach — the comment the client asked for would not
+-   * exist on screen. The wrapper is the fix, so it is what the test pins.
++   * Oct-3 issue 24 deactivated `cuRender`'s `openSuWork` button on the Sign up
++   * Pipeline — "should be deactivated, with a mouse over comment saying 'coming
++   * soon'" — while the client held the sign-up workflow back. RE-POINTED 23-Oct:
++   * tracker row 10 releases it ("Shortlisted startups should be able to sign up
++   * as per prototype design"), so the same row's button is live and carries no
++   * coming-soon wrapper. The mechanism (`signupComingSoon`) is not deleted, and
++   * the control below still proves it is per screen.
+    */
+-  it("Sign up Pipeline — the row's Sign-up action is deactivated, and says coming soon on hover", async () => {
++  it("Sign up Pipeline — the row's Sign-up action is live again, with no coming-soon comment", async () => {
+     mockApi([deck({ id: "d1", name: "LedgerLite", statusId: "signup", status: "Signup" })], [signup({ deckId: "d1" })]);
+     render(<StagePage config={INCUBATOR_STAGE_CONFIG.incuration} />);
+     const row = await screen.findByRole("row", { name: /LedgerLite/ });
+ 
+     const button = await within(row).findByRole("button", { name: "Sign-up" });
+-    expect(button).toBeDisabled();
+-    expect(button.parentElement).toHaveAttribute("title", "Sign-up — coming soon");
++    expect(button).toBeEnabled();
++    expect(button.parentElement).not.toHaveAttribute("title");
++  });
++
++  /**
++   * 23-Oct tracker row 4 — "Shortlisted startups should reflect in the 'Signup
++   * pipeline'." The prototype's Sign up Pipeline (`cuData`) carries a
++   * `shortlisted` row; the build listed `signup` only, so a deck the criteria
++   * shortlisted reached Intro calls and the PM's pipeline but not this screen.
++   */
++  it("Sign up Pipeline — lists a deck from the moment it is shortlisted, and nothing still being judged", async () => {
++    mockApi(
++      [
++        deck({ id: "d1", name: "AgriChain", statusId: "shortlisted", status: "Shortlisted" }),
++        deck({ id: "d2", name: "WealthOS", statusId: "intro", status: "Intro" }),
++        deck({ id: "d3", name: "LedgerLite", statusId: "signup", status: "Signup" }),
++        deck({ id: "d4", name: "StillScoring", statusId: "jury_evaluation", status: "Jury Evaluation" }),
++      ],
++      [signup({ deckId: "d3" })],
++    );
++    render(<StagePage config={INCUBATOR_STAGE_CONFIG.incuration} />);
++    const shortlisted = await screen.findByRole("row", { name: /AgriChain/ });
++    // No sign-up record yet: the status reads the prototype's `suSignupLabel.shortlisted`.
++    expect(within(shortlisted).getByText("Shortlisted")).toBeInTheDocument();
++    expect(within(screen.getByRole("row", { name: /WealthOS/ })).getByText("Shortlisted")).toBeInTheDocument();
++    expect(screen.getByRole("row", { name: /LedgerLite/ })).toBeInTheDocument();
++    expect(screen.queryByRole("row", { name: /StillScoring/ })).not.toBeInTheDocument();
++    expect(screen.getByTestId("stage-footer-stat")).toHaveTextContent("3 startups in curation");
+   });
+ 
+   /**

@@ -38,6 +38,7 @@ const SUPERUSER = "priya.sharma@demo.startupjury.ai";
 const PM = "raj.kumar@demo.startupjury.ai";
 const PA = "sunita.rao@demo.startupjury.ai";
 const FOUNDER = "meera.sharma@demo.startupjury.ai";
+const JURY = "rajesh.kumar@demo.startupjury.ai";
 
 const PROGRAM = { id: "prog_incubator_0002", name: "Fintech Accelerator", cohort: "coh_0002" };
 const SAMPLE_DECK = fileURLToPath(new URL("../docs/demo-assets/gridbloom-sample-deck.pdf", import.meta.url));
@@ -116,25 +117,36 @@ test.beforeAll(async ({ baseURL }) => {
     expect((await su.post(`/api/decks/${deckId}/transition`, { data: { action: "approve_review" } })).status()).toBe(200);
   }
   expect((await su.post(`/api/decks/${deckId}/assign`, { data: { assigneeId: "inc_jury" } })).status()).toBe(200);
-  for (const action of ["start_jury_eval", "shortlist", "schedule_intro"]) {
-    const res = await su.post(`/api/decks/${deckId}/transition`, { data: { action } });
-    expect(res.status(), `${action}: ${await res.text()}`).toBe(200);
-  }
+  // 23-Oct — nobody may shortlist by hand, so the deck is SCORED onto the
+  // shortlist: its one juror submits 9s, the panel is complete, and 9 clears
+  // Fintech Accelerator's floor (the org threshold, 7.0 — the programme sets
+  // none). The comments satisfy the override-rationale rule whatever the AI
+  // scored. This used to post `start_jury_eval` and `shortlist` as the superuser.
+  const jury = await api(baseURL!, JURY);
+  const { parameters } = (await (await jury.get("/api/parameters")).json()) as { parameters: { key: string }[] };
+  const scored = await jury.post(`/api/decks/${deckId}/evaluate`, {
+    data: { scores: parameters.map((p) => ({ key: p.key, value: 9, comment: "e2e fixture" })) },
+  });
+  expect(scored.status(), await scored.text()).toBe(200);
+  expect(((await scored.json()) as { status: string }).status).toBe("shortlisted");
+  await jury.dispose();
+  const intro = await su.post(`/api/decks/${deckId}/transition`, { data: { action: "schedule_intro" } });
+  expect(intro.status(), await intro.text()).toBe(200);
   expect(await status()).toBe("intro");
 
   // The programme's document checklist — "Bank account details" MANDATORY.
   //
   // This used to be a side effect of the admin's console journey below, which
-  // S2-ADMIN skipped on 30-Sep because feedback row 11 hides the Sign-up group
-  // and its `?section=sudocs` deep link now resolves elsewhere. Skipping the
-  // configurator silently un-configured the two tests that depend on it: the
-  // `doc-badge-awaiting` assertions at :181 and :210 read a checklist nobody
-  // had set, and "Bank account details" was simply not required.
+  // S2-ADMIN skipped on 30-Sep because feedback row 11 hid the Sign-up group.
+  // Skipping the configurator silently un-configured the two tests that depend
+  // on it: the `doc-badge-awaiting` assertions read a checklist nobody had set,
+  // and "Bank account details" was simply not required.
   //
-  // So the CONFIGURATION moves here, to the fixture, where it belongs — the
+  // So the CONFIGURATION moved here, to the fixture, where it belongs — the
   // dependent tests are about the sign-up workspace, not about how the
-  // checklist got written. The console journey stays skipped and returns with
-  // the group.
+  // checklist got written. It stays here now that the console journey is back
+  // (23-Oct): that journey runs first in this serial file, but a fixture that
+  // does not depend on a test's order is the better fixture.
   //
   // `GST / tax registration` is pinned false for the reason the console test
   // records: another spec toggles that org-wide row mid-run, and two FILES
@@ -174,19 +186,13 @@ test.beforeAll(async ({ baseURL }) => {
   await su.dispose();
 });
 
-// SKIPPED 30-Sep-2026 · feedback row 11 (S2-ADMIN). This is the one test in this
-// file that configures the sign-up from inside the Admin console, and both
-// screens it opens — `?section=sudocs` and `?section=suagr` — are in the Sign-up
-// group, hidden until the next release. The deep links now resolve to Scoring
-// framework, so the first `admin-section-title` assertion would fail.
-//
-// Skipped rather than rewritten against the API alone: what it walks IS the
-// admin's console journey, and it comes back with the group. The configuration
-// this test writes is exercised by the pipeline half of this file through
-// `/api/signup-config/documents` directly, and the two screens keep
-// `test/client/signupConfig.test.tsx` and `test/client/agreements.test.tsx`.
-// Un-skip alongside `e2e/signup-config.spec.ts` and `e2e/agreements.spec.ts`.
-test.skip("admin — the programme's checklist asks for four documents, and its template is mapped", async ({ page }) => {
+// SKIPPED 30-Sep-2026 for feedback row 11 (S2-ADMIN), and BACK 23-Oct with the
+// incubator's Sign-up group (tracker row 10). This is the one test in this file
+// that configures the sign-up from inside the Admin console, through
+// `?section=sudocs` and `?section=suagr`; while the group was hidden both deep
+// links resolved to Scoring framework. Un-skipped unchanged, alongside
+// `e2e/signup-config.spec.ts` and `e2e/agreements.spec.ts`.
+test("admin — the programme's checklist asks for four documents, and its template is mapped", async ({ page }) => {
   test.setTimeout(120_000);
   await login(page, ADMIN);
   await page.goto("/app/admin?section=sudocs");

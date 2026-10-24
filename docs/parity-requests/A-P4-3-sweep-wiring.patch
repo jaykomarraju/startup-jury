@@ -1,0 +1,228 @@
+diff --git a/src/server/index.ts b/src/server/index.ts
+index 3eb0667..5deb0b4 100644
+--- a/src/server/index.ts
++++ b/src/server/index.ts
+@@ -28,7 +28,7 @@ import { tickets, messages, issues, help } from "./routes/support";
+ import { calls } from "./routes/calls";
+ import { assignments } from "./routes/assignments"; // W7-E · Assign: board + cross-product confirm
+ import { handleQueue } from "./queue";
+-import { runMonthlyUsageSummary, runReminders, runStuckSweep } from "./scheduled";
++import { runMonthlyUsageSummary, runReminders, runShortlistSweep, runStuckSweep } from "./scheduled";
+ import { withSecurityHeaders } from "./security";
+ import { rateLimit, AUTH_RATE_LIMITS } from "./middleware/rateLimit";
+ 
+@@ -133,13 +133,17 @@ export default {
+   //   "0 8 * * *"    — daily evaluator reminders.
+   //   "*/10 * * * *" — re-drive decks stranded at `pending_ai` (§9). It runs
+   //                    often because a stranded deck is invisible to its
+-  //                    uploader until something picks it back up.
++  //                    uploader until something picks it back up. Since 23-Oct
++  //                    it also re-applies the shortlist criteria
++  //                    (`runShortlistSweep`), for the same reason: a deck that
++  //                    meets them and is not moved is invisible to the Sign up
++  //                    Pipeline.
+   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+     // W3-B rides the daily schedule rather than adding a third cron: the
+     // monthly digest is made monthly by its dedupe key (see `scheduled.ts`), so
+     // thirty of every thirty-one runs are no-ops.
+     if (controller.cron === "0 8 * * *")
+       ctx.waitUntil(Promise.all([runReminders(env), runMonthlyUsageSummary(env)]));
+-    else ctx.waitUntil(runStuckSweep(env));
++    else ctx.waitUntil(Promise.all([runStuckSweep(env), runShortlistSweep(env)]));
+   },
+ } satisfies ExportedHandler<Env, EvalMessage>;
+diff --git a/src/server/routes/config.ts b/src/server/routes/config.ts
+index 1e1cdfa..32e0bc7 100644
+--- a/src/server/routes/config.ts
++++ b/src/server/routes/config.ts
+@@ -33,6 +33,8 @@ import { scopeOf, scoped, insertScope, type TenantScope } from "../../shared/ten
+ import { inEdition } from "../config/scope";
+ import { rescoreEdition } from "../config/rescore";
+ import { loadScoringSettings } from "../config/scoringSettings";
++// 23-Oct — the shortlist criteria, re-applied when the bar they judge by moves.
++import { sweepShortlistCriteria } from "./pipeline";
+ import { loadScoreVisibility } from "../config/scoreVisibility";
+ import {
+   VISIBILITY_EDITIONS,
+@@ -1419,7 +1421,25 @@ config.put("/scoring-framework", requireTask("adminconsole", "admin"), async (c)
+   await auditScoreVisibility(c, moved);
+ 
+   const rescored = recompute ? await rescoreEdition(c.env, scope) : { decks: 0, evaluations: 0 };
+-  return c.json({ ok: true, scoring: stored, visibility: { incubator, vc }, rescored });
++  // 23-Oct — nobody may shortlist by hand, so a deck waiting at Jury Evaluation
++  // that this save carries over its floor — a lower threshold, a moved AI / jury
++  // split, or the re-score just above — is shortlisted by the criteria HERE,
++  // after the re-score has landed, rather than waiting for the cron.
++  //
++  // ONLY when one of those three moved. A save that flips an unrelated toggle
++  // judges nothing: measured, an unconditional sweep here made
++  // `e2e/scoring-framework.spec.ts`'s show-AI-score flip shortlist the seeded
++  // InsureFlow out from under `e2e/incubator.spec.ts`, and the same save in
++  // production would have moved decks for a reason the admin never touched.
++  // Anything this misses, the ten-minute cron catches (`runShortlistSweep`).
++  const criteriaMoved =
++    recompute ||
++    stored.shortlistThreshold !== before.shortlistThreshold ||
++    stored.aiWeightPct !== before.aiWeightPct;
++  const shortlisted = criteriaMoved
++    ? (await sweepShortlistCriteria(c.env.DB, scope)).filter((o) => o.shortlisted).length
++    : 0;
++  return c.json({ ok: true, scoring: stored, visibility: { incubator, vc }, rescored, shortlisted });
+ });
+ 
+ // ── Cohort thresholds ────────────────────────────────────────────────────────
+diff --git a/src/server/routes/programs.ts b/src/server/routes/programs.ts
+index d39ae05..e21171f 100644
+--- a/src/server/routes/programs.ts
++++ b/src/server/routes/programs.ts
+@@ -19,6 +19,8 @@ import type { AppEnv } from "../types";
+ import { denyMentor, requireAuth, requireRole } from "../auth/middleware";
+ import { insertScope, scopeOf, scoped, type TenantScope } from "../../shared/tenant";
+ import { NEW_PROGRAMME_AI_WEIGHT_PCT } from "../../shared/scoring";
++// 23-Oct — the shortlist criteria, re-applied when a programme's floor moves.
++import { sweepShortlistCriteria } from "./pipeline";
+ 
+ const programs = new Hono<AppEnv>();
+ programs.use("*", requireAuth, denyMentor);
+@@ -351,6 +353,12 @@ programs.put("/:id", requireRole("admin"), async (c) => {
+     )
+     .run();
+ 
++  // 23-Oct — a lowered `shortlist_min` can carry this programme's waiting decks
++  // over their floor, and nobody may shortlist by hand, so the criteria are
++  // re-applied now rather than at the next cron tick. Raising it un-shortlists
++  // nobody: the criteria decide a deck once.
++  if (shortlistMin !== existing.shortlist_min) await sweepShortlistCriteria(c.env.DB, scope);
++
+   return c.json({
+     ok: true,
+     program: {
+diff --git a/src/server/scheduled.ts b/src/server/scheduled.ts
+index 0ee9e76..73aab59 100644
+--- a/src/server/scheduled.ts
++++ b/src/server/scheduled.ts
+@@ -10,6 +10,8 @@ import { scoped, type TenantScope } from "../shared/tenant";
+ import { sendEmail, buildReminderEmail, emitNotification } from "./email/outbox";
+ import { sweepStuckEvaluations, type SweepResult } from "./ai/health";
+ import { ASSIGNEE_PAIRS_SQL } from "./decks/assignments";
++// 23-Oct — the shortlist criteria, re-applied for every live workspace.
++import { sweepShortlistCriteria, type ShortlistCriteriaOutcome } from "./routes/pipeline";
+ // The client's open item — the five-working-day rule already lives here, and
+ // this sweep reuses it rather than restating "5 days" in SQL.
+ import { queryDueAt, QUERY_RESPONSE_WORKING_DAYS } from "../shared/queries";
+@@ -151,6 +153,30 @@ async function remindersFor(env: Env, scope: TenantScope): Promise<EvaluatorRemi
+  * more frequent cron. Thin wrapper so `index.ts` stays declarative and the
+  * sweep's own logic lives with the rest of the AI-health code.
+  */
++/**
++ * 23-Oct tracker row 4 — the shortlist criteria, for every live workspace.
++ *
++ * A deck is shortlisted by the system, never by a person, when its panel has
++ * scored it over its floor (`applyShortlistCriteria`, `routes/pipeline.ts`). The
++ * submit that completes the panel applies them at once, and the two console
++ * saves that move a floor re-apply them at once; this is the catch-all for every
++ * OTHER way a waiting deck comes to meet them — a cohort's AI / jury split, an AI
++ * re-score, a panel shrunk by reassignment — and for the decks already waiting
++ * at Jury Evaluation on the day this shipped, which no submit will touch again.
++ * It rides the ten-minute schedule because a deck that meets the criteria and
++ * stays put is invisible to the Sign up Pipeline until something moves it.
++ *
++ * Incubator only: the VC edition keeps its manual `shortlist_to_partner`.
++ */
++export async function runShortlistSweep(env: Env): Promise<ShortlistCriteriaOutcome[]> {
++  const out: ShortlistCriteriaOutcome[] = [];
++  for (const scope of await liveWorkspaces(env)) {
++    if (scope.edition !== "incubator") continue;
++    out.push(...(await sweepShortlistCriteria(env.DB, scope)));
++  }
++  return out;
++}
++
+ export async function runStuckSweep(env: Env): Promise<SweepResult> {
+   const result = await sweepStuckEvaluations(env);
+   if (result.requeued.length || result.failed.length) {
+diff --git a/test/worker/shortlist-criteria.test.ts b/test/worker/shortlist-criteria.test.ts
+index f37b373..0e6b2d0 100644
+--- a/test/worker/shortlist-criteria.test.ts
++++ b/test/worker/shortlist-criteria.test.ts
+@@ -1,6 +1,8 @@
+ import { SELF, env } from "cloudflare:test";
+ import { describe, it, expect } from "vitest";
+ import { sweepShortlistCriteria } from "../../src/server/routes/pipeline";
++import { runShortlistSweep } from "../../src/server/scheduled";
++import type { Env } from "../../src/server/types";
+ 
+ // 23-Oct tracker rows 4 and 10 — "The startups are shortlisted as per the
+ // criteria set in the admin console. NO MANUAL SHORTLISTING SHOULD BE ALLOWED BY
+@@ -255,3 +257,71 @@ describe("sweepShortlistCriteria", () => {
+     expect(await sweepShortlistCriteria(env.DB, { tenantId: "t_default", edition: "vc" })).toEqual([]);
+   });
+ });
++
++// ── 4 · what re-applies the criteria when the BAR moves ──────────────────────
++//
++// Nobody may click shortlist, so a deck waiting at Jury Evaluation that a lower
++// floor would carry over it has to be moved by something. These are the three
++// somethings (`docs/parity-requests/A-P4.md`, patch 3).
++
++describe("lowering a floor shortlists the decks waiting under it", () => {
++  async function put(path: string, cookie: string, body: unknown) {
++    return SELF.fetch(`${BASE}${path}`, {
++      method: "PUT",
++      headers: { cookie, "content-type": "application/json" },
++      body: JSON.stringify(body),
++    });
++  }
++
++  it("a programme's floor, lowered in the console, moves its waiting deck at once", async () => {
++    await env.DB.prepare(
++      "INSERT INTO programs (id, edition, name, shortlist_min, active, sort_order) VALUES ('prog_crit_lower', 'incubator', 'Criteria Lower', 9.5, 1, 99)",
++    ).run();
++    await seedDeck("crit_prog_lower", { ai: 8, panel: ["inc_jury"], scored: { inc_jury: 8 } });
++    await env.DB.prepare("UPDATE decks SET program_id = 'prog_crit_lower' WHERE id = 'crit_prog_lower'").run();
++    // 8.0 against 9.5: waiting, and the sweep agrees.
++    const before = await sweepShortlistCriteria(env.DB, { tenantId: "t_default", edition: "incubator" });
++    expect(before.find((o) => o.deckId === "crit_prog_lower")).toMatchObject({ shortlisted: false, reason: "below_floor" });
++
++    const res = await put("/api/programs/prog_crit_lower", await login(ROLES.admin), { shortlistMin: 7.5 });
++    expect(res.status, await res.clone().text()).toBe(200);
++    expect(await statusOf("crit_prog_lower")).toBe("shortlisted");
++    expect(await shortlistEvents("crit_prog_lower")).toEqual([{ actor_id: null, action: "auto_shortlist" }]);
++  });
++
++  it("the organisation's threshold, lowered on the Scoring framework, does the same", async () => {
++    await seedDeck("crit_org_lower", { ai: 6, panel: ["inc_jury"], scored: { inc_jury: 6 } });
++    const admin = await login(ROLES.admin);
++    // 6.0 against the seeded 7.0.
++    expect(await statusOf("crit_org_lower")).toBe("jury_evaluation");
++    const res = await put("/api/config/scoring-framework", admin, { shortlistThreshold: 5.5 });
++    expect(res.status, await res.clone().text()).toBe(200);
++    expect(((await res.json()) as { shortlisted: number }).shortlisted).toBeGreaterThanOrEqual(1);
++    expect(await statusOf("crit_org_lower")).toBe("shortlisted");
++    await put("/api/config/scoring-framework", admin, { shortlistThreshold: 7 });
++  });
++
++  it("a Scoring-framework save that moves nothing the criteria read moves no deck", async () => {
++    // Waiting and qualifying — 9.0 against 7.0 — but nothing has applied the
++    // criteria to it yet. An unrelated toggle must not be what does.
++    await seedDeck("crit_unrelated_save", { ai: 9, panel: ["inc_jury"], scored: { inc_jury: 9 } });
++    const admin = await login(ROLES.admin);
++    const res = await put("/api/config/scoring-framework", admin, { showAiScoreToJury: false });
++    expect(res.status, await res.clone().text()).toBe(200);
++    expect(((await res.json()) as { shortlisted: number }).shortlisted).toBe(0);
++    expect(await statusOf("crit_unrelated_save")).toBe("jury_evaluation");
++    await put("/api/config/scoring-framework", admin, { showAiScoreToJury: true });
++    // Left waiting on purpose: the cron case below is the one that moves it.
++  });
++
++  it("the ten-minute cron catches whatever else moved the bar — every live workspace, incubator only", async () => {
++    // A deck that meets the criteria with nothing left to submit: the state the
++    // decks already waiting on the day this shipped are in.
++    await seedDeck("crit_cron", { ai: 9, panel: ["inc_jury"], scored: { inc_jury: 9 } });
++    const swept = await runShortlistSweep(env as Env);
++    expect(swept.find((o) => o.deckId === "crit_cron")).toMatchObject({ shortlisted: true });
++    expect(await statusOf("crit_cron")).toBe("shortlisted");
++    // …and the one the unrelated save above rightly left alone.
++    expect(await statusOf("crit_unrelated_save")).toBe("shortlisted");
++  });
++});

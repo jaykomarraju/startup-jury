@@ -256,10 +256,21 @@ test.describe("superuser — a seatless sign-up is allocated a seat", () => {
       expect((await su.post(`/api/decks/${deckId}/transition`, { data: { action: "approve_review" } })).status()).toBe(200);
     }
     expect((await su.post(`/api/decks/${deckId}/assign`, { data: { assigneeId: "inc_jury" } })).status()).toBe(200);
-    for (const action of ["start_jury_eval", "shortlist", "schedule_intro"]) {
-      const res = await su.post(`/api/decks/${deckId}/transition`, { data: { action } });
-      expect(res.status(), `${action}: ${await res.text()}`).toBe(200);
-    }
+    // 23-Oct — nobody may shortlist by hand, so the deck is SCORED onto the
+    // shortlist: its one juror submits 9s, the panel is complete, and 9 clears
+    // any seeded floor (the highest incubator one is the org threshold, 7.0).
+    // The comments satisfy the override-rationale rule whatever the AI scored.
+    // This used to post `start_jury_eval` and `shortlist` as the superuser.
+    const jury = await api(baseURL!, JURY);
+    const { parameters } = (await (await jury.get("/api/parameters")).json()) as { parameters: { key: string }[] };
+    const scored = await jury.post(`/api/decks/${deckId}/evaluate`, {
+      data: { scores: parameters.map((p) => ({ key: p.key, value: 9, comment: "e2e fixture" })) },
+    });
+    expect(scored.status(), await scored.text()).toBe(200);
+    expect(((await scored.json()) as { status: string }).status).toBe("shortlisted");
+    await jury.dispose();
+    const intro = await su.post(`/api/decks/${deckId}/transition`, { data: { action: "schedule_intro" } });
+    expect(intro.status(), await intro.text()).toBe(200);
     const sent = await su.post(`/api/decks/${deckId}/send-signup`);
     expect(sent.status(), await sent.text()).toBe(200);
     const list = (await (await su.get("/api/signups")).json()) as { signups: { signupId: string; deckId: string }[] };
